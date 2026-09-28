@@ -33,7 +33,11 @@ def main():
     parser.add_argument('--engine-evidence', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--concurrency', type=int, choices=(2, 4), default=4)
+    parser.add_argument('--output-tokens', type=int, default=256,
+                        help='Synthetic gate length; keep all restores active long enough to observe overlap')
     args = parser.parse_args()
+    if not 64 <= args.output_tokens <= 1024:
+        parser.error('Functional output length must be between 64 and 1024 tokens')
     evidence = json.loads(args.engine_evidence.read_text())
     command = evidence['command']
     options = json.loads(command[command.index('--kv-transfer-config')+1])['kv_connector_extra_config']['kvmem']
@@ -44,6 +48,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     capture = args.engine_evidence.resolve().parent / 'capture'
     report = {'status': 'running', 'scope': __doc__, 'concurrency': args.concurrency,
+              'output_tokens': args.output_tokens,
               'engine': evidence, 'harness_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'calls': {}, 'phases': {}}
     def save():
@@ -57,9 +62,10 @@ def main():
         return state
     def read_archive():
         return json.loads((capture / 'archive.json').read_text())
-    def complete(tokens, session, request_id=None, cache_salt=None, output=64):
+    def complete(tokens, session, request_id=None, cache_salt=None, output=None):
         payload = {'model': 'qualification', 'prompt': tokens, 'session_id': session,
-                   'temperature': 0, 'seed': 104729, 'max_tokens': output, 'return_token_ids': True}
+                   'temperature': 0, 'seed': 104729,
+                   'max_tokens': args.output_tokens if output is None else output, 'return_token_ids': True}
         if request_id:
             payload['request_id'] = request_id
         if cache_salt is not None:

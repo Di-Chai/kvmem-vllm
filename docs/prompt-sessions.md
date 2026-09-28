@@ -1,7 +1,7 @@
 # Experimental exact prompt sessions
 
-This path has passed its short actual-model HTTP/GPU token-equality gate.
-Compressed-state continuation, concurrent cancellation and agent performance are
+This path has passed short and 134K compressed actual-model HTTP/GPU token-equality gates.
+Concurrent cancellation and agent performance are
 still pending. It is disabled by default and is separate from native streaming-input
 sessions. Target Q8_0, target FP8 e4m3, DFlash2 BF16 sliding KV and K128K/G64K are
 unchanged.
@@ -87,6 +87,22 @@ only after the same explicit post-warmup boundary used for authority capture;
 formal requests still reject missing metadata. Five runner lifecycle tests pass.
 The failed `session_backend_01` evidence is preserved.
 
+The frozen Quill input `request_10.json` also passes in full (`session_http_long_01`):
+134067 prompt tokens, SHA256
+`8e5ea601d0bb63892e16938e061265ac650d36ef8a5fd20517e3c6b917057a6b`,
+133120 imported tokens, 64 identical greedy outputs across cold control, checkpoint
+population and restore. Restoring the already compressed frame and immediately
+performing the next semantic query refresh succeeds. Changed-prefix recomputation
+also matches its separate cold control without another session hit. Each call drains
+native ownership to 0, with 1072/1073 physical blocks free (one null block).
+
+Observed cold/populate/reuse HTTP times are 185.885/183.708/5.172 s. Native TTFT
+falls from 182.686 s for population to 4.230 s on reuse. Native decode is 68.328
+versus 73.852 tok/s over just 63 token intervals; both have 61.538% draft acceptance
+and mean acceptance length 5.308. The main benefit is avoided repeated prefill,
+not a 35-fold decode speedup. This functional gate is not an agent result or a
+repeated performance comparison, and host development overlapped execution.
+
 The separate concurrency/cancellation gate is ready for GPU execution:
 
 ```sh
@@ -101,3 +117,11 @@ concurrent restores against their original token streams. It also checks same-se
 serialization and restored-decode cancellation/recovery. Concurrent token differences
 are reported separately, since native batching can alter reduction order. Passing
 this gate would not establish concurrent numerical quality or agent throughput.
+
+The optional agent relay can send native `X-Session-ID` headers for an explicit
+`--session-task` allowlist. IDs are deterministic within its unique run scope and
+separate tasks and runs; request/response JSON bytes and task stopping/sampling
+remain unchanged. This is benchmark-local namespace routing, not authentication.
+`qualify_agent.py --session-evidence ...` requires passed long restore plus concurrent
+cancellation gates from the same frozen backend before executing session-enabled
+agent tasks. Such agent execution has not yet been qualified.
