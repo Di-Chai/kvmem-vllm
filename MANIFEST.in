@@ -1,3 +1,6 @@
 recursive-include csrc *.cpp
 recursive-include third_party/qw3 *.hpp *.cpp LICENSE *.json
 recursive-include third_party/vllm *.py LICENSE *.json
+include CMakeLists.txt requirements-cu130.lock
+recursive-include docs *.md
+recursive-include scripts *.py *.sh

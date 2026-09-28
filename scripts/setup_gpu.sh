@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-uv venv --python 3.12 .venv
+uv venv --python 3.12 --allow-existing .venv
 uv pip install --python .venv/bin/python --torch-backend=cu130 -r requirements-cu130.lock
 if [ ! -d .deps/vllm-gguf-plugin/.git ]; then
   git clone https://github.com/vllm-project/vllm-gguf-plugin.git .deps/vllm-gguf-plugin
