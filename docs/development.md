@@ -806,3 +806,13 @@ for the exact commands and limits. The official agent pair continues unchanged o
 its frozen non-session backend. No session throughput or quality claim is made.
 The final combined host regression passes 254 tests, with 42 GPU cases deferred
 (`components_sessions_final_host_20260929.xml`).
+
+A fresh source-release check at commit `b9ec4ae` builds an sdist, extracts it into
+an empty directory with no extension binary, recompiles the native wheel and
+installs it into a new environment without torch or vLLM. The installed package
+passes 59 host core/archive/checkpoint/configuration/session-control tests; one
+native-connector test is skipped because that environment has no vLLM. All four
+new session modules and all three project/vendor licenses are present in the wheel.
+Hashes, logs and JUnit evidence are in `artifacts/source-build-sessions_01`. This
+qualifies host packaging of the current source; it is not a clean GPU dependency
+installation or an actual session-model result.
