@@ -68,3 +68,13 @@ byte-correctness pass. The default remains full checksum verification. Compare
 performance runs using the same retirement mode and retain separate checksum
 qualification. This option does not implement asynchronous/background retirement:
 publication draining and record reclamation still happen synchronously.
+
+New harness runs sample owned GPU-process memory and API/GPU-process RSS every
+2 seconds into `resources.jsonl`. The summary reports **sampled** maxima over
+server lifetime, including startup; it cannot detect every transient peak.
+Host RSS is summed and can double-count shared pages. Ownership is checked by the
+server process group. Foreign GPU processes, unknown ownership or sampling errors
+make `exclusive_gpu_observed` false; do not use such a run to establish an
+exclusive-GPU performance result. The prior `memory` field remains an end snapshot.
+A manually attached `resources_partial.jsonl` monitor covers only its recorded
+interval and cannot establish a whole-run peak.

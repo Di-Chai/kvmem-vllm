@@ -317,11 +317,14 @@ def main():
         report["plugin_options"] = {key: value for key, value in env.items() if key.startswith("KVMEM_")}
         (args.output / "command.json").write_text(json.dumps(report, indent=2))
         process = None
+        monitor = None
         try:
             with (args.output / "server.log").open("w") as logfile:
                 process = subprocess.Popen(command, env=env, stdout=logfile, stderr=subprocess.STDOUT,
                                            start_new_session=True)
                 report["server_pid"] = process.pid
+                from vllm_kvmem.telemetry import ResourceMonitor
+                monitor = ResourceMonitor(args.output / "resources.jsonl", process.pid).start()
                 start = time.monotonic()
                 url = f"http://127.0.0.1:{port}"
                 while time.monotonic() - start < 600:
@@ -457,6 +460,8 @@ def main():
             report["error"] = repr(error)
             raise
         finally:
+            if monitor is not None:
+                report["resources"] = monitor.stop()
             if process is not None:
                 try:
                     process.send_signal(signal.SIGTERM)
