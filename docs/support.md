@@ -33,17 +33,25 @@ explicit flags and pinned source hashes; no installed vLLM files are rewritten.
 | Target weights | Qwen3.8-27B GGUF Q8_0 through pinned vllm-gguf-plugin | Other quantizations and model families |
 | Target KV | Native FP8 e4m3 layouts; raw pre-RoPE K authority and FP8 V; byte-checked assembly | Other native KV codecs and scale layouts |
 | Hybrid state | Qwen3.5-family GDN native state identity restore/replay | Cancellation and session persistence; corrected bounded real C1 passes |
-| DFlash2 | Native generation, accepted/rejected capture and identity replay; 197K C1 compressed prefill / later decode and short C4 pass | Long compressed C4, decode-time refresh, terminal-prefix rollback and persistent sessions |
+| DFlash2 | Corrected long compressed C4 lifecycle; short native exact terminal archive clipping and checksums pass | Matched performance, decode-time refresh/cancellation, recurrent terminal rollback in serving and persistent sessions |
 | Bounded target | Scheduled semantic prefill/selection, actual-length acknowledgment, page trimming implemented | Corrected real long C1/C4 pass; pressure tests and performance acceptance remain |
 | GPU admission | Future growth reservations tested with native full-attention/Mamba allocator | Attached to bounded scheduler; native GPU pressure tests remain |
-| Storage | Immutable archive, generation-qualified leases, packed transfers and fenced failures; direct pinned reads pass GPU byte/failure tests | Direct-read serving performance, per-request disk/CPU quota admission, background GC, asynchronous retirement |
+| Storage | Immutable archive, generation-qualified leases, packed/direct transfers; async retirement passes native long C4; original GC passes component reuse tests | Matched direct-read performance, disk/CPU quota admission and native serving GC/backpressure |
 | Measurements | Exact frozen-token inputs, SSE arrival/usage validation, C1/C4 aggregation | Native SSE C1/short-C4 passes; matched warm repeats and executed agent-task success remain |
 
 BF16 is used for activations and the draft model; it does not change the Q8_0
 target weight path. Initial integration requires one GPU/rank, eager execution,
 text-only input, prefix caching disabled and Mamba cache mode `none`. Bounded
-refresh has target-only long C1/C4 and experimental DFlash2 long-C1 evidence.
+refresh has corrected target-only and experimental DFlash2 long-C4 lifecycle evidence.
 `--bounded-dflash` uses synchronous DFlash2 with native BF16 sliding draft KV;
-long DFlash C4 and decode-time refresh qualification are still pending. Public connector
+Matched DFlash performance and decode-time refresh qualification are still pending. Public connector
 metadata carries commands/acknowledgments; isolated runner/scheduler adapters
 supply the missing historical selection, replay and bounded-allocation semantics.
+
+An optional `--q8-tensorcore` qualification flag experiments with a source-pinned
+GGUF batch linear adapter on SM120, for BF16 input batches of at least 16 rows.
+It preserves original Q8_0 bytes/FP16 scales and the native fast-math Q8_1
+activation quantization, using grouped integer Tensor Core dots and FP32 scaling.
+It changes floating-point reduction order. It is disabled by default and has not
+yet passed native model/task quality or performance qualification. This does not
+add BF16 target weights or change target FP8 KV.

@@ -69,6 +69,22 @@ def test_finished_http_requests_do_not_hide_unfinished_background_retirement():
         qualification.validate_archive(report, archived)
 
 
+def test_warmup_requests_remain_in_archive_integrity_gate():
+    report, archived = fixture()
+    warmup = copy.deepcopy(report['single'])
+    warmup['result']['id'] = 'warmup'
+    report['concurrent_warmup'] = [warmup]
+    with pytest.raises(RuntimeError, match='request sets'):
+        qualification.validate_archive(report, archived)
+    record = copy.deepcopy(archived['completed'][0])
+    record['request_id'] = 'warmup-0-worker'
+    archived['completed'].append(record)
+    qualification.validate_archive(report, archived)
+    record['accepted_tokens'] -= 1
+    with pytest.raises(RuntimeError, match='mismatch'):
+        qualification.validate_archive(report, archived)
+
+
 def test_terminal_extent_checks_each_request_and_native_packet_not_just_total():
     report, archived = fixture()
     archived["completed"][0]["last_steps"][0]["history_begin"] = 148

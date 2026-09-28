@@ -579,3 +579,30 @@ one-token native updates; normalization code and numeric tolerances did not
 change. Both the failed artifact and corrected evidence are retained:
 `components_after_long_c4.xml`, `accepted_state_gpu_correct_reference.xml`, and
 `components_accepted_state_verified.xml`.
+
+## Short native terminal and profiler gate (2026-09-29)
+
+`artifacts/engine_terminal_dflash_profile_02`, source `1f2dd81`, passed
+short C1/C4 terminal lifecycle qualification with Q8_0/FP8/DFlash2 and unchanged
+K131072/G65536. Five requests ended at their 128-token output limit. Their
+archived canonical lengths are exactly 141, 141, 142, 151 and 144 tokens;
+respectively 1, 1, 4, 7 and 1 extra computed speculative rows were discarded.
+All sealed archive records passed full checksums. No active/retiring authority,
+archive slot, pending download, reservation or owned native block remains;
+1161 of 1162 native blocks are free (one permanent null block). This gate does
+not exercise compression, EOS/cancellation, persistent sessions or task quality.
+
+The eight-iteration concurrent CUDA trace contains 29052 kernels. Q8_0 GGUF
+`mul_mat_q8_0` consumes 1091.645 ms of 1194.157 ms summed kernel durations
+(91.42%). The GPU kernel interval union is 1194.044 ms across a 1270.405 ms
+first-to-last-kernel span. This identifies the current short-context batch
+linear implementation as a priority; it does not establish the share of long
+prefill/refresh stalls. The trace's GDN MTP kernel consumes 13.249 ms and the
+Q8_1 activation quantizer 4.102 ms. Profiling export interrupts responses for
+about 18.5 s, so all HTTP throughput from this instrumented run is explicitly
+ineligible as performance evidence. Sampled owned GPU peak is 71442 MiB.
+
+The non-GPU suite after the short-mode harness change passes 151 cases with
+34 GPU cases skipped (`components_terminal_profile.xml`). This is not a new
+full GPU-suite claim. The source-pinned recurrent continuation method remains
+unwired in serving; successful terminal archive clipping does not imply it is.

@@ -81,7 +81,7 @@ def validate_archive(report, archived):
         raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
     if not sum(r.get("sealed_records_archived", r["sealed_records_verified"]) for r in archived["completed"]):
         raise RuntimeError("Archive qualification did not exercise a complete immutable record")
-    items = ([report["single"]] if "single" in report else []) + report["concurrent"]
+    items = ([report["single"]] if "single" in report else []) + report["concurrent"] + report.get('concurrent_warmup', [])
     if len(items) + len(report.get("cancelled", [])) != len(archived["completed"]):
         raise RuntimeError("Native and HTTP request sets differ")
     bound = archived["max_concurrent_batches"] * archived["decode_query_len"]
@@ -246,10 +246,14 @@ def main():
                         help="Scheduled semantic prefill and bounded target page ownership (no DFlash)")
     parser.add_argument('--bounded-short-lifecycle', action='store_true',
                         help='Use short fixtures for terminal/retirement checks; explicitly does not qualify compression')
+    parser.add_argument('--warmup-short-concurrent', action='store_true',
+                        help='Retain a complete short C4 warmup before measuring the second C4; requires short lifecycle/stream metrics')
     parser.add_argument("--cpu-read-cache-mib", type=int, default=0,
                         help="Experimental bounded CPU archive cache; requires bounded-target")
     parser.add_argument("--packed-assembly", action="store_true",
                         help="Use archive-layout GPU assembly; requires bounded-target")
+    parser.add_argument('--q8-tensorcore', action='store_true',
+                        help='Experimental precision-preserving Q8_0 batch linear, SM120 only')
     parser.add_argument("--direct-pinned-reads", action="store_true",
                         help="Experimental archive reads directly into bounded pinned H2D slots; requires packed-assembly")
     parser.add_argument("--frozen-input", type=Path,
@@ -290,6 +294,8 @@ def main():
         parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
+    if args.warmup_short_concurrent and (not args.bounded_short_lifecycle or not args.stream_metrics or args.profile_concurrent_steps):
+        parser.error('Short C4 warmup requires short lifecycle and stream metrics without profiling')
     if args.bounded_short_lifecycle and (not args.bounded_target or any((
             args.frozen_input, args.concurrent_frozen_input, args.concurrent_only,
             args.cancel_during_refresh, args.require_capacity_pressure, args.history_repeat))):
@@ -396,6 +402,8 @@ def main():
         env = {key: value for key, value in os.environ.items() if not key.startswith("KVMEM_")}
         env.update(HF_HUB_OFFLINE="1", VLLM_USE_V2_MODEL_RUNNER="1", MAX_JOBS="2",
                    CUDA_HOME="/usr/local/cuda-13", VLLM_PLUGINS="gguf,kvmem")
+        if args.q8_tensorcore:
+            env['KVMEM_Q8_TENSORCORE'] = '1'
         env["PATH"] = f"{Path(sys.executable).parent}:/usr/local/cuda-13/bin:" + env["PATH"]
         env["PYTHONPATH"] = str(worker_source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         imported = subprocess.check_output([sys.executable, "-c",
@@ -557,6 +565,14 @@ def main():
                         report["single"] = complete((0, single_prompt), phase="single")
                 if frozen_concurrent:
                     prompts = [item["input_ids"] for item, _ in frozen_concurrent]
+                if args.warmup_short_concurrent:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                        try:
+                            report['concurrent_warmup'] = list(executor.map(
+                                lambda item: complete(item, phase='concurrent_warmup'), enumerate(prompts)))
+                        except BaseException:
+                            stop_owned_server(process)
+                            raise
                 if args.profile_concurrent_steps:
                     from vllm_kvmem.profiling import control_profiler
                     control_profiler(url, 'start')
@@ -583,6 +599,9 @@ def main():
                         "concurrent": summarize_group([StreamTrace(**item["trace"]) for item in report["concurrent"]])}
                     if "single" in report:
                         report["http_measurements"]["single"] = summarize_group([StreamTrace(**report["single"]["trace"])])
+                    if 'concurrent_warmup' in report:
+                        report['http_measurements']['concurrent_warmup'] = summarize_group(
+                            [StreamTrace(**item['trace']) for item in report['concurrent_warmup']])
                 report["memory"] = subprocess.check_output([
                     "nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader"], text=True).strip()
                 if args.capture_probe:
@@ -594,7 +613,7 @@ def main():
                         raise RuntimeError("Scheduler-driven rebuild did not complete")
                 if args.archive_probe:
                     path = args.output / "capture/archive.json"
-                    expected_requests = len(report["concurrent"]) + int("single" in report) + len(report.get("cancelled", []))
+                    expected_requests = len(report["concurrent"]) + int("single" in report) + len(report.get("cancelled", [])) + len(report.get('concurrent_warmup', []))
                     retirement_start = time.monotonic()
                     deadline = retirement_start + 180
                     while time.monotonic() < deadline:

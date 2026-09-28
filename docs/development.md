@@ -356,3 +356,34 @@ would synthesize a 134144-token C1. Its stop reason and interrupted result remai
 in the artifact directory. An explicit `--bounded-short-lifecycle` mode now
 separates this terminal/retirement check from the existing mandatory compression
 gate. Profiling/qualification host tests: 21 pass; long gates are not weakened.
+
+## Q8 batch linear hotspot and experimental replacement
+
+The short native terminal/profiler gate passed. Its Q8_0 DP4A matrix kernel
+accounts for 91.42% of summed GPU kernel time. An optional SM120 Tensor Core
+adapter now computes exact INT32 dots per original 32-element Q8 group, scales
+in FP32 with unchanged FP16 scales, and reduces groups without unpacking the
+whole model into BF16 weights. It only replaces MMQ batches with >=16 rows;
+the single-request 8-row DFlash verifier keeps its original path.
+
+The first prototype used round-to-nearest division, which differs at quantizer
+ties from the upstream `--use_fast_math` build. That version was never enabled
+in serving. The corrected quantizer uses the native constant reciprocal and
+`div.approx.ftz`; identity Q8 weights expose native activation quantization and
+match every tested value exactly. FP64 grouped-dot references and native CUDA
+comparisons pass six GPU cases. The full component suite passes **191 tests**
+(`components_q8_tensorcore.xml`). A subsequent short-C4 warmup archive-integrity
+test also passes with all 20 qualification host tests.
+
+Isolated real layer-0 QKV, FFN gate and FFN down weights with synthetic inputs
+show 1.84–2.02x kernel speed ratios at 32 rows and 1.94–2.09x at 1024 rows.
+Relative RMS output differences are 2.6e-5–5.3e-5 in these batch cases, reflecting
+FP32 reduction order and BF16 rounding boundaries. Evidence is retained in
+`artifacts/q8_tensorcore_real_weights.json`; these are not model throughput or
+task-quality results. The switch remains experimental and off by default.
+
+`--warmup-short-concurrent` retains an entire additional short C4 request group
+before the measured group, including its streams and archive/terminal checks.
+It is only allowed with short lifecycle and streaming metrics, without profiling;
+it does not relax the mandatory long compression gate. Native baseline/candidate
+runs and real task-quality qualification remain pending.
