@@ -160,3 +160,16 @@ The harness records actual prefill/decode query-size histograms to detect draft
 headroom and alignment changes in future comparisons. Targeted scheduler,
 option and harness tests: 35 passed. Native cancellation qualification also
 counts the disconnected request when waiting for archive retirement.
+
+## Active next GPU run
+
+`engine_long_c4_dflash_direct_cadence_01` launched from `80853e8`, with its own
+frozen worker package and native extension. It uses the same four real long
+inputs as the earlier target C4, Q8_0/FP8, BF16 DFlash2, K131072/G65536 and B128.
+Candidates: direct pinned reads, 36 GiB CPU cache, packed assembly, prefill cadence
+8, global batch budget 4224 / request cap 1024, and publication-only retirement.
+It must demonstrate actual four-request native compressed batching and cleanup.
+This is a combined-path qualification, not a matched speedup against the old
+256-query, full-readback target C4. Actual scheduling histograms and complete
+HTTP arrival windows will determine follow-up matched controls. Final outcome
+is pending; the persistent goal remains active.

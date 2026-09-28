@@ -32,8 +32,9 @@ By default only the single request uses the frozen long input and the following
 C4 prompts remain short. For explicit long C4, supply exactly four
 `--concurrent-frozen-input PATH SHA256` pairs. Each file is validated independently
 before launching the server and its provenance is saved. The same C1/C4 token IDs
-must be supplied to matched native and bounded runs. This long-C4 option still
-needs native GPU qualification.
+must be supplied to matched native and bounded runs. The target-only long-C4
+option passed native lifecycle qualification; its poor performance is recorded
+separately from short-C4 results.
 
 Do not interpret diagnostic timings as optimized serving: archive qualification
 performs synchronized complete record readback, and replay diagnostics may repeat
@@ -52,7 +53,8 @@ of speedup: report actual worker batch membership and both TTFT and makespan.
 
 
 `--bounded-dflash` selects the experimental synchronous compressed DFlash2 path
-and implies `--dflash --bounded-target`; it is not yet GPU-qualified. It preserves
+and implies `--dflash --bounded-target`; compressed prefill / later decode passed
+one real long C1 and short C4. It preserves
 native accepted/rejected accounting, applies the same frozen input and natural EOS
 contract, and rejects refresh evidence that scores unverified draft rows. Keep
 its results separate from target-only measurements and from identity-replay tests.
