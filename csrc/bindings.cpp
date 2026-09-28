@@ -251,6 +251,10 @@ PYBIND11_MODULE(_native, m) {
                                  -1, -1, handle.generation);
         })
         .def("prepare_append", &KvMemStore::prepare_repository_append, py::keep_alive<0, 1>())
+        .def("checkpoint", &KvMemStore::repository_checkpoint,
+             py::arg("position"), py::arg("pin_working_set") = true)
+        .def("checkpoint_valid", &KvMemStore::repository_checkpoint_valid)
+        .def("prepare_rewind", &KvMemStore::prepare_repository_rewind, py::keep_alive<0, 1>())
         .def("read", [](const KvMemStore &s, uint64_t b, uint32_t n) {
             return OwnedRead(s.repository_storage_read(b, n));
         })
@@ -263,6 +267,15 @@ PYBIND11_MODULE(_native, m) {
              py::arg("handles"), py::arg("force_raw_refresh") = false)
         .def("set_baked", &KvMemStore::set_block_baked_pos,
              py::arg("slot"), py::arg("position"), py::arg("generation"));
+
+    py::class_<KvMemStore::RepositoryCheckpoint, std::shared_ptr<KvMemStore::RepositoryCheckpoint>>(
+            m, "RepositoryCheckpoint")
+        .def_property_readonly("position", &KvMemStore::RepositoryCheckpoint::position)
+        .def_property_readonly("valid", &KvMemStore::RepositoryCheckpoint::valid);
+    py::class_<KvMemStore::RepositoryRewind>(m, "RepositoryRewind")
+        .def_property_readonly("position", &KvMemStore::RepositoryRewind::position)
+        .def_property_readonly("discarded_spans", &KvMemStore::RepositoryRewind::discarded_spans)
+        .def("commit", &KvMemStore::RepositoryRewind::commit);
 
     py::class_<NvmeAllocation>(m, "NvmeAllocation")
         .def_readonly("block_id", &NvmeAllocation::block_id)

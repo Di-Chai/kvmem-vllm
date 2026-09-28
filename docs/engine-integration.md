@@ -1,164 +1,123 @@
 # Engine integration boundary
 
-The installed vLLM wheel remains unchanged. General plugin discovery is passive
-unless explicit diagnostic compatibility options are enabled. The target engine
-is vLLM 0.30.0 V2; source hashes guard the version-specific extension points.
+The installed vLLM wheel remains unchanged. General-plugin discovery is passive;
+experimental runner/scheduler adapters require explicit flags and source hashes
+for vLLM 0.30.0 V2. Supported execution currently means TP=1, eager, text-only,
+synchronous scheduling, prefix caching off and Mamba cache mode `none`. See
+`support.md` and `qualification-20260928.md` for evidence and remaining gates.
 
-Implemented building blocks are not yet a serving pipeline. The next integration
-must connect them through the following ownership boundaries:
+## Ownership and execution
 
-1. **Scheduler owner.** `EnginePageLeases` allocates through the existing native
-   BlockPool and waits for worker acknowledgments before returning pages. The
-   current helper is independently tested, not wired into native scheduling.
-   A complete integration must replace full-attention history allocation with
-   bounded working-set allocation while preserving the recurrent group's native
-   state ownership. Do not mutate Request.num_computed_tokens to represent K.
-   `KVMemScheduler` now wraps native full-attention managers with
-   `WorkingSetManager` in an explicit identity-refresh diagnostic. It suspends
-   the request via native decode eligibility, protects pending pages against
-   preemption, and uses `KVMemConnector` commands/acknowledgments for commit.
-   Native `SchedulerOutput.block_table_updates` replaces complete rows, including
-   allocations made in the resume step. This closed loop passed a real GPU request;
-   automatic compressed admission and production refresh policies remain pending.
-2. **Worker batch.** Keep logical processed-token counts for input IDs, sampling,
-   generation limits and recurrent state. Prepare separate dense working-window
-   RoPE positions and attention lengths. `WorkingSetMetadata` forwards all native
-   GDN/speculation metadata and overrides lengths only for attention groups.
-   `metadata_patch.py` supplies the small missing upstream hook, enabled only
-   with `KVMEM_WINDOW_METADATA=1`. `WindowBatchAdapter` computes dense positions
-   and lengths without changing the native batch's logical counters. The native
-   slot-mapping kernel uses dense positions for full-attention groups; recurrent
-   groups must have slot mapping disabled. `window_bridge.py` scopes metadata
-   overrides to the model-state call and supplies dense text MRoPE input positions.
-   GPU tests cover different per-request offsets, reordered requests, mixed query
-   lengths and padded rows using actual native BlockTables. The full-model identity
-   run with this hook enabled still matches baseline. A full-model compressed
-   replay now also passes at logical history 195584 with a 64512-token offset,
-   preserving logical history while attention uses its 131072-token prefix.
-   Automatic bounded scheduling and multi-request compressed refresh remain.
-3. **Raw authority.** `capture.py` retains batched quantized projections and adds
-   raw Q/K stores to the existing fusion. Layer capture is verified in a real
-   Q8_0/FP8 request. Per-request slicing must use the runner's actual query offsets,
-   not SchedulerOutput dictionary iteration order. Capture target and draft
-   authorities separately; the current model probe covers the target only.
-4. **Archive publication.** Clone generation-qualified repository leases into
-   `AsyncArchive` jobs and `PackedTransfers`. Publish only after completion.
-   Repository cancellation does not cancel already-admitted I/O. NVMe buffers
-   have explicit record/capacity limits and no silent authoritative eviction.
-   `CaptureRuntime` now packs every target batch plus native rejection counts into
-   one D2H transfer, following native query offsets and GPU logical positions.
-   `RequestAuthority` excludes rejected rows, extends a CPU tail, seals complete
-   records, and maintains content-frame mean keys. `PackedDownloads` requires
-   explicit CPU-consumer release even after its CUDA event completes. This is
-   integrated in the opt-in archive diagnostic, including DFlash. Finalization
-   drains and verifies records synchronously; production asynchronous retirement,
-   policy GC, global capacity admission, and draft authority are still pending.
-   Native verifier acceptance can exceed HTTP output at termination when async
-   batches are in flight. These temporary records are currently retired in full.
-   Persistent sessions must receive the scheduler's final prefix boundary and
-   restore/replay recurrent state before publishing a reusable terminal checkpoint.
-5. **Refresh commit.** Core selection mutates its host working-set metadata.
-   Retain its Plan (which owns previous-window leases), fence asynchronous
-   assembly, and make a worker table/length update atomically. On failed assembly,
-   fail or restore the request before it is scheduled; never decode with mixed
-   old/new state. `assemble_fp8` supports staged V or resident-V preservation.
-   The authority's MeanK bridge can now feed accepted-key scores into the original
-   native selector. Its returned plan still needs scheduler commit, assembly and
-   query replay; the bridge alone does not enable compressed serving.
-   `NativeWindowAssembler` now resolves actual kernel-page tables and consumes
-   bounded coalesced record reads. Its completion retains the selected plan,
-   authority and cache views until fused raw-K/FP8-V assembly completes. The
-   scheduler must continue holding the physical allocation until acknowledgment.
-6. **Query replay / speculation.** Restore pre-query convolution and recurrent
-   state using a generation-qualified checkpoint, replay the required query,
-   refresh target/draft context and commit only accepted tokens. Rejected pages
-   must be cleaned before repository slots become reclaimable. Checkpoints and
-   their completion fences are implemented. `NativeRecurrentState` now borrows all
-   actual native convolution/SSM rows and acceptance counters. It checks request
-   incarnations and page tables before restoring. Native identity query replay
-   is byte-equal for prefill, decode and four-request batches with and without
-   DFlash. The probe samples and publishes only the final pass, and restores all
-   neighboring requests before replay. A long target-only compressed replay now
-   passes separately; draft refresh still needs full-model qualification.
+1. **Native scheduling and pages.** `KVMemScheduler` uses the native scheduler,
+   sampling and continuous batches. `WorkingSetManager` bounds full-attention
+   storage while GDN retains native recurrent allocation. Logical computed-token
+   counts never stand in for dense window length. `ReservedKVCacheManager` reserves
+   future window growth plus recurrent/draft pages and limits live/retiring
+   authorities. A refresh can release physical pages while retaining its growth
+   reservation. Active-request preemption is refused until checkpoint restoration
+   is qualified. Native capacity-pressure testing remains outstanding.
+2. **Window metadata.** `WindowBatchAdapter`, `WorkingSetMetadata` and the scoped
+   model-state bridge supply dense RoPE positions, attention lengths and slot
+   maps only for semantically identified full-attention groups. Native GDN and
+   draft logical positions remain intact. `MambaSpec.uses_slot_mapping` is not an
+   attention classifier. Logical 128-token authority records differ from allocator
+   blocks and kernel pages; page ownership always stays with vLLM.
+3. **Accepted authority.** Fused capture retains target pre-RoPE BF16 K and unchanged
+   FP8 V. One packed D2H transfer covers each native batch and its rejection counts.
+   `CaptureRuntime` uses actual batch offsets and excludes rejected proposals.
+   `RequestAuthority` extends mutable tails, seals immutable complete records and
+   maintains content-frame MeanK. Per-request namespaces and repository generations
+   prevent cross-session or recycled-slot aliasing. Uniform target FP8 e4m3 geometry
+   is the currently qualified codec, not a generic format guarantee.
+4. **Storage and transfer.** `AsyncArchive` clones repository leases and bounds
+   shared I/O count plus optional in-flight bytes. NVMe capacity is geometry-derived;
+   optional physical reservation and a shared arena-byte cap fail before readiness
+   when unsatisfiable. These startup/byte controls currently have CPU evidence.
+   `CachedArchive` has independent global/per-namespace read-cache limits and never
+   substitutes cache presence for durable publication. Packed/direct assembly
+   coalesces immutable record reads; pinned slots remain owned through CPU fill
+   and CUDA completion. Completed read results and authority/serialization buffers
+   remain separate from the in-flight I/O cap. Whole-process host-byte admission
+   and fair asynchronous I/O scheduling are still missing.
+5. **Selection and replay.** A native pre-forward connector command initiates
+   query-conditioned selection after K, with query sizes clipped to aligned K/G
+   boundaries. `bounded_runtime.py` snapshots provisional native state, obtains
+   the query, selects history, assembles raw K with its new RoPE positions, restores
+   state and replays. Only the final pass is sampled/captured. Current replay
+   includes neighbours in the provisional batch, a remaining performance cost.
+   Assembly completion retains the selected plan and page owners. Scheduler
+   acknowledgments commit actual selected lengths and complete page-table rows,
+   including replay allocations. GDN counters retain logical history.
+6. **Incremental assembly and failure.** A retained unmoved record can reuse
+   resident K/V; moved K is rebuilt from immutable pre-RoPE K. Dropped blocks lose
+   working residency only after the assembly fence. Reselecting a previously
+   dropped block at its old position must reload it. This rule fixes the withdrawn
+   earlier compression measurements. Failed partial assembly owns a cleanup fence
+   and cannot commit or resume; cancellation waits for the same ownership chain.
+7. **DFlash2.** The opt-in draft contract preserves the original target Q8_0 and
+   FP8 KV with BF16 draft weights/native sliding KV, seven speculative proposals
+   and an eight-token verifier query. Source-checked draft loading supports the
+   mixed GGUF/safetensors setup. Rejection counts travel with capture. Corrected
+   compressed long C4 and short exact terminal archive tests pass. The qualified
+   draft logical-position range is 262144; longer sessions need a separate position
+   adapter, never silent truncation or changed K/G.
+8. **Termination and reclamation.** Scheduler terminal-prefix metadata arrives
+   before draining the latest capture, clipping EOS/length/abort overshoot exactly.
+   Optional bounded CPU retirement publishes, verifies when requested, and reclaims
+   the archive before connector acknowledgment frees native pages/reservations.
+   Actual HTTP active-prefill cancellation passes; compressed-refresh cancellation
+   remains a separate gate. Serving GC uses the original background policy and
+   generation-qualified release callbacks. Scheduler ready-record credits debit
+   unpublished accepted/speculative rows; idle worker feedback can unblock requests.
+   GC/admission host tests pass, but native GPU pressure qualification is pending.
 
-The `--compression-probe` diagnostic keeps the native allocation and performs one
-capacity-boundary selection, rather than enabling production semantic prefill.
-The original semantic policy reselects query-conditioned history on each aligned
-prefill chunk after K; this must be integrated with scheduler clipping and native
-page ownership next. `RefreshTicket.replay_tokens` now retains destination pages
-for a query executed before acknowledgment, in addition to the selected prefix.
-Unit tests verify that commit cannot free those freshly written query pages.
+## Persistent-session integration still required
 
-An opt-in `KVMEM_BOUNDED_TARGET=1` integration now wires the query into the native
-scheduler. Its source-checked `_reserve_prefill_lookahead` override clips admission
-at K and keeps non-final prefill chunks block-aligned. The existing
-`_build_kv_connector_meta` hook runs after native allocation and before counter
-advance; it reserves every attention group and marks `has_sync_kv_loads`, so V2
-delivers the command before model forward rather than deferring it to post-forward.
-Worker acknowledgments carry actual selected lengths. The scheduler validates all
-groups, retains selected-prefix plus replay-query pages, trims the remainder and
-sends a full updated page table on the next step. GDN allocation/history is intact.
+A request ID or HTTP session header is not state reuse. The current official agent
+backend reconstructs each turn as a fresh request. Native vLLM streaming-input
+sessions retain pages but bypass normal terminal cleanup and discard the previous
+last sampled token on update; using them directly would miss KVMem's final-prefix
+and recurrent/draft-state contract.
 
-`bounded_runtime.py` performs the all-history bootstrap at K, then query-conditioned
-semantic prefill after K. It snapshots and restores every request in a provisional
-batch, including neighbours not being refreshed. Only the final native forward is
-sampled/captured. Target decode refresh is scheduled at an aligned boundary with
-one block of provisional headroom. This integration is synchronous, target-only,
-eager and APC-off; corrected real long C1 GPU qualification has passed, but it is
-not an advertised production mode or a DFlash/concurrency performance result.
+The imported core's bounded repository checkpoint/rewind transactions are exposed
+through `RequestMemory`. A checkpoint pins its current working prefix. Rewind
+requires a completion fence before publishing shorter history, holds discarded
+suffix leases through cleanup, and permanently invalidates later checkpoints.
+The Python adapter currently accepts sealed-record boundaries only. Partial-tail
+branching requires archive generation handling; it must not overwrite immutable
+published records in place. These are host ownership primitives, not completed
+persistent serving. `NativeRecurrentState.canonicalize_accepted` separately has
+GPU component evidence for retained speculative rows, but is not wired to session
+turn transitions.
 
-Live request preemption is temporarily disabled rather than discarding GDN state
-without a qualified restore path. Cross-request capacity reservations/admission
-must therefore be completed before claiming arbitrary-load deadlock freedom;
-native full-input-size checks alone are not a reservation of all future growth.
-The shared archive currently allocates a logical quota of repository_blocks times
-max_num_seqs in this mode. Disk-capacity admission, background GC and asynchronous
-retirement remain necessary; sparse logical capacity is not guaranteed free space.
+Next integration must:
 
-Failed assembly marks its host transaction FAILED and installs a cleanup fence
-owning the plan, cache views and staging. It cannot commit or admit more work.
-Cancellation waits for that fence. A real GPU test injects an archive read failure
-after the first assembly chunk and verifies cleanup without publishing the partial
-window. Packed H2D writes also wait for prior destination use on the caller stream;
-an allocation obtained from torch.empty may reuse storage still busy on that stream.
+- Suspend resumable turns and send the exact retained prefix through the connector;
+  acknowledge target GDN, draft KV/hidden state, capture and native page cleanup
+  before accepting the next input. Preserve per-turn sampling and output limits.
+- Compare exact rendered token prefixes. Thinking trimming and XML tool-call
+  normalization can rewrite generated output. Restore a checkpoint before the
+  first differing token and replay the official new history; do not change chat
+  serialization to force a prefix hit. A recent block-aligned prompt checkpoint
+  is a candidate that avoids partial archive overwrites. Unsupported branches
+  require a correct explicit recompute path.
+- Bound idle sessions/checkpoints and support offload/admission beyond active GPU
+  slots. Qualify isolation, reconnect/abort/expiry, speculation rollback, GC and
+  repeated tool turns under contention before using persistent state for scores.
 
-Physical allocator blocks are not logical KVMem blocks. In the qualification
-configuration vLLM chooses 1568-token attention allocator blocks without DFlash
-and 1648 with it to match Mamba pages. Kernel pages are smaller. Logical 128-token
-records need a distinct page mapping; reusing a repository slot must never reuse
-a physical allocation still leased by a different record or request.
+Reconstructed prompts from 21 live agent calls match recorded native token counts;
+all 19 adjacent pairs retain the prior reconstructed prompt as a prefix
+(`agent_prefix_analysis_02`). This supports investigating prompt checkpoints but
+is not raw generated-token equality, proof of native state reuse, or task quality.
 
-The first full integration should use explicit supported graph modes, prefix
-caching off, text-only, TP=1 and bounded C1/C4. Extend model/quantization/graph
-support only after these lifecycle tests pass. Unsupported cases must fail rather
-than falling back to a different KVMem algorithm or precision.
+## Qualification boundaries
 
-Cache-group selection must use the semantic cache spec, not `uses_slot_mapping`:
-Qwen's native `MambaSpec` inherits that flag as true. `cache_groups.py` selects
-only supported causal `FullAttentionSpec` groups (unwrapping uniform specs), and
-both window metadata and worker refresh validation use that same set. A regression
-uses real native attention/Mamba specs and verifies that recurrent metadata gets
-no dense-window overrides. Earlier compression diagnostic results made before
-this correction cannot establish recurrent-metadata correctness.
-
-The `ReservedKVCacheManager` adapter passes native CPU allocation tests and is
-now attached to the bounded scheduler; full-model capacity-pressure qualification
-is pending. It holds lifetime
-credits for each request's bounded full-attention window plus fixed GDN state,
-and subtracts other requests' unallocated credits through native `reserved_blocks`.
-A refresh may return physical pages without surrendering its future growth credit.
-Free/pop operations release credits only after native bookkeeping succeeds;
-deferred physical pages remain unavailable in the original pool. Source hashes
-pin the allocation/free contract. This is GPU-page admission only: CPU/NVMe quota
-and I/O scheduling still require separate lifecycle integration.
-
-Two opt-in candidates are now wired after completion of the bounded baseline.
-`packed_assembly.py` reads the immutable file layout directly and lets GPU assembly
-address record/layer strides; it avoids per-record CPU tensor clones and multiple
-concatenations. GPU byte equality and failure fencing tests pass. `CachedArchive` adds an optional
-bounded CPU read cache with independent global and per-namespace payload limits.
-It never substitutes cache presence for a published archive entry and live
-namespace/generation-qualified leases. Failed writes evict provisional cached
-copies, and reclaim/close remove entries. In-flight job buffers and pinned staging
-remain separately bounded and must be included in total CPU admission. These
-candidates require explicit connector options and have no full-model speedup claim yet.
+Current single comparisons show short C4 arrival decode improving from 88.20 to
+173.11 tok/s with the optional integer Tensor Core Q8 linear adapter. Four frozen
+long histories improve from 10.44 to 18.62 tok/s across the full arrival window,
+including prefill/refresh interference. Output streams differ and the long baseline
+predates terminal clipping; these are not repeated controlled estimates or quality
+acceptance. The agent harness preserves official tasks/solver/verifier policy and
+records all failures. Full fixed-set scores, matched native-Q8 controls, repeated
+performance, persistent sessions and clean installation/release validation remain
+required before production claims or broader model/quantization support.

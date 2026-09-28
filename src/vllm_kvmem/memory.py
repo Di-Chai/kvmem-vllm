@@ -20,6 +20,7 @@ class Phase(Enum):
     READY = auto()
     APPENDING = auto()
     ASSEMBLING = auto()
+    REWINDING = auto()
     FAILED = auto()
     CLOSED = auto()
 
@@ -35,6 +36,7 @@ class RequestMemory:
         self.phase = Phase.READY
         self._append = None
         self._plan = None
+        self._rewind = None
         self._fence = None
         self._submitted = False
 
@@ -65,14 +67,14 @@ class RequestMemory:
         return self._append.discarded_page_ranges(accepted, page_tokens)
 
     def attach_completion(self, fence: Fence) -> None:
-        if self.phase not in (Phase.APPENDING, Phase.ASSEMBLING) or self._submitted:
+        if self.phase not in (Phase.APPENDING, Phase.ASSEMBLING, Phase.REWINDING) or self._submitted:
             raise RuntimeError("No unsubmitted transaction")
         self._fence = fence
         self._submitted = True
 
     def fail_transaction(self, fence: Fence) -> None:
         """Retain partially submitted work through its cleanup fence; never commit."""
-        if self.phase not in (Phase.APPENDING, Phase.ASSEMBLING) or self._submitted:
+        if self.phase not in (Phase.APPENDING, Phase.ASSEMBLING, Phase.REWINDING) or self._submitted:
             raise RuntimeError("No unsubmitted transaction to fail")
         self._fence = fence
         self._submitted = True
@@ -130,6 +132,49 @@ class RequestMemory:
         self._require(Phase.READY)
         return self._store.read(begin, count)
 
+    def checkpoint(self):
+        """Pin the current working prefix; model/draft tensors are separate.
+
+        This host handle is not an executable session checkpoint. Serving must
+        also snapshot exact model state, tokens, position maps and mutable tails.
+        """
+        self._require(Phase.READY)
+        return self._store.checkpoint(self.history_end)
+
+    def checkpoint_valid(self, checkpoint):
+        return self._store is not None and self._store.checkpoint_valid(checkpoint)
+
+    def begin_rewind(self, checkpoint):
+        """Prepare a sealed-record boundary; caller quiesces all suffix users.
+
+        Partial-tail branching needs a new immutable archive generation and is
+        deliberately refused by this first host adapter. The completion fence
+        must include physical suffix cleanup and GDN/draft state restoration.
+        """
+        self._require(Phase.READY)
+        if not self.checkpoint_valid(checkpoint):
+            raise ValueError('Stale or foreign repository checkpoint')
+        if checkpoint.position % self.config.block_tokens:
+            raise ValueError('Rewind requires a sealed-record boundary')
+        rewind = self._store.prepare_rewind(checkpoint.position)
+        self._rewind = rewind
+        self.phase = Phase.REWINDING
+        self._submitted = False
+        # Copy value fields: exposing pybind views would let callers keep the
+        # transaction's suffix leases alive after commit without realizing it.
+        return tuple((span.history_begin, span.storage_begin, span.token_count,
+                      _native.Handle(span.handle.slot, span.handle.generation))
+                     for span in rewind.discarded_spans)
+
+    def commit_rewind(self):
+        self._require(Phase.REWINDING)
+        if not self._completed():
+            return False
+        self._rewind.commit()
+        self._rewind = None
+        self._reset()
+        return True
+
     def _reset(self):
         self._fence = None
         self._submitted = False
@@ -146,6 +191,7 @@ class RequestMemory:
             self._append.commit(0)
             self._append = None
         self._plan = None
+        self._rewind = None
         self._store = None
         # Retirement hides cancelled request data immediately. Existing read/DMA
         # leases still prevent the resource bundle from being reclaimed.

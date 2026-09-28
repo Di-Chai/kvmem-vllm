@@ -624,3 +624,38 @@ The live `_03` official agent pair uses frozen prior code and does not activate
 this quota; at this checkpoint 19 model calls have completed without relay error,
 but neither task has a verifier score. These counts are not a quality result or
 an exclusive performance measurement.
+
+## Prompt-prefix evidence and fenced repository rewind
+
+`agent_prefix_analysis_02` reconstructs 21 completed historical prompts from
+snapshotted trajectories using the installed tokenizer/template and the official
+bash schema. All reconstructed token counts match native response usage, and all
+19 adjacent reconstructed prompts preserve the entire preceding prompt prefix.
+The first diagnostic accidentally counted BatchEncoding keys rather than token
+IDs; its correction file withdraws it. The replacement explicitly requests a
+token list. No generated raw token IDs were saved in these calls, so this does
+not establish equality of the generated suffix or executable state reuse.
+
+The original imported core already implements repository checkpoint and rewind
+transactions. New bindings expose these without changing imported source.
+`RequestMemory` now pins a current checkpoint, validates request/branch identity,
+prepares a sealed-record rewind and publishes it only after the caller's suffix
+cleanup/model-state fence completes. Returned discarded spans copy value handles
+instead of retaining hidden transaction owners. Rewind permanently invalidates
+later checkpoints even if another branch grows back to the same length. Native
+transactions retain their Store lifetime; checkpoint ownership retains prefix
+leases until explicitly released. Partial-record boundaries are rejected because
+the immutable archive does not yet have a partial-tail branch-generation protocol.
+
+23 targeted host tests pass (`repository_rewind_cpu_02.xml`), including fence
+delay, failure cleanup, cross-request/partial-boundary rejection, permanent branch
+invalidation, suffix recycling and checkpoint/native owner lifetime. Rebuilding
+the extension and running the full host suite yields 215 passes and 41 deferred
+GPU cases (`components_repository_rewind_host_20260929.xml`). The live agent worker
+continues using its frozen extension, verified through `/proc/.../maps`.
+
+These are prerequisites only. The HTTP scheduler/worker turn handshake, authority
+index rewind, GDN/draft restoration, exact prompt comparison and idle-session
+admission remain to be connected and GPU-tested. `engine-integration.md` now
+describes the current execution path and these remaining boundaries instead of
+the earlier staged probe-only architecture.
