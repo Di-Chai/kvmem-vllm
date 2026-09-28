@@ -219,3 +219,30 @@ def test_final_scheduler_gate_requires_physical_gpu_pages_not_only_request_clean
         qualification.validate_released_scheduler(snapshot)
     snapshot['free_blocks'] = 16
     qualification.validate_released_scheduler(snapshot)
+
+
+def test_new_terminal_prefix_evidence_rejects_old_speculative_overshoot_tolerance():
+    report, archived = fixture()
+    archived['terminal_prefix_required'] = True
+    with pytest.raises(RuntimeError, match='Missing scheduler terminal'):
+        qualification.validate_archive(report, archived)
+    record = archived['completed'][0]
+    record['terminal_prefix'] = {'history_end': 153}
+    with pytest.raises(RuntimeError, match='beyond'):
+        qualification.validate_archive(report, archived)
+    record.update(history_end=141, accepted_tokens=141, terminal_prefix={'history_end': 141})
+    record['last_steps'] = [{'history_begin': 140, 'accepted': 1}]
+    qualification.validate_archive(report, archived)
+
+
+def test_gc_accounting_does_not_count_deleted_records_as_checksum_verified():
+    report, archived = fixture()
+    record = archived['completed'][0]
+    report['single']['result']['usage']['prompt_tokens'] = 142
+    record.update(history_end=269, accepted_tokens=269, sealed_records_archived=1,
+                  gc_reclaimed_records=1)
+    record['last_steps'] = [{'history_begin': 268, 'accepted': 1}]
+    qualification.validate_archive(report, archived)
+    record['sealed_records_verified'] = 2
+    with pytest.raises(RuntimeError, match='Incomplete archive'):
+        qualification.validate_archive(report, archived)

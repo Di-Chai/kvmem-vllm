@@ -74,9 +74,9 @@ def validate_archive(report, archived):
     mode = archived.get("archive_verification", "full_checksum")
     if mode not in ("full_checksum", "publication_only"):
         raise RuntimeError("Unknown archive verification mode")
-    if not all(r.get("sealed_records_archived", r["sealed_records_verified"]) == r["history_end"] // block_tokens
+    if not all(r.get("sealed_records_archived", r["sealed_records_verified"]) + r.get('gc_reclaimed_records', 0) == r["history_end"] // block_tokens
                and r["history_end"] == r["accepted_tokens"]
-               and r["sealed_records_verified"] == (r["history_end"] // block_tokens if mode == "full_checksum" else 0)
+               and r["sealed_records_verified"] == (r.get('sealed_records_archived', r['sealed_records_verified']) if mode == "full_checksum" else 0)
                for r in archived["completed"]):
         raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
     if not sum(r.get("sealed_records_archived", r["sealed_records_verified"]) for r in archived["completed"]):
@@ -85,6 +85,12 @@ def validate_archive(report, archived):
     if len(items) + len(report.get("cancelled", [])) != len(archived["completed"]):
         raise RuntimeError("Native and HTTP request sets differ")
     bound = archived["max_concurrent_batches"] * archived["decode_query_len"]
+    require_terminal = archived.get('terminal_prefix_required', False)
+    if require_terminal and any(r.get('terminal_prefix') is None for r in archived['completed']):
+        raise RuntimeError('Missing scheduler terminal prefix evidence')
+    if any(r.get('terminal_prefix') is not None and
+           r['terminal_prefix']['history_end'] != r['history_end'] for r in archived['completed']):
+        raise RuntimeError('Scheduler terminal prefix disagrees with captured history')
     for item in items:
         response = item["result"]
         matched = [record for record in archived["completed"]
@@ -93,6 +99,9 @@ def validate_archive(report, archived):
             raise RuntimeError("Missing or ambiguous request archive")
         record = matched[0]
         expected = response["usage"]["prompt_tokens"] + response["usage"]["completion_tokens"] - 1
+        terminal = record.get('terminal_prefix')
+        if terminal is not None and not terminal['history_end'] == record['history_end'] == expected:
+            raise RuntimeError('Terminal capture includes rows beyond the final native output prefix')
         if not expected <= record["history_end"] <= expected + bound:
             raise RuntimeError("Accepted archive extent differs from native request work")
         # Retain native evidence of the last committed packet, rather than

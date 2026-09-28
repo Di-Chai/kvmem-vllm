@@ -147,8 +147,17 @@ def make_probe_runner(base):
                           valid_dummy_state_slots=valid_dummy_state_slots)
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             if not dummy_run and runtime is not None:
+                terminal = None
+                if getattr(self, '_kvmem_bounded_target', False):
+                    from .connector import ControlMetadata
+                    control = scheduler_output.kv_connector_metadata
+                    if not isinstance(control, ControlMetadata):
+                        raise RuntimeError('Bounded capture requires scheduler control metadata')
+                    terminal = control.terminal_prefixes
+                # Apply EOS/cancellation truncation before draining the latest
+                # accepted sample packet into the immutable authority.
+                runtime.finish(scheduler_output.finished_req_ids, terminal)
                 runtime.drain(wait=False)
-                runtime.finish(scheduler_output.finished_req_ids)
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)

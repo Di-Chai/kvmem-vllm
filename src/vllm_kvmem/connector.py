@@ -13,6 +13,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 
 from .window_manager import RefreshTicket
+from .terminal import TerminalPrefix
 
 RETIREMENT_CONNECTOR_SHA256 = 'b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b46082439076f62c6a81'
 
@@ -28,6 +29,7 @@ class RefreshCommand:
 class ControlMetadata(KVConnectorMetadata):
     commands: list[RefreshCommand] = field(default_factory=list)
     cancelled: set[str] = field(default_factory=set)
+    terminal_prefixes: dict[str, TerminalPrefix] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,6 +50,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.pending = {}
         self.cancelled = set()
         self.cancel_updates = set()
+        self.terminal_prefixes = {}
+        self.bounded_target = os.getenv('KVMEM_BOUNDED_TARGET') == '1'
         self.worker_jobs = {}
         self.worker_completions = []
         self.worker_selected_windows = {}
@@ -72,8 +76,9 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.commands.append(command)
 
     def build_connector_meta(self, scheduler_output):
-        result = ControlMetadata(self.commands, self.cancel_updates)
+        result = ControlMetadata(self.commands, self.cancel_updates, self.terminal_prefixes)
         self.commands, self.cancel_updates = [], set()
+        self.terminal_prefixes = {}
         return result
 
     def start_load_kv(self, forward_context, **kwargs):
@@ -135,6 +140,10 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.cancelled.difference_update(connector_output.finished_sending or ())
 
     def request_finished_all_groups(self, request, block_ids):
+        if self.bounded_target:
+            if request.request_id in self.terminal_prefixes:
+                raise RuntimeError('Duplicate terminal request boundary')
+            self.terminal_prefixes[request.request_id] = TerminalPrefix.from_request(request)
         if request.request_id not in self.pending and not self.async_retirement:
             return False, None
         self.cancelled.add(request.request_id)

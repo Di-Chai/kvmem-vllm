@@ -66,6 +66,8 @@ class CaptureRuntime:
         self.accepted = {}
         self.rejected = {}
         self.last_steps = {}
+        self.terminal_prefixes = {}
+        self.terminal_discarded = {}
         self.completed = []
         self.batches = 0
         self._progress_batch = -1
@@ -135,7 +137,15 @@ class CaptureRuntime:
                     self.last_steps[request_id] = []
                 begin, end = starts[i:i+2]
                 accepted = end - begin - rejected[i]
-                success = authority.append(raw[:, begin:end], values[:, begin:end],
+                if not 0 <= accepted <= end - begin:
+                    raise ValueError('Native sampling rejection count exceeds captured rows')
+                discarded = 0
+                terminal = self.terminal_prefixes.get(request_id)
+                if terminal is not None:
+                    retained = max(0, min(accepted, terminal.history_end - histories[i]))
+                    discarded = accepted - retained
+                    accepted = retained
+                success = not accepted or authority.append(raw[:, begin:end], values[:, begin:end],
                     history_begin=histories[i], local_rope_begin=local[i], accepted=accepted)
                 if not success:
                     if not wait:
@@ -144,9 +154,11 @@ class CaptureRuntime:
                     continue
                 self.accepted[request_id] += accepted
                 self.rejected[request_id] += rejected[i]
+                self.terminal_discarded[request_id] = self.terminal_discarded.get(request_id, 0) + discarded
                 steps = self.last_steps[request_id]
                 steps.append({"history_begin": histories[i], "scheduled": end - begin,
-                              "accepted": accepted, "rejected": rejected[i]})
+                              "accepted": accepted, "rejected": rejected[i],
+                              "terminal_discarded": discarded})
                 del steps[:max(0, len(steps) - self.runner.vllm_config.max_concurrent_batches - 1)]
                 packet.next_request += 1
             assert self.downloads.release(packet.download)
@@ -179,15 +191,33 @@ class CaptureRuntime:
         for job in jobs:
             job.result()
 
-    def finish(self, request_ids):
+    def finish(self, request_ids, terminal_prefixes=None):
         """Drain publication, optionally checksum records, then reclaim the request."""
         if not request_ids:
             return
+        if terminal_prefixes is not None:
+            for request_id in request_ids:
+                known = request_id in self.authorities or any(request_id in p.request_ids for p in self.queue)
+                prefix = terminal_prefixes.get(request_id)
+                if known and prefix is None:
+                    raise RuntimeError('Missing scheduler terminal prefix for captured request')
+                if prefix is None or not known:
+                    continue
+                authority = self.authorities.get(request_id)
+                if authority is not None and authority.history_end > prefix.history_end:
+                    raise RuntimeError('Terminal prefix arrived after excess history was published')
+                self.terminal_prefixes[request_id] = prefix
         self.drain(wait=True)
         for request_id in request_ids:
             authority = self.authorities.get(request_id)
             if authority is None:
                 continue
+            terminal = getattr(self, 'terminal_prefixes', {}).pop(request_id, None)
+            if terminal is not None and authority.history_end != terminal.history_end:
+                raise RuntimeError('Final capture does not match scheduler terminal prefix')
+            terminal_report = {
+                'terminal_prefix': asdict(terminal) if terminal is not None else None,
+                'terminal_discarded_tokens': getattr(self, 'terminal_discarded', {}).pop(request_id, 0)}
             if self.options.async_archive_retirement:
                 # All GPU capture packets have drained above. Detach ownership
                 # before another native batch; this worker touches CPU data only.
@@ -197,7 +227,7 @@ class CaptureRuntime:
                     "retirement_enqueued_at": enqueued_at,
                     "accepted_tokens": self.accepted.pop(request_id),
                     "rejected_tokens": self.rejected.pop(request_id),
-                    "last_steps": self.last_steps.pop(request_id)}
+                    "last_steps": self.last_steps.pop(request_id), **terminal_report}
                 del self.authorities[request_id]
                 continue
             authority.stop_gc()
@@ -226,7 +256,7 @@ class CaptureRuntime:
                 "last_steps": self.last_steps.pop(request_id),
                 "records": len(authority.records), "sealed_records_archived": published,
                 "sealed_records_verified": verified,
-                "gc_reclaimed_records": authority.gc_reclaimed_records})
+                "gc_reclaimed_records": authority.gc_reclaimed_records, **terminal_report})
             if not authority.close():
                 raise RuntimeError("Finalized authority still has unexpected live storage leases")
             del self.authorities[request_id]
@@ -266,6 +296,7 @@ class CaptureRuntime:
                   "packed_assembly": self.options.packed_assembly,
                   "direct_pinned_reads": self.options.direct_pinned_reads,
                   "async_archive_retirement": self.options.async_archive_retirement,
+                  "terminal_prefix_required": bool(getattr(self.runner, '_kvmem_bounded_target', False)),
                   "retiring_requests": len(getattr(self, 'retiring', {})),
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,

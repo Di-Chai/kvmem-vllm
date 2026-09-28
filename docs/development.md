@@ -267,3 +267,30 @@ The corrected long-C4 combined-path run is
 worker snapshot. It additionally opts into asynchronous archive retirement.
 Actual decode rates and final lifecycle results remain pending; no speedup is
 claimed from the earlier interrupted run or from the component tests.
+
+## Scheduler terminal prefix (CPU qualified, GPU pending)
+
+The bounded connector now carries the finished request's scheduler-owned prefix
+before native request fields are discarded. Sampling acceptance is not the final
+boundary: native EOS/length checks can trim an accepted speculative burst. The
+worker applies that boundary before draining the latest capture packet. Aborted
+in-flight rows and rows past the final evaluated output prefix are counted as
+`terminal_discarded_tokens`, separately from sampling rejections, and never enter
+the raw-K/V archive or MeanK index. Late boundaries after excess publication fail
+closed; this path does not silently rewind immutable records.
+
+New bounded archive reports require exact agreement between scheduler prefix,
+archive history and HTTP token usage, replacing the historical extra-burst
+allowance. Legacy reports retain their old validation semantics. Finalization
+also distinguishes GC-deleted records from remaining records checksum-verified
+on exit. CPU tests cover EOS overshoot, ordinary decode, prefill/decode abort,
+ignored requests, metadata transfer, a real archive with mixed-request capture,
+and strict qualification checks. Current CPU regression: **143 passed, 28 GPU
+tests skipped** (`artifacts/components_terminal_prefix_cpu.xml`).
+
+This fixes prospective capture publication only. Native recurrent state and
+DFlash sliding state may still have advanced past the final retained prefix;
+persistent sessions remain disabled until final restore/replay is implemented
+and qualified. The running long-C4 uses its earlier frozen source and therefore
+does not qualify this new boundary path. Its finished namespaces are discarded,
+not reused as sessions; its final report must retain that limitation.
