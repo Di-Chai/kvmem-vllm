@@ -49,14 +49,21 @@ def main():
     def save():
         (out / 'results.json').write_text(json.dumps(report, indent=2))
     def snapshot():
-        return settle(capture)
+        state = settle(capture)
+        if (state['archive']['session_checkpoints'] > options['session_capacity'] or
+                state['scheduler']['sessions']['entries'] > options['session_capacity'] or
+                state['archive']['session_checkpoint_payload_bytes'] > options['session_checkpoint_bytes']):
+            raise RuntimeError('Session entry or payload quota exceeded')
+        return state
     def read_archive():
         return json.loads((capture / 'archive.json').read_text())
-    def complete(tokens, session, request_id=None):
+    def complete(tokens, session, request_id=None, cache_salt=None):
         payload = {'model': 'qualification', 'prompt': tokens, 'session_id': session,
                    'temperature': 0, 'seed': 104729, 'max_tokens': 64, 'return_token_ids': True}
         if request_id:
             payload['request_id'] = request_id
+        if cache_salt is not None:
+            payload['cache_salt'] = cache_salt
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         start = time.monotonic()
         req = urllib.request.Request(evidence['api_base']+'/completions',
@@ -185,6 +192,27 @@ def main():
         report['calls']['after_cancel'] = result
         if output_tokens(result['result']) != output_tokens(controls[0]['result']):
             raise RuntimeError('Cancellation changed the next exact continuation')
+        # The same visible session ID in another gateway isolation scope must
+        # cold-compute. At a full pool this also exercises fenced idle eviction.
+        result = complete(prompts[0], sessions[0], cache_salt='different-scope-'+uuid.uuid4().hex)
+        isolated_scope = snapshot()
+        reuse_delta(recovered, isolated_scope, 0, [])
+        if output_tokens(result['result']) != output_tokens(controls[0]['result']):
+            raise RuntimeError('Cold isolation-scope continuation differs')
+        report['calls']['different_cache_salt'] = result
+        report['phases']['different_cache_salt'] = {'before': recovered, 'after': isolated_scope}
+        recovered = isolated_scope
+        if options['session_capacity'] == args.concurrency:
+            # Serial verification order, followed by the session-0 overlap and
+            # cancellation phases, makes session 1 the least recently retired.
+            result = complete(prompts[1], sessions[1])
+            after_eviction = snapshot()
+            reuse_delta(recovered, after_eviction, 0, [])
+            if output_tokens(result['result']) != output_tokens(controls[1]['result']):
+                raise RuntimeError('Evicted session cold recomputation differs')
+            report['calls']['evicted_session'] = result
+            report['phases']['evicted_session'] = {'before': recovered, 'after': after_eviction}
+            recovered = after_eviction
         report['status'] = 'passed'
         report['final_state'] = recovered
     except BaseException as error:
