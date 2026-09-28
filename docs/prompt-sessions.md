@@ -1,8 +1,8 @@
 # Experimental exact prompt sessions
 
-This path has passed short and 134K compressed actual-model HTTP/GPU token-equality gates.
-Concurrent cancellation and agent performance are
-still pending. It is disabled by default and is separate from native streaming-input
+This path has passed short and 134K compressed actual-model HTTP/GPU token-equality
+gates, plus a four-session lifecycle/cancellation gate. Concurrent numerical quality
+and agent performance are still pending. It is disabled by default and is separate from native streaming-input
 sessions. Target Q8_0, target FP8 e4m3, DFlash2 BF16 sliding KV and K128K/G64K are
 unchanged.
 
@@ -103,12 +103,12 @@ and mean acceptance length 5.308. The main benefit is avoided repeated prefill,
 not a 35-fold decode speedup. This functional gate is not an agent result or a
 repeated performance comparison, and host development overlapped execution.
 
-The separate concurrency/cancellation gate is ready for GPU execution:
+The separate concurrency/cancellation gate passes with the following command:
 
 ```sh
 .venv/bin/python scripts/qualify_session_concurrency.py \
   --engine-evidence artifacts/session_backend_02/server_state.json \
-  --output artifacts/session_http_c4_01 --concurrency 4
+  --output artifacts/session_http_c4_02 --concurrency 4
 ```
 
 It populates independent checkpoints, requires real overlapping native request
@@ -116,7 +116,27 @@ ownership and exact import counts, and compares isolated continuations after the
 concurrent restores against their original token streams. It also checks same-session
 serialization and restored-decode cancellation/recovery. Concurrent token differences
 are reported separately, since native batching can alter reduction order. Passing
-this gate would not establish concurrent numerical quality or agent throughput.
+this gate does not establish concurrent numerical quality or agent throughput.
+
+The first 64-token fixture (`session_http_c4_01`) failed its overlap observation:
+four native requests were outstanding, but periodic capture progress recorded at
+most three active authorities. It remains a failed artifact. The 256-token fixture
+in `_02` observes four active authorities and passes import counts, subsequent
+isolated exact-token checks, same-session serialization (one active authority),
+native cancellation/recovery, cache-salt isolation and idle LRU reclamation. The
+cancelled restored request stops at accepted history 4096 with one sampled output
+token, discards all eight in-flight verifier rows and retains its original 3072-token
+checkpoint. Four checkpoints occupy 811044608 payload bytes, within the 1-GiB bound.
+Explicit shorter-prefix requests then release all snapshots and archive slots;
+native ownership/reservations also return to zero with 1072/1073 blocks free.
+
+Concurrent streams differ from the serial controls after common prefixes of
+86/90/253/67 tokens, with output lengths 256/256/254/94 versus serial 256 each.
+The isolated continuations after this concurrency exactly reproduce all four
+original 256-token streams. These results support checkpoint isolation and recovery;
+they do not attribute the concurrent differences solely to rounding or establish
+equal agent quality. Matched concurrent controls and executed task scoring remain
+required.
 
 The optional agent relay can send native `X-Session-ID` headers for an explicit
 `--session-task` allowlist. IDs are deterministic within its unique run scope and
@@ -124,4 +144,9 @@ separate tasks and runs; request/response JSON bytes and task stopping/sampling
 remain unchanged. This is benchmark-local namespace routing, not authentication.
 `qualify_agent.py --session-evidence ...` requires passed long restore plus concurrent
 cancellation gates from the same frozen backend before executing session-enabled
-agent tasks. Such agent execution has not yet been qualified.
+agent tasks. Actual session-enabled C2 tasks have now started in
+`agent_sessions_c2_initial_01` (termenv and tomlkit) on frozen backend `ac566ea`,
+after fresh tool and disconnect preflights. No score is available yet. The previous
+non-session pair timed out with reward 0 for both tasks; it is retained in full.
+Relay measurements are restricted to the new execution interval and task identities,
+so preflight calls or earlier runs cannot enter the agent throughput statistics.
