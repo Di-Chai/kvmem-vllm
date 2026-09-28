@@ -99,6 +99,8 @@ def main():
                         help='Required for execution: ready managed relay resources.json and its native request journal')
     parser.add_argument('--preflight-evidence', type=Path,
                         help='Required for execution: passed tool/capture/retirement check for this backend')
+    parser.add_argument('--cancel-preflight-evidence', type=Path,
+                        help='Required for execution: native cancellation/release proof through this relay')
     parser.add_argument('--prepare-only', action='store_true', help='Validate/snapshot without invoking Pier; not a quality result')
     args = parser.parse_args()
     # Resolving the interpreter symlink would select the base Python and lose
@@ -122,6 +124,7 @@ def main():
     evidence = json.loads(args.engine_evidence.read_text())
     relay = None
     preflight = None
+    cancel_preflight = None
     if not args.prepare_only:
         if args.relay_evidence is None:
             parser.error('Executed qualification requires relay-evidence for native timing and backend identity')
@@ -139,6 +142,13 @@ def main():
                 or preflight.get('engine_api_base') != evidence.get('api_base')
                 or preflight.get('engine_source_commit') != evidence.get('source_commit')):
             raise RuntimeError('Tool/capture/retirement preflight must qualify this same backend instance')
+        if args.cancel_preflight_evidence is None:
+            parser.error('Executed qualification requires cancel-preflight-evidence to exclude orphaned inference')
+        cancel_preflight = json.loads(args.cancel_preflight_evidence.read_text())
+        if (cancel_preflight.get('status') != 'passed'
+                or cancel_preflight.get('engine_manager_pid') != evidence.get('manager_pid')
+                or cancel_preflight.get('relay_manager_pid') != relay.get('manager_pid')):
+            raise RuntimeError('Cancellation preflight must qualify this same backend and relay')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     shutil.copy2(Path(__file__), out / 'qualify_agent.py')
@@ -148,6 +158,8 @@ def main():
         (out / 'relay_evidence.json').write_text(json.dumps(relay, indent=2) + '\n')
     if preflight is not None:
         (out / 'preflight_evidence.json').write_text(json.dumps(preflight, indent=2) + '\n')
+    if cancel_preflight is not None:
+        (out / 'cancel_preflight_evidence.json').write_text(json.dumps(cancel_preflight, indent=2) + '\n')
     tasks = []
     for task_id in args.task:
         task_out = out / task_id
