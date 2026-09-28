@@ -333,3 +333,19 @@ runner with the same task/agent/verifier provenance, explicit limits, and actual
 container/verifier results. Frozen prompts and parseable tool calls remain
 insufficient quality evidence. Existing containers/services were only inspected,
 not stopped or replaced.
+
+## Latest native result and next gate
+
+The corrected long-C4 run has finished: all four compressed requests and all
+resource cleanup checks pass. Whole-group arrival decode is 10.443 tok/s, with
+mixed-prefill stalls up to 25.789 s; it is not a performance acceptance. The
+short 3.249 s all-stream overlap shows 98.189 arrivals/s only as a diagnostic.
+Native sampling draft acceptance is 44.982%, GPU sampled peak is 79.32 GiB,
+and asynchronous CPU archive reclamation takes about 28–31 ms per request.
+See the qualification record for complete scopes and limits.
+
+All 182 current CPU/GPU component cases pass, including canonical GDN-prefix
+state comparisons. The reference fixture correction is recorded with the failed
+and corrected artifacts. Next native run will exercise exact terminal-prefix
+capture and a bounded GPU profiler window; profiling timings are not benchmarks.
+Persistent streaming-session integration and actual agent execution remain open.

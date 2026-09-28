@@ -47,10 +47,16 @@ def test_canonical_state_matches_native_prefix_conv_and_gdn(dim_first, retained)
     fused_sigmoid_gating_delta_rule_update(A, a, b, bias, q, k, v,
         initial_state=ssm, cu_seqlens=starts, ssm_state_indices=rows,
         num_accepted_tokens=one, use_qk_l2norm_in_kernel=True)
-    fused_sigmoid_gating_delta_rule_update(A, a[:retained], b[:retained], bias,
-        q[:, :retained].contiguous(), k[:, :retained].contiguous(), v[:, :retained].contiguous(),
-        initial_state=ref_ssm, cu_seqlens=torch.tensor([0, retained], device='cuda', dtype=torch.int32),
-        ssm_state_indices=rows[:, 0], use_qk_l2norm_in_kernel=True)
+    # The native fused update writes one state-index column per input token,
+    # including when num_accepted_tokens is absent. Ordinary reference decode
+    # therefore uses one token per call, rather than passing a multi-token query
+    # with a one-column state table (which is not a supported native layout).
+    single = torch.tensor([0, 1], device='cuda', dtype=torch.int32)
+    for i in range(retained):
+        fused_sigmoid_gating_delta_rule_update(A, a[i:i+1], b[i:i+1], bias,
+            q[:, i:i+1].contiguous(), k[:, i:i+1].contiguous(), v[:, i:i+1].contiguous(),
+            initial_state=ref_ssm, cu_seqlens=single,
+            ssm_state_indices=rows[:, 0], use_qk_l2norm_in_kernel=True)
     owner = NativeRecurrentState.__new__(NativeRecurrentState)
     owner.conv_dim_first, owner.conv_widths = dim_first, {'gdn': width}
     owner.groups = {0: {'gdn': (conv, ssm)}}

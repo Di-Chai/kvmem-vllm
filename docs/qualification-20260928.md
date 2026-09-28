@@ -11,7 +11,8 @@ only after the assembly completion fence, preserving generation-qualified leases
 Earlier compressed model timings and lifecycle observations remain historical
 measurements, but **do not establish compressed numerical correctness or accepted
 performance**. The metadata classification correction described elsewhere did not
-fix this separate issue. Corrected model qualification is pending. The optimized
+fix this separate issue. A corrected long-C4 lifecycle run now passes; matched
+performance and executed task-quality acceptance remain pending. The optimized
 long-C4 run `engine_long_c4_dflash_direct_cadence_01` was deliberately interrupted
 before compression, and is not a completed benchmark.
 
@@ -519,3 +520,62 @@ byte checks, exclusive-slot ownership and failure-after-first-chunk recovery.
 JUnit evidence: `artifacts/components_82e504c.xml`. Native direct-read serving,
 prefill cadence, cancellation/pressure, long DFlash C4 and the final matched
 performance/quality gates remain pending.
+
+## Corrected long C4, direct reads and asynchronous retirement (2026-09-29)
+
+`engine_long_c4_dflash_direct_cadence_02`, frozen source `053383f`, completed with
+Q8_0 target / FP8 e4m3 target KV, BF16 DFlash2, K131072/G65536, B128, CPU cache
+36 GiB, packed direct-pinned assembly, prefill cadence 8, batch budget 4224 and
+request prefill cap 1024. Inputs are the same four hash-checked long histories
+10/22/36/37 (532797 total prompt tokens). Finish checks were publication-only.
+
+All four requests compressed; ten worker/scheduler refreshes matched, including
+six genuine history selections above K and actual native four-request batches.
+All requests, physical GPU pages except the permanent null page, authority
+credits, archive slots, CPU read-cache entries and retirement jobs were released.
+The process exited normally. The existing native one-semaphore shutdown warning
+recurred. No foreign/unknown GPU PID or monitoring error was observed.
+
+| Frozen input | Output / finish | TTFT (s) | Arrival decode (tok/s) | Maximum burst gap (s) |
+|---|---:|---:|---:|---:|
+| 10 Quill | 114 / EOS | 1858.681 | 32.660 | 0.303 |
+| 22 Effect | 128 / limit | 1842.087 | 6.135 | 15.680 |
+| 36 Dynamo | 128 / limit | 1815.470 | 2.733 | 25.789 |
+| 37 Dynamo | 128 / limit | 1858.682 | 31.052 | 0.280 |
+
+The whole-group arrival decode rate is **10.443 tok/s over 47.303 s** (498 output
+tokens, 494 after excluding one first token per request). Cold group service is
+1862.795 s / 0.267 output tok/s. A separate diagnostic intersection where all
+four streams overlap contains 319 arrivals over 3.2488 s (98.189 tok/s); this
+short selected interval is **not the group throughput or a steady-state result**.
+
+Native verification ran 121 request steps of eight rows. Of 847 draft candidates,
+466 were rejected (sampling acceptance 44.982%); these old-worker counters still
+include terminal overshoot and are not identical to final user-visible acceptance.
+The four generated texts/token streams differ from the earlier target-only C4.
+No tools or official task verifier executed, so no task-quality pass is implied.
+
+Total assembly time is 15.178 s, including 11.754 s host preparation, for
+36660314112 uploaded bytes. Distinct refresh intervals total 83.242 s. Each CPU
+retirement reclaimed its archive in 28.2–30.6 ms; enqueue-to-native-ack was
+47.6–154.4 ms. Mixed prefill/refresh blocking remains a major observed limitation;
+retirement no longer introduces the previously observed multi-second pauses in
+this run. The combined options and changed query sizes prevent attributing gains
+to one optimization or claiming a matched speedup over historical runs.
+
+Sampled owned GPU peak: 81222 MiB (79.32 GiB). Sampled summed process RSS peak:
+41449444 KiB (39.53 GiB), with 982 GPU samples including startup. This run predates
+scheduler terminal-prefix clipping, active-authority GC and canonical GDN state
+continuation. It discards finished namespaces, and does not qualify persistent
+sessions. Source/result/resource logs and derived summaries are in the artifact
+folder; `qualification_summary.json` and `overlap_diagnostic.json` preserve the
+measurement scopes explicitly.
+
+After this run, the updated complete component suite passes **182 tests**,
+including the six native accepted-prefix GDN/conv GPU comparisons. The first
+attempt used an invalid multi-token non-speculative reference with a one-column
+SSM table and failed four comparisons. The corrected reference executes ordinary
+one-token native updates; normalization code and numeric tolerances did not
+change. Both the failed artifact and corrected evidence are retained:
+`components_after_long_c4.xml`, `accepted_state_gpu_correct_reference.xml`, and
+`components_accepted_state_verified.xml`.

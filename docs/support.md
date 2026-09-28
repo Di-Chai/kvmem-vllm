@@ -11,7 +11,8 @@ only after the assembly completion fence, preserving generation-qualified leases
 Earlier compressed model timings and lifecycle observations remain historical
 measurements, but **do not establish compressed numerical correctness or accepted
 performance**. The metadata classification correction described elsewhere did not
-fix this separate issue. Corrected model qualification is pending. The optimized
+fix this separate issue. A corrected long-C4 lifecycle run now passes; matched
+performance and executed task-quality acceptance remain pending. The optimized
 long-C4 run `engine_long_c4_dflash_direct_cadence_01` was deliberately interrupted
 before compression, and is not a completed benchmark.
 
