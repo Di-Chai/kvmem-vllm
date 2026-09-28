@@ -43,11 +43,13 @@ task-quality acceptance. On four frozen long histories, observed whole-window
 arrival decode rises from 10.44 to 18.62 tok/s and service time falls from
 1862.80 to 761.16 seconds. These runs retain Q8_0/FP8 and K131072/G65536;
 mixed prefill/refresh blocking remains severe and changed outputs still need
-executed task-quality checks. Controlled long-context repeats, decode-time
-refresh, capacity pressure and persistent-session qualification remain pending.
-**Production bounded KVMem serving is not implemented yet. Installing the plugin
-does not enable historical reselection; the experimental paths require explicit
-diagnostic flags.** See [development milestones](docs/development.md) and
+executed task-quality checks. Short and frozen 134K prompt-session restore now match exact greedy token IDs.
+A four-session HTTP lifecycle gate passes isolation, same-session serialization,
+cancellation/recovery and idle reclamation. Concurrent output streams differ from
+serial controls, so task quality remains under test. Controlled long-context repeats,
+decode-time refresh and native capacity pressure remain pending.
+**Production acceptance is incomplete. Installing the plugin is passive; enabling
+experimental KVMem requires an explicit serving profile or qualification launcher.** See [development milestones](docs/development.md) and
 [qualification boundaries](docs/support.md).
 
 ## Host core development
@@ -86,5 +88,22 @@ GPU setup on this CUDA 13 / SM120 machine: `bash scripts/setup_gpu.sh`.
 Explicit GPU component tests: `KVMEM_RUN_GPU_TESTS=1 .venv/bin/python -m pytest tests/test_codec_gpu.py tests/test_capture_gpu.py`.
 Run only when the GPU is available; this command is not a model performance test.
 See [qualification results and limitations](docs/qualification-20260928.md).
-The opt-in [exact prompt-session path](docs/prompt-sessions.md) now has scheduler/
-worker wiring and host tests; its separate actual-model GPU gate is still pending.
+The opt-in [exact prompt-session path](docs/prompt-sessions.md) has passed short/134K
+actual-model restore and C4 lifecycle gates. Official session-enabled agent tests
+are running; no final quality or long-task throughput acceptance is claimed.
+
+## Experimental profile launcher
+
+[Installation and API usage](docs/installation.md) describe an entry that does not
+require a prior benchmark artifact. Edit the external model paths in
+`examples/qwen-q8-fp8-dflash.json`, then inspect a launch with:
+
+```sh
+.venv/bin/python -m vllm_kvmem serve \
+  --config local-profile.json --run-dir runs/session-01 --dry-run
+```
+
+Omit `--dry-run` to start native vLLM. The new profile/automatic-arming entry has
+20 passing host tests; its actual-model GPU launch check is pending. Existing
+benchmark-launcher evidence is not evidence for that new entry. The work is
+currently committed locally; no remote package release has been published.

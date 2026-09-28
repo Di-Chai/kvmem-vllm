@@ -73,8 +73,9 @@ synchronous scheduling, prefix caching off and Mamba cache mode `none`. See
 
 ## Experimental prompt-session integration
 
-A request ID or HTTP session header is not state reuse. The current official agent
-backend reconstructs each turn as a fresh request. Native vLLM streaming-input
+A request ID or HTTP session header alone is not proof of state reuse. The original
+official agent backend reconstructs each turn as a fresh request; the new opt-in
+session backend imports exact worker-acknowledged prompt checkpoints. Native vLLM streaming-input
 sessions retain pages but bypass normal terminal cleanup and discard the previous
 last sampled token on update; using them directly would miss KVMem's final-prefix
 and recurrent/draft-state contract.
@@ -89,7 +90,8 @@ GC continues running and keeps its hole count relative to the retained branch.
 `WindowCheckpoint` preserves selected generations and their original dense frame;
 restore prepares a full K/V rebuild into newly allocated native pages, including
 unchanged-position records. Host tests cover repeated rewind with GC and new
-generations. The corresponding new-page FP8 GPU assembly checks are still pending.
+generations. The corresponding new-page FP8 GPU assembly checks now pass, including poisoned
+replacement pages; see `session_components_gpu_01.xml`.
 The Python adapter currently accepts sealed-record boundaries only. Partial-tail
 branching requires archive generation handling; it must not overwrite immutable
 published records in place. These are host ownership primitives, not completed
@@ -101,9 +103,7 @@ turn transitions.
 non-final prefill boundary: native GDN base convolution/SSM rows, plus the visible
 accepted DFlash sliding context. Restore uses the new request's native row/page
 mapping and validates the complete snapshot before writing. Snapshots do not
-retain old GPU pages and cannot cross worker/model loads. This adapter currently
-has host fixture evidence only; its CUDA and real-model continuation gates remain
-open. It is not a terminal speculative-state snapshot.
+retain old GPU pages and cannot cross worker/model loads. This adapter now has CUDA-copy and short/134K actual-model continuation evidence. It is not a terminal speculative-state snapshot.
 
 `WorkingSetManager.prepare_import` separately supports native connector allocation
 for an exact saved prefix: target full-attention allocation uses the saved dense
@@ -114,7 +114,8 @@ real vLLM hybrid manager passes host tests for neighbour isolation, bounded futu
 growth, cancellation before allocation and restoration admission. With sessions
 disabled, the connector continues to advertise zero prefix hits. The new explicit
 session mode imports only exact saved model/authority prefixes acknowledged by
-the worker; its actual HTTP/GPU qualification is pending.
+the worker. Short and frozen 134K HTTP/GPU continuations now pass exact output
+token checks, including import immediately followed by query reselection.
 
 `PromptCheckpointPool` composes those worker ownership primitives with exact
 packed token identity. It bounds retained entry count and checkpoint payload bytes
@@ -134,15 +135,16 @@ page zeroing and before metadata construction. Exact-prefix misses evict the idl
 checkpoint and recompute normally. The cache evicts idle entries under capacity
 pressure and reserves extra shared archive geometry for idle authorities.
 
-The path is opt-in and has host evidence only. Remaining qualification must:
+The opt-in path passes short and compressed actual-model token equality after
+page recycling, including import immediately followed by reselection. Actual C4
+HTTP lifecycle tests pass concurrent restores, subsequent isolated exact outputs,
+same-session serialization, prefix/scope misses, cancellation/recovery and idle
+reclamation. Concurrent streams differ from serial controls; numerical/agent quality
+equivalence remains unproven. Failed-import device recovery, deeper history/pressure
+gates and repeated performance remain outstanding. See `prompt-sessions.md` for
+exact artifacts and the distinction between lifecycle and quality acceptance.
 
-- Verify actual-model token equality before/after page recycling and state import,
-  including a compressed frame and an import followed immediately by reselection.
-- Exercise concurrent HTTP turns, prefix misses, cancellation and failed restore
-  with actual GPU execution. The scripted gate is `scripts/qualify_sessions.py`;
-  adding it does not establish that the gate has passed.
-- Measure exact-prefix replay costs and repeated official tool turns under
-  contention. Session identity is `(cache_salt, session_id)` within one worker/model;
+Remaining work includes measuring repeated official tool turns under contention. Session identity is `(cache_salt, session_id)` within one worker/model;
   the serving gateway must provide the intended isolation scope. Cross-worker or
   restart continuation, timed expiry, total host-memory accounting and fair I/O
   remain separate missing capabilities.
@@ -161,5 +163,5 @@ including prefill/refresh interference. Output streams differ and the long basel
 predates terminal clipping; these are not repeated controlled estimates or quality
 acceptance. The agent harness preserves official tasks/solver/verifier policy and
 records all failures. Full fixed-set scores, matched native-Q8 controls, repeated
-performance, persistent sessions and clean installation/release validation remain
+performance, growing multi-turn session quality and clean installation/release validation remain
 required before production claims or broader model/quantization support.
