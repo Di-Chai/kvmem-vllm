@@ -731,3 +731,36 @@ neighbour isolation and future-growth reservations. No connector prefix hit or
 HTTP state reuse is enabled by these changes. The frozen agent backend is unchanged.
 The combined host regression passes 230 tests, with 42 GPU cases deferred
 (`components_prompt_import_host_20260929.xml`).
+
+## Exact prompt checkpoint ownership pool
+
+`PromptCheckpointPool` now combines sealed `WindowCheckpoint`, portable model
+state and exact token-prefix bytes. The pool checks retained-entry and payload
+limits before copying model state. It never interprets a mere session ID or a
+hash collision as a reusable prefix, and it leaves at least one input token for
+native prefill. The serving coordinator must provide a properly scoped namespace;
+this internal component does not implement authentication or HTTP admission.
+
+Capture initially borrows the live authority. After the caller detaches it,
+retirement waits for archive publication, the supplied completion fence, rewind
+and all discarded suffix readers. Only then can a matching next turn claim it.
+The target frame must undergo full reconstruction before ownership transfers to
+the fresh request. Failed imports require a cleanup fence; eviction releases our
+checkpoint pins but keeps entry/byte credits charged until external readers and
+archive reclamation drain. Dropping a live snapshot leaves its executing authority
+intact. Obsolete handles cannot retain internal native prefix leases.
+
+Fifteen focused host checks pass (`prompt_checkpoint_pool_cpu_02.xml`). They compose
+real repository/archive rewind with CPU GDN/draft fixtures and new native request
+indices, check exact-prefix misses, per-namespace isolation, suffix-reader stalls,
+admission failure and failed-import cleanup. The full host suite passes 236 tests,
+with 42 GPU cases skipped (`components_prompt_pool_host_20260929.xml`). This pool
+is not connected to HTTP serving yet. It also does not replace shared authority
+admission, total host-memory accounting, an idle eviction/expiry policy or actual
+GPU/model continuation tests.
+
+The ongoing official pair remains on frozen backend `agent_backend_tensorcore_05`.
+At 2026-09-29 06:41 CST, 21 termenv and 24 tomlkit model responses have completed
+with no relay error or undelivered response. Both official trials remain running
+without final scores. These are live observations, not a clean performance result;
+host development/checks overlap and cross-turn prompt reuse is still disabled.

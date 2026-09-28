@@ -114,6 +114,18 @@ real vLLM hybrid manager passes host tests for neighbour isolation, bounded futu
 growth, cancellation before allocation and restoration admission. The connector
 still advertises zero prefix hits: these primitives do not yet enable HTTP reuse.
 
+`PromptCheckpointPool` composes those worker ownership primitives with exact
+packed token identity. It bounds retained entry count and checkpoint payload bytes
+(model tensors, token IDs and serialized frame geometry; not Python overhead or
+authority/archive storage). A live snapshot borrows its authority. After explicit
+capture detachment, retirement waits for publication, rewind fences and discarded
+read leases before making the checkpoint available. Claims serialize imports;
+successful reconstruction transfers authority ownership only after its fence.
+Failed imports/evictions keep credits charged until cleanup and all readers drain.
+Host tests exercise this lifecycle with the real repository/NVMe implementation
+and model-state fixtures. Scheduler metadata, authenticated session namespaces,
+shared idle-authority admission/expiry and HTTP wiring remain unimplemented.
+
 Next integration must:
 
 - Retain an exact prompt checkpoint across completed turns and expose it through
