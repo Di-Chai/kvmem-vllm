@@ -49,3 +49,10 @@ qualified single request. `--prefill-request-token-cap` maps to vLLM's native
 aligned prefill chunks in a native batch. This changes per-request query chunking,
 so matched controls must use the same cap. It is a scheduling setting, not evidence
 of speedup: report actual worker batch membership and both TTFT and makespan.
+
+
+`--bounded-dflash` selects the experimental synchronous compressed DFlash2 path
+and implies `--dflash --bounded-target`; it is not yet GPU-qualified. It preserves
+native accepted/rejected accounting, applies the same frozen input and natural EOS
+contract, and rejects refresh evidence that scores unverified draft rows. Keep
+its results separate from target-only measurements and from identity-replay tests.

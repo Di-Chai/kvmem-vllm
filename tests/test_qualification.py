@@ -116,3 +116,17 @@ def test_long_c4_requires_compression_for_each_history_and_bounded_pages():
     schedulers[0]['groups'][0]['blocks'] += 1
     with pytest.raises(RuntimeError, match='allocation'):
         qualification.validate_bounded(report, workers, schedulers)
+
+
+def test_bounded_dflash_reselection_cannot_score_unverified_candidates():
+    report, workers, schedulers = bounded_fixture()
+    report['dflash'] = True
+    for item, worker, scheduler in zip(report['concurrent'], workers, schedulers):
+        item['result']['usage']['prompt_tokens'] = 132000
+        worker.update(query_tokens=8, query_score_tokens=1, draft_groups=[4])
+        scheduler.update(replay_tokens=8)
+        scheduler['groups'][0]['blocks'] = 1025
+    qualification.validate_bounded(report, workers, schedulers, require_concurrent=True)
+    workers[0]['query_score_tokens'] = 8
+    with pytest.raises(RuntimeError, match='unverified draft'):
+        qualification.validate_bounded(report, workers, schedulers)

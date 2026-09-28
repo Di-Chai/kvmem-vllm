@@ -2,7 +2,8 @@
 
 Initial integration is eager, synchronous, text-only, TP=1, APC off. All batch
 neighbours are restored after a provisional query, while only selected requests
-change attention windows. DFlash and persistent-session rollback are not enabled.
+change attention windows. Experimental synchronous DFlash2 preserves independent
+native draft sliding pages; persistent-session rollback remains unsupported.
 """
 from dataclasses import dataclass
 import json
@@ -31,11 +32,18 @@ class QueryJob:
 
 
 def install_bounded_target(runner):
-    if (runner.speculative_config is not None or runner.vllm_config.max_concurrent_batches != 1 or
+    draft_contract = None
+    if runner.speculative_config is not None:
+        if os.getenv("KVMEM_BOUNDED_DFLASH") != "1":
+            raise ValueError("Bounded speculation requires explicit DFlash2 opt-in")
+        from .draft_contract import DraftContract
+        from .options import RuntimeOptions
+        draft_contract = DraftContract.from_vllm(runner.vllm_config, RuntimeOptions.from_vllm(runner.vllm_config).memory)
+    if (runner.vllm_config.max_concurrent_batches != 1 or
             runner.vllm_config.cache_config.enable_prefix_caching or
             runner.vllm_config.cache_config.mamba_cache_mode != "none" or
             os.getenv("KVMEM_WINDOW_METADATA") != "1" or not runner._kvmem_continuous):
-        raise ValueError("Bounded target requires synchronous non-speculative APC-off archive/window execution")
+        raise ValueError("Bounded execution requires synchronous APC-off archive/window execution")
     jobs = {}
     original = runner.model.forward
 
@@ -55,6 +63,7 @@ def install_bounded_target(runner):
         runtime = runner._kvmem_capture_runtime
         if runtime is None or not set(jobs).issubset(batch.req_ids):
             raise ValueError("Scheduled refresh is missing its archived history or query batch")
+        draft_groups = draft_contract.validate_native_groups(runner) if draft_contract is not None else ()
         runtime.drain(wait=True)
         cfg = runtime.config
         extents = {}
@@ -107,10 +116,16 @@ def install_bounded_target(runner):
         for request_id, job in jobs.items():
             i, history, query = extents[request_id]
             authority = runtime.authorities[request_id]
+            score_query = query
             if history <= cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
             else:
                 begin, end = batch.query_start_loc_np[i:i+2]
+                if draft_contract is not None:
+                    from .speculative_admission import SpeculativeQueryPolicy
+                    score_query = SpeculativeQueryPolicy.authoritative_probe_tokens(
+                        history, int(batch.prefill_len_np[i]), query)
+                    end = begin + score_query
                 queries = torch.stack([c.query[begin:end] for c in captured])
                 plan = authority.select_for_queries(queries)
             selected = plan.total_window_tokens
@@ -130,6 +145,7 @@ def install_bounded_target(runner):
                 "history_begin": history, "selected_tokens": selected, "query_tokens": query,
                 "rebuilt_tokens": assembly.rebuilt_tokens, "skipped_tokens": assembly.skipped_tokens,
                 "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
+                "query_score_tokens": score_query, "draft_groups": list(draft_groups),
                 "assembly_seconds": time.perf_counter() - assembly_start,
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
                 "assembly_uploaded_bytes": assembly.uploaded_bytes,

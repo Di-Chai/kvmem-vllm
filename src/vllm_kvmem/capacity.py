@@ -2,7 +2,9 @@
 
 The native allocator still owns every physical block. Reservations are credits,
 not extra allocations: trimming a window returns physical pages while retaining
-that request's right to grow again. This adapter is target-only, APC-off, TP=1.
+that request's right to grow again. The optional qualified draft contract adds
+native SWA and speculative GDN credits.
+Execution remains synchronous, APC-off, TP=1.
 """
 import hashlib
 import inspect
@@ -14,19 +16,20 @@ KV_MANAGER_SHA256 = "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2
 
 
 class ReservedKVCacheManager:
-    def __init__(self, native, vllm_config):
+    def __init__(self, native, vllm_config, *, draft_contract=None):
         from vllm.v1.core.kv_cache_manager import KVCacheManager
-        from vllm.v1.core.single_type_kv_cache_manager import MambaManager
-        from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
+        from vllm.v1.core.single_type_kv_cache_manager import MambaManager, SlidingWindowManager
+        from vllm.v1.kv_cache_interface import MambaSpec, SlidingWindowSpec, UniformTypeKVCacheSpecs
 
         if hashlib.sha256(Path(inspect.getfile(KVCacheManager)).read_bytes()).hexdigest() != KV_MANAGER_SHA256:
             raise ValueError("Unqualified native page reservation/free hooks")
-        if (vllm_config.speculative_config is not None or
+        if ((vllm_config.speculative_config is not None) != (draft_contract is not None) or
                 vllm_config.cache_config.enable_prefix_caching or
                 vllm_config.cache_config.mamba_cache_mode != "none" or
                 vllm_config.max_concurrent_batches != 1):
-            raise ValueError("Capacity reservation requires synchronous target-only APC-off execution")
+            raise ValueError("Capacity reservation requires synchronous APC-off execution and an explicit draft contract")
         self.native = native
+        self.lookahead = draft_contract.query_tokens if draft_contract is not None else 0
         self.groups = tuple(native.coordinator.single_type_managers)
         self.static_blocks = {}
         for index, manager in enumerate(self.groups):
@@ -34,13 +37,22 @@ class ReservedKVCacheManager:
                 raise ValueError("Capacity reservation requires the native shared page pool")
             if isinstance(manager, WorkingSetManager):
                 continue
-            if type(manager) is not MambaManager:
-                raise ValueError("Unqualified cache manager for lifetime reservation")
             spec = manager.kv_cache_spec
             if isinstance(spec, UniformTypeKVCacheSpecs):
                 spec = spec.first_spec
-            if (type(spec) is not MambaSpec or spec.num_speculative_blocks or spec.num_prefill_checkpoint_blocks or
-                    spec.mamba_cache_mode != "none" or spec.block_size < native.max_model_len):
+            if type(manager) is SlidingWindowManager and draft_contract is not None:
+                if type(spec) is not SlidingWindowSpec or spec.sliding_window != draft_contract.sliding_window:
+                    raise ValueError("Unqualified draft sliding-window reservation")
+                # Native recycling happens before allocation. Include an extra
+                # drafter lookahead beyond the target in-flight token budget.
+                cap = spec.max_admission_blocks_per_request(
+                    vllm_config.max_in_flight_tokens + self.lookahead, native.max_model_len)
+                self.static_blocks[index] = cap
+                continue
+            if (type(manager) is not MambaManager or type(spec) is not MambaSpec or
+                    spec.num_speculative_blocks != (self.lookahead - 1 if self.lookahead else 0) or
+                    spec.num_prefill_checkpoint_blocks or spec.mamba_cache_mode != "none" or
+                    spec.block_size < native.max_model_len):
                 raise ValueError("Unqualified recurrent-state reservation geometry")
             self.static_blocks[index] = spec.max_num_blocks_per_req(vllm_config, native.max_model_len)
         self.reservations = {}
@@ -72,7 +84,10 @@ class ReservedKVCacheManager:
         existing = self.reservations.get(request_id)
         if existing is not None and existing[0] is not request:
             raise ValueError("Request identity reused before releasing capacity")
-        tokens = min(self.native.max_model_len, request.num_prompt_tokens + request.max_tokens)
+        # A terminal speculative step may verify a full block and draft another
+        # before the scheduler observes EOS/max_tokens. Retain those credits.
+        tokens = min(self.native.max_model_len,
+                     request.num_prompt_tokens + request.max_tokens + 2 * self.lookahead)
         demand = self._demand(tokens)
         if existing is not None and existing[1] != demand:
             raise ValueError("Request lifetime bound changed after admission")
@@ -80,7 +95,7 @@ class ReservedKVCacheManager:
                      if key != request_id)
         extra = kwargs.get("reserved_blocks", 0)
         # Preserve any additional native connector constraint conservatively.
-        # This target-only connector normally contributes zero extra credits.
+        # This connector normally contributes zero extra credits.
         reserved = others + extra
         if existing is None and self._remaining(request_id, demand) + reserved > self.block_pool.get_num_free_blocks():
             self.rejections += 1

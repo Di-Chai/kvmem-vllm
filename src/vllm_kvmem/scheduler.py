@@ -30,8 +30,15 @@ class KVMemScheduler(Scheduler):
         super().__init__(*args, **kwargs)
         if not isinstance(self.connector, KVMemConnector):
             raise ValueError("KVMemScheduler requires KVMemConnector")
-        if self.scheduler_config.async_scheduling or self.vllm_config.speculative_config is not None:
-            raise ValueError("First scheduler transaction qualification requires synchronous target execution")
+        if self.scheduler_config.async_scheduling:
+            raise ValueError("Scheduler refresh transactions require synchronous execution")
+        self.draft_contract = None
+        if self.vllm_config.speculative_config is not None:
+            if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" or os.getenv("KVMEM_BOUNDED_TARGET") != "1":
+                raise ValueError("Bounded speculation requires its explicit experimental opt-in")
+            from .draft_contract import DraftContract
+            self.draft_contract = DraftContract.from_vllm(
+                self.vllm_config, RuntimeOptions.from_vllm(self.vllm_config).memory)
         self._bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
         if not self._bounded_target and os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") != "1":
             raise ValueError("Compressed runtime not yet enabled; scheduler currently exposes the explicit identity probe")
@@ -39,6 +46,10 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
         config = RuntimeOptions.from_vllm(self.vllm_config).memory
         self.query_policy = QueryPolicy(config.block_tokens, config.select_budget, config.gen_budget)
+        if self.draft_contract is not None:
+            from .speculative_admission import SpeculativeQueryPolicy
+            self.query_policy = SpeculativeQueryPolicy(config.block_tokens, config.select_budget,
+                                                       config.gen_budget, self.draft_contract.query_tokens)
         if self._bounded_target and not config.block_tokens <= self.scheduler_config.max_num_batched_tokens <= config.gen_budget:
             raise ValueError("Bounded target batch budget must fit an aligned block and G headroom")
         coordinator = self.kv_cache_manager.coordinator
@@ -53,7 +64,8 @@ class KVMemScheduler(Scheduler):
         coordinator.single_type_managers = tuple(managers)
         if self._bounded_target:
             from .capacity import ReservedKVCacheManager
-            self.kv_cache_manager = ReservedKVCacheManager(self.kv_cache_manager, self.vllm_config)
+            self.kv_cache_manager = ReservedKVCacheManager(self.kv_cache_manager, self.vllm_config,
+                                                           draft_contract=self.draft_contract)
         self.connector.scheduler_completion = self._complete_refresh
         self.transactions = {}
         self.table_updates = {}

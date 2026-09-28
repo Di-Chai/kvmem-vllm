@@ -68,16 +68,22 @@ def validate_bounded(report, workers, schedulers, *, require_concurrent=False):
     if not workers or by_worker.keys() != by_scheduler.keys():
         raise RuntimeError("Bounded worker and scheduler transaction sets differ")
     items = ([report["single"]] if "single" in report else []) + report["concurrent"]
-    http_ids = [item["result"]["id"] for item in items]
     for key, worker in by_worker.items():
         scheduler = by_scheduler[key]
         request_id = worker["request_id"]
-        if sum(request_id.startswith(value + "-0-") for value in http_ids) != 1:
+        matched = [item["result"] for item in items if request_id.startswith(item["result"]["id"] + "-0-")]
+        if len(matched) != 1:
             raise RuntimeError("Bounded transaction does not belong to the HTTP request set")
         selected, query = worker["selected_tokens"], worker["query_tokens"]
         if (not 0 < selected <= 131072 or query <= 0 or
                 selected != scheduler["selected_tokens"] or query != scheduler["replay_tokens"]):
             raise RuntimeError("Worker and scheduler disagree on selected/query extent")
+        if report.get("dflash"):
+            prompt = matched[0]["usage"]["prompt_tokens"]
+            expected_probe = min(query, max(1, prompt - worker["history_begin"]))
+            if (not worker.get("draft_groups") or worker.get("query_score_tokens") != expected_probe or
+                    (worker["history_begin"] >= prompt and query > 8)):
+                raise RuntimeError("Bounded DFlash reselection used unverified draft rows or lost draft groups")
         groups = scheduler["groups"]
         if not groups:
             raise RuntimeError("Bounded transaction has no attention allocation")
@@ -101,7 +107,7 @@ def validate_bounded(report, workers, schedulers, *, require_concurrent=False):
     max_batch = max(len(w["batch_requests"]) for w in workers)
     if require_concurrent:
         concurrent_ids = {item["result"]["id"] for item in report["concurrent"]}
-        co_batched = any(all(any(native.startswith(http + "-0-") for native in w["batch_requests"])
+        co_batched = any(w["history_begin"] > 131072 and all(any(native.startswith(http + "-0-") for native in w["batch_requests"])
                             for http in concurrent_ids) for w in workers)
         if len(concurrent_ids) != 4 or not co_batched:
             raise RuntimeError("Long C4 did not exercise a native four-request refresh batch")
@@ -140,6 +146,8 @@ def main():
     parser.add_argument("--replay-probe", action="store_true")
     parser.add_argument("--compression-probe", action="store_true",
                         help="Single long-request K131072/G65536 selection/replay diagnostic")
+    parser.add_argument("--bounded-dflash", action="store_true",
+                        help="Experimental synchronous DFlash2 with scheduled bounded semantic refresh")
     parser.add_argument("--bounded-target", action="store_true",
                         help="Scheduled semantic prefill and bounded target page ownership (no DFlash)")
     parser.add_argument("--cpu-read-cache-mib", type=int, default=0,
@@ -161,6 +169,8 @@ def main():
     parser.add_argument("--history-repeat", type=int, default=0,
                         help="Prepend deterministic repository-like history to exercise chunked prefill")
     args = parser.parse_args()
+    if args.bounded_dflash:
+        args.bounded_target = args.dflash = True
     if not 1 <= args.output_tokens <= 8192:
         parser.error("output-tokens must be in [1, 8192]")
     if args.prefill_request_token_cap < 0 or (args.prefill_request_token_cap and
@@ -171,7 +181,7 @@ def main():
     if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
         parser.error("Assembly/cache candidates currently require bounded-target qualification")
     if args.bounded_target:
-        if any((args.dflash, args.compression_probe, args.replay_probe, args.rebuild_probe,
+        if any((args.dflash and not args.bounded_dflash, args.compression_probe, args.replay_probe, args.rebuild_probe,
                 args.scheduled_rebuild_probe, args.history_repeat)):
             parser.error("Bounded target requires its own non-speculative scheduled qualification")
         args.archive_probe = True
@@ -254,6 +264,8 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
+        if args.bounded_dflash:
+            env["KVMEM_BOUNDED_DFLASH"] = "1"
         if args.bounded_target:
             env["KVMEM_BOUNDED_TARGET"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
@@ -278,7 +290,7 @@ def main():
         if args.compression_probe:
             report["scope"] = "real K128K/G64K target compression/replay; unbounded native allocation; long C1 only"
         if args.bounded_target:
-            report["scope"] = "scheduled semantic target refresh and bounded native allocation; " + ("" if args.concurrent_only else "long C1, ") + ("frozen long C4" if frozen_concurrent else "short C4")
+            report["scope"] = ("experimental DFlash2; " if args.bounded_dflash else "target-only; ") + "scheduled semantic refresh and bounded native allocation; " + ("" if args.concurrent_only else "long C1, ") + ("frozen long C4" if frozen_concurrent else "short C4")
         if args.scheduled_rebuild_probe or args.bounded_target:
             command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({

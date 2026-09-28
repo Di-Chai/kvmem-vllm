@@ -63,3 +63,31 @@ above passes. Keep the old artifact as a historical observation, not a semantic
 reference. Detailed measurements and limitations are in
 [the qualification record](qualification-20260928.md), with measurement definitions
 in [measurement.md](measurement.md) and boundaries in [support.md](support.md).
+
+
+## Experimental bounded DFlash2 wiring (GPU qualification pending)
+
+The new diagnostic `scripts/qualify_engine.py --bounded-dflash` enables a narrow
+contract for the existing BF16 DFlash2 draft while retaining Q8_0 target / FP8
+KV and K131072/G65536. Native vLLM uses method `dflash` and selects its DFlash2
+implementation from the `DFlash2DraftModel` architecture. Five upstream source
+hashes pin the draft factory, position/slot handling and model implementation.
+
+The scheduler clips speculative queries at the accepted-history checkpoint and
+reserves both speculative GDN rows and recycling-aware draft SWA pages. It leaves
+room for verifier and drafter lookahead. Reselection scores use known prompt rows,
+or only the first already-sampled input during decode, never unverified draft
+candidates. Provisional target forwards restore every batch neighbour's recurrent
+state; only the final forward reaches native sampling and drafting. Draft pages
+and their logical position frame remain independent of the target dense window.
+The actual native draft groups are checked against BF16 SWA geometry before any
+compressed refresh. Mandatory target recent context must contain the draft window.
+Logical histories beyond the draft RoPE table are rejected pending an explicit
+renormalization/session adapter.
+
+Native allocator tests cover combined full attention + speculative Mamba + SWA,
+future-growth credit exclusion, recycling and release. These and the admission /
+transaction / harness tests pass; they are not compressed DFlash GPU evidence.
+The long target C4 run `engine_long_c4_cached_packed_01` was launched from commit
+`776bb7a` before these DFlash changes and continues with that loaded runtime and
+its saved source manifest. Do not attribute its eventual results to later code.
