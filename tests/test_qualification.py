@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -246,3 +247,16 @@ def test_gc_accounting_does_not_count_deleted_records_as_checksum_verified():
     record['sealed_records_verified'] = 2
     with pytest.raises(RuntimeError, match='Incomplete archive'):
         qualification.validate_archive(report, archived)
+
+
+@pytest.mark.parametrize('flags', [
+    ['--bounded-short-lifecycle'],
+    ['--bounded-dflash', '--bounded-short-lifecycle', '--frozen-input', 'unused'],
+    ['--bounded-target', '--bounded-short-lifecycle', '--cancel-during-refresh'],
+])
+def test_short_lifecycle_cannot_silently_replace_long_or_cancellation_gates(monkeypatch, tmp_path, flags):
+    monkeypatch.setattr(sys, 'argv', ['qualify_engine.py', '--models', 'unused',
+                                     '--output', str(tmp_path), *flags])
+    with pytest.raises(SystemExit) as error:
+        qualification.main()
+    assert error.value.code == 2

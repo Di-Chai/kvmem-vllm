@@ -145,3 +145,11 @@ kernel intervals per trace device, since different streams can overlap. Gaps in
 those intervals do not by themselves prove CPU launch overhead or GPU idleness.
 The top-kernel table is a starting point for inspecting the native trace, not a
 model/draft/verification attribution inferred from kernel names.
+
+`--bounded-short-lifecycle` keeps K/G and the native bounded scheduler unchanged,
+but uses the existing short C1/C4 fixtures to check terminal publication and
+retirement. It explicitly does not qualify compression, and cannot be combined
+with frozen long inputs, cancellation-during-refresh or capacity-pressure gates.
+Default bounded qualification still requires genuine compression evidence. This
+short mode is appropriate for a limited decode profiler diagnostic before another
+long model run; it is not a substitute for long-history performance or quality.

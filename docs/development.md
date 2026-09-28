@@ -349,3 +349,10 @@ state comparisons. The reference fixture correction is recorded with the failed
 and corrected artifacts. Next native run will exercise exact terminal-prefix
 capture and a bounded GPU profiler window; profiling timings are not benchmarks.
 Persistent streaming-session integration and actual agent execution remain open.
+
+The initial terminal-profiler launch (`engine_terminal_dflash_profile_01`) was
+stopped before readiness/requests because the harness's default bounded mode
+would synthesize a 134144-token C1. Its stop reason and interrupted result remain
+in the artifact directory. An explicit `--bounded-short-lifecycle` mode now
+separates this terminal/retirement check from the existing mandatory compression
+gate. Profiling/qualification host tests: 21 pass; long gates are not weakened.

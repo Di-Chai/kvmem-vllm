@@ -244,6 +244,8 @@ def main():
                         help="Experimental synchronous DFlash2 with scheduled bounded semantic refresh")
     parser.add_argument("--bounded-target", action="store_true",
                         help="Scheduled semantic prefill and bounded target page ownership (no DFlash)")
+    parser.add_argument('--bounded-short-lifecycle', action='store_true',
+                        help='Use short fixtures for terminal/retirement checks; explicitly does not qualify compression')
     parser.add_argument("--cpu-read-cache-mib", type=int, default=0,
                         help="Experimental bounded CPU archive cache; requires bounded-target")
     parser.add_argument("--packed-assembly", action="store_true",
@@ -288,6 +290,10 @@ def main():
         parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
+    if args.bounded_short_lifecycle and (not args.bounded_target or any((
+            args.frozen_input, args.concurrent_frozen_input, args.concurrent_only,
+            args.cancel_during_refresh, args.require_capacity_pressure, args.history_repeat))):
+        parser.error('Short bounded lifecycle requires bounded serving without long/cancellation/pressure fixtures')
     if not 1 <= args.output_tokens <= 8192:
         parser.error("output-tokens must be in [1, 8192]")
     if not 128 <= args.batch_token_budget <= 65536 or args.batch_token_budget % 128:
@@ -407,7 +413,7 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
-        if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement:
+        if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle:
             env["KVMEM_LIFECYCLE_TRACE"] = "1"
         if args.bounded_dflash:
             env["KVMEM_BOUNDED_DFLASH"] = "1"
@@ -445,6 +451,8 @@ def main():
             report["scope"] = "real K128K/G64K target compression/replay; unbounded native allocation; long C1 only"
         if args.bounded_target:
             report["scope"] = ("experimental DFlash2; " if args.bounded_dflash else "target-only; ") + "scheduled semantic refresh and bounded native allocation; " + ("" if args.concurrent_only else "long C1, ") + ("frozen long C4" if frozen_concurrent else "short C4")
+            if args.bounded_short_lifecycle:
+                report['scope'] = 'short C1/C4 native terminal-prefix and retirement lifecycle; compression not exercised'
         if args.scheduled_rebuild_probe or args.bounded_target:
             command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({
@@ -530,7 +538,7 @@ def main():
                     if frozen is not None:
                         single_prompt = frozen["input_ids"]
                         report["long_single_prompt_tokens"] = len(single_prompt)
-                    elif args.compression_probe or args.bounded_target:
+                    elif args.compression_probe or (args.bounded_target and not args.bounded_short_lifecycle):
                         history = fetch(url + "/tokenize", {"model": "qualification", "prompt":
                             "Repository history: utilities.py defines add(a, b) returning a + b; tests cover zero and negative values.\n"})["tokens"]
                         task = fetch(url + "/tokenize", {"model": "qualification", "prompt":
@@ -634,13 +642,18 @@ def main():
                             for size in scheduled_queries['queries']['prefill']):
                         raise RuntimeError('Actual scheduled prefill exceeds the requested per-request query cap')
                     report['scheduled_queries'] = scheduled_queries
-                    workers = [json.loads(line) for line in (args.output / "capture/bounded_refresh.jsonl").read_text().splitlines()]
-                    schedulers = [json.loads(line) for line in (args.output / "capture/scheduler_refresh.jsonl").read_text().splitlines()]
+                    def refresh_records(name):
+                        path = args.output / 'capture' / name
+                        if args.bounded_short_lifecycle and not path.exists():
+                            return []
+                        return [json.loads(line) for line in path.read_text().splitlines()]
+                    workers = refresh_records('bounded_refresh.jsonl')
+                    schedulers = refresh_records('scheduler_refresh.jsonl')
                     if args.cancel_during_refresh:
                         finished = [json.loads(line) for line in (args.output / "capture/scheduler_finished.jsonl").read_text().splitlines()]
                         validate_cancellation(report["cancelled"], workers, finished)
                         report["scheduler_finished"] = finished
-                    if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement:
+                    if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle:
                         # The worker publishes retirement before its completion
                         # reaches the scheduler. Wait for native physical release.
                         deadline = time.monotonic() + 10
@@ -656,8 +669,13 @@ def main():
                         report["scheduler_resources"] = released
                         if args.require_capacity_pressure and not released["reservation_rejections"]:
                             raise RuntimeError("Requested capacity test never exercised admission backpressure")
-                    report["bounded"] = validate_bounded(report, workers, schedulers,
-                        require_concurrent=bool(args.concurrent_frozen_input) and not args.require_capacity_pressure)
+                    if args.bounded_short_lifecycle:
+                        if workers or schedulers:
+                            raise RuntimeError('Short lifecycle unexpectedly entered compression; scope mismatch')
+                        report['bounded'] = {'scope': 'terminal/retirement lifecycle only', 'compression_exercised': False}
+                    else:
+                        report["bounded"] = validate_bounded(report, workers, schedulers,
+                            require_concurrent=bool(args.concurrent_frozen_input) and not args.require_capacity_pressure)
                 report["status"] = "passed"
         except BaseException as error:
             report["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
