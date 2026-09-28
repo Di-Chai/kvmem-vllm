@@ -160,6 +160,7 @@ def install_bounded_target(runner):
                 "assembly_seconds": time.perf_counter() - assembly_start,
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
                 "assembly_uploaded_bytes": assembly.uploaded_bytes,
+                "assembly_read_stats": assembly.read_stats,
                 "packed_assembly": runtime.options.packed_assembly})
 
         if needs_probe:

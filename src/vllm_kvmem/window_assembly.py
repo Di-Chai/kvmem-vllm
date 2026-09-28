@@ -5,7 +5,7 @@ fence. Only after it completes may it trim the old allocation or resume executio
 This first bridge batches native archive reads and H2D copies, with synchronous
 CPU I/O between chunks; overlapping scheduler-visible preparation is pending.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import time
 
@@ -35,6 +35,7 @@ class AssemblyResult:
     chunks: int
     host_prepare_seconds: float = 0.0
     uploaded_bytes: int = 0
+    read_stats: dict = field(default_factory=dict)
 
     def query(self):
         return self.event.query()
@@ -128,6 +129,7 @@ class NativeWindowAssembler:
         pending = [remap for remap in remaps if not remap.skip]
         rebuilt, chunks, owners = 0, 0, [self, plan, authority]
         host_prepare_seconds, uploaded_bytes = 0.0, 0
+        read_stats = {}
         for start in range(0, len(pending), self.chunk_blocks):
             chunk = pending[start:start+self.chunk_blocks]
             handles = [by_slot[remap.block_id].handle for remap in chunk]
@@ -136,7 +138,9 @@ class NativeWindowAssembler:
                 from .packed_assembly import read_packed_records
                 if any(remap.n_tokens != self.block_tokens for remap in chunk):
                     raise ValueError("Packed window assembly requires complete selected records")
-                payload, _ = read_packed_records(authority, handles)
+                payload, stats = read_packed_records(authority, handles)
+                for key, value in stats.items():
+                    read_stats[key] = read_stats.get(key, 0) + value
                 count = len(chunk) * self.block_tokens
             else:
                 payloads = authority.read_records(handles)
@@ -178,7 +182,7 @@ class NativeWindowAssembler:
         done.record(torch.cuda.current_stream(self.device))
         return AssemblyResult(done, tuple(owners), rebuilt,
                               sum(remap.n_tokens for remap in remaps if remap.skip), chunks,
-                              host_prepare_seconds, uploaded_bytes)
+                              host_prepare_seconds, uploaded_bytes, read_stats)
 
     def close(self):
         return self.transfers.close()

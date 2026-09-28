@@ -99,3 +99,10 @@ executing requests and must not be presented as full GPU C4 throughput. The
 ordinary long-C4 gate still requires an actual four-request compressed batch.
 A pool unable to fit even one worst-case KVMem window is rejected at startup;
 do not weaken that check to make a pressure run start.
+
+Packed refresh reports now retain summed archive-read statistics, including
+logical/cache-hit/native I/O bytes, queue wait, buffer allocation, cache copying,
+native read-call wall time and cache insertion. These host timings are wall time
+at the named boundaries, not isolated CPU-cycle or physical-disk measurements.
+They complement overall assembly and host-preparation durations; do not infer
+a disk bottleneck from total host-preparation time alone.
