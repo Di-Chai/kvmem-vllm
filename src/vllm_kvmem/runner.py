@@ -69,6 +69,14 @@ def make_probe_runner(base):
                 self._kvmem_request_generations.pop(request_id, None)
             return result
 
+        def shutdown(self):
+            try:
+                runtime = getattr(self, '_kvmem_capture_runtime', None)
+                if runtime is not None:
+                    runtime.shutdown_retirement()
+            finally:
+                super().shutdown()
+
         def _kvmem_refresh(self, command):
             from .refresh_probe import rebuild_native_batch
             captured, request_id = self._kvmem_saved_capture
@@ -151,7 +159,9 @@ def make_probe_runner(base):
             if (getattr(self, "_kvmem_bounded_target", False) and not dummy_run
                     and (self._kvmem_probe_output / "armed").is_file()):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
-                get_kv_transfer_group().runtime = self._kvmem_query_refresh
+                connector = get_kv_transfer_group()
+                connector.runtime = self._kvmem_query_refresh
+                connector.retirement_done = (runtime.retirement_done if runtime is not None else lambda _: True)
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
                     (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or

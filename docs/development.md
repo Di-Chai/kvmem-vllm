@@ -173,3 +173,35 @@ This is a combined-path qualification, not a matched speedup against the old
 256-query, full-readback target C4. Actual scheduling histograms and complete
 HTTP arrival windows will determine follow-up matched controls. Final outcome
 is pending; the persistent goal remains active.
+
+## Bounded asynchronous archive retirement
+
+The opt-in `--async-archive-retirement` detaches a finalized authority only after
+all native capture DMA has drained. A single bounded CPU worker publishes its
+remaining records, optionally verifies every checksum, and reclaims the entire
+namespace. Other native requests can keep executing. Publication, verification,
+reclamation and acknowledgment timestamps are retained in the archive report.
+
+The native connector deliberately retains the completed request's physical GPU
+pages and lifetime reservation until CPU reclamation succeeds. An additional
+authority-count gate caps live plus retiring requests at `max_num_seqs`, so
+background cleanup cannot silently exceed the configured archive namespace
+budget. This first implementation trades delayed capacity reuse for safe overlap;
+it does not yet release GPU pages ahead of CPU retirement. Cancellation and
+checksum/I/O failures cannot issue a successful free acknowledgment. Idle native
+`no_forward` steps deliver completion even when every HTTP request has ended.
+The pinned helper source hash rejects incompatible native completion semantics.
+
+Host tests cover concurrent namespace writes during blocked checksum reading,
+held generation leases, queue bounds, corrupt archive failure, admission with
+spare physical pages, idle native connector completion, and graceful shutdown
+ordering. Native GPU retirement/cancellation/pressure qualification remains
+pending. The active long-C4 run uses its frozen pre-change package and synchronous
+publication-only retirement; it cannot qualify this new option. This feature
+does not implement active-history policy GC, persistent sessions or total CPU /
+disk byte admission, which remain separate goal requirements.
+
+Latest CPU regression after this integration: **120 passed, 28 GPU tests skipped**
+to avoid contention with the active model run. The earlier complete CPU/GPU suite
+of 136 tests qualifies the previous code, not asynchronous retirement. Evidence
+for this CPU run is `artifacts/components_async_retirement_cpu.xml`.

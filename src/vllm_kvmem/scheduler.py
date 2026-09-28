@@ -46,6 +46,8 @@ class KVMemScheduler(Scheduler):
         if self._bounded_target and hashlib.sha256(Path(inspect.getfile(Scheduler)).read_bytes()).hexdigest() != SCHEDULER_SHA256:
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
         options = RuntimeOptions.from_vllm(self.vllm_config)
+        if options.async_archive_retirement and not self._bounded_target:
+            raise ValueError('Asynchronous archive retirement requires bounded execution')
         config = options.memory
         self.prefill_cadence = options.prefill_cadence
         self._mixed_steps = 0
@@ -71,7 +73,8 @@ class KVMemScheduler(Scheduler):
         if self._bounded_target:
             from .capacity import ReservedKVCacheManager
             self.kv_cache_manager = ReservedKVCacheManager(self.kv_cache_manager, self.vllm_config,
-                                                           draft_contract=self.draft_contract)
+                draft_contract=self.draft_contract,
+                max_authorities=self.scheduler_config.max_num_seqs if options.async_archive_retirement else None)
         self.connector.scheduler_completion = self._complete_refresh
         self.transactions = {}
         self.table_updates = {}
@@ -107,6 +110,7 @@ class KVMemScheduler(Scheduler):
         report = {"at": time.perf_counter(), "requests": len(self.requests),
             "refresh_pending": len(self.transactions), "connector_pending": len(self.connector.pending),
             "reservations": list(gate.reservations), "reservation_rejections": gate.rejections,
+            "authority_limit": gate.max_authorities, "authority_rejections": gate.authority_rejections,
             "owned_blocks": owned,
             "free_blocks": gate.block_pool.get_num_free_blocks(),
             "total_blocks": gate.block_pool.num_gpu_blocks}
@@ -227,7 +231,7 @@ class KVMemScheduler(Scheduler):
                     self._probe_submitted = True
                     break
         output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
-        if hasattr(self, '_scheduled_queries'):
+        if hasattr(self, '_scheduled_queries') and output.total_num_scheduled_tokens:
             # Actual admitted sizes, including native draft reservations and
             # alignment, are the evidence for a matched query-policy comparison.
             path = Path(os.environ['KVMEM_RUNNER_PROBE_DIR'])

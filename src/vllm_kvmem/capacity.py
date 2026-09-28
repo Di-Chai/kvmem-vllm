@@ -16,7 +16,7 @@ KV_MANAGER_SHA256 = "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2
 
 
 class ReservedKVCacheManager:
-    def __init__(self, native, vllm_config, *, draft_contract=None):
+    def __init__(self, native, vllm_config, *, draft_contract=None, max_authorities=None):
         from vllm.v1.core.kv_cache_manager import KVCacheManager
         from vllm.v1.core.single_type_kv_cache_manager import MambaManager, SlidingWindowManager
         from vllm.v1.kv_cache_interface import MambaSpec, SlidingWindowSpec, UniformTypeKVCacheSpecs
@@ -29,6 +29,10 @@ class ReservedKVCacheManager:
                 vllm_config.max_concurrent_batches != 1):
             raise ValueError("Capacity reservation requires synchronous APC-off execution and an explicit draft contract")
         self.native = native
+        if max_authorities is not None and (type(max_authorities) is not int or max_authorities <= 0):
+            raise ValueError('Authority admission requires a positive request count')
+        self.max_authorities = max_authorities
+        self.authority_rejections = 0
         self.lookahead = draft_contract.query_tokens if draft_contract is not None else 0
         self.groups = tuple(native.coordinator.single_type_managers)
         self.static_blocks = {}
@@ -84,6 +88,10 @@ class ReservedKVCacheManager:
         existing = self.reservations.get(request_id)
         if existing is not None and existing[0] is not request:
             raise ValueError("Request identity reused before releasing capacity")
+        if existing is None and self.max_authorities is not None and len(self.reservations) >= self.max_authorities:
+            self.rejections += 1
+            self.authority_rejections += 1
+            return None
         # A terminal speculative step may verify a full block and draft another
         # before the scheduler observes EOS/max_tokens. Retain those credits.
         tokens = min(self.native.max_model_len,

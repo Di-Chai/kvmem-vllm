@@ -51,7 +51,8 @@ def fetch(url, payload=None, timeout=180):
 
 
 def validate_archive(report, archived):
-    if (archived["active_requests"] or archived["archive_used_slots"] or archived["pending_downloads"] or
+    if (archived["active_requests"] or archived.get('retiring_requests', 0) or
+            archived["archive_used_slots"] or archived["pending_downloads"] or
             archived.get("cpu_cache_used_bytes", 0)):
         raise RuntimeError("Finalized requests retained authority resources")
     block_tokens = archived.get("block_tokens", 128)
@@ -247,6 +248,8 @@ def main():
     parser.add_argument("--output-tokens", type=int, default=128)
     parser.add_argument("--skip-archive-readback", action="store_true",
                         help="Measure serving without diagnostic finish checksums; still drain and check publication/cleanup")
+    parser.add_argument("--async-archive-retirement", action="store_true",
+                        help="Experimental CPU retirement with native completion acknowledgments and bounded authority admission")
     parser.add_argument("--stream-metrics", action="store_true",
                         help="Record HTTP token bursts, TTFT and correctly overlapping group rates")
     parser.add_argument("--history-repeat", type=int, default=0,
@@ -311,6 +314,8 @@ def main():
         args.capture_probe = True
     if args.skip_archive_readback and not args.bounded_target:
         parser.error("skip-archive-readback requires bounded serving and its public connector options")
+    if args.async_archive_retirement and not args.bounded_target:
+        parser.error("async-archive-retirement requires bounded serving")
     if args.archive_probe and (args.rebuild_probe or args.scheduled_rebuild_probe):
         parser.error("Continuous archive qualification uses its own lifecycle diagnostic")
     if args.scheduled_rebuild_probe and (args.dflash or args.rebuild_probe):
@@ -371,7 +376,7 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
-        if args.cancel_during_refresh or args.require_capacity_pressure:
+        if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement:
             env["KVMEM_LIFECYCLE_TRACE"] = "1"
         if args.bounded_dflash:
             env["KVMEM_BOUNDED_DFLASH"] = "1"
@@ -412,6 +417,7 @@ def main():
                                 "packed_assembly": args.packed_assembly,
                                 "direct_pinned_reads": args.direct_pinned_reads,
                                 "prefill_cadence": args.prefill_cadence,
+                                "async_archive_retirement": args.async_archive_retirement,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
@@ -527,7 +533,8 @@ def main():
                 if args.archive_probe:
                     path = args.output / "capture/archive.json"
                     expected_requests = len(report["concurrent"]) + int("single" in report) + len(report.get("cancelled", []))
-                    deadline = time.monotonic() + 10
+                    retirement_start = time.monotonic()
+                    deadline = retirement_start + 180
                     while time.monotonic() < deadline:
                         try:
                             archived = json.loads(path.read_text())
@@ -539,9 +546,11 @@ def main():
                     else:
                         raise RuntimeError("Continuous archive did not finalize every submitted request")
                     validate_archive(report, archived)
+                    report['archive_drain_seconds_after_http'] = time.monotonic() - retirement_start
                     if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
                             or archived.get("packed_assembly", False) != args.packed_assembly
-                            or archived.get("direct_pinned_reads", False) != args.direct_pinned_reads):
+                            or archived.get("direct_pinned_reads", False) != args.direct_pinned_reads
+                            or archived.get("async_archive_retirement", False) != args.async_archive_retirement):
                         raise RuntimeError("Worker did not apply requested cache/assembly options")
                     expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
                     if archived.get("archive_verification", "full_checksum") != expected_verification:
@@ -577,9 +586,19 @@ def main():
                         finished = [json.loads(line) for line in (args.output / "capture/scheduler_finished.jsonl").read_text().splitlines()]
                         validate_cancellation(report["cancelled"], workers, finished)
                         report["scheduler_finished"] = finished
-                    if args.cancel_during_refresh or args.require_capacity_pressure:
-                        released = json.loads((args.output / "capture/scheduler_resources.json").read_text())
-                        validate_released_scheduler(released)
+                    if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement:
+                        # The worker publishes retirement before its completion
+                        # reaches the scheduler. Wait for native physical release.
+                        deadline = time.monotonic() + 10
+                        while True:
+                            try:
+                                released = json.loads((args.output / "capture/scheduler_resources.json").read_text())
+                                validate_released_scheduler(released)
+                                break
+                            except (RuntimeError, FileNotFoundError, json.JSONDecodeError):
+                                if time.monotonic() >= deadline:
+                                    raise
+                                time.sleep(0.01)
                         report["scheduler_resources"] = released
                         if args.require_capacity_pressure and not released["reservation_rejections"]:
                             raise RuntimeError("Requested capacity test never exercised admission backpressure")

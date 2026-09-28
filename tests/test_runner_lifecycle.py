@@ -5,6 +5,27 @@ import pytest
 pytest.importorskip("vllm")
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_runner_shutdown_drains_retirement_before_releasing_native_gpu_state(failed):
+    from vllm_kvmem.runner import make_probe_runner
+    calls = []
+    class Base:
+        def shutdown(self):
+            calls.append('native')
+    def retire():
+        calls.append('retire')
+        if failed:
+            raise OSError('retirement failure')
+    runner = make_probe_runner(Base)()
+    runner._kvmem_capture_runtime = SimpleNamespace(shutdown_retirement=retire)
+    if failed:
+        with pytest.raises(OSError, match='retirement'):
+            runner.shutdown()
+    else:
+        runner.shutdown()
+    assert calls == ['retire', 'native']
+
+
 def test_unarmed_native_warmup_does_not_access_temporarily_disabled_connector(monkeypatch, tmp_path):
     from vllm_kvmem.runner import make_probe_runner
     import vllm.distributed.kv_transfer as transfer

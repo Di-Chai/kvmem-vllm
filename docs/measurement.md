@@ -116,3 +116,12 @@ refresh frequency relative to the initial C4 cap of 256, but changes that earlie
 C4 query-selection policy and activation memory. It is an optimization candidate,
 not a measured gain; compare matched query policies and preserve precision, K/G,
 input IDs and natural output stopping. No large-budget GPU result exists yet.
+
+`--async-archive-retirement` is a separate experimental option, requiring bounded
+serving. It moves final publication/checksum/reclamation to a bounded CPU worker;
+the native connector retains resources until completion. Reports include pending
+retirements and per-stage timestamps. The harness waits for every archive and
+physical GPU-page release after HTTP completion and records that extra drain
+duration separately. Deferred work is not silently counted as already reclaimed
+or removed from lifecycle acceptance. Compare the same checksum mode when
+isolating the effect of asynchronous retirement; GPU qualification is pending.

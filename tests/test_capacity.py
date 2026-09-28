@@ -86,6 +86,24 @@ def test_standalone_capacity_failure_is_reported_at_initialization():
         make_gate(blocks=4)
 
 
+def test_authority_admission_waits_for_retirement_even_with_unused_gpu_pages():
+    gate, _, pool = make_gate(blocks=30)
+    gate.max_authorities = 1
+    a, b = request('a'), request('b')
+    assert gate.allocate_slots(a, 16) is not None
+    assert pool.get_num_free_blocks() == 28
+    # The connector still owns a's lifetime reservation during CPU retirement.
+    assert gate.allocate_slots(b, 16) is None
+    assert gate.authority_rejections == 1
+    # Existing requests may finish while new authorities wait.
+    a.history = 16
+    assert gate.allocate_slots(a, 16) is not None
+    gate.free(a)
+    assert gate.allocate_slots(b, 16) is not None
+    gate.free(b)
+    assert pool.get_num_free_blocks() == 29
+
+
 def test_real_hybrid_kv_manager_reserves_recurrent_state_and_window_growth():
     from vllm import SamplingParams
     from vllm.v1.core.kv_cache_manager import KVCacheManager

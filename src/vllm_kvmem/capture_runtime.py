@@ -8,6 +8,7 @@ Finalization always drains I/O; diagnostic checksum readback is separately gated
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import time
 
 import torch
 
@@ -68,6 +69,13 @@ class CaptureRuntime:
         self.completed = []
         self.batches = 0
         self._progress_batch = -1
+        self.retiring = {}
+        self.retirement = None
+        if self.options.async_archive_retirement:
+            if not getattr(runner, '_kvmem_bounded_target', False):
+                raise ValueError('Asynchronous retirement requires native bounded authority admission')
+            from .retirement import RetirementQueue
+            self.retirement = RetirementQueue(max_reqs, self.options.verify_archive_on_finish)
 
     def submit(self, captured, batch, rejected):
         if tuple(c.name for c in captured) != self.names:
@@ -153,7 +161,8 @@ class CaptureRuntime:
             "accepted_history": {req: owner.history_end for req, owner in self.authorities.items()},
             "archive_used_slots": self.archive.tier.used_slots,
             "pending_downloads": len(self.downloads.pending),
-            "completed_requests": len(self.completed)}
+                    "completed_requests": len(self.completed),
+                    "retiring_requests": len(getattr(self, 'retiring', {}))}
         temporary = self.output / "progress.tmp"
         temporary.write_text(json.dumps(progress, indent=2))
         temporary.replace(self.output / "progress.json")
@@ -178,6 +187,18 @@ class CaptureRuntime:
         for request_id in request_ids:
             authority = self.authorities.get(request_id)
             if authority is None:
+                continue
+            if self.options.async_archive_retirement:
+                # All GPU capture packets have drained above. Detach ownership
+                # before another native batch; this worker touches CPU data only.
+                enqueued_at = time.perf_counter()
+                self.retirement.submit(request_id, authority)
+                self.retiring[request_id] = {"request_id": request_id,
+                    "retirement_enqueued_at": enqueued_at,
+                    "accepted_tokens": self.accepted.pop(request_id),
+                    "rejected_tokens": self.rejected.pop(request_id),
+                    "last_steps": self.last_steps.pop(request_id)}
+                del self.authorities[request_id]
                 continue
             if not authority.flush():
                 self._wait_archive_progress()
@@ -207,6 +228,33 @@ class CaptureRuntime:
             if not authority.close():
                 raise RuntimeError("Finalized authority still has unexpected live storage leases")
             del self.authorities[request_id]
+        self._write_archive_report()
+
+    def retirement_done(self, request_id):
+        """Called on the engine thread before the native connector releases pages."""
+        if request_id in self.retiring:
+            result = self.retirement.poll(request_id)
+            if result is None:
+                return False
+            self.completed.append({**self.retiring.pop(request_id), **result,
+                                   "retirement_ack_ready_at": time.perf_counter()})
+            self._write_archive_report()
+        return (request_id not in self.authorities and
+                all(request_id not in packet.request_ids for packet in self.queue))
+
+    def shutdown_retirement(self):
+        """Graceful engine shutdown drains detached work before releasing storage."""
+        if not self.options.async_archive_retirement:
+            return
+        self.drain(wait=True)
+        self.finish(set(self.authorities))
+        for request_id in list(self.retiring):
+            self.retirement.jobs[request_id].result(timeout=180)
+            assert self.retirement_done(request_id)
+        if not self.retirement.close() or not self.archive.close():
+            raise RuntimeError('Shutdown retained archive I/O or retirement jobs')
+
+    def _write_archive_report(self):
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": self.completed,
                   "block_tokens": self.config.block_tokens,
@@ -215,11 +263,15 @@ class CaptureRuntime:
                   "cpu_cache_used_bytes": getattr(getattr(self.archive, 'read_cache', None), 'used_bytes', 0),
                   "packed_assembly": self.options.packed_assembly,
                   "direct_pinned_reads": self.options.direct_pinned_reads,
+                  "async_archive_retirement": self.options.async_archive_retirement,
+                  "retiring_requests": len(getattr(self, 'retiring', {})),
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,
                   "active_requests": len(self.authorities),
                   "archive_used_slots": self.archive.tier.used_slots,
                   "pending_downloads": len(self.downloads.pending)}
-        (self.output / "archive.json").write_text(json.dumps(report, indent=2))
+        temporary = self.output / 'archive.tmp'
+        temporary.write_text(json.dumps(report, indent=2))
+        temporary.replace(self.output / 'archive.json')
         self._write_progress()

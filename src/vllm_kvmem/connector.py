@@ -4,12 +4,17 @@ No prefix hits are invented. The worker runtime owns capture/storage/assembly;
 the connector carries commands and completion acknowledgments to the scheduler.
 """
 from dataclasses import dataclass, field
+import hashlib
+from importlib.metadata import distribution
+import os
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorWorkerMetadata, SupportsHMA,
 )
 
 from .window_manager import RefreshTicket
+
+RETIREMENT_CONNECTOR_SHA256 = 'b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b46082439076f62c6a81'
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,17 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.worker_selected_windows = {}
         self.runtime = None
         self.scheduler_completion = None
+        options = vllm_config.kv_transfer_config.kv_connector_extra_config.get('kvmem', {})
+        self.async_retirement = options.get('async_archive_retirement', False)
+        if type(self.async_retirement) is not bool:
+            raise ValueError('Asynchronous retirement option must be boolean')
+        if self.async_retirement and os.getenv('KVMEM_BOUNDED_TARGET') != '1':
+            raise ValueError('Asynchronous retirement requires bounded authority admission')
+        if self.async_retirement:
+            source = distribution('vllm').locate_file('vllm/v1/worker/gpu/kv_connector.py')
+            if hashlib.sha256(source.read_bytes()).hexdigest() != RETIREMENT_CONNECTOR_SHA256:
+                raise ValueError('Unqualified native idle-worker retirement completion hook')
+        self.retirement_done = None
 
     def queue(self, command):
         if command.request_id in self.pending:
@@ -79,7 +95,16 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                 if getattr(job, "selected_tokens", None) is not None:
                     self.worker_selected_windows[request_id] = job.selected_tokens
                 del self.worker_jobs[request_id]
-        done = {request_id for request_id in self.cancelled if request_id not in self.worker_jobs}
+        done = set()
+        for request_id in self.cancelled:
+            if request_id in self.worker_jobs:
+                continue
+            if self.async_retirement:
+                if self.retirement_done is None:
+                    raise RuntimeError('Missing authority retirement completion handler')
+                if not self.retirement_done(request_id):
+                    continue
+            done.add(request_id)
         self.cancelled.difference_update(done)
         return done or None, None
 
@@ -110,7 +135,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.cancelled.difference_update(connector_output.finished_sending or ())
 
     def request_finished_all_groups(self, request, block_ids):
-        if request.request_id not in self.pending:
+        if request.request_id not in self.pending and not self.async_retirement:
             return False, None
         self.cancelled.add(request.request_id)
         self.cancel_updates.add(request.request_id)

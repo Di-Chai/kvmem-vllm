@@ -6,7 +6,7 @@ repository GC releases records only after all consumers have dropped leases.
 """
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Lock
+from threading import Condition, Lock
 
 from . import _native
 
@@ -56,6 +56,7 @@ class AsyncArchive:
         self.max_pending = max_pending
         self._pending = 0
         self._lock = Lock()
+        self._capacity_changed = Condition(self._lock)
         self._entries = {}
         self._free_ids = list(reversed(range(capacity)))
         self._closed = False
@@ -74,6 +75,15 @@ class AsyncArchive:
             return False
         self._pending += 1
         return True
+
+    def wait_for_capacity(self, timeout):
+        """Host retirement may wait for I/O admission; model threads need not."""
+        with self._capacity_changed:
+            ready = self._capacity_changed.wait_for(
+                lambda: self._closed or self._pending < self.max_pending, timeout)
+            if self._closed:
+                raise RuntimeError('Archive closed while waiting for retirement I/O')
+            return ready
 
     def write(self, namespace: str, leases: list, payload: bytes) -> ArchiveJob | None:
         if len(payload) != len(leases) * self.record_bytes or not leases:
@@ -115,6 +125,7 @@ class AsyncArchive:
                 owned.clear()
                 with self._lock:
                     self._pending -= 1
+                    self._capacity_changed.notify_all()
         # Executor submission and close are serialized; close cannot shut down
         # the pool while an admitted task still needs to be submitted.
         with self._lock:
@@ -144,6 +155,7 @@ class AsyncArchive:
                 owned.clear()
                 with self._lock:
                     self._pending -= 1
+                    self._capacity_changed.notify_all()
         with self._lock:
             return ArchiveJob(self.executor.submit(work))
 
@@ -174,6 +186,7 @@ class AsyncArchive:
             if self._closed:
                 return True
             self._closed = True
+            self._capacity_changed.notify_all()
             self.executor.shutdown(wait=False)
             self._entries.clear()
             self._free_ids.clear()

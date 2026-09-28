@@ -77,6 +77,7 @@ class CachedArchive(AsyncArchive):
                 owned.clear()
                 with self._lock:
                     self._pending -= 1
+                    self._capacity_changed.notify_all()
 
         with self._lock:
             return ArchiveJob(self.executor.submit(work))

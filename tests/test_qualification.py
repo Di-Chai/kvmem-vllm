@@ -61,6 +61,13 @@ def test_terminal_extent_accounts_for_actual_native_inflight_batches():
         qualification.validate_archive(report, serial)
 
 
+def test_finished_http_requests_do_not_hide_unfinished_background_retirement():
+    report, archived = fixture()
+    archived['retiring_requests'] = 1
+    with pytest.raises(RuntimeError, match='resources'):
+        qualification.validate_archive(report, archived)
+
+
 def test_terminal_extent_checks_each_request_and_native_packet_not_just_total():
     report, archived = fixture()
     archived["completed"][0]["last_steps"][0]["history_begin"] = 148
