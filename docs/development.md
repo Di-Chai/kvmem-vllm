@@ -56,8 +56,19 @@ parser flags. A subsequent short preflight exposed a missing capture-directory
 creation in the backend launcher. Both infrastructure failures are retained;
 neither is a model score. The corrected launcher enables native Qwen XML tools
 and reasoning parsing and prepares telemetry before starting engine processes.
-The latest full host suite passes 167 tests, with 41 GPU cases skipped while the
-model service is active (`components_agent_host_20260929.xml`).
+The latest full host suite passes 176 tests, with 41 GPU cases skipped while the
+model service is active (`components_agent_preflight_host_20260929.xml`).
+
+The backend launcher also now arms capture after native warmup. An initial
+HTTP-only preflight succeeded but the unarmed engine then failed at retirement;
+that result is explicitly withdrawn in `agent_backend_tensorcore_03`'s correction
+record. The replacement preflight requires tool parsing, native metrics, exact
+terminal archive, zero archive/physical-page ownership and a live API. It passes
+on `agent_backend_tensorcore_04` (source `9cf462a`): 284 prompt/31 output tokens,
+314 archived rows, 1072/1073 free native blocks (one null), no remaining request,
+reservation, download or archive slot. The two official attempts have started in
+`agent_tensorcore_c2_initial_02` with instance-bound preflight evidence. Results
+and executed task quality are still pending.
 
 All earlier compressed model runs predate the cold-block residency correction.
 Their timings and cleanup observations are retained in the qualification record,

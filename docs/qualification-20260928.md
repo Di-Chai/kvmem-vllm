@@ -691,3 +691,27 @@ return to zero; 1072 of 1073 physical blocks are free (one null block).
 This run verifies long-context lifecycle and measures useful improvement, but
 does not satisfy final long-running agent or high-throughput acceptance.
 Full derived evidence: `artifacts/engine_long_c4_dflash_tensorcore_01/comparison_summary.json`.
+
+## Agent API and authority lifecycle preflight (2026-09-29)
+
+The first official pair (`agent_tensorcore_c2_initial_01`) made 14 calls rejected
+before inference because native auto-tool parsing was not configured. They were
+stopped as infrastructure failures, not scored model outcomes. The replacement
+backend uncovered two launcher omissions: telemetry-directory creation and
+post-warmup capture arming. All failed artifacts are retained. In particular,
+`agent_backend_tensorcore_03/tool_preflight.json`'s HTTP-only success does **not**
+qualify KVMem; its `qualification_correction.json` records the fatal retirement
+error immediately after the HTTP response.
+
+The strengthened preflight passes on `agent_backend_tensorcore_04` at `9cf462a`:
+one parsed bash call (no tool executed), native timing/speculative metrics,
+284 prompt tokens, 31 generated tokens and exactly 314 archived accepted rows.
+All request/reservation/physical-page ownership, pending downloads and archive
+slots return to zero, with 1072/1073 native blocks free (the null block remains).
+The API remains healthy. Its 0.306-second decode interval is a tool/lifecycle
+diagnostic, not a throughput benchmark or task score.
+
+`agent_tensorcore_c2_initial_02` now runs the same two official tasks through a
+new owned relay, retaining the exact model recipe and official task policy.
+Neither task has a score yet. The latest host suite passes 176 cases with 41
+GPU cases deferred during serving; artifact `components_agent_preflight_host_20260929.xml`.
