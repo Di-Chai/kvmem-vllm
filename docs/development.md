@@ -56,8 +56,8 @@ parser flags. A subsequent short preflight exposed a missing capture-directory
 creation in the backend launcher. Both infrastructure failures are retained;
 neither is a model score. The corrected launcher enables native Qwen XML tools
 and reasoning parsing and prepares telemetry before starting engine processes.
-The latest full host suite passes 176 tests, with 41 GPU cases skipped while the
-model service is active (`components_agent_preflight_host_20260929.xml`).
+The latest full host suite passes 181 tests, with 41 GPU cases skipped while the
+model service is active (`components_serving_gc_host_20260929.xml`).
 
 The backend launcher also now arms capture after native warmup. An initial
 HTTP-only preflight succeeded but the unarmed engine then failed at retirement;
@@ -510,3 +510,10 @@ The GPU harness exposes `--repository-gc`, `--repository-blocks` and
 `--require-gc-reclamation`; the latter prevents an enabled-but-idle policy from
 passing a pressure gate. Current official agent runs use their frozen prior code
 and do not activate this change.
+
+After integration, the complete host suite passes 181 cases with 41 GPU cases
+deferred (`components_serving_gc_host_20260929.xml`). At this observation the
+two official tasks have completed 17 model calls without HTTP errors and remain
+live; accepted-history capture is progressing for both. Neither has a verifier
+score. These live counters are progress evidence, not a final quality or
+aggregate-throughput result.
