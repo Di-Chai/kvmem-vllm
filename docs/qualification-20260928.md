@@ -746,3 +746,23 @@ matched performance comparison or a verifier score. The agent proceeded to its
 next call. At this checkpoint 25 calls across the two tasks completed without
 relay errors; both official tasks remain unscored and running.
 Evidence: `agent_tensorcore_c2_initial_03/transport_long_response.json`.
+
+The `_03` pair has now finished: both termenv and tomlkit reached the unchanged
+5400-second official agent limit and received verifier reward 0. Pier exited 0
+and classified both as scored `AgentTimeoutError`, rather than infrastructure
+failures. This is a failed two-task quality result, not final suite acceptance.
+The 32 delivered termenv calls have weighted per-request decode 27.072 tok/s;
+the 28 delivered tomlkit calls have 20.067 tok/s. These divide summed output
+interval tokens by summed native decode time, **not aggregate C2 throughput**.
+Each task also has one undelivered final call at termination. Development and
+host checks overlapped execution, and no matched native control was run; these
+observations cannot isolate numerical quality from scheduling/prefill costs.
+Full results and exceptions remain in `agent_tensorcore_c2_initial_03/results.json`.
+All 64 backend requests (including two preflights) retired with no accepted
+history, archive slots or pending downloads remaining before owned services were
+stopped. Unrelated QW3 containers were left running.
+
+The new prompt-session component GPU gate passes 13 cases, including portable
+GDN/draft CUDA state copying and reconstruction into poisoned replacement native
+FP8 pages (`session_components_gpu_01.xml`). These are component tests; actual
+model HTTP restore and concurrent session behavior still need qualification.
