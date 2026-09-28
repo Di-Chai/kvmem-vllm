@@ -42,6 +42,22 @@ def test_activation_bytes_match_pinned_fast_math_cuda_via_identity_weights():
     assert torch.equal(native, q.float() * d.repeat_interleave(32, 1))
 
 
+def test_request_departure_does_not_compile_new_batch_size_kernels():
+    import torch
+    from vllm_kvmem.q8_tensorcore import q8_tensorcore_linear, _matmul, _reduce
+
+    # All-zero Q8 bytes encode a finite zero matrix. This test is about changing
+    # native C4 -> C3 -> C2 verifier rows, a stall observed in the model run.
+    w = torch.zeros((256, 512 // 32 * 34), dtype=torch.uint8, device='cuda')
+    q8_tensorcore_linear(torch.ones((32, 512), dtype=torch.bfloat16, device='cuda'), w)
+    device = torch.cuda.current_device()
+    counts = (len(_matmul.device_caches[device][0]), len(_reduce.device_caches[device][0]))
+    for rows in (24, 16, 48, 17):
+        y = q8_tensorcore_linear(torch.ones((rows, 512), dtype=torch.bfloat16, device='cuda'), w)
+        assert y.shape == (rows, 256) and torch.count_nonzero(y).item() == 0
+        assert counts == (len(_matmul.device_caches[device][0]), len(_reduce.device_caches[device][0]))
+
+
 @pytest.mark.parametrize("rows,outputs,inputs,split", [(1, 17, 64, 1), (8, 129, 160, 4), (32, 256, 512, 8), (65, 128, 1024, 2)])
 def test_grouped_integer_dot_preserves_q8_scales(rows, outputs, inputs, split):
     import numpy as np

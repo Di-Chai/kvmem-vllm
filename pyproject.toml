@@ -8,6 +8,7 @@ version = "0.1.0.dev0"
 description = "Bounded, query-selected long-context memory for vLLM"
 requires-python = ">=3.12"
 license = "Apache-2.0"
+license-files = ["LICENSE", "third_party/qw3/LICENSE", "third_party/vllm/LICENSE"]
 
 [project.optional-dependencies]
 vllm = ["vllm==0.30.0"]

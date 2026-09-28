@@ -606,3 +606,30 @@ The non-GPU suite after the short-mode harness change passes 151 cases with
 34 GPU cases skipped (`components_terminal_profile.xml`). This is not a new
 full GPU-suite claim. The source-pinned recurrent continuation method remains
 unwired in serving; successful terminal archive clipping does not imply it is.
+
+## First uninstrumented short Q8 adapter comparison
+
+Both runs use source `8d919de`, identical Q8_0/FP8/DFlash2/K/G, short prompts,
+128-token limits, batch budget 1152, per-request prefill cap 1024, full archive
+checksums and async retirement. Each retains C1 plus a full C4 warmup and a
+measured C4; all nine requests pass exact terminal and resource-release checks.
+
+| Artifact | C1 arrival decode | Warmup C4 aggregate | Measured C4 aggregate | Measured decode window |
+| --- | ---: | ---: | ---: | ---: |
+| `engine_short_warm_native_q8_01` | 89.253 tok/s | 87.652 tok/s | 88.203 tok/s | 5.759 s |
+| `engine_short_warm_tensorcore_q8_01` | 89.952 tok/s | 44.668 tok/s | 89.094 tok/s | 5.702 s |
+
+Both measured groups produce 512 tokens; arrival decode counts 508 after
+excluding each first token. The observed whole-window ratio is only 1.0101x.
+The candidate has a 2.799 s gap even in its second C4 group. Logs record Triton
+compilation during inference; the prototype specialized matrix/reduction kernels
+on exact batch size, so request departure can introduce a shape absent from the
+first group. No stall time is removed to improve these figures. The subsequent
+implementation uses dynamic row counts and has a cache-reuse regression test.
+
+C1 token IDs agree exactly, but all four measured C4 outputs differ (common
+prefixes 121, 3, 1 and 0 tokens). Small linear numerical errors are not proof of
+model/task equivalence. This comparison therefore establishes lifecycle behavior
+and a compilation problem, not accepted performance or task-quality gains.
+Sampled GPU peaks are 71430/71176 MiB. Derived measurements are retained in
+`artifacts/short_q8_comparison_01.json`.

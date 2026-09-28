@@ -387,3 +387,17 @@ before the measured group, including its streams and archive/terminal checks.
 It is only allowed with short lifecycle and streaming metrics, without profiling;
 it does not relax the mandatory long compression gate. Native baseline/candidate
 runs and real task-quality qualification remain pending.
+
+The first short native comparison passes all lifecycle checks but shows only
+88.20 -> 89.09 aggregate arrival tok/s because the candidate retains a 2.799 s
+measured pause. Four measured outputs differ. Exact batch-row specialization
+has now been removed from the matrix and output reduction kernels; seven
+targeted GPU tests pass, including C4/C3/C2 row transitions reusing the same
+compiled kernels. This change needs a new native run and is not a retroactive
+correction to the recorded throughput.
+
+An installed wheel in a fresh CPU-only environment passes 22 core/storage/GC
+tests outside the source package path. Wheel metadata now carries the original
+QW3 and vLLM licenses alongside this package's license. Evidence and wheel hash:
+`artifacts/wheel-smoke/summary.json`. This verifies host packaging, not a clean
+GPU dependency installation or release readiness.

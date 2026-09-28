@@ -31,8 +31,8 @@ def _quantize(X, Q, D, K: tl.constexpr, GROUPS: tl.constexpr):
     tl.store(D + row * GROUPS + group, d.to(tl.float16))
 
 
-@triton.jit
-def _matmul(Q, D, W, P, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+@triton.jit(do_not_specialize=['M'])
+def _matmul(Q, D, W, P, M, N: tl.constexpr, K: tl.constexpr,
             BM: tl.constexpr, BN: tl.constexpr, BG: tl.constexpr,
             SPLIT: tl.constexpr):
     mi = tl.program_id(0) * BM + tl.arange(0, BM)
@@ -63,8 +63,8 @@ def _matmul(Q, D, W, P, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
              (mi[:, None] < M) & (ni[None, :] < N))
 
 
-@triton.jit
-def _reduce(P, Y, SIZE: tl.constexpr, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
+@triton.jit(do_not_specialize=['SIZE'])
+def _reduce(P, Y, SIZE, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
     offset = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     splits = tl.arange(0, SPLIT)
     values = tl.load(P + splits[:, None] * SIZE + offset[None, :],
