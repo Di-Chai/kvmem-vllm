@@ -401,3 +401,10 @@ tests outside the source package path. Wheel metadata now carries the original
 QW3 and vLLM licenses alongside this package's license. Evidence and wheel hash:
 `artifacts/wheel-smoke/summary.json`. This verifies host packaging, not a clean
 GPU dependency installation or release readiness.
+
+Dynamic-row native follow-up passes and reaches 173.112 aggregate arrival tok/s
+in short C4 versus the baseline 88.203 (1.9626x), with longest measured gap
+0.1287 s and unchanged ~89 tok/s C1. All nine request lifecycle checks pass.
+The same long frozen C4 is the next gate. Output IDs differ under concurrency;
+long-history and executed task-quality acceptance remain open, and the adapter
+is still opt-in. See the qualification record for full measurement scope.

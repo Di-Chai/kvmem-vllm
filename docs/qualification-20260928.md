@@ -633,3 +633,23 @@ model/task equivalence. This comparison therefore establishes lifecycle behavior
 and a compilation problem, not accepted performance or task-quality gains.
 Sampled GPU peaks are 71430/71176 MiB. Derived measurements are retained in
 `artifacts/short_q8_comparison_01.json`.
+
+### Dynamic batch-size follow-up
+
+`engine_short_warm_tensorcore_q8_dynamic_01` at `5bc5929` passes the same native
+nine-request lifecycle gate. Its retained warmup C4 is 170.961 arrival tok/s;
+the measured C4 is **173.112 arrival tok/s over 2.934524 s**, again 512 emitted
+tokens / 508 decode arrivals. Compared with the original 88.203 tok/s measured
+group, the short-test ratio is **1.9626x**. Maximum measured burst gap is
+0.1287 s (the other three requests are <=0.0875 s). No time is excluded to
+produce these rates. C1 is 89.138 tok/s; its IDs agree with the native baseline.
+
+All nine canonical terminal prefixes/checksums and all resource cleanup checks
+pass. Sampled owned GPU peak is 71174 MiB. Native cache sizing chose 1143 total
+blocks versus 1162 in the baseline; both use the same 0.72 memory-utilization
+setting, have enough capacity for these fixtures and finish with only the null
+block occupied. This is a single short fixed-output comparison, not a confidence
+interval, long-context benchmark or task-quality acceptance. The four measured
+C4 token streams still differ (common prefixes 121, 3, 1 and 43), so the opt-in
+adapter remains experimental. The next gate uses the same four frozen long
+histories as the corrected long-C4 lifecycle run.

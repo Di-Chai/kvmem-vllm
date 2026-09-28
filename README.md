@@ -35,8 +35,12 @@ checks, but its recurrent metadata classification required a subsequent correcti
 corrected bounded target serving has now passed one real 197K-history C1 lifecycle
 check and subsequent short C4. Native long C4 also passes lifecycle checks, with
 severe prefill/retirement interference. DFlash2 compressed prefill plus decode
-now passes a real 197K C1 and short C4 lifecycle check. Long DFlash C4,
-decode-time refresh, capacity pressure and performance qualification remain pending.
+now passes a corrected long C4 lifecycle check. Exact terminal archive clipping
+and async retirement pass short C1/C4 with full archive checksums. An opt-in Q8
+integer Tensor Core adapter improves a short fixed-output C4 test from 88.20 to
+173.11 aggregate arrival tok/s (1.96x); output streams differ, so this is not a
+task-quality acceptance. Long-context performance, decode-time refresh,
+capacity pressure and persistent-session qualification remain pending.
 **Production bounded KVMem serving is not implemented yet. Installing the plugin
 does not enable historical reselection; the experimental paths require explicit
 diagnostic flags.** See [development milestones](docs/development.md) and
