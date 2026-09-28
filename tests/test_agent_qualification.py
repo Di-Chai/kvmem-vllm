@@ -76,3 +76,11 @@ def test_session_agent_gate_requires_same_worker_long_restore_and_cancel(tmp_pat
     concurrent.write_text(json.dumps(data))
     with pytest.raises(ValueError, match='same frozen backend'):
         agent.validate_session_gates([long, concurrent], engine, 4)
+
+
+def test_reused_relay_journal_excludes_preflight_and_other_run_requests():
+    record = {'task_id': 'task-a', 'path': '/v1/chat/completions', 'submitted_unix': 12.5}
+    assert agent.belongs_to_run(record, {'task-a'}, 10, 20)
+    for changes in ({'submitted_unix': 9}, {'submitted_unix': 21}, {'submitted_unix': None},
+                    {'task_id': 'preflight'}, {'path': '/v1/models'}):
+        assert not agent.belongs_to_run({**record, **changes}, {'task-a'}, 10, 20)

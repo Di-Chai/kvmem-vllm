@@ -104,6 +104,13 @@ def validate_session_gates(paths, engine, concurrency):
     return gates
 
 
+def belongs_to_run(record, tasks, start, end):
+    submitted = record.get('submitted_unix')
+    return (record.get('task_id') in tasks and
+            record.get('path') in ('/v1/chat/completions', '/v1/completions') and
+            type(submitted) in (int, float) and start <= submitted <= end)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--pier-python', type=Path, required=True)
@@ -275,13 +282,20 @@ def main():
         (task_out / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
         return result
 
+    report['execution_started_unix'] = time.time()
+    if session_gates:
+        capture = args.engine_evidence.parent / 'capture'
+        report['session_initial_state'] = {name: json.loads((capture / f'{name}.json').read_text())
+                                           for name in ('scheduler_resources', 'progress')}
+    (out / 'plan.json').write_text(json.dumps(report, indent=2) + '\n')
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         try:
             results = list(pool.map(run, tasks))
         except BaseException:
             stop_children()
             raise
-    report.update(status='interrupted' if stopped.is_set() else 'finished', results=results,
+    report.update(execution_finished_unix=time.time(),
+                  status='interrupted' if stopped.is_set() else 'finished', results=results,
                   all_scored=all(r['status'] == 'scored' for r in results))
     journal = args.relay_evidence.parent / 'requests.jsonl'
     lines = journal.read_text().splitlines() if journal.exists() else []
@@ -291,7 +305,7 @@ def main():
             record = json.loads(line)
         except json.JSONDecodeError:
             continue  # The live relay may be appending its next record.
-        if record.get('task_id') in set(args.task) and record.get('path') in ('/v1/chat/completions', '/v1/completions'):
+        if belongs_to_run(record, set(args.task), report['execution_started_unix'], report['execution_finished_unix']):
             requests.append(record)
     (out / 'native_requests.json').write_text(json.dumps(requests, indent=2) + '\n')
     report['native_metrics'] = {}
