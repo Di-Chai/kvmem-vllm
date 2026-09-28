@@ -39,8 +39,12 @@ now passes a corrected long C4 lifecycle check. Exact terminal archive clipping
 and async retirement pass short C1/C4 with full archive checksums. An opt-in Q8
 integer Tensor Core adapter improves a short fixed-output C4 test from 88.20 to
 173.11 aggregate arrival tok/s (1.96x); output streams differ, so this is not a
-task-quality acceptance. Long-context performance, decode-time refresh,
-capacity pressure and persistent-session qualification remain pending.
+task-quality acceptance. On four frozen long histories, observed whole-window
+arrival decode rises from 10.44 to 18.62 tok/s and service time falls from
+1862.80 to 761.16 seconds. These runs retain Q8_0/FP8 and K131072/G65536;
+mixed prefill/refresh blocking remains severe and changed outputs still need
+executed task-quality checks. Controlled long-context repeats, decode-time
+refresh, capacity pressure and persistent-session qualification remain pending.
 **Production bounded KVMem serving is not implemented yet. Installing the plugin
 does not enable historical reselection; the experimental paths require explicit
 diagnostic flags.** See [development milestones](docs/development.md) and

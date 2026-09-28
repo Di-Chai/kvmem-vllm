@@ -33,19 +33,31 @@ throughput improvement must be supported by actual matched measurements.
 
 ## Current execution stage (2026-09-29)
 
-The latest source includes the cold-block residency correction, background GC
-at the authority/component layer, and scheduler terminal-prefix capture clipping.
-The residency correction passed 154 CPU/GPU component tests and all 5 original
-C++ tests. Subsequent terminal-prefix changes passed 143 CPU tests with 28 GPU
-tests deferred while the model test runs. GC serving activation, exact terminal
-GPU qualification and persistent sessions remain incomplete.
+The latest source includes the cold-block residency correction, component-level
+background GC, exact terminal archive clipping, asynchronous retirement and an
+opt-in Q8 integer Tensor Core adapter. Short C1/C4 native runs verify terminal
+archive prefixes and complete cleanup. Recurrent accepted-boundary GPU components
+pass, but are not yet wired into persistent serving. GC serving activation,
+capacity-pressure/cancellation and persistent-session qualification remain open.
 
-`engine_long_c4_dflash_direct_cadence_02` is the active corrected native model run,
-from frozen commit `053383f`. It uses the same four long inputs, Q8_0/FP8,
-DFlash2 and K131072/G65536, with direct pinned reads, packed assembly, cadence 8
-and asynchronous archive retirement. No completed decode result is available yet.
-It predates terminal-prefix clipping and therefore cannot qualify reusable final
-checkpoints. A completed timing is also not a matched optimization speedup.
+The corrected long-C4 native Q8 run and Tensor Core run are both complete.
+`engine_long_c4_dflash_direct_cadence_02` (`053383f`) measures 10.443 whole-window
+arrival decode tok/s; `engine_long_c4_dflash_tensorcore_01` (`2eae320`) measures
+18.619 tok/s, with service time 1862.795 versus 761.158 seconds. They use the same
+four inputs, 498 total output tokens, Q8_0/FP8, DFlash2, K131072/G65536, B128,
+direct pinned reads, 36 GiB CPU cache, cadence 8 and asynchronous retirement.
+The earlier baseline predates terminal clipping; this is an observed comparison,
+not a repeated same-commit controlled experiment. Mixed prefill/refresh blocking
+and three changed output streams require further performance and quality checks.
+
+Actual official agent qualification is in progress. The first pair of attempts
+reached the API but received HTTP 400 before inference due to missing native tool
+parser flags. A subsequent short preflight exposed a missing capture-directory
+creation in the backend launcher. Both infrastructure failures are retained;
+neither is a model score. The corrected launcher enables native Qwen XML tools
+and reasoning parsing and prepares telemetry before starting engine processes.
+The latest full host suite passes 167 tests, with 41 GPU cases skipped while the
+model service is active (`components_agent_host_20260929.xml`).
 
 All earlier compressed model runs predate the cold-block residency correction.
 Their timings and cleanup observations are retained in the qualification record,

@@ -31,6 +31,10 @@ substitution is introduced.
    A completion-only recipe without these API flags rejects the official
    agent's `tool_choice=auto` before inference; that configuration failure is
    not a model outcome.
+   Once ready, run `scripts/preflight_agent_api.py --api-base <host-api-base>
+   --output <new-preflight.json>` to check one native tool call and decode/spec
+   metrics before launching tasks. This short diagnostic executes no shell tool
+   and is not a task or throughput result. Failures are saved, never overwritten.
 2. Start `scripts/manage_agent_relay.py --upstream-port <server-port>
    --image <existing-task-image-with-python3> --output <new-relay-artifact>`.
    It creates its own Docker bridge address and container, exposing port 443
