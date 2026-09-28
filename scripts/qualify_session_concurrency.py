@@ -68,16 +68,21 @@ def main():
     def batch(name, prompts, sessions, positions):
         before = snapshot()
         peak = 0
+        peak_active = 0
         observations = []
         observation_errors = []
         stop = threading.Event()
         def observe():
-            nonlocal peak
+            nonlocal peak, peak_active
             try:
                 while not stop.is_set():
                     state = json.loads((capture/'scheduler_resources.json').read_text())
+                    progress = json.loads((capture/'progress.json').read_text())
                     peak = max(peak, state['requests'])
-                    observations.append({'at': time.monotonic(), 'requests': state['requests']})
+                    active = len(progress['accepted_history'])
+                    peak_active = max(peak_active, active)
+                    observations.append({'at': time.monotonic(), 'requests': state['requests'],
+                                         'active_authorities': active})
                     stop.wait(.01)
             except Exception as error:
                 observation_errors.append(repr(error))
@@ -94,10 +99,11 @@ def main():
         if observation_errors:
             raise RuntimeError(f'Native concurrency observation failed: {observation_errors}')
         reuse_delta(before, after, len(prompts), positions)
-        report['phases'][name] = {'before': before, 'after': after, 'peak_native_requests': peak}
+        report['phases'][name] = {'before': before, 'after': after, 'peak_native_requests': peak,
+                                  'peak_active_authorities': peak_active}
         report['calls'][name] = results
         save()
-        return results, peak
+        return results, peak_active
 
     try:
         from transformers import AutoTokenizer
@@ -136,7 +142,10 @@ def main():
             if output_tokens(result['result']) != output_tokens(controls[i]['result']):
                 raise RuntimeError(f'Isolated session {i} changed tokens after concurrent page reuse')
         same, peak = batch('same_session_overlap', [prompts[0]]*2, [sessions[0]]*2, [positions[0]]*2)
-        if peak != 1 or any(output_tokens(x['result']) != output_tokens(controls[0]['result']) for x in same):
+        overlap = report['phases']['same_session_overlap']
+        waits = (overlap['after']['scheduler']['sessions']['waits'] -
+                 overlap['before']['scheduler']['sessions']['waits'])
+        if peak != 1 or not waits or any(output_tokens(x['result']) != output_tokens(controls[0]['result']) for x in same):
             raise RuntimeError('Same-session requests were not serialized with exact continuation')
 
         # Cancel a restored decode after its first SSE event. Check the native
