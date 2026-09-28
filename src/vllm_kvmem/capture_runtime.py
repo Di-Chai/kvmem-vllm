@@ -15,7 +15,7 @@ import torch
 
 from .authority import RequestAuthority
 from .options import RuntimeOptions
-from .storage import AsyncArchive
+from .storage import make_shared_archive
 from .transfer import PackedDownloads
 
 
@@ -61,14 +61,10 @@ class CaptureRuntime:
                 raise ValueError('Serving repository GC requires bounded execution')
             from .repository_gc import serving_gc_config
             self.gc_config = serving_gc_config(self.config, max_tokens)
-        archive_records = self.config.repository_blocks * (max_reqs if getattr(runner, "_kvmem_bounded_target", False) else 1)
-        archive_type, archive_options = AsyncArchive, {}
-        if self.options.cpu_read_cache_bytes:
-            from .cached_storage import CachedArchive
-            archive_type = CachedArchive
-            archive_options = dict(cache_bytes=self.options.cpu_read_cache_bytes,
-                namespace_bytes=(self.config.select_budget + self.config.gen_budget) * self.row_elements * 3)
-        self.archive = archive_type(str(output / "continuous_archive"), record_bytes, archive_records, **archive_options)
+        self.archive = getattr(runner, '_kvmem_prepared_archive', None)
+        if self.archive is None:
+            self.archive = make_shared_archive(self.options, output / 'continuous_archive', record_bytes,
+                max_reqs if getattr(runner, '_kvmem_bounded_target', False) else 1)
         self.downloads = PackedDownloads(max_tokens * self.row_elements * 3 + (4 * max_reqs + 1) * 8,
                                          2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)
@@ -352,6 +348,8 @@ class CaptureRuntime:
                   "decode_query_len": self.runner.decode_query_len,
                   "active_requests": len(self.authorities),
                   "archive_used_slots": self.archive.tier.used_slots,
+                  "nvme_capacity_bytes": self.archive.capacity_bytes,
+                  "nvme_preallocated": self.archive.preallocated,
                   "pending_downloads": len(self.downloads.pending)}
         temporary = self.output / 'archive.tmp'
         temporary.write_text(json.dumps(report, indent=2))

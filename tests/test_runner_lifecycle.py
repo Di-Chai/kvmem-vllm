@@ -52,3 +52,14 @@ def test_unarmed_native_warmup_does_not_access_temporarily_disabled_connector(mo
     (tmp_path / "armed").touch()
     assert runner.execute_model(batch) == "native"
     assert connector.runtime is runner._kvmem_query_refresh
+
+
+def test_startup_reservation_closes_even_without_a_first_request():
+    from vllm_kvmem.runner import make_probe_runner
+    closed = []
+    class Base:
+        def shutdown(self): closed.append('native')
+    runner = make_probe_runner(Base)()
+    runner._kvmem_prepared_archive = SimpleNamespace(close=lambda: closed.append('archive') or True)
+    runner.shutdown()
+    assert closed == ['archive', 'native']

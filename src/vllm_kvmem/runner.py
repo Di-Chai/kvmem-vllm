@@ -28,7 +28,21 @@ def make_probe_runner(base):
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
             from .options import RuntimeOptions
-            self._kvmem_repository_gc = RuntimeOptions.from_vllm(self.vllm_config).repository_gc
+            options = RuntimeOptions.from_vllm(self.vllm_config)
+            self._kvmem_repository_gc = options.repository_gc
+            self._kvmem_prepared_archive = None
+            if options.nvme_preallocate or options.nvme_max_bytes:
+                from .storage import make_shared_archive
+                modules = dict(self.model.named_modules())
+                layers = [modules[name] for name in self._kvmem_layers]
+                geometry = {(layer.num_kv_heads, layer.head_dim) for layer in layers}
+                if len(geometry) != 1:
+                    raise ValueError('NVMe startup reservation requires uniform target KV geometry')
+                heads, dim = geometry.pop()
+                record_bytes = len(layers) * heads * dim * options.memory.block_tokens * 3
+                self._kvmem_prepared_archive = make_shared_archive(options,
+                    self._kvmem_probe_output / 'continuous_archive', record_bytes,
+                    self.vllm_config.scheduler_config.max_num_seqs if self._kvmem_bounded_target else 1)
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None
@@ -76,6 +90,10 @@ def make_probe_runner(base):
                 runtime = getattr(self, '_kvmem_capture_runtime', None)
                 if runtime is not None:
                     runtime.shutdown_retirement()
+                else:
+                    archive = getattr(self, '_kvmem_prepared_archive', None)
+                    if archive is not None and not archive.close():
+                        raise RuntimeError('Unused startup archive retained I/O ownership')
             finally:
                 super().shutdown()
 

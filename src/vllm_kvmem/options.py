@@ -14,13 +14,15 @@ class RuntimeOptions:
     prefill_cadence: int = 1
     async_archive_retirement: bool = False
     repository_gc: bool = False
+    nvme_preallocate: bool = False
+    nvme_max_bytes: int = 0
 
     def __post_init__(self):
-        if type(self.cpu_read_cache_bytes) is not int or self.cpu_read_cache_bytes < 0:
+        if any(type(value) is not int or value < 0 for value in (self.cpu_read_cache_bytes, self.nvme_max_bytes)):
             raise ValueError("CPU read-cache capacity must be a nonnegative byte count")
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
-                self.async_archive_retirement, self.repository_gc)):
+                self.async_archive_retirement, self.repository_gc, self.nvme_preallocate)):
             raise ValueError("Assembly and archive verification settings must be boolean")
         if self.direct_pinned_reads and not self.packed_assembly:
             raise ValueError("Direct pinned reads require packed assembly")
@@ -44,10 +46,12 @@ class RuntimeOptions:
         cadence = payload.pop('prefill_cadence', 1)
         retirement = payload.pop('async_archive_retirement', False)
         gc = payload.pop('repository_gc', False)
+        preallocate = payload.pop('nvme_preallocate', False)
+        nvme_bytes = payload.pop('nvme_max_bytes', 0)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
             raise ValueError(f"Unknown KVMem setting: {error}") from error
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
-        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc)
+        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes)

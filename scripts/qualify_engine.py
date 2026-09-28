@@ -260,6 +260,10 @@ def main():
                         help='Per-request archive capacity, independent of unchanged K/G')
     parser.add_argument('--require-gc-reclamation', action='store_true',
                         help='Fail unless accepted history actually recycles archive generations')
+    parser.add_argument('--nvme-preallocate', action='store_true',
+                        help='Physically reserve the entire shared archive before API readiness')
+    parser.add_argument('--nvme-max-mib', type=int, default=0,
+                        help='Hard shared archive capacity quota; 0 uses the geometry-derived capacity')
     parser.add_argument("--direct-pinned-reads", action="store_true",
                         help="Experimental archive reads directly into bounded pinned H2D slots; requires packed-assembly")
     parser.add_argument("--frozen-input", type=Path,
@@ -300,6 +304,8 @@ def main():
         parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
+    if args.nvme_max_mib < 0 or ((args.nvme_preallocate or args.nvme_max_mib) and not args.bounded_target):
+        parser.error('NVMe quota must be nonnegative; reservation/quota qualification requires bounded serving')
     if ((args.repository_gc or args.repository_blocks != 4096) and not args.bounded_target
             or args.require_gc_reclamation and not args.repository_gc):
         parser.error('Repository GC/capacity options require bounded serving; reclamation requires GC')
@@ -491,6 +497,8 @@ def main():
                                 "async_archive_retirement": args.async_archive_retirement,
                                 "repository_gc": args.repository_gc,
                                 "repository_blocks": args.repository_blocks,
+                                "nvme_preallocate": args.nvme_preallocate,
+                                "nvme_max_bytes": args.nvme_max_mib * 1024**2,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
@@ -656,6 +664,9 @@ def main():
                         raise RuntimeError("Worker did not apply requested cache/assembly options")
                     if args.require_gc_reclamation and not sum(r.get('gc_reclaimed_records', 0) for r in archived['completed']):
                         raise RuntimeError('GC qualification never reclaimed an archive generation')
+                    if (archived.get('nvme_preallocated', False) != args.nvme_preallocate
+                            or (args.nvme_max_mib and archived.get('nvme_capacity_bytes', float('inf')) > args.nvme_max_mib * 1024**2)):
+                        raise RuntimeError('Worker did not apply the requested NVMe reservation/quota')
                     expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
                     if archived.get("archive_verification", "full_checksum") != expected_verification:
                         raise RuntimeError("Worker did not apply requested archive verification mode")

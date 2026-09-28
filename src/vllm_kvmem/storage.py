@@ -45,13 +45,35 @@ class ArchiveJob:
         return False
 
 
+def make_shared_archive(options, directory, record_bytes, max_requests):
+    """One process-wide arena; each admitted authority has a lifetime partition."""
+    capacity = options.memory.repository_blocks * max_requests
+    cls, kwargs = AsyncArchive, {}
+    if options.cpu_read_cache_bytes:
+        from .cached_storage import CachedArchive
+        cls = CachedArchive
+        kwargs.update(cache_bytes=options.cpu_read_cache_bytes,
+                      namespace_bytes=(options.memory.select_budget + options.memory.gen_budget)
+                      // options.memory.block_tokens * record_bytes)
+    return cls(str(directory), record_bytes, capacity, preallocate=options.nvme_preallocate,
+               max_bytes=options.nvme_max_bytes, **kwargs)
+
+
 class AsyncArchive:
     def __init__(self, directory: str, record_bytes: int, capacity: int,
-                 workers: int = 2, max_pending: int = 4):
+                 workers: int = 2, max_pending: int = 4, *, preallocate: bool = False,
+                 max_bytes: int = 0):
         if min(record_bytes, capacity, workers, max_pending) <= 0:
             raise ValueError("Archive capacities must be positive")
         self.record_bytes = record_bytes
-        self.tier = _native.NvmeTier(directory, record_bytes * capacity, record_bytes)
+        if type(preallocate) is not bool or type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError('Invalid NVMe reservation/quota option')
+        self.capacity_bytes = record_bytes * capacity
+        if max_bytes and self.capacity_bytes > max_bytes:
+            raise ValueError('Shared NVMe arena exceeds configured byte quota')
+        self.preallocated = preallocate
+        self.tier = (_native.NvmeTier(directory, self.capacity_bytes, record_bytes, True)
+                     if preallocate else _native.NvmeTier(directory, self.capacity_bytes, record_bytes))
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kvmem-io")
         self.max_pending = max_pending
         self._pending = 0

@@ -4,9 +4,34 @@
 #include "qw3/kvmem_store.hpp"
 #include "qw3/nvme_kv_tier.hpp"
 #include "qw3/kvmem_repository_gc.hpp"
+#include <filesystem>
+#include <sys/stat.h>
 
 namespace py = pybind11;
 using namespace qw3;
+
+// A private, named inode allows strict reservation verification without changing
+// the imported tier. Unlink at construction exit (including exceptions), leaving
+// the tier's own fd as the sole owner, exactly as for its ephemeral arena.
+struct ReservationFile {
+    int fd = -1;
+    std::string path;
+    explicit ReservationFile(const std::string &directory) {
+        std::filesystem::create_directories(directory);
+        std::string pattern = directory + "/kvmem-reserve-XXXXXX";
+        std::vector<char> name(pattern.begin(), pattern.end());
+        name.push_back('\0');
+        fd = ::mkstemp(name.data());
+        if (fd < 0) throw std::runtime_error("Cannot create private NVMe reservation file");
+        path = name.data();
+    }
+    ~ReservationFile() {
+        if (fd >= 0) ::close(fd);
+        if (!path.empty()) ::unlink(path.c_str());
+    }
+    ReservationFile(const ReservationFile &) = delete;
+    ReservationFile &operator=(const ReservationFile &) = delete;
+};
 
 // vector<move-only Lease> can falsely satisfy is_copy_constructible on libstdc++.
 // Give pybind11 an explicitly non-copyable owner for asynchronous read leases.
@@ -246,14 +271,27 @@ PYBIND11_MODULE(_native, m) {
     py::class_<NvmeIoSpan>(m, "IoSpan")
         .def(py::init<int32_t, uint64_t, uint64_t>());
     py::class_<NvmeKvTier>(m, "NvmeTier")
-        .def(py::init([](const std::string &dir, uint64_t total, uint64_t slot) {
+        .def(py::init([](const std::string &dir, uint64_t total, uint64_t slot, bool preallocate) {
             if (slot == 0 || total < slot || total / slot > UINT32_MAX)
                 throw std::invalid_argument("Invalid NVMe arena capacity");
+            py::gil_scoped_release release;
             NvmeKvTierConfig cfg;
             cfg.dir = dir; cfg.total_bytes = total; cfg.slot_bytes = slot;
             cfg.drop_page_cache = true;
+            if (preallocate) {
+                ReservationFile reservation(dir);
+                cfg.file_name = std::filesystem::path(reservation.path).filename().string();
+                cfg.durable = true;
+                cfg.preallocate = true;
+                auto tier = std::make_unique<NvmeKvTier>(cfg);
+                struct stat state {};
+                if (::fstat(reservation.fd, &state) != 0 || state.st_size < 0 || state.st_blocks < 0 ||
+                        uint64_t(state.st_size) < total || uint64_t(state.st_blocks) * 512 < total)
+                    throw std::runtime_error("Filesystem did not physically reserve the requested NVMe quota");
+                return tier;
+            }
             return std::make_unique<NvmeKvTier>(cfg);
-        }))
+        }), py::arg("directory"), py::arg("total_bytes"), py::arg("slot_bytes"), py::arg("preallocate") = false)
         .def("allocate", [](NvmeKvTier &tier, uint32_t block) {
             tier.place_block(block);
             return tier.allocation(block);

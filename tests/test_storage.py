@@ -5,6 +5,19 @@ from vllm_kvmem.storage import AsyncArchive
 from threading import Event
 
 
+def test_global_nvme_byte_quota_is_checked_before_creating_arena(tmp_path):
+    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.storage import make_shared_archive
+    options = RuntimeOptions(memory=KVMemConfig(repository_blocks=4096),
+                             nvme_max_bytes=4096 * 4096 * 2 - 1, nvme_preallocate=True)
+    with pytest.raises(ValueError, match='byte quota'):
+        make_shared_archive(options, tmp_path / 'not-created', 4096, 2)
+    assert not (tmp_path / 'not-created').exists()
+    archive = AsyncArchive(str(tmp_path / 'reserved'), 4096, 4, preallocate=True, max_bytes=16384)
+    assert archive.preallocated and archive.capacity_bytes == 16384 and archive.close()
+
+
 def test_namespaced_async_archive_roundtrip_reclaim_and_capacity(tmp_path):
     archive = AsyncArchive(str(tmp_path), record_bytes=4096, capacity=2)
     a, b = _native.Repository(1, 16), _native.Repository(1, 16)
