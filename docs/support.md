@@ -37,6 +37,7 @@ explicit flags and pinned source hashes; no installed vLLM files are rewritten.
 | Bounded target | Scheduled semantic prefill/selection, actual-length acknowledgment, page trimming implemented | Corrected real long C1/C4 pass; pressure tests and performance acceptance remain |
 | GPU admission | Future growth reservations tested with native full-attention/Mamba allocator | Attached to bounded scheduler; native GPU pressure tests remain |
 | Storage | Immutable archive, generation-qualified leases, packed/direct transfers; async retirement passes native long C4; CPU tests cover serving GC, strict NVMe reservation and shared I/O byte admission | GPU GC/quota/backpressure qualification; whole-process host-byte admission and fair I/O scheduling |
+| Prompt sessions | Opt-in exact-prefix scheduler/worker wiring, portable GDN/draft state, native import allocation and fenced idle-authority eviction pass host tests | Actual GPU/HTTP token equality, compressed/concurrent continuation, cancellation, expiry and agent performance; see `prompt-sessions.md` |
 | Measurements | Exact frozen-token inputs, SSE arrival/usage validation, C1/C4 aggregation | Native SSE C1/short-C4 passes; matched warm repeats and executed agent-task success remain |
 
 BF16 is used for activations and the draft model; it does not change the Q8_0

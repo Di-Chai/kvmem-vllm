@@ -191,7 +191,7 @@ def test_lifecycle_snapshot_does_not_confuse_released_credits_with_deferred_phys
     scheduler.kv_cache_manager = gate
     scheduler.requests = {'a': req}
     scheduler.transactions = {}
-    scheduler.connector = SimpleNamespace(pending={})
+    scheduler.connector = SimpleNamespace(pending={}, sessions=None)
     monkeypatch.setenv('KVMEM_LIFECYCLE_TRACE', '1')
     monkeypatch.setenv('KVMEM_RUNNER_PROBE_DIR', str(tmp_path))
     scheduler._write_lifecycle_snapshot()
@@ -204,3 +204,58 @@ def test_lifecycle_snapshot_does_not_confuse_released_credits_with_deferred_phys
     pool.free_blocks(reversed(held))
     scheduler._write_lifecycle_snapshot()
     assert read()['free_blocks'] == read()['total_blocks'] - 1
+
+
+def test_import_and_query_refresh_share_one_native_forward_but_commit_in_order(monkeypatch, tmp_path):
+    from vllm_kvmem.session_control import SessionLedger, SessionBinding, SessionNotice
+    from vllm_kvmem.admission import QueryPolicy
+    from test_session_control import request as session_request, first_turn
+    scheduler, req, pools = setup_scheduler()
+    for manager in scheduler.window_managers.values():
+        manager.free('a')
+    events = []
+    def prepare(request_id, history, window):
+        for manager in scheduler.window_managers.values():
+            manager.prepare_import(request_id, history, window)
+    def commit(request_id, history):
+        events.append('import')
+        for manager in scheduler.window_managers.values():
+            assert manager.commit_import(request_id, history, SimpleNamespace(query=lambda: True))
+    sessions = SessionLedger(2, 4, prepare, lambda _: None, commit)
+    scheduler.connector.sessions = sessions
+    old = session_request('old', tokens=list(range(65)))
+    old.num_computed_tokens, old.num_prompt_tokens = 48, 65
+    assert sessions.lookup(old, 0) == 0
+    sessions.allocated(old, 0)
+    sessions.capture_before_final_prefill(old, 17)
+    binding = sessions.take_commands().bindings[0]
+    sessions.finished(old)
+    sessions.consume(SessionNotice('retired', binding.namespace, binding.generation, 'old', 48, 32))
+    new = session_request('new', tokens=list(range(65)))
+    new.num_computed_tokens, new.num_prompt_tokens = 48, 65
+    new.num_in_flight_tokens, new.next_decode_eligible_step = 0, 7
+    new.is_finished = lambda: False
+    scheduler.requests = {'new': new}
+    assert sessions.lookup(new, 0) == 48
+    for manager in scheduler.window_managers.values():
+        manager.add_local_computed_blocks('new', (), 0, 48)
+        manager.allocate_external_computed_blocks('new', 0, 48)
+        manager.allocate_new_blocks('new', 64, 64)
+    sessions.allocated(new, 48)
+    scheduler._bounded_target = True
+    scheduler.query_policy = QueryPolicy(16, 32, 32)
+    monkeypatch.setenv('KVMEM_RUNNER_PROBE_DIR', str(tmp_path))
+    output = SimpleNamespace(num_scheduled_tokens={'new': 16}, has_sync_kv_loads=True)
+    meta = scheduler._build_kv_connector_meta(scheduler.connector, output)
+    assert len(meta.sessions.bindings) == len(meta.commands) == 1
+    command = meta.commands[0]
+    scheduler.connector.update_connector_output(KVConnectorOutput(kv_connector_worker_meta=ControlCompletions(
+        completed=[('new', command.command_id)], selected_windows={'new': 16},
+        sessions=[SessionNotice('restored', binding.namespace, binding.generation, 'new', 48, 32)])))
+    assert events == ['import']
+    assert all(not m.imports and not m.pending and m.offsets['new'] == 32
+               for m in scheduler.window_managers.values())
+    assert all(len(row) == 2 for row in scheduler.table_updates['new'])
+    for manager in scheduler.window_managers.values():
+        manager.free('new'); manager.free('b')
+    assert [p.get_num_free_blocks() for p in pools] == [16, 16]

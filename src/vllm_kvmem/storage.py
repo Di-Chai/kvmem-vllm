@@ -47,7 +47,7 @@ class ArchiveJob:
 
 def make_shared_archive(options, directory, record_bytes, max_requests, *, max_query_tokens=0):
     """One process-wide arena; each admitted authority has a lifetime partition."""
-    capacity = options.memory.repository_blocks * max_requests
+    capacity = options.memory.repository_blocks * (max_requests + options.session_capacity)
     if options.archive_io_max_bytes:
         block = options.memory.block_tokens
         # Refuse an impossible serving configuration before opening the arena.

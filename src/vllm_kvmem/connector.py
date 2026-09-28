@@ -15,6 +15,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from .window_manager import RefreshTicket
 from .terminal import TerminalPrefix
 from .archive_admission import ArchiveCapacity
+from .session_control import SessionCommands
 
 RETIREMENT_CONNECTOR_SHA256 = 'b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b46082439076f62c6a81'
 
@@ -31,6 +32,7 @@ class ControlMetadata(KVConnectorMetadata):
     commands: list[RefreshCommand] = field(default_factory=list)
     cancelled: set[str] = field(default_factory=set)
     terminal_prefixes: dict[str, TerminalPrefix] = field(default_factory=dict)
+    sessions: SessionCommands = field(default_factory=SessionCommands)
 
 
 @dataclass
@@ -39,6 +41,7 @@ class ControlCompletions(KVConnectorWorkerMetadata):
     selected_windows: dict[str, int] = field(default_factory=dict)
     archive_sequence: int | None = None
     archive_capacity: dict[str, ArchiveCapacity] = field(default_factory=dict)
+    sessions: list = field(default_factory=list)
 
     def aggregate(self, other):
         raise RuntimeError("Working-set control currently requires a single worker rank")
@@ -75,6 +78,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.archive_snapshot = None
         self.scheduler_archive_update = None
         self.archive_sequence = 0
+        self.sessions = None  # Scheduler ledger; worker lifecycle is separate.
+        self.session_worker = None
 
     def queue(self, command):
         if command.request_id in self.pending:
@@ -86,6 +91,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         result = ControlMetadata(self.commands, self.cancel_updates, self.terminal_prefixes)
         self.commands, self.cancel_updates = [], set()
         self.terminal_prefixes = {}
+        if self.sessions is not None:
+            result.sessions = self.sessions.take_commands()
         return result
 
     def start_load_kv(self, forward_context, **kwargs):
@@ -93,6 +100,10 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         if not isinstance(metadata, ControlMetadata):
             raise TypeError("Unexpected KVMem control metadata")
         self.cancelled.update(metadata.cancelled)
+        if metadata.sessions.evictions:
+            if self.session_worker is None:
+                raise RuntimeError('Session eviction received without its worker')
+            self.session_worker.evict(metadata.sessions.evictions)
         for command in metadata.commands:
             if self.runtime is None:
                 raise RuntimeError("Working-set command received without a worker runtime")
@@ -122,9 +133,11 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
 
     def build_connector_worker_meta(self):
         capacity = self.archive_snapshot() if self.archive_snapshot is not None else None
-        if not self.worker_completions and capacity is None:
+        notices = self.session_worker.notices() if self.session_worker is not None else []
+        if not self.worker_completions and capacity is None and not notices:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
+        result.sessions = notices
         if capacity is not None:
             self.archive_sequence += 1
             result.archive_sequence = self.archive_sequence
@@ -138,6 +151,10 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         if metadata is not None:
             if not isinstance(metadata, ControlCompletions):
                 raise TypeError("Unexpected worker completion metadata")
+            for notice in metadata.sessions:
+                if self.sessions is None:
+                    raise RuntimeError('Unexpected session worker completion')
+                self.sessions.consume(notice)
             if metadata.archive_sequence is not None:
                 if self.scheduler_archive_update is None:
                     raise RuntimeError('Unexpected archive capacity feedback')
@@ -156,6 +173,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.cancelled.difference_update(connector_output.finished_sending or ())
 
     def request_finished_all_groups(self, request, block_ids):
+        if self.sessions is not None:
+            self.sessions.finished(request)
         if self.bounded_target:
             if request.request_id in self.terminal_prefixes:
                 raise RuntimeError('Duplicate terminal request boundary')
@@ -167,9 +186,14 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         return True, None
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        if self.sessions is not None:
+            return self.sessions.lookup(request, num_computed_tokens), False
         return 0, False
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
+        if self.sessions is not None:
+            self.sessions.allocated(request, num_external_tokens)
+            return
         if num_external_tokens:
             raise ValueError("KVMem reselection is not an external contiguous prefix hit")
 
@@ -183,4 +207,5 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         pass
 
     def has_pending_push_work(self):
-        return bool(self.pending or self.cancelled)
+        return bool(self.pending or self.cancelled or
+                    (self.sessions is not None and self.sessions.has_pending_work()))

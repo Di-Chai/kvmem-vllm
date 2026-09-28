@@ -18,6 +18,9 @@ def test_serving_reserve_matches_original_policy_and_rejects_unreclaimable_capac
     assert gc.recent_tokens == memory.recent_blocks * 128 and gc.background
     with pytest.raises(ValueError, match=r'K\+G'):
         serving_gc_config(KVMemConfig(repository_blocks=1536), 4224)
+    assert serving_gc_config(memory, 4224, checkpoint_frames=1).ready_high == 409
+    with pytest.raises(ValueError, match=r'K\+G'):
+        serving_gc_config(KVMemConfig(repository_blocks=3200), 4224, checkpoint_frames=1)
 
 
 def test_shared_archive_recycles_both_request_namespaces_with_serving_pressure_path(tmp_path):

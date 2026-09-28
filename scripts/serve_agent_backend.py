@@ -20,7 +20,7 @@ import urllib.request
 from qualify_engine import freeze_worker_package, stop_owned_server
 
 
-def server_command(recipe, python, port):
+def server_command(recipe, python, port, *, session_capacity=0, session_checkpoint_mib=0):
     if recipe.get('status') != 'passed' or not recipe.get('performance_eligible'):
         raise ValueError('Agent backend requires a completed uninstrumented qualification recipe')
     command = list(recipe['command'])
@@ -31,6 +31,18 @@ def server_command(recipe, python, port):
     command[0] = str(python)
     command[command.index('--port') + 1] = str(port)
     command[command.index('--host') + 1] = '127.0.0.1'
+    if (type(session_capacity) is not int or type(session_checkpoint_mib) is not int or
+            min(session_capacity, session_checkpoint_mib) < 0 or
+            bool(session_capacity) != bool(session_checkpoint_mib)):
+        raise ValueError('Session qualification requires positive entry and checkpoint MiB limits together')
+    if session_capacity:
+        index = command.index('--kv-transfer-config') + 1
+        transfer = json.loads(command[index])
+        options = transfer['kv_connector_extra_config']['kvmem']
+        if not options.get('async_archive_retirement'):
+            raise ValueError('Session qualification requires a fenced-retirement recipe')
+        options.update(session_capacity=session_capacity, session_checkpoint_bytes=session_checkpoint_mib * 1024**2)
+        command[index] = json.dumps(transfer)
     command += ['--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
                 '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml',
                 '--reasoning-parser', 'qwen3']
@@ -41,6 +53,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--recipe', type=Path, required=True, help='Completed qualification results.json')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--session-capacity', type=int, default=0,
+                        help='Experimental prompt-session entry bound; needs separate GPU qualification')
+    parser.add_argument('--session-checkpoint-mib', type=int, default=0)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     recipe = json.loads(args.recipe.read_text())
@@ -69,7 +84,10 @@ def main():
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
-        command = server_command(recipe, sys.executable, port)
+        command = server_command(recipe, sys.executable, port, session_capacity=args.session_capacity,
+                                 session_checkpoint_mib=args.session_checkpoint_mib)
+        if args.session_capacity:
+            report['scope'] = 'experimental prompt-session API; qualification pending'
         files = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
         manifest = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in files if name and (root / name).is_file()}
         (out / 'source_manifest.json').write_text(json.dumps(manifest, indent=2))

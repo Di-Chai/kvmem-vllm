@@ -50,6 +50,12 @@ def make_probe_runner(base):
             self._kvmem_continuous = os.getenv("KVMEM_ARCHIVE_PROBE") == "1"
             self._kvmem_capture_runtime = None
             self._kvmem_pending_capture = None
+            self._kvmem_sessions = None
+            if options.session_capacity:
+                if not self._kvmem_bounded_target or not self._kvmem_continuous:
+                    raise ValueError('Prompt sessions require bounded continuous authority capture')
+                from .session_worker import SessionWorker
+                self._kvmem_sessions = SessionWorker(self, options)
             self._kvmem_request_generations = {}
             self._kvmem_next_generation = 0
             if self._kvmem_bounded_target:
@@ -136,6 +142,9 @@ def make_probe_runner(base):
             return event
 
         def prepare_attn(self, input_batch):
+            sessions = getattr(self, '_kvmem_sessions', None)
+            if sessions is not None:
+                sessions.before_attention(input_batch)
             self._kvmem_last_batch = input_batch
             self._kvmem_window_batch = None
             if self._kvmem_window_adapter is not None:
@@ -167,6 +176,13 @@ def make_probe_runner(base):
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
             runtime = getattr(self, "_kvmem_capture_runtime", None)
+            sessions = getattr(self, '_kvmem_sessions', None)
+            if not dummy_run and sessions is not None:
+                from .connector import ControlMetadata
+                control = scheduler_output.kv_connector_metadata
+                if not isinstance(control, ControlMetadata):
+                    raise RuntimeError('Prompt sessions require native connector metadata')
+                sessions.receive(control.sessions)
             if not dummy_run and runtime is not None:
                 terminal = None
                 if getattr(self, '_kvmem_bounded_target', False):
@@ -190,6 +206,7 @@ def make_probe_runner(base):
                     and (self._kvmem_probe_output / "armed").is_file()):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 connector = get_kv_transfer_group()
+                connector.session_worker = sessions
                 connector.runtime = self._kvmem_query_refresh
                 connector.retirement_done = (runtime.retirement_done if runtime is not None else lambda _: True)
                 if getattr(self, '_kvmem_repository_gc', False):

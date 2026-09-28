@@ -60,7 +60,8 @@ class CaptureRuntime:
             if not getattr(runner, '_kvmem_bounded_target', False):
                 raise ValueError('Serving repository GC requires bounded execution')
             from .repository_gc import serving_gc_config
-            self.gc_config = serving_gc_config(self.config, max_tokens)
+            self.gc_config = serving_gc_config(self.config, max_tokens,
+                checkpoint_frames=int(bool(self.options.session_capacity)))
         self.archive = getattr(runner, '_kvmem_prepared_archive', None)
         if self.archive is None:
             self.archive = make_shared_archive(self.options, output / 'continuous_archive', record_bytes,
@@ -215,7 +216,8 @@ class CaptureRuntime:
             if progressed:
                 self._archive_wait_deadline = None
                 return
-            if getattr(self, 'retiring', {}):
+            if (getattr(self, 'retiring', {}) or
+                    getattr(getattr(getattr(self, 'runner', None), '_kvmem_sessions', None), 'retiring', {})):
                 # Detached finalizers share the same count/byte queue. Their
                 # I/O is absent from active authority.writes; do not report a
                 # false repository-capacity failure while they still own it.
@@ -269,6 +271,14 @@ class CaptureRuntime:
             terminal_report = {
                 'terminal_prefix': asdict(terminal) if terminal is not None else None,
                 'terminal_discarded_tokens': getattr(self, 'terminal_discarded', {}).pop(request_id, 0)}
+            sessions = getattr(self.runner, '_kvmem_sessions', None)
+            if sessions is not None and sessions.detach(request_id, authority, {
+                    'request_id': request_id, 'accepted_tokens': self.accepted[request_id],
+                    'rejected_tokens': self.rejected[request_id],
+                    'last_steps': self.last_steps[request_id], **terminal_report}):
+                del self.authorities[request_id], self.accepted[request_id], self.rejected[request_id]
+                del self.last_steps[request_id]
+                continue
             if self.options.async_archive_retirement:
                 # All GPU capture packets have drained above. Detach ownership
                 # before another native batch; this worker touches CPU data only.
@@ -315,6 +325,11 @@ class CaptureRuntime:
 
     def retirement_done(self, request_id):
         """Called on the engine thread before the native connector releases pages."""
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
+        if sessions is not None:
+            retained = sessions.retirement_done(request_id)
+            if retained is not None:
+                return retained
         if request_id in self.retiring:
             result = self.retirement.poll(request_id)
             if result is None:
@@ -322,14 +337,24 @@ class CaptureRuntime:
             self.completed.append({**self.retiring.pop(request_id), **result,
                                    "retirement_ack_ready_at": time.perf_counter()})
             self._write_archive_report()
-        return (request_id not in self.authorities and
+        done = (request_id not in self.authorities and
                 all(request_id not in packet.request_ids for packet in self.queue))
+        if done and sessions is not None:
+            sessions.ordinary_retired(request_id)
+        return done
 
     def shutdown_retirement(self):
         """Graceful engine shutdown drains detached work before releasing storage."""
         if not self.options.async_archive_retirement:
             return
         self.drain(wait=True)
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
+        if sessions is not None:
+            deadline = time.monotonic() + 180
+            while not sessions.close():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Session checkpoint cleanup did not drain during shutdown')
+                self.archive.wait_for_idle(.05)
         self.finish(set(self.authorities))
         for request_id in list(self.retiring):
             self.retirement.jobs[request_id].result(timeout=180)
@@ -338,6 +363,7 @@ class CaptureRuntime:
             raise RuntimeError('Shutdown retained archive I/O or retirement jobs')
 
     def _write_archive_report(self):
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": self.completed,
                   "block_tokens": self.config.block_tokens,
@@ -352,6 +378,12 @@ class CaptureRuntime:
                   "gc_wait_seconds": getattr(self, 'gc_wait_seconds', 0.0),
                   "gc_wait_count": getattr(self, 'gc_wait_count', 0),
                   "retiring_requests": len(getattr(self, 'retiring', {})),
+                  "session_capacity": self.options.session_capacity,
+                  "session_checkpoint_payload_bytes": sessions.pool.payload_bytes if sessions else 0,
+                  "session_checkpoints": len(sessions.pool.entries) if sessions else 0,
+                  "session_retiring_requests": len(sessions.retiring) if sessions else 0,
+                  "session_restored_tokens": sessions.restored_tokens if sessions else 0,
+                  "session_checkpoint_deferrals": sessions.checkpoint_deferrals if sessions else 0,
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,

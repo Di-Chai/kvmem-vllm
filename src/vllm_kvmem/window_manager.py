@@ -132,14 +132,17 @@ class WorkingSetManager:
         return self.native.allocate_external_computed_blocks(request_id,
                                                              num_local_computed_tokens, external)
 
-    def commit_import(self, request_id, history_end, completion):
+    def validate_import(self, request_id, history_end):
         checkpoint = self.imports.get(request_id)
         if checkpoint is None or checkpoint[0] != history_end:
             raise ValueError('Stale or foreign checkpoint import completion')
-        if not completion.query():
-            return False
         if len(self.native.req_to_blocks.get(request_id, ())) * self.native.block_size < checkpoint[1]:
             raise ValueError('Imported checkpoint has no allocated target frame')
+
+    def commit_import(self, request_id, history_end, completion):
+        self.validate_import(request_id, history_end)
+        if not completion.query():
+            return False
         del self.imports[request_id]
         return True
 
@@ -153,8 +156,9 @@ class WorkingSetManager:
         return self.native.allocate_new_blocks(request_id, self._local(request_id, num_tokens),
                                                self._local(request_id, num_tokens_main_model))
 
-    def prepare_refresh(self, request_id: str, history_end: int, window_tokens: int, *, replay_tokens=0):
-        if request_id in self.pending or request_id in self.imports:
+    def prepare_refresh(self, request_id: str, history_end: int, window_tokens: int, *, replay_tokens=0,
+                        allow_import=False):
+        if request_id in self.pending or (request_id in self.imports and not allow_import):
             raise RefreshPending(request_id)
         old_window = self._local(request_id, history_end)
         if not 0 < window_tokens <= min(old_window, self.select_budget):

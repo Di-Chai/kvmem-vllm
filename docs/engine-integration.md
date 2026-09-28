@@ -71,7 +71,7 @@ synchronous scheduling, prefix caching off and Mamba cache mode `none`. See
    unpublished accepted/speculative rows; idle worker feedback can unblock requests.
    GC/admission host tests pass, but native GPU pressure qualification is pending.
 
-## Persistent-session integration still required
+## Experimental prompt-session integration
 
 A request ID or HTTP session header is not state reuse. The current official agent
 backend reconstructs each turn as a fresh request. Native vLLM streaming-input
@@ -111,8 +111,10 @@ frame, while native GDN and draft managers keep the logical prefix. It translate
 both allocation estimates and external-prefix allocation, including the fresh
 request's zero locally computed tokens. A completion fence gates commit. The
 real vLLM hybrid manager passes host tests for neighbour isolation, bounded future
-growth, cancellation before allocation and restoration admission. The connector
-still advertises zero prefix hits: these primitives do not yet enable HTTP reuse.
+growth, cancellation before allocation and restoration admission. With sessions
+disabled, the connector continues to advertise zero prefix hits. The new explicit
+session mode imports only exact saved model/authority prefixes acknowledged by
+the worker; its actual HTTP/GPU qualification is pending.
 
 `PromptCheckpointPool` composes those worker ownership primitives with exact
 packed token identity. It bounds retained entry count and checkpoint payload bytes
@@ -123,24 +125,27 @@ read leases before making the checkpoint available. Claims serialize imports;
 successful reconstruction transfers authority ownership only after its fence.
 Failed imports/evictions keep credits charged until cleanup and all readers drain.
 Host tests exercise this lifecycle with the real repository/NVMe implementation
-and model-state fixtures. Scheduler metadata, authenticated session namespaces,
-shared idle-authority admission/expiry and HTTP wiring remain unimplemented.
+and model-state fixtures. `SessionLedger` and `SessionWorker` now connect this pool
+to native connector metadata and the runner's pre-attention boundary. A session's
+next turn waits for old authority retirement; unrelated requests can proceed.
+Import and query refresh may share the first forward, with import acknowledgment
+processed before refresh trimming. Worker state restoration occurs after native
+page zeroing and before metadata construction. Exact-prefix misses evict the idle
+checkpoint and recompute normally. The cache evicts idle entries under capacity
+pressure and reserves extra shared archive geometry for idle authorities.
 
-Next integration must:
+The path is opt-in and has host evidence only. Remaining qualification must:
 
-- Retain an exact prompt checkpoint across completed turns and expose it through
-  the connector only after worker acknowledgment. Import into a fresh native
-  request so per-turn sampling and output limits keep their normal lifecycle;
-  restore target/GDN/draft state before attention metadata is constructed.
-- Compare exact rendered token prefixes. Thinking trimming and XML tool-call
-  normalization can rewrite generated output. Restore a checkpoint before the
-  first differing token and replay the official new history; do not change chat
-  serialization to force a prefix hit. A recent block-aligned prompt checkpoint
-  is a candidate that avoids partial archive overwrites. Unsupported branches
-  require a correct explicit recompute path.
-- Bound idle sessions/checkpoints and support offload/admission beyond active GPU
-  slots. Qualify isolation, reconnect/abort/expiry, speculation rollback, GC and
-  repeated tool turns under contention before using persistent state for scores.
+- Verify actual-model token equality before/after page recycling and state import,
+  including a compressed frame and an import followed immediately by reselection.
+- Exercise concurrent HTTP turns, prefix misses, cancellation and failed restore
+  with actual GPU execution. The scripted gate is `scripts/qualify_sessions.py`;
+  adding it does not establish that the gate has passed.
+- Measure exact-prefix replay costs and repeated official tool turns under
+  contention. Session identity is `(cache_salt, session_id)` within one worker/model;
+  the serving gateway must provide the intended isolation scope. Cross-worker or
+  restart continuation, timed expiry, total host-memory accounting and fair I/O
+  remain separate missing capabilities.
 
 Reconstructed prompts from 21 live agent calls match recorded native token counts;
 all 19 adjacent pairs retain the prior reconstructed prompt as a prefix

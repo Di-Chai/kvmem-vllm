@@ -38,6 +38,10 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'nvme_max_bytes': -1}}, 'capacity'),
     ({'kvmem': {'archive_io_max_bytes': -1}}, 'capacity'),
     ({'kvmem': {'archive_io_max_bytes': True}}, 'capacity'),
+    ({'kvmem': {'session_capacity': True}}, 'capacity'),
+    ({'kvmem': {'session_capacity': 2}}, 'both'),
+    ({'kvmem': {'session_checkpoint_bytes': 4096}}, 'both'),
+    ({'kvmem': {'session_capacity': 2, 'session_checkpoint_bytes': 4096}}, 'retirement'),
     ({'kvmem': {'kv_dtype': 'bfloat16'}}, 'codec'),
     ({'kvmem': []}, 'object'),
 ])

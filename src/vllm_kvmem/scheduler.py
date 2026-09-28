@@ -54,7 +54,8 @@ class KVMemScheduler(Scheduler):
             if not self._bounded_target:
                 raise ValueError('Serving repository GC requires bounded execution')
             from .repository_gc import serving_gc_config
-            serving_gc_config(config, self.scheduler_config.max_num_batched_tokens)
+            serving_gc_config(config, self.scheduler_config.max_num_batched_tokens,
+                              checkpoint_frames=int(bool(options.session_capacity)))
             from .archive_admission import ArchiveAdmission
             self.archive_admission = ArchiveAdmission(config.block_tokens, config.repository_blocks)
             self.connector.scheduler_archive_update = lambda sequence, capacity: self.archive_admission.update(
@@ -89,6 +90,37 @@ class KVMemScheduler(Scheduler):
         self.transactions = {}
         self.table_updates = {}
         self._probe_submitted = False
+        if options.session_capacity:
+            from .session_control import SessionLedger
+            def prepare_import(request_id, history, window):
+                prepared = []
+                try:
+                    for manager in self.window_managers.values():
+                        manager.prepare_import(request_id, history, window)
+                        prepared.append(manager)
+                    if self.archive_admission is not None:
+                        from .archive_admission import ArchiveCapacity
+                        ready = self.connector.sessions.requests[request_id].ready_records
+                        if not 0 <= ready <= config.repository_blocks:
+                            raise ValueError('Imported checkpoint exceeds repository capacity')
+                        self.archive_admission.snapshots[request_id] = ArchiveCapacity(history, ready)
+                except Exception:
+                    for manager in prepared:
+                        manager.abort_import_preparation(request_id)
+                    raise
+            def abort_import(request_id):
+                for manager in self.window_managers.values():
+                    manager.abort_import_preparation(request_id)
+                if self.archive_admission is not None:
+                    self.archive_admission.forget(request_id)
+            def commit_import(request_id, history):
+                for manager in self.window_managers.values():
+                    manager.validate_import(request_id, history)
+                for manager in self.window_managers.values():
+                    if not manager.commit_import(request_id, history, _Complete()):
+                        raise RuntimeError('Acknowledged prompt import did not commit')
+            self.connector.sessions = SessionLedger(options.session_capacity, config.block_tokens,
+                                                    prepare_import, abort_import, commit_import)
 
     def begin_refresh(self, request, window_tokens, *, replay_tokens=0):
         if getattr(request, "num_in_flight_tokens", 0):
@@ -100,7 +132,8 @@ class KVMemScheduler(Scheduler):
             for group_id, manager in self.window_managers.items():
                 prepared.append((group_id, manager.prepare_refresh(
                     request.request_id, request.num_computed_tokens, window_tokens,
-                    replay_tokens=replay_tokens)))
+                    replay_tokens=replay_tokens, allow_import=bool(self.connector.sessions and
+                        self.connector.sessions.import_scheduled(request.request_id)))))
         except Exception:
             for group_id, ticket in prepared:
                 self.window_managers[group_id].abort_preparation(ticket)
@@ -125,6 +158,10 @@ class KVMemScheduler(Scheduler):
             "archive_capacity_deferrals": self.archive_admission.deferred if getattr(self, 'archive_admission', None) else 0,
             "free_blocks": gate.block_pool.get_num_free_blocks(),
             "total_blocks": gate.block_pool.num_gpu_blocks}
+        sessions = self.connector.sessions
+        if sessions is not None:
+            report['sessions'] = dict(entries=len(sessions.entries), hits=sessions.hits,
+                                      misses=sessions.misses, waits=sessions.waits)
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
         temporary = path / "scheduler_resources.tmp"
         temporary.write_text(json.dumps(report))
@@ -206,6 +243,8 @@ class KVMemScheduler(Scheduler):
         if getattr(self, "_bounded_target", False):
             for request_id, query_tokens in output.num_scheduled_tokens.items():
                 request = self.requests[request_id]
+                if connector.sessions is not None:
+                    connector.sessions.capture_before_final_prefill(request, query_tokens)
                 if hasattr(self, '_scheduled_queries'):
                     stage = 'prefill' if request.num_computed_tokens < request.num_prompt_tokens else 'decode'
                     histogram = self._scheduled_queries[stage]

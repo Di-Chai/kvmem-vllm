@@ -11,7 +11,7 @@ from threading import Event
 from . import _native
 
 
-def serving_gc_config(memory, max_query_tokens):
+def serving_gc_config(memory, max_query_tokens, *, checkpoint_frames=0):
     """Original qw3 reserve policy, sized for the native admitted batch bound.
 
     The reserve must coexist with K+G; a smaller repository cannot become safe
@@ -20,11 +20,13 @@ def serving_gc_config(memory, max_query_tokens):
     """
     if type(max_query_tokens) is not int or max_query_tokens <= 0:
         raise ValueError('GC requires a positive native query bound')
+    if type(checkpoint_frames) is not int or checkpoint_frames not in (0, 1):
+        raise ValueError('GC supports at most one retained prompt checkpoint frame')
     append_blocks = (max_query_tokens + memory.block_tokens - 1) // memory.block_tokens + 1
     config = _native.RepositoryGcConfig()
     config.ready_low = max(memory.repository_blocks // 20, append_blocks * 2)
     config.ready_high = max(memory.repository_blocks // 10, config.ready_low + append_blocks)
-    protected = (memory.select_budget + memory.gen_budget) // memory.block_tokens
+    protected = (1 + checkpoint_frames) * (memory.select_budget + memory.gen_budget) // memory.block_tokens
     if protected + config.ready_high >= memory.repository_blocks:
         raise ValueError('Repository must exceed K+G plus the GC ready reserve')
     config.recent_tokens = memory.recent_blocks * memory.block_tokens

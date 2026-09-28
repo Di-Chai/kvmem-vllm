@@ -764,3 +764,45 @@ At 2026-09-29 06:41 CST, 21 termenv and 24 tomlkit model responses have complete
 with no relay error or undelivered response. Both official trials remain running
 without final scores. These are live observations, not a clean performance result;
 host development/checks overlap and cross-turn prompt reuse is still disabled.
+
+## Prompt-session scheduler and worker wiring
+
+The previously separate checkpoint primitives are now connected behind explicit
+`session_capacity` / `session_checkpoint_bytes` options. `SessionLedger` carries
+generation-qualified binding/capture/eviction messages through the native KV
+connector and accepts reusable prefixes only after worker retirement acknowledgment.
+Exact token-prefix misses evict/recompute; cancellation before allocation restores
+the idle lease. One session's active turn serializes later turns without preventing
+unrelated native requests from running. Idle LRU eviction remains fenced through
+storage readers and shared archive capacity includes idle authority allowances.
+
+`SessionWorker` receives controls before native execution and imports state in the
+pre-attention hook, after native request state/table initialization and block zeroing.
+It reconstructs the original target FP8 frame, restores native GDN plus BF16 draft
+context, and then publishes the restored authority to capture. A final-prefill
+checkpoint command may capture the next turn at that same boundary. Import and
+semantic query refresh may share a forward; the connector consumes the import
+completion before allowing refresh page trimming. The original repository GC
+remains running during optional checksum verification, using snapshot leases for
+stable reads, and starts a new policy step on resumed turns. Its reserve now covers
+the union of a saved and current working frame.
+
+The worker's new host checks use the real archive/repository and CPU state fixtures,
+with a stand-in target assembler; they do not claim GPU assembly/model correctness.
+They cover full capture/retire/import, recycled native state indices, prefix misses,
+byte/count admission, checksum failure, failed-import cleanup and empty short-turn
+retirement. A native-manager scheduler test covers import plus reselection within
+one forward and ordered completion. The combined host run passes 252 tests with
+42 GPU cases skipped (`components_sessions_host_20260929.xml`). Six backend/HTTP
+gate checks also pass (`session_http_gate_cpu_01.xml`), including rejection of
+changed token outputs or fictitious reuse counters.
+
+`serve_agent_backend.py` can explicitly launch the changed session configuration;
+the new command is labeled experimental and is not substituted for the base recipe's
+qualification. `qualify_sessions.py` is the pending actual HTTP gate for unchanged
+greedy token IDs after native page recycling and for changed-prefix recomputation.
+It can take a frozen long input without changing its tokens. See `prompt-sessions.md`
+for the exact commands and limits. The official agent pair continues unchanged on
+its frozen non-session backend. No session throughput or quality claim is made.
+The final combined host regression passes 254 tests, with 42 GPU cases deferred
+(`components_sessions_final_host_20260929.xml`).

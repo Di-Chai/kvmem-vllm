@@ -86,3 +86,5 @@ GPU setup on this CUDA 13 / SM120 machine: `bash scripts/setup_gpu.sh`.
 Explicit GPU component tests: `KVMEM_RUN_GPU_TESTS=1 .venv/bin/python -m pytest tests/test_codec_gpu.py tests/test_capture_gpu.py`.
 Run only when the GPU is available; this command is not a model performance test.
 See [qualification results and limitations](docs/qualification-20260928.md).
+The opt-in [exact prompt-session path](docs/prompt-sessions.md) now has scheduler/
+worker wiring and host tests; its separate actual-model GPU gate is still pending.
