@@ -89,3 +89,56 @@ def test_refresh_query_requires_original_allocation_and_capacity():
     with pytest.raises(ValueError, match="admitted"):
         manager.prepare_refresh("a", 48, 32, replay_tokens=17)
     assert not manager.pending
+
+
+def test_import_allocates_dense_frame_and_requires_exact_prefix_and_completion():
+    manager, pool = make_manager()
+    manager.allocate_new_blocks('neighbour', 32, 32)
+    neighbour = tuple(manager.req_to_blocks['neighbour'])
+    with pytest.raises(ValueError, match='prepared checkpoint'):
+        manager.get_num_blocks_to_allocate('new', 520, (), 512, 0, 520)
+    manager.prepare_import('new', 512, 48)
+    manager.prepare_import('new', 512, 48)  # Repeated waiting-queue lookup.
+    assert manager.get_num_blocks_to_allocate('new', 528, (), 512, 0, 520) == 4
+    with pytest.raises(ValueError, match='changed'):
+        manager.prepare_import('new', 512, 32)
+    with pytest.raises(ValueError, match='prepared checkpoint'):
+        manager.allocate_external_computed_blocks('new', 0, 496)
+    assert not manager.req_to_blocks.get('new')
+    manager.add_local_computed_blocks('new', (), 0, 512)
+    manager.allocate_external_computed_blocks('new', 0, 512)
+    assert len(manager.req_to_blocks['new']) == 3  # Not the 32 logical blocks.
+    manager.allocate_new_blocks('new', 528, 520)
+    assert len(manager.req_to_blocks['new']) == 4
+    event = Event()
+    assert not manager.commit_import('new', 512, event)
+    with pytest.raises(RefreshPending):
+        manager.prepare_refresh('new', 512, 32)
+    with pytest.raises(ValueError, match='fenced'):
+        manager.abort_import_preparation('new')
+    event.done = True
+    assert manager.commit_import('new', 512, event)
+    assert manager.offsets['new'] == 464
+    assert tuple(manager.req_to_blocks['neighbour']) == neighbour
+    with pytest.raises(ValueError, match='Stale'):
+        manager.commit_import('new', 512, event)
+    ticket = manager.prepare_refresh('new', 520, 32)
+    assert manager.commit_refresh(ticket, event)
+    manager.free('new'); manager.free('neighbour')
+    assert not manager.offsets and not manager.imports
+    assert pool.get_num_free_blocks() == 16
+
+
+def test_unscheduled_import_preparation_can_be_cancelled_without_page_ownership():
+    manager, pool = make_manager()
+    for history, window in ((0, 16), (16, 17), (512, 65), (True, 1)):
+        with pytest.raises(ValueError, match='extent'):
+            manager.prepare_import('a', history, window)
+    manager.prepare_import('a', 512, 48)
+    manager.abort_import_preparation('a')
+    assert not manager.offsets and not manager.imports
+    assert pool.get_num_free_blocks() == 16
+    manager.allocate_new_blocks('a', 16, 16)
+    with pytest.raises(ValueError, match='fresh'):
+        manager.prepare_import('a', 512, 48)
+    manager.free('a')

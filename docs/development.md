@@ -697,3 +697,37 @@ table and byte comparison against native FP8 kernels; these added GPU checks hav
 Neither change is activated by the frozen live backend. Persistent HTTP reuse
 still requires model/draft state export/import, exact prompt matching, scheduler
 admission and completion acknowledgment; these host results do not establish it.
+
+## Portable prompt model state and native checkpoint allocation
+
+The prompt-state adapter captures only exact non-final prefill boundaries with
+the canonical native acceptance counter. It copies GDN base convolution/SSM rows
+and the DFlash visible accepted context to CPU after validating the native group
+and page layout. DFlash's head-major BF16 cache is addressed by logical positions
+and its actual physical page table; null entries outside the sliding window are
+ignored, while null/aliased visible pages are rejected. No GPU page view remains
+in the snapshot. Its payload-byte limit is checked before materializing copies.
+
+Restore accepts a different native request/state index and different page IDs,
+validates all tensors before the first write, and returns a CUDA completion event
+when applicable. Host fixtures cover an evicted source request, poisoned old pages,
+unchanged neighbours/speculative scratch rows, strided draft caches and a sliding
+tail spanning physical pages. Target-only and DFlash fixtures pass. This is not
+support for restoring a speculative terminal state, nor a global host-memory cap.
+The full host suite passes 227 tests with 42 explicit GPU cases skipped
+(`components_portable_prompt_host_20260929.xml`). The new CUDA fixture is pending.
+
+Native connector prefix allocation also needs more than a window offset:
+`add_local_computed_blocks` and `allocate_external_computed_blocks` otherwise
+allocate the full logical history even if the allocation estimate was compressed.
+The working-set adapter now translates all three paths only for an explicitly
+prepared exact checkpoint import. Fresh local-computed zero remains an ownership
+count; target external history becomes the saved dense frame. GDN and draft
+managers retain logical history and native sliding eviction. Commit requires the
+correct checkpoint and completion fence; allocated cancellation stays under native
+fenced cleanup. Thirteen focused tests pass against actual native managers
+(`native_checkpoint_import_cpu_01.xml`), including hybrid speculative allocation,
+neighbour isolation and future-growth reservations. No connector prefix hit or
+HTTP state reuse is enabled by these changes. The frozen agent backend is unchanged.
+The combined host regression passes 230 tests, with 42 GPU cases deferred
+(`components_prompt_import_host_20260929.xml`).

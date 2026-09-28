@@ -47,6 +47,7 @@ class WorkingSetManager:
         self.capacity = select_budget + gen_budget
         self.offsets: dict[str, int] = {}
         self.pending: dict[str, RefreshTicket] = {}
+        self.imports: dict[str, tuple[int, int]] = {}
 
     def __getattr__(self, name):
         return getattr(self.native, name)
@@ -68,21 +69,92 @@ class WorkingSetManager:
                                    num_tokens_main_model, apply_admission_cap=False):
         if new_computed_blocks:
             raise ValueError("Working-set manager cannot consume ordinary prefix-cache hits")
+        external = total_computed_tokens - num_local_computed_tokens
+        if external:
+            self._external_extent(request_id, num_local_computed_tokens, external)
+        # A fresh connector import has no locally computed prefix. Its zero is
+        # an ownership count, not a logical position to subtract the offset from.
+        local_computed = (0 if external else
+                          self._local(request_id, num_local_computed_tokens,
+                                      admission=apply_admission_cap))
         return self.native.get_num_blocks_to_allocate(
             request_id, self._local(request_id, num_tokens, admission=apply_admission_cap),
             new_computed_blocks,
             self._local(request_id, total_computed_tokens, admission=apply_admission_cap),
-            self._local(request_id, num_local_computed_tokens, admission=apply_admission_cap),
+            local_computed,
             self._local(request_id, num_tokens_main_model, admission=apply_admission_cap),
             apply_admission_cap=apply_admission_cap,
         )
+
+    def prepare_import(self, request_id, history_end, window_tokens):
+        """Reserve the exact checkpoint frame before connector allocation.
+
+        This installs positions only, never a claim that pages contain KV. The
+        caller must restore target/GDN/draft state and acknowledge its fence
+        before committing the import or running another query. Repeated lookup
+        before allocation may prepare the same immutable checkpoint again.
+        """
+        if (any(type(v) is not int for v in (history_end, window_tokens)) or
+                not 0 < window_tokens <= min(history_end, self.capacity)):
+            raise ValueError('Invalid imported checkpoint extent')
+        value = history_end, window_tokens
+        if request_id in self.imports:
+            if self.imports[request_id] != value:
+                raise ValueError('Checkpoint changed while import was pending')
+            return
+        if (request_id in self.pending or request_id in self.offsets or
+                self.native.req_to_blocks.get(request_id)):
+            raise ValueError('Import requires a fresh native request allocation')
+        self.imports[request_id] = value
+        self.offsets[request_id] = history_end - window_tokens
+
+    def _external_extent(self, request_id, local, external):
+        checkpoint = self.imports.get(request_id)
+        if local != 0 or checkpoint is None or external != checkpoint[0]:
+            raise ValueError('External KV requires an exact prepared checkpoint import')
+        return checkpoint[1]
+
+    def add_local_computed_blocks(self, request_id, new_computed_blocks,
+                                  num_local_computed_tokens, num_external_computed_tokens):
+        if new_computed_blocks:
+            raise ValueError('Working-set manager cannot consume ordinary prefix-cache hits')
+        external = (self._external_extent(request_id, num_local_computed_tokens,
+                                         num_external_computed_tokens)
+                    if num_external_computed_tokens else 0)
+        return self.native.add_local_computed_blocks(request_id, new_computed_blocks,
+                                                     num_local_computed_tokens, external)
+
+    def allocate_external_computed_blocks(self, request_id, num_local_computed_tokens,
+                                          num_external_computed_tokens):
+        external = (self._external_extent(request_id, num_local_computed_tokens,
+                                         num_external_computed_tokens)
+                    if num_external_computed_tokens else 0)
+        return self.native.allocate_external_computed_blocks(request_id,
+                                                             num_local_computed_tokens, external)
+
+    def commit_import(self, request_id, history_end, completion):
+        checkpoint = self.imports.get(request_id)
+        if checkpoint is None or checkpoint[0] != history_end:
+            raise ValueError('Stale or foreign checkpoint import completion')
+        if not completion.query():
+            return False
+        if len(self.native.req_to_blocks.get(request_id, ())) * self.native.block_size < checkpoint[1]:
+            raise ValueError('Imported checkpoint has no allocated target frame')
+        del self.imports[request_id]
+        return True
+
+    def abort_import_preparation(self, request_id):
+        if self.native.req_to_blocks.get(request_id):
+            raise ValueError('Allocated import requires fenced native request cleanup')
+        del self.imports[request_id]
+        del self.offsets[request_id]
 
     def allocate_new_blocks(self, request_id, num_tokens, num_tokens_main_model):
         return self.native.allocate_new_blocks(request_id, self._local(request_id, num_tokens),
                                                self._local(request_id, num_tokens_main_model))
 
     def prepare_refresh(self, request_id: str, history_end: int, window_tokens: int, *, replay_tokens=0):
-        if request_id in self.pending:
+        if request_id in self.pending or request_id in self.imports:
             raise RefreshPending(request_id)
         old_window = self._local(request_id, history_end)
         if not 0 < window_tokens <= min(old_window, self.select_budget):
@@ -134,6 +206,7 @@ class WorkingSetManager:
         if request_id in self.pending:
             raise RefreshPending("Drain refresh before cancelling/freeing request pages")
         self.offsets.pop(request_id, None)
+        self.imports.pop(request_id, None)
         return self.native.pop_blocks_for_free(request_id)
 
     def free(self, request_id: str):

@@ -177,3 +177,46 @@ def test_native_speculative_hybrid_reservation_covers_recycled_draft_and_gdn_row
     assert gate.allocate_slots(c, 16, num_lookahead_tokens=8) is not None
     gate.free(b); gate.free(c)
     assert native.block_pool.get_num_free_blocks() == 36 and not gate.reservations
+
+
+def test_real_native_hybrid_connector_import_bounds_target_but_preserves_gdn_draft_history():
+    from vllm import SamplingParams
+    from vllm.v1.core.kv_cache_manager import KVCacheManager
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, MambaSpec, SlidingWindowSpec
+    from vllm.v1.request import Request
+    from vllm_kvmem.draft_contract import DraftContract
+
+    specs = [FullAttentionSpec(block_size=16, num_kv_heads=2, head_size=64, dtype=torch.uint8),
+             MambaSpec(block_size=1024, shapes=((1024,),), dtypes=(torch.float32,), num_speculative_blocks=7),
+             SlidingWindowSpec(block_size=16, num_kv_heads=2, head_size=64, dtype=torch.uint8, sliding_window=32)]
+    config = KVCacheConfig(num_blocks=37, kv_cache_tensors=[],
+        kv_cache_groups=[KVCacheGroupSpec([str(i)], spec) for i, spec in enumerate(specs)])
+    native = KVCacheManager(config, 1024, 1024, 16, max_in_flight_tokens=32, enable_caching=False)
+    managers = list(native.coordinator.single_type_managers)
+    managers[0] = WorkingSetManager(managers[0], 32, 32)
+    native.coordinator.single_type_managers = tuple(managers)
+    cfg = SimpleNamespace(speculative_config=object(), max_concurrent_batches=1, max_in_flight_tokens=32,
+        cache_config=SimpleNamespace(enable_prefix_caching=False, mamba_cache_mode='none'))
+    gate = ReservedKVCacheManager(native, cfg, draft_contract=DraftContract(8, 32, 1024, 1))
+    a, b, c = [Request(name, [1] * 600, SamplingParams(max_tokens=128), None) for name in ('a', 'b', 'c')]
+    assert gate.allocate_slots(b, 16, num_lookahead_tokens=8) is not None
+    neighbours = [tuple(m.req_to_blocks['b']) for m in managers]
+    managers[0].prepare_import('a', 512, 48)
+    assert gate.allocate_slots(a, 8, num_lookahead_tokens=8, num_external_computed_tokens=512,
+                               full_sequence_must_fit=True) is not None
+    assert len(managers[0].req_to_blocks['a']) == 4
+    assert len(managers[1].req_to_blocks['a']) == 8
+    draft = managers[2].req_to_blocks['a']
+    assert len(draft) == 33
+    assert all(block.is_null for block in draft[:30])
+    assert all(not block.is_null for block in draft[30:])
+    assert [tuple(m.req_to_blocks['b']) for m in managers] == neighbours
+    assert gate.allocate_slots(c, 16, num_lookahead_tokens=8) is None
+    assert managers[0].commit_import('a', 512, SimpleNamespace(query=lambda: True))
+    a.num_computed_tokens = 520
+    # Resume/reselect is still governed by the dense K/G limit.
+    ticket = managers[0].prepare_refresh('a', 520, 32)
+    assert managers[0].commit_refresh(ticket, SimpleNamespace(query=lambda: True))
+    assert gate.allocate_slots(a, 8, num_lookahead_tokens=8) is not None
+    gate.free(a); gate.free(b)
+    assert native.block_pool.get_num_free_blocks() == 36 and not gate.reservations

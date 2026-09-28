@@ -1,0 +1,153 @@
+"""Portable GDN and native DFlash context for sealed prompt checkpoints.
+
+Only quiescent, non-final prefill boundaries are supported. Target attention KV
+is reconstructed separately from WindowCheckpoint's immutable authority. Capture
+offloads synchronously to bounded CPU storage; no old native page stays owned by
+the returned snapshot. The session owner must verify exact prompt identity and
+hold destination pages until the restore fence completes before admitting work.
+"""
+from dataclasses import dataclass
+
+import torch
+
+from .native_state import NativeRecurrentState
+
+
+@dataclass(frozen=True)
+class PromptModelState:
+    owner: object
+    position: int
+    draft_begin: int
+    recurrent: dict[tuple[str, str], torch.Tensor]
+    draft: dict[str, torch.Tensor]
+
+    @property
+    def bytes(self):
+        return sum(t.numel() * t.element_size() for t in
+                   (*self.recurrent.values(), *self.draft.values()))
+
+
+class PromptStateAdapter:
+    def __init__(self, runner):
+        from .draft_contract import DraftContract
+        from .options import RuntimeOptions
+        self.runner = runner
+        self.recurrent = NativeRecurrentState(runner)
+        self.contract = None
+        if runner.speculative_config is not None:
+            self.contract = DraftContract.from_vllm(runner.vllm_config,
+                RuntimeOptions.from_vllm(runner.vllm_config).memory)
+            self.contract.validate_native_groups(runner)
+        self._identity = object()  # Snapshots never cross workers/model loads.
+
+    def _prefill_index(self, request_id, position):
+        index = self.runner.req_states.req_id_to_index[request_id]
+        states = self.runner.req_states
+        if (type(position) is not int or position <= 0 or
+                int(states.num_computed_tokens_np[index]) != position or
+                int(states.prefill_len.np[index]) <= position):
+            raise ValueError('Model checkpoint requires the exact non-final prefill boundary')
+        return index
+
+    def _recurrent_views(self, request_id):
+        # borrow validates generation, null pages and the native state layout.
+        bundle = self.recurrent.borrow([request_id])
+        result = {}
+        for gid, layers in self.recurrent.groups.items():
+            row = bundle.page_rows[request_id, gid][0]
+            for name, (conv, ssm) in layers.items():
+                result[name, 'conv'] = conv[row]
+                result[name, 'ssm'] = ssm[row]
+        return result
+
+    def _draft_views(self, request_id, begin, end):
+        if self.contract is None:
+            if begin != end:
+                raise ValueError('Target-only snapshot cannot contain draft history')
+            return {}
+        groups = self.contract.validate_native_groups(self.runner)
+        index = self.runner.req_states.req_id_to_index[request_id]
+        modules = {getattr(m, 'layer_name', None): m
+                   for m in self.runner.speculator.model.modules()
+                   if getattr(m, 'layer_name', None) is not None}
+        result = {}
+        for gid in groups:
+            block_size = self.runner.block_tables.kernel_block_sizes[gid]
+            count = int(self.runner.block_tables.num_blocks.np[gid, index])
+            table = self.runner.block_tables.block_tables[gid].gpu[index, :count]
+            first, stop = begin // block_size, (end + block_size - 1) // block_size
+            if not 0 <= first < stop <= count:
+                raise ValueError('Draft checkpoint context is outside its native page table')
+            pages = table[first:stop].cpu().tolist()
+            if any(p <= 0 for p in pages) or len(set(pages)) != len(pages):
+                raise ValueError('Draft checkpoint has null or aliased context pages')
+            logical = torch.arange(begin, end, device=table.device, dtype=torch.int64)
+            physical, offset = table[logical // block_size].long(), logical % block_size
+            for name in self.runner.kv_cache_config.kv_cache_groups[gid].layer_names:
+                layer = modules.get(name)
+                cache = getattr(layer, 'kv_cache', None)
+                if (cache is None or cache.dtype != torch.bfloat16 or cache.ndim != 4 or
+                        cache.shape[1] != layer.num_kv_heads or
+                        cache.shape[2] != block_size or cache.shape[3] != 2 * layer.head_size or
+                        cache.stride(-1) != 1 or cache.device != table.device or
+                        max(pages) >= cache.shape[0]):
+                    raise ValueError('Unqualified native draft BHN(2D) cache view')
+                result[name] = (cache.transpose(1, 2), physical, offset)
+        return result
+
+    def capture(self, request_id, position, *, max_bytes):
+        index = self._prefill_index(request_id, position)
+        counter = self.runner.model_state.num_accepted_tokens_gpu
+        if int(counter[index].item()) != 1:
+            raise ValueError('Speculative terminal state requires canonicalization or replay')
+        recurrent = self._recurrent_views(request_id)
+        begin = max(0, position - self.contract.sliding_window + 1) if self.contract else position
+        draft = self._draft_views(request_id, begin, position)
+        size = sum(t.numel() * t.element_size() for t in recurrent.values())
+        size += sum((position - begin) * cache.shape[2] * cache.shape[3] * cache.element_size()
+                    for cache, _, _ in draft.values())
+        if type(max_bytes) is not int or max_bytes <= 0 or size > max_bytes:
+            raise BufferError('Prompt model checkpoint exceeds its byte reservation')
+        # Blocking copies establish a stable CPU-owned checkpoint before the
+        # next target forward can overwrite the borrowed GDN/draft source views.
+        saved_recurrent = {name: tensor.to('cpu', copy=True) for name, tensor in recurrent.items()}
+        saved_draft = {name: cache[pages, offsets].to('cpu', copy=True)
+                       for name, (cache, pages, offsets) in draft.items()}
+        snapshot = PromptModelState(self._identity, position, begin, saved_recurrent, saved_draft)
+        if snapshot.bytes != size:
+            raise RuntimeError('Checkpoint byte reservation disagrees with materialized state')
+        return snapshot
+
+    def restore(self, snapshot, request_id):
+        if not isinstance(snapshot, PromptModelState) or snapshot.owner is not self._identity:
+            raise ValueError('Prompt state belongs to another worker/model load')
+        index = self._prefill_index(request_id, snapshot.position)
+        recurrent = self._recurrent_views(request_id)
+        expected_begin = (max(0, snapshot.position - self.contract.sliding_window + 1)
+                          if self.contract else snapshot.position)
+        if snapshot.draft_begin != expected_begin:
+            raise ValueError('Checkpoint draft context differs from the model window')
+        draft = self._draft_views(request_id, snapshot.draft_begin, snapshot.position)
+        if recurrent.keys() != snapshot.recurrent.keys() or draft.keys() != snapshot.draft.keys():
+            raise ValueError('Incomplete prompt model checkpoint')
+        # Validate every tensor before the first native state/page write.
+        for name, destination in recurrent.items():
+            source = snapshot.recurrent[name]
+            if source.device.type != 'cpu' or source.shape != destination.shape or source.dtype != destination.dtype:
+                raise ValueError('Recurrent checkpoint schema changed')
+        for name, (cache, _, _) in draft.items():
+            source = snapshot.draft[name]
+            shape = (snapshot.position - snapshot.draft_begin, cache.shape[2], cache.shape[3])
+            if source.device.type != 'cpu' or tuple(source.shape) != shape or source.dtype != cache.dtype:
+                raise ValueError('Draft checkpoint schema changed')
+        for name, destination in recurrent.items():
+            destination.copy_(snapshot.recurrent[name])
+        for name, (cache, pages, offsets) in draft.items():
+            cache[pages, offsets] = snapshot.draft[name].to(cache.device)
+        counter = self.runner.model_state.num_accepted_tokens_gpu
+        counter[index].fill_(1)
+        if counter.device.type == 'cuda':
+            event = torch.cuda.Event()
+            event.record(torch.cuda.current_stream(counter.device))
+            return event
+        return None

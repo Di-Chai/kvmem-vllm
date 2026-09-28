@@ -97,11 +97,29 @@ persistent serving. `NativeRecurrentState.canonicalize_accepted` separately has
 GPU component evidence for retained speculative rows, but is not wired to session
 turn transitions.
 
+`PromptStateAdapter` now exports a CPU-owned, byte-limited snapshot at an exact
+non-final prefill boundary: native GDN base convolution/SSM rows, plus the visible
+accepted DFlash sliding context. Restore uses the new request's native row/page
+mapping and validates the complete snapshot before writing. Snapshots do not
+retain old GPU pages and cannot cross worker/model loads. This adapter currently
+has host fixture evidence only; its CUDA and real-model continuation gates remain
+open. It is not a terminal speculative-state snapshot.
+
+`WorkingSetManager.prepare_import` separately supports native connector allocation
+for an exact saved prefix: target full-attention allocation uses the saved dense
+frame, while native GDN and draft managers keep the logical prefix. It translates
+both allocation estimates and external-prefix allocation, including the fresh
+request's zero locally computed tokens. A completion fence gates commit. The
+real vLLM hybrid manager passes host tests for neighbour isolation, bounded future
+growth, cancellation before allocation and restoration admission. The connector
+still advertises zero prefix hits: these primitives do not yet enable HTTP reuse.
+
 Next integration must:
 
-- Suspend resumable turns and send the exact retained prefix through the connector;
-  acknowledge target GDN, draft KV/hidden state, capture and native page cleanup
-  before accepting the next input. Preserve per-turn sampling and output limits.
+- Retain an exact prompt checkpoint across completed turns and expose it through
+  the connector only after worker acknowledgment. Import into a fresh native
+  request so per-turn sampling and output limits keep their normal lifecycle;
+  restore target/GDN/draft state before attention metadata is constructed.
 - Compare exact rendered token prefixes. Thinking trimming and XML tool-call
   normalization can rewrite generated output. Restore a checkpoint before the
   first differing token and replay the official new history; do not change chat
