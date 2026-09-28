@@ -85,3 +85,32 @@ def enable_runner_probe() -> None:
     if importlib.metadata.version("vllm") != "0.30.0":
         raise RuntimeError("Runner extension only supports vLLM 0.30.0")
     sys.meta_path.insert(0, _RunnerFinder())
+
+
+class _MetadataLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        from .metadata_patch import patch_metadata_source
+        return compile(patch_metadata_source(self.get_data(self.path)), self.path, "exec")
+
+
+class _MetadataFinder(importlib.abc.MetaPathFinder):
+    target = "vllm.v1.worker.gpu.attn_utils"
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self.target:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not spec.origin:
+            raise ImportError("Cannot locate pinned attention metadata builder")
+        spec.loader = _MetadataLoader(fullname, spec.origin)
+        return spec
+
+
+def enable_window_metadata() -> None:
+    if any(isinstance(f, _MetadataFinder) for f in sys.meta_path):
+        return
+    if _MetadataFinder.target in sys.modules:
+        raise RuntimeError("Window metadata must be enabled before native module import")
+    if importlib.metadata.version("vllm") != "0.30.0":
+        raise RuntimeError("Window metadata only supports vLLM 0.30.0")
+    sys.meta_path.insert(0, _MetadataFinder())

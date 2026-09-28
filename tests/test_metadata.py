@@ -56,6 +56,15 @@ def test_real_vllm_metadata_separates_working_set_from_recurrent_history():
         assert attn.max_seq_len == 1024 and recurrent.max_seq_len == 262144
         assert torch.equal(attn.is_prefilling, prefill_flags)
         assert attn_extra == recurrent_extra == {"native_marker": "unchanged"}
+        from vllm_kvmem.window_batch import attention_windows
+        positions = torch.tensor([256, 512])
+        kwargs["model_specific_attn_metadata"] = NativeMetadata()
+        with attention_windows({0: WindowLengths(window_lens, window_lens.clone(), 1024, positions)}):
+            contextual = module.build_attn_metadata(**kwargs)
+        assert contextual["attention"][0].positions is positions
+        assert contextual["recurrent"][0].positions is None
+        assert torch.equal(contextual["attention"][0].seq_lens, window_lens)
+        assert torch.equal(contextual["recurrent"][0].seq_lens, original_lens)
         kwargs["model_specific_attn_metadata"] = None
         unmodified = module.build_attn_metadata(**kwargs)
         assert all(torch.equal(meta.seq_lens, original_lens) for meta, _ in unmodified.values())

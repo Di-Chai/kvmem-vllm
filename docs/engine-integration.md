@@ -24,8 +24,16 @@ must connect them through the following ownership boundaries:
    generation limits and recurrent state. Prepare separate dense working-window
    RoPE positions and attention lengths. `WorkingSetMetadata` forwards all native
    GDN/speculation metadata and overrides lengths only for attention groups.
-   `metadata_patch.py` proposes the small missing upstream hook and is tested
-   against real vLLM metadata construction; it is not automatically activated.
+   `metadata_patch.py` supplies the small missing upstream hook, enabled only
+   with `KVMEM_WINDOW_METADATA=1`. `WindowBatchAdapter` computes dense positions
+   and lengths without changing the native batch's logical counters. The native
+   slot-mapping kernel uses dense positions for full-attention groups; recurrent
+   groups must have slot mapping disabled. `window_bridge.py` scopes metadata
+   overrides to the model-state call and supplies dense text MRoPE input positions.
+   GPU tests cover different per-request offsets, reordered requests, mixed query
+   lengths and padded rows using actual native BlockTables. The full-model identity
+   run with this hook enabled still matches baseline. A nonzero-offset full-model
+   compressed refresh and query replay have not yet been qualified.
 3. **Raw authority.** `capture.py` retains batched quantized projections and adds
    raw Q/K stores to the existing fusion. Layer capture is verified in a real
    Q8_0/FP8 request. Per-request slicing must use the runner's actual query offsets,

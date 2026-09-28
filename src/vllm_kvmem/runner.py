@@ -5,6 +5,7 @@ This stage verifies actual target-layer capture on a real native batch.
 """
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -25,6 +26,12 @@ def make_probe_runner(base):
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_saved_capture = None
+            self._kvmem_window_adapter = None
+            self._kvmem_window_batch = None
+            if os.getenv("KVMEM_WINDOW_METADATA") == "1":
+                from .window_bridge import install_window_bridge
+                install_window_bridge(self.model_state, lambda batch:
+                    self._kvmem_window_batch if batch is getattr(self, "_kvmem_last_batch", None) else None)
             if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
 
@@ -41,6 +48,19 @@ def make_probe_runner(base):
             report = rebuild_native_batch(self, captured, self._kvmem_probe_output)
             if not report["all_byte_equal"]:
                 raise RuntimeError("Scheduled refresh changed native KV bytes")
+            from .config import KVMemConfig
+            from .window_batch import WindowBatchAdapter
+            if os.getenv("KVMEM_WINDOW_METADATA") != "1":
+                raise RuntimeError("Scheduled refresh requires the explicit window metadata hook")
+            if self._kvmem_window_adapter is None:
+                config = KVMemConfig()
+                self._kvmem_window_adapter = WindowBatchAdapter(
+                    tuple(group for group, _ in command.groups), config.select_budget + config.gen_budget)
+            extents = {(ticket.history_end, ticket.window_tokens) for _, ticket in command.groups}
+            if len(extents) != 1:
+                raise ValueError("All full-attention groups must commit the same dense window")
+            history_end, window_tokens = extents.pop()
+            self._kvmem_window_adapter.commit(command.request_id, history_end, window_tokens)
             report["command_id"] = command.command_id
             report["request_id"] = command.request_id
             path = self._kvmem_probe_output / "capture.json"
@@ -54,6 +74,15 @@ def make_probe_runner(base):
 
         def prepare_attn(self, input_batch):
             self._kvmem_last_batch = input_batch
+            self._kvmem_window_batch = None
+            if self._kvmem_window_adapter is not None:
+                window = self._kvmem_window_adapter.prepare(input_batch)
+                self._kvmem_window_batch = window
+                if window is not None:
+                    active_groups = {i for i, enabled in enumerate(self.block_tables._slot_mapping_enabled) if enabled}
+                    if active_groups != set(window.groups):
+                        raise ValueError("Window mapping must cover exactly the slot-mapped attention groups")
+                    return super().prepare_attn(replace(input_batch, positions=window.positions))
             return super().prepare_attn(input_batch)
 
         def execute_model(self, scheduler_output, intermediate_tensors=None,
@@ -63,6 +92,9 @@ def make_probe_runner(base):
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
+            if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
+                for request_id in scheduler_output.finished_req_ids:
+                    self._kvmem_window_adapter.free(request_id)
             if (getattr(self, "_kvmem_scheduled", False) and not dummy_run
                     and (self._kvmem_probe_output / "armed").is_file()):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group

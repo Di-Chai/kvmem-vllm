@@ -59,6 +59,7 @@ def main():
             env["KVMEM_REBUILD_PROBE"] = "1"
         if args.scheduled_rebuild_probe:
             env["KVMEM_SCHEDULED_REBUILD_PROBE"] = "1"
+            env["KVMEM_WINDOW_METADATA"] = "1"
         command = [sys.executable, "-m", "vllm_kvmem", "--draft-load-compat", "vllm", "serve",
                    str(models / "Qwen3.8-27B-Q8_0.gguf"),
                    "--served-model-name", "qualification", "--host", "127.0.0.1", "--port", str(port),

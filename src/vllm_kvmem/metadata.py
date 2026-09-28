@@ -9,6 +9,7 @@ class WindowLengths:
     seq_lens: torch.Tensor
     cpu_upper_bound: torch.Tensor
     max_seq_len: int
+    positions: torch.Tensor | None = None
 
     def __post_init__(self):
         if (self.seq_lens.ndim != 1 or self.seq_lens.dtype != torch.int32 or
@@ -38,6 +39,8 @@ class WorkingSetMetadata:
             kwargs.update(seq_lens=window.seq_lens[:num_reqs],
                           seq_lens_cpu_upper_bound=window.cpu_upper_bound[:num_reqs],
                           max_seq_len=window.max_seq_len)
+            if window.positions is not None:
+                kwargs["positions"] = window.positions
         return kwargs
 
     def get_extra_attn_kwargs(self, attn_metadata_builder, num_reqs: int):

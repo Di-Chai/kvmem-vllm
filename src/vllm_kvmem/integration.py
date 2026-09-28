@@ -15,6 +15,9 @@ def register_plugin() -> None:
     if os.getenv("KVMEM_RUNNER_PROBE_DIR"):
         from .compat import enable_runner_probe
         enable_runner_probe()
+    if os.getenv("KVMEM_WINDOW_METADATA") == "1":
+        from .compat import enable_window_metadata
+        enable_window_metadata()
     # No global monkeypatches and no CUDA initialization in discovery.
     _registered = True
 

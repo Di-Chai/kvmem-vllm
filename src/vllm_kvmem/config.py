@@ -7,8 +7,8 @@ class KVMemConfig:
     select_budget: int = 131072
     gen_budget: int = 65536
     repository_blocks: int = 4096
-    sink_blocks: int = 1
-    recent_blocks: int = 0
+    sink_blocks: int | None = None
+    recent_blocks: int | None = None
     kv_dtype: str = "fp8_e4m3"
     speculation: bool = True
 
@@ -24,10 +24,19 @@ class KVMemConfig:
         if self.repository_blocks * self.block_tokens < self.select_budget + self.gen_budget:
             raise ValueError("Repository must fit K + G")
         for key in ("sink_blocks", "recent_blocks"):
-            if type(getattr(self, key)) is not int or getattr(self, key) < 0:
+            value = getattr(self, key)
+            if value is not None and (type(value) is not int or not 0 <= value <= 2**32 - 1):
                 raise ValueError(f"{key} must be a nonnegative integer")
-        if (self.sink_blocks + self.recent_blocks) * self.block_tokens > self.select_budget:
-            raise ValueError("Mandatory bands exceed K")
+        from . import _native
+        try:
+            sink, recent = _native.resolve_keep_bands(
+                self.block_tokens, self.select_budget,
+                -1 if self.sink_blocks is None else self.sink_blocks,
+                -1 if self.recent_blocks is None else self.recent_blocks)
+        except RuntimeError as error:
+            raise ValueError(str(error)) from error
+        object.__setattr__(self, "sink_blocks", sink)
+        object.__setattr__(self, "recent_blocks", recent)
         if self.kv_dtype not in ("fp8_e4m3", "float16", "bfloat16"):
             raise ValueError(f"KV codec not qualified: {self.kv_dtype}")
 

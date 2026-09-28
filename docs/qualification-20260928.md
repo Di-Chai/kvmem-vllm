@@ -9,8 +9,8 @@ Exact Python dependencies: `requirements-cu130.lock`.
 
 ## Completed checks
 
-- Current combined suite: 43/43 Python CPU/GPU tests pass with explicit GPU opt-in
-  (32 CPU/control tests and 11 GPU tests).
+- Current combined suite: 48/48 Python CPU/GPU tests pass with explicit GPU opt-in
+  (34 CPU/control tests and 14 GPU tests).
 - Original host-core CTest: 5/5 pass, Debug build (assertions enabled).
 - Python host tests cover bindings, speculative accepted-prefix publication,
   completion fences, request cancellation, immutable FP8 remap planning, stale
@@ -129,6 +129,33 @@ Reproduce the live identity diagnostic on an idle GPU:
 
 This opt-in path requires eager TP=1, synchronous target-only execution and APC
 off. It does not enable compressed retrieval or DFlash refresh semantics.
+
+## Dense working-window metadata and slot mapping
+
+`WindowBatchAdapter` now translates new-token positions and full-attention sequence
+lengths after a committed selection, while leaving native logical counters and
+recurrent metadata unchanged. Tests use real GPU `BlockTables` with different
+allocator/kernel block sizes, two request offsets, reversed batch order, mixed
+query lengths and padding. Each request's slots match its own dense window and
+physical pages; recurrent slot-mapping rows remain disabled. A growing selection
+may legitimately reduce the history-to-window offset; the adapter validates
+monotonic logical history instead of incorrectly requiring a monotonic offset.
+
+The instance-local model-state bridge and source-hash-checked metadata hook are
+now enabled in the scheduled diagnostic. `engine_window_bridge_01` passed: all
+16 layers byte-equal after identity refresh, 128-token continuation exactly equal
+to baseline, and four subsequent 128-token requests completed. This full-model run
+has zero compression offset; nonzero offsets are qualified at the GPU mapping
+and native metadata levels only. It is not compressed-serving validation.
+
+The original configuration used provisional sink=1/recent=0 defaults. This was
+corrected by binding qw3's unchanged `resolve_kvmem_keep_allocation` function.
+Mainline K=131072, block=128 now resolves to 11 sink blocks and 82 recent blocks
+(1408 and 10496 tokens). Small mechanical tests specify explicit bands; automatic
+bands are never silently shrunk to make a small budget pass. This correction was
+made after `engine_window_bridge_01`; core regression tests verify both defaults
+and explicit overrides. Earlier identity tests kept all tokens, so this does not
+change their selection, but they do not establish long-history retrieval quality.
 
 ## Remaining before any success/performance claim
 

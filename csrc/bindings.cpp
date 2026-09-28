@@ -16,6 +16,12 @@ struct OwnedRead : KvMemStorageRead {
 };
 
 PYBIND11_MODULE(_native, m) {
+    m.def("resolve_keep_bands", [](uint32_t block_tokens, uint32_t select_budget,
+                                   int64_t sink_blocks, int64_t recent_blocks) {
+        const auto bands = resolve_kvmem_keep_allocation(
+            block_tokens, select_budget, sink_blocks, recent_blocks, -1, -1);
+        return py::make_tuple(bands.sink_blocks, bands.recent_blocks);
+    });
     py::class_<KvMemBlockHandle>(m, "Handle")
         .def(py::init<uint32_t, uint64_t>())
         .def_readonly("slot", &KvMemBlockHandle::slot)

@@ -47,5 +47,15 @@ The full-attention allocation adapter also passes native-manager tests for bound
 windows and deferred release. Scheduler suspension/acknowledgment wiring has now
 passed a real native request: command-only worker rebuild, all-layer byte equality,
 page-table replacement and baseline-equal continuation. The combined CPU/GPU suite
-passes 43 tests, plus 5 original CTests. Actual compressed selections, automatic
+passes 48 tests, plus 5 original CTests. Dense-window metadata and position mapping
+are integrated with the native model state; nonzero-offset mapping is GPU-tested,
+and the full-model identity diagnostic with the hook enabled remains byte/token
+equal. Actual compressed selections, automatic
 bounded prefill/decode admission and recurrent/draft replay still remain.
+
+The next runtime integration must retain accepted raw K/V across every batch,
+seal immutable archive records only when the repository block is complete, and
+keep the partial tail authoritative in bounded memory. Per-request capture slices
+must follow native query_start_loc; rejected speculative rows must not enter the
+archive or MeanK index. Connect this authority to query-conditioned selection and
+native recurrent checkpoint/replay before claiming compressed serving.

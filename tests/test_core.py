@@ -17,7 +17,7 @@ class Event:
 
 def small(request_id="a"):
     return RequestMemory(request_id, KVMemConfig(block_tokens=16, select_budget=32,
-                         gen_budget=32, repository_blocks=8, sink_blocks=1))
+                         gen_budget=32, repository_blocks=8, sink_blocks=1, recent_blocks=0))
 
 
 def append(memory, count, accepted=None, local=0):
@@ -100,7 +100,8 @@ def test_request_state_isolation_and_cancel():
 
 
 def test_binding_keeps_store_alive_until_append_destructor():
-    cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=4)
+    cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=4,
+                     sink_blocks=1, recent_blocks=0)
     repo = _native.Repository(4, 16)
     store = _native.Store(cfg.native(), repo)
     txn = store.prepare_append(16, 0)
@@ -119,3 +120,14 @@ def test_binding_keeps_store_alive_until_append_destructor():
 def test_invalid_config_rejected(kwargs):
     with pytest.raises(ValueError):
         KVMemConfig(**kwargs)
+
+
+def test_default_bands_use_original_qw3_auto_policy_without_silently_shrinking():
+    cfg = KVMemConfig()
+    # Original policy rounds 1% sink and 8% recent to whole 128-token blocks.
+    assert (cfg.sink_blocks, cfg.recent_blocks) == (11, 82)
+    assert (cfg.native().sink_blocks, cfg.native().recent_blocks) == (11, 82)
+    explicit = KVMemConfig(sink_blocks=1, recent_blocks=0)
+    assert (explicit.sink_blocks, explicit.recent_blocks) == (1, 0)
+    with pytest.raises(ValueError, match="exceeds"):
+        KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=4)

@@ -2,7 +2,7 @@
 
 The existing model-specific metadata interface supplies the overrides. No model
 or scheduler computations change for callers which do not supply these fields.
-Not activated by plugin discovery; engine bridge integration is still pending.
+Enabled only by the explicit KVMEM_WINDOW_METADATA compatibility option.
 """
 import hashlib
 
@@ -23,4 +23,15 @@ def patch_metadata_source(source: bytes) -> str:
             max_seq_len=common_attn_metadata_extra_kwargs.pop("max_seq_len", max_seq_len),"""
     if text.count(old) != 1:
         raise ImportError("Ambiguous per-group metadata patch")
-    return text.replace(old, new)
+    text = text.replace(old, new)
+    old_positions = "            positions=positions,"
+    if text.count(old_positions) != 1:
+        raise ImportError("Ambiguous per-group position patch")
+    text = text.replace(old_positions,
+                        '            positions=common_attn_metadata_extra_kwargs.pop("positions", positions),')
+    anchor = "    attn_metadata: dict[str, Any] = {}"
+    if text.count(anchor) != 1:
+        raise ImportError("Ambiguous attention-window context hook")
+    return text.replace(anchor, """    from vllm_kvmem.window_batch import contextual_metadata
+    model_specific_attn_metadata = contextual_metadata(model_specific_attn_metadata)
+""" + anchor)
