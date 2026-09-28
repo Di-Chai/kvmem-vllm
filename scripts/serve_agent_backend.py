@@ -46,6 +46,9 @@ def main():
     recipe = json.loads(args.recipe.read_text())
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
+    # Scheduler telemetry can precede the worker's first capture. Prepare its
+    # shared destination before either process starts.
+    (out / 'capture').mkdir()
     stopped = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
