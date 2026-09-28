@@ -106,3 +106,11 @@ native read-call wall time and cache insertion. These host timings are wall time
 at the named boundaries, not isolated CPU-cycle or physical-disk measurements.
 They complement overall assembly and host-preparation durations; do not infer
 a disk bottleneck from total host-preparation time alone.
+
+`--batch-token-budget` controls native `max_num_batched_tokens` (default 1024).
+For example, a 4096 total budget and 1024 per-request prefill cap permit four
+1024-token query chunks, matching the current C1 query granularity. This can reduce
+refresh frequency relative to the initial C4 cap of 256, but changes that earlier
+C4 query-selection policy and activation memory. It is an optimization candidate,
+not a measured gain; compare matched query policies and preserve precision, K/G,
+input IDs and natural output stopping. No large-budget GPU result exists yet.

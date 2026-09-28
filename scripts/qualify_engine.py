@@ -201,6 +201,8 @@ def main():
     parser.add_argument("--frozen-sha256")
     parser.add_argument("--concurrent-frozen-input", nargs=2, action="append", metavar=("PATH", "SHA256"),
                         help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
+    parser.add_argument("--batch-token-budget", type=int, default=1024,
+                        help="Native token budget per GPU batch; does not change K/G")
     parser.add_argument("--prefill-request-token-cap", type=int, default=0,
                         help="Native vLLM long-prefill token cap per request (0 keeps the default)")
     parser.add_argument("--kv-cache-memory-mib", type=int, default=0,
@@ -223,9 +225,11 @@ def main():
         args.bounded_target = args.dflash = True
     if not 1 <= args.output_tokens <= 8192:
         parser.error("output-tokens must be in [1, 8192]")
+    if not 128 <= args.batch_token_budget <= 65536 or args.batch_token_budget % 128:
+        parser.error("batch-token-budget must be a multiple of 128 within [128, 65536]")
     if args.prefill_request_token_cap < 0 or (args.prefill_request_token_cap and
-            (args.prefill_request_token_cap > 1024 or args.prefill_request_token_cap % 128)):
-        parser.error("prefill-request-token-cap must be 0 or a multiple of 128 up to the 1024 batch budget")
+            (args.prefill_request_token_cap > args.batch_token_budget or args.prefill_request_token_cap % 128)):
+        parser.error("prefill-request-token-cap must be 0 or a multiple of 128 up to the native batch budget")
     if args.cpu_read_cache_mib < 0:
         parser.error("cpu-read-cache-mib must be nonnegative")
     if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
@@ -341,7 +345,7 @@ def main():
                    "--config-format", "hf", "--dtype", "bfloat16", "--language-model-only",
                    "--model-loader-extra-config", json.dumps({"mm_proj": str(models / "Qwen3.8-27B-mmproj-f16.gguf")}),
                    "--kv-cache-dtype", "fp8_e4m3", "--max-model-len", "262144" if args.compression_probe or args.bounded_target or frozen is not None or frozen_concurrent else str(max(8192, args.output_tokens + 4096)),
-                   "--max-num-seqs", "4", "--max-num-batched-tokens", "1024",
+                   "--max-num-seqs", "4", "--max-num-batched-tokens", str(args.batch_token_budget),
                    "--gpu-memory-utilization", "0.72", "--no-enable-prefix-caching",
                    "--generation-config", "vllm", "--enforce-eager"]
         if args.kv_cache_memory_mib:
