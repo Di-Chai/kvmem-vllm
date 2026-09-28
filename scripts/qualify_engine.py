@@ -8,12 +8,39 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import sys
 import time
 import urllib.request
 import uuid
+
+
+def freeze_worker_package(root, output, manifest):
+    """Snapshot late-imported worker code and the built extension before launch."""
+    source = root / 'src' / 'vllm_kvmem'
+    target = output / 'worker_source' / 'vllm_kvmem'
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    hashes = {}
+    for path in sorted(target.rglob('*')):
+        if not path.is_file():
+            continue
+        name = path.relative_to(target).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        tracked = 'src/vllm_kvmem/' + name
+        expected = manifest.get(tracked)
+        if ((expected is not None and digest != expected) or
+                hashlib.sha256((source / name).read_bytes()).hexdigest() != digest or
+                (path.suffix == '.py' and expected is None)):
+            raise RuntimeError(f'Worker source changed while freezing: {name}')
+        hashes[name] = digest
+    expected_python = {name.removeprefix('src/vllm_kvmem/') for name in manifest
+                       if name.startswith('src/vllm_kvmem/') and name.endswith('.py')}
+    if expected_python != {name for name in hashes if name.endswith('.py')}:
+        raise RuntimeError('Worker source file set changed while freezing')
+    (output / 'worker_manifest.json').write_text(json.dumps(hashes, indent=2))
+    return target.parent.resolve(), hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
 def fetch(url, payload=None, timeout=180):
@@ -196,6 +223,8 @@ def main():
                         help="Experimental bounded CPU archive cache; requires bounded-target")
     parser.add_argument("--packed-assembly", action="store_true",
                         help="Use archive-layout GPU assembly; requires bounded-target")
+    parser.add_argument("--direct-pinned-reads", action="store_true",
+                        help="Experimental archive reads directly into bounded pinned H2D slots; requires packed-assembly")
     parser.add_argument("--frozen-input", type=Path,
                         help="Hash-checked native DeepSWE JSON; preserve its exact input IDs")
     parser.add_argument("--frozen-sha256")
@@ -232,6 +261,8 @@ def main():
         parser.error("prefill-request-token-cap must be 0 or a multiple of 128 up to the native batch budget")
     if args.cpu_read_cache_mib < 0:
         parser.error("cpu-read-cache-mib must be nonnegative")
+    if args.direct_pinned_reads and not args.packed_assembly:
+        parser.error("direct-pinned-reads requires packed-assembly")
     if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
         parser.error("Assembly/cache candidates currently require bounded-target qualification")
     if args.bounded_target:
@@ -301,6 +332,9 @@ def main():
     (args.output / "source_manifest.json").write_text(json.dumps(manifest, indent=2))
     report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     report["source_manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    worker_source, worker_hash = freeze_worker_package(root, args.output, manifest)
+    report["worker_source"] = str(worker_source)
+    report["worker_manifest_sha256"] = worker_hash
     if args.archive_probe:
         report["scope"] = "continuous target KV authority; no compressed KVMem serving"
     with open("/tmp/kvmem-vllm-gpu.lock", "w") as lock:
@@ -316,6 +350,11 @@ def main():
         env.update(HF_HUB_OFFLINE="1", VLLM_USE_V2_MODEL_RUNNER="1", MAX_JOBS="2",
                    CUDA_HOME="/usr/local/cuda-13", VLLM_PLUGINS="gguf,kvmem")
         env["PATH"] = f"{Path(sys.executable).parent}:/usr/local/cuda-13/bin:" + env["PATH"]
+        env["PYTHONPATH"] = str(worker_source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        imported = subprocess.check_output([sys.executable, "-c",
+            "import vllm_kvmem; print(vllm_kvmem.__file__)"], env=env, text=True).strip()
+        if Path(imported).resolve() != worker_source / 'vllm_kvmem' / '__init__.py':
+            raise RuntimeError('Worker package snapshot did not take precedence over installed code')
         if args.capture_probe:
             env["KVMEM_RUNNER_PROBE_DIR"] = str((args.output / "capture").resolve())
         if args.rebuild_probe:
@@ -366,6 +405,7 @@ def main():
                             "kv_connector_extra_config": {"kvmem": {
                                 "cpu_read_cache_bytes": args.cpu_read_cache_mib * 1024**2,
                                 "packed_assembly": args.packed_assembly,
+                                "direct_pinned_reads": args.direct_pinned_reads,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({

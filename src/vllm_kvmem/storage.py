@@ -11,6 +11,19 @@ from threading import Lock
 from . import _native
 
 
+def read_destination(destination, size):
+    """Retain the caller's exclusive writable byte buffer until I/O completes."""
+    if destination is None:
+        return None
+    try:
+        view = memoryview(destination)
+    except TypeError as error:
+        raise ValueError("Read destination must export writable contiguous bytes") from error
+    if view.readonly or view.ndim != 1 or view.itemsize != 1 or not view.c_contiguous or view.nbytes != size:
+        raise ValueError("Read destination must have the exact writable contiguous byte extent")
+    return view.cast('B')
+
+
 @dataclass
 class _Entry:
     allocation: object
@@ -107,9 +120,10 @@ class AsyncArchive:
         with self._lock:
             return ArchiveJob(self.executor.submit(work))
 
-    def read(self, namespace: str, leases: list) -> ArchiveJob | None:
+    def read(self, namespace: str, leases: list, *, destination=None) -> ArchiveJob | None:
         if not leases:
             raise ValueError("Empty read")
+        destination = read_destination(destination, len(leases) * self.record_bytes)
         keys = [self.key(namespace, lease) for lease in leases]
         with self._lock:
             entries = [self._entries.get(key) for key in keys]
@@ -123,7 +137,7 @@ class AsyncArchive:
 
         def work():
             try:
-                payload = bytearray(len(entries) * self.record_bytes)
+                payload = bytearray(len(entries) * self.record_bytes) if destination is None else destination
                 stats = self.tier.io(spans, payload, False)
                 return payload, stats
             finally:

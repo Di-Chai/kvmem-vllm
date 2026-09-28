@@ -97,3 +97,28 @@ def test_cached_write_is_not_readable_before_archive_write_completes_and_failure
     lease.reset()
     assert repo.reclaim(handle, lambda rec: archive.reclaim('a', rec)) == _native.ReclaimResult.RECLAIMED
     assert archive.close()
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_archive_reads_directly_into_owned_destination_without_bypassing_leases(tmp_path, cached):
+    from vllm_kvmem.storage import AsyncArchive
+    size = 2*4*1*2*3
+    kwargs = dict(cache_bytes=size, namespace_bytes=size) if cached else {}
+    archive = (CachedArchive if cached else AsyncArchive)(str(tmp_path), size, 8, **kwargs)
+    authority, _ = setup(tmp_path, 'a', archive)
+    assert authority.append(*payload(0, 8), history_begin=0, local_rope_begin=0)
+    drain(authority)
+    leases = [authority.memory.repository.pin(record.handle) for record in authority.records.values()]
+    expected, _ = archive.read('a', leases).result(timeout=5)
+    buffer = bytearray(b'x' * (2 * size))
+    result, stats = archive.read('a', list(reversed(leases)), destination=buffer).result(timeout=5)
+    assert result.obj is buffer
+    assert bytes(buffer) == bytes(expected[size:]) + bytes(expected[:size])
+    for invalid in (bytes(2*size), bytearray(size), memoryview(bytearray(4*size))[::2]):
+        with pytest.raises(ValueError, match='destination'):
+            archive.read('a', leases, destination=invalid)
+    with pytest.raises(KeyError):
+        archive.read('foreign', leases, destination=buffer)
+    for lease in leases:
+        lease.reset()
+    assert authority.close() and archive.close()

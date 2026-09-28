@@ -42,7 +42,8 @@ class AssemblyResult:
 
 
 class NativeWindowAssembler:
-    def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False):
+    def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
+                 direct_pinned_reads=False):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
@@ -65,13 +66,17 @@ class NativeWindowAssembler:
         self.block_tokens = block_tokens
         self.chunk_blocks = chunk_blocks
         self.packed = packed
+        if direct_pinned_reads and not packed:
+            raise ValueError("Direct pinned reads require packed assembly")
+        self.direct_pinned_reads = direct_pinned_reads
         self.device = device
         self.heads, self.dim = heads, dim
         self.transfers = PackedTransfers(len(layers) * heads * dim * block_tokens * chunk_blocks * 3,
                                          2, device)
 
     @classmethod
-    def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False):
+    def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False,
+                    direct_pinned_reads=False):
         modules = dict(runner.model.named_modules())
         groups = {name: group_id for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups)
                   for name in group.layer_names}
@@ -90,7 +95,8 @@ class NativeWindowAssembler:
             key, value = native_vllm_fp8_views(attn.kv_cache, module.num_kv_heads, module.head_dim)
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
                                       attn._k_scale, tables[group_id]))
-        return cls(tuple(layers), block_tokens, chunk_blocks, packed=packed)
+        return cls(tuple(layers), block_tokens, chunk_blocks, packed=packed,
+                   direct_pinned_reads=direct_pinned_reads)
 
     def assemble(self, authority, plan):
         try:
@@ -134,7 +140,23 @@ class NativeWindowAssembler:
             chunk = pending[start:start+self.chunk_blocks]
             handles = [by_slot[remap.block_id].handle for remap in chunk]
             prepare_start = time.perf_counter()
-            if self.packed:
+            transfer = None
+            if self.direct_pinned_reads:
+                from .packed_assembly import read_packed_records
+                if any(remap.n_tokens != self.block_tokens for remap in chunk):
+                    raise ValueError("Packed window assembly requires complete selected records")
+                size = len(handles) * authority.record_bytes
+                gpu = torch.empty(size, dtype=torch.uint8, device=self.device)
+                def fill(staging):
+                    _, stats = read_packed_records(authority, handles, destination=staging)
+                    for key, value in stats.items():
+                        read_stats[key] = read_stats.get(key, 0) + value
+                transfer = self.transfers.upload_from_reader(size, gpu, fill)
+                if transfer is None:
+                    next(iter(self.transfers.pending.values())).event.synchronize()
+                    transfer = self.transfers.upload_from_reader(size, gpu, fill)
+                count = len(chunk) * self.block_tokens
+            elif self.packed:
                 from .packed_assembly import read_packed_records
                 if any(remap.n_tokens != self.block_tokens for remap in chunk):
                     raise ValueError("Packed window assembly requires complete selected records")
@@ -148,16 +170,18 @@ class NativeWindowAssembler:
                 values = torch.cat([value for _, value in payloads], dim=1).contiguous()
                 payload = torch.cat((raw.view(torch.uint8).flatten(), values.flatten()))
                 count = raw.shape[1]
-            host_prepare_seconds += time.perf_counter() - prepare_start
-            uploaded_bytes += payload.numel()
-            gpu = torch.empty(payload.numel(), dtype=torch.uint8, device=self.device)
-            transfer = self.transfers.upload(payload, gpu)
-            if transfer is None:
-                # Only bounded staging is reused, after its own DMA completes.
-                next(iter(self.transfers.pending.values())).event.synchronize()
+            uploaded_bytes += size if self.direct_pinned_reads else payload.numel()
+            if not self.direct_pinned_reads:
+                gpu = torch.empty(payload.numel(), dtype=torch.uint8, device=self.device)
                 transfer = self.transfers.upload(payload, gpu)
+                if transfer is None:
+                    # Only bounded staging is reused, after its own DMA completes.
+                    next(iter(self.transfers.pending.values())).event.synchronize()
+                    transfer = self.transfers.upload(payload, gpu)
             if transfer is None:
                 raise RuntimeError("Native assembly staging did not make progress")
+            # Includes CPU staging and waiting for a bounded slot, in both paths.
+            host_prepare_seconds += time.perf_counter() - prepare_start
             torch.cuda.current_stream(self.device).wait_event(transfer.event)
             if self.packed:
                 from .packed_assembly import assemble_packed_layer

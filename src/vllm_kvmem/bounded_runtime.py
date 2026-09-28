@@ -144,7 +144,8 @@ def install_bounded_target(runner):
                 raise RuntimeError("Original selector exceeded its reserved prefix")
             assembly_start = time.perf_counter()
             assembler = NativeWindowAssembler.from_runner(runner, request_id, runtime.names, cfg.block_tokens,
-                                                          packed=runtime.options.packed_assembly)
+                                                          packed=runtime.options.packed_assembly,
+                                                          direct_pinned_reads=runtime.options.direct_pinned_reads)
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
@@ -161,7 +162,8 @@ def install_bounded_target(runner):
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
                 "assembly_uploaded_bytes": assembly.uploaded_bytes,
                 "assembly_read_stats": assembly.read_stats,
-                "packed_assembly": runtime.options.packed_assembly})
+                "packed_assembly": runtime.options.packed_assembly,
+                "direct_pinned_reads": runtime.options.direct_pinned_reads})
 
         if needs_probe:
             state_adapter.validate(bundle)

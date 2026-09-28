@@ -7,13 +7,17 @@ from vllm_kvmem.packed_assembly import read_packed_records
 from test_authority import setup, payload, drain
 
 
-def test_packed_records_preserve_order_bytes_and_owned_lifetime(tmp_path):
+@pytest.mark.parametrize('direct', [False, True])
+def test_packed_records_preserve_order_bytes_and_owned_lifetime(tmp_path, direct):
     authority, archive = setup(tmp_path)
     assert authority.append(*payload(0, 9), history_begin=0, local_rope_begin=0)
     drain(authority)
     records = list(authority.records.values())
     handles = [records[1].handle, records[0].handle]
-    packed, stats = read_packed_records(authority, handles)
+    destination = torch.empty(len(handles) * authority.record_bytes, dtype=torch.uint8) if direct else None
+    packed, stats = read_packed_records(authority, handles, destination=destination)
+    if direct:
+        assert packed.data_ptr() == destination.data_ptr()
     expected = b''.join(authority.read_record(h)[0].view(torch.uint8).numpy().tobytes() +
                         authority.read_record(h)[1].numpy().tobytes() for h in handles)
     assert stats['bytes'] == len(expected)

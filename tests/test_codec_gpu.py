@@ -78,3 +78,26 @@ def test_upload_waits_for_prior_destination_use_on_caller_stream():
     caller.synchronize()
     assert torch.equal(destination.cpu(), source)
     assert pool.close()
+
+
+def test_direct_reader_keeps_slot_exclusive_through_cpu_io_and_recovers_after_failure():
+    import torch
+    from vllm_kvmem.transfer import PackedTransfers
+    device = torch.device('cuda', torch.cuda.current_device())
+    pool = PackedTransfers(4096, 1, device)
+    destination = torch.empty(4096, dtype=torch.uint8, device=device)
+
+    def fail(staging):
+        assert staging.is_pinned()
+        assert not pool.close()
+        assert pool.upload_from_reader(4096, destination, lambda _: pytest.fail('busy slot reused')) is None
+        staging.fill_(11)
+        raise OSError('injected read failure')
+
+    with pytest.raises(OSError, match='injected'):
+        pool.upload_from_reader(4096, destination, fail)
+    assert not pool.preparing and not pool.pending
+    transfer = pool.upload_from_reader(4096, destination, lambda staging: staging.fill_(73))
+    transfer.event.synchronize()
+    assert torch.equal(destination.cpu(), torch.full((4096,), 73, dtype=torch.uint8))
+    assert pool.close()

@@ -7,8 +7,8 @@ import torch
 from vllm.triton_utils import tl, triton
 
 
-def read_packed_records(authority, handles):
-    """One bounded read; the returned tensor retains its owned bytearray."""
+def read_packed_records(authority, handles, *, destination=None):
+    """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
     from .authority import record_key
     if not handles:
         raise ValueError("No immutable records requested")
@@ -20,13 +20,22 @@ def read_packed_records(authority, handles):
     try:
         if not all(leases):
             raise ValueError("Stale archive generation")
-        job = authority.archive.read(authority.memory.request_id, leases)
+        kwargs = {}
+        if destination is not None:
+            if (destination.device.type != 'cpu' or destination.dtype != torch.uint8 or
+                    destination.ndim != 1 or not destination.is_contiguous()):
+                raise ValueError("Packed read destination must be contiguous CPU bytes")
+            kwargs['destination'] = destination.numpy()
+        job = authority.archive.read(authority.memory.request_id, leases, **kwargs)
         if job is None:
             raise BlockingIOError("Archive read queue is full")
         data, stats = job.result()
         if len(data) != len(handles) * authority.record_bytes:
             raise ValueError("Archive returned an incomplete packed record batch")
-        return torch.frombuffer(data, dtype=torch.uint8), stats
+        result = torch.frombuffer(data, dtype=torch.uint8)
+        if destination is not None and result.data_ptr() != destination.data_ptr():
+            raise ValueError("Archive did not fill the requested staging buffer")
+        return result, stats
     finally:
         for lease in leases:
             lease.reset()

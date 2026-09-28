@@ -214,6 +214,7 @@ class CaptureRuntime:
                   "cpu_cache_capacity_bytes": self.options.cpu_read_cache_bytes,
                   "cpu_cache_used_bytes": getattr(getattr(self.archive, 'read_cache', None), 'used_bytes', 0),
                   "packed_assembly": self.options.packed_assembly,
+                  "direct_pinned_reads": self.options.direct_pinned_reads,
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,

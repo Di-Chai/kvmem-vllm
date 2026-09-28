@@ -10,6 +10,37 @@ qualification = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualification)
 
 
+def test_worker_snapshot_preserves_late_imports_and_extension_after_workspace_edits(tmp_path):
+    import hashlib
+    import json
+    import os
+    import subprocess
+    import sys
+    root, output = tmp_path / 'repo', tmp_path / 'run'
+    package = root / 'src/vllm_kvmem'
+    package.mkdir(parents=True)
+    output.mkdir()
+    (package / '__init__.py').write_text('')
+    (package / 'late.py').write_text('VALUE = 17')
+    (package / '_native.so').write_bytes(b'extension artifact')
+    (package / '__pycache__').mkdir()
+    (package / '__pycache__/stale.pyc').write_bytes(b'ignored')
+    manifest = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in package.glob('*.py')}
+    frozen, digest = qualification.freeze_worker_package(root, output, manifest)
+    (package / 'late.py').write_text('VALUE = 99')
+    (package / '_native.so').write_bytes(b'rebuilt extension')
+    result = subprocess.check_output([sys.executable, '-c',
+        'from vllm_kvmem.late import VALUE; print(VALUE)'],
+        cwd=output, env={**os.environ, 'PYTHONPATH': str(frozen)}, text=True)
+    assert result.strip() == '17'
+    assert (frozen / 'vllm_kvmem/_native.so').read_bytes() == b'extension artifact'
+    hashes = json.loads((output / 'worker_manifest.json').read_text())
+    assert len(hashes) == 3 and len(digest) == 64
+    with pytest.raises(RuntimeError, match='changed'):
+        qualification.freeze_worker_package(root, tmp_path / 'other', manifest)
+
+
 def fixture():
     report = {"dflash": True, "single": {"result": {
         "id": "r", "usage": {"prompt_tokens": 14, "completion_tokens": 128}}}, "concurrent": []}

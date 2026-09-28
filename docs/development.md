@@ -112,5 +112,33 @@ not affect its already loaded runtime.
 
 `engine_deepswe_effect_bounded_dflash_01` is now running the same exact 197110-token
 Effect input as the corrected target C1, from commit `62726f0`. It retains full
-checksum verification, per-request 1024-token query chunks and the same K/G and
-precision. Its final result is pending; a successful launch is not qualification.
+checksum verification and the same K/G and precision. The requested batch budget
+was 1024, but native draft-slot reservation followed by KVMem alignment produces
+896-token prefill chunks. It is a correctness run, not a matched 1024-query
+performance comparison. Future matched C1 uses budget 1152 / request cap 1024;
+C4 uses budget 4224 / cap 1024, and must verify the actual scheduled queries.
+Its final result is pending; a successful launch is not qualification.
+
+## Direct pinned archive reads and reproducible workers
+
+The live DFlash run's host breakdown identified repeated zero-initialization of
+the CPU read buffer as a large cost: one 5.44 GB, entirely cache-hit refresh spent
+2.645 s allocating buffers, 0.388 s copying cached bytes, and 3.927 s assembling
+in total. These are one-round wall timings, not an isolated optimization result.
+
+The new opt-in `--packed-assembly --direct-pinned-reads` reads immutable records
+directly into the existing two bounded pinned H2D slots. It removes the separate
+zeroed bytearray and second host copy. Namespace/generation checks and archive
+leases remain mandatory; CPU preparation and DMA both own their staging slot.
+Injected read failure after an earlier GPU chunk must retain the transaction
+failure fence. The default path remains unchanged. CPU suite: 104 passed,
+28 GPU tests skipped; direct-path native/GPU qualification is still pending.
+`assembly_host_prepare_seconds` now includes staging copy/submission and waits
+for a bounded slot in both paths; earlier reports excluded the upload call, so
+use total `assembly_seconds` for comparisons spanning this instrumentation change.
+
+Future engine runs copy the worker Python package and built native extension into
+their artifact directory and import that snapshot in all child processes. Both
+source and worker manifests are hashed; changing the workspace while a test runs
+cannot alter a later worker import. Dependency environments remain pinned and
+must not be rebuilt or updated during a run.

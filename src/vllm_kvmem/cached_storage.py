@@ -6,7 +6,7 @@ validation. I/O admission remains bounded by the underlying archive queue.
 import time
 
 from . import _native
-from .storage import AsyncArchive, ArchiveJob
+from .storage import AsyncArchive, ArchiveJob, read_destination
 from .read_cache import RecordReadCache
 
 
@@ -32,9 +32,10 @@ class CachedArchive(AsyncArchive):
                     self.read_cache.put(key, payload[begin:begin+self.record_bytes])
         return job
 
-    def read(self, namespace, leases):
+    def read(self, namespace, leases, *, destination=None):
         if not leases:
             raise ValueError("Empty read")
+        destination = read_destination(destination, len(leases) * self.record_bytes)
         keys = [self.key(namespace, lease) for lease in leases]
         with self._lock:
             entries = [self._entries.get(key) for key in keys]
@@ -51,7 +52,7 @@ class CachedArchive(AsyncArchive):
         def work():
             try:
                 started_at = time.perf_counter()
-                data = bytearray(len(keys) * self.record_bytes)
+                data = bytearray(len(keys) * self.record_bytes) if destination is None else destination
                 allocated_at = time.perf_counter()
                 view = memoryview(data)
                 for i, hit in enumerate(cached):
