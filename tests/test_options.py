@@ -26,6 +26,9 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'verify_archive_on_finish': 0}}, 'boolean'),
     ({'kvmem': {'direct_pinned_reads': True}}, 'require packed'),
     ({'kvmem': {'packed_assembly': True, 'direct_pinned_reads': 1}}, 'boolean'),
+    ({'kvmem': {'prefill_cadence': True}}, 'cadence'),
+    ({'kvmem': {'prefill_cadence': 0}}, 'cadence'),
+    ({'kvmem': {'prefill_cadence': 65}}, 'cadence'),
     ({'kvmem': {'kv_dtype': 'bfloat16'}}, 'codec'),
     ({'kvmem': []}, 'object'),
 ])

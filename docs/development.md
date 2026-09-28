@@ -142,3 +142,14 @@ their artifact directory and import that snapshot in all child processes. Both
 source and worker manifests are hashed; changing the workspace while a test runs
 cannot alter a later worker import. Dependency environments remain pinned and
 must not be rebuilt or updated during a run.
+
+An experimental `--prefill-cadence N` now requests native prefill throttling on
+N-1 of each N mixed scheduling steps. It does not resize queries, reorder the
+running queue or override native admission/capacity gates. Prefill-only work,
+unavailable decode and capacity-bound scheduling proceed normally. The default
+is 1. This can reduce repeated prefill interruptions but cannot shorten one
+blocking refresh or remove retirement pauses; GPU benefits remain unmeasured.
+The harness records actual prefill/decode query-size histograms to detect draft
+headroom and alignment changes in future comparisons. Targeted scheduler,
+option and harness tests: 35 passed. Native cancellation qualification also
+counts the disconnected request when waiting for archive retirement.

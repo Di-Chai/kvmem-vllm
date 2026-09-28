@@ -234,6 +234,8 @@ def main():
                         help="Native token budget per GPU batch; does not change K/G")
     parser.add_argument("--prefill-request-token-cap", type=int, default=0,
                         help="Native vLLM long-prefill token cap per request (0 keeps the default)")
+    parser.add_argument("--prefill-cadence", type=int, default=1,
+                        help="Experimental native prefill release cadence during mixed decode, default every step")
     parser.add_argument("--kv-cache-memory-mib", type=int, default=0,
                         help="Explicit native GPU KV pool budget; 0 uses native utilization-based sizing")
     parser.add_argument("--require-capacity-pressure", action="store_true",
@@ -263,6 +265,8 @@ def main():
         parser.error("cpu-read-cache-mib must be nonnegative")
     if args.direct_pinned_reads and not args.packed_assembly:
         parser.error("direct-pinned-reads requires packed-assembly")
+    if not 1 <= args.prefill_cadence <= 64 or (args.prefill_cadence != 1 and not args.bounded_target):
+        parser.error("prefill-cadence must be in [1, 64], and nondefault values require bounded serving")
     if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
         parser.error("Assembly/cache candidates currently require bounded-target qualification")
     if args.bounded_target:
@@ -406,6 +410,7 @@ def main():
                                 "cpu_read_cache_bytes": args.cpu_read_cache_mib * 1024**2,
                                 "packed_assembly": args.packed_assembly,
                                 "direct_pinned_reads": args.direct_pinned_reads,
+                                "prefill_cadence": args.prefill_cadence,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
@@ -520,7 +525,7 @@ def main():
                         raise RuntimeError("Scheduler-driven rebuild did not complete")
                 if args.archive_probe:
                     path = args.output / "capture/archive.json"
-                    expected_requests = len(report["concurrent"]) + int("single" in report)
+                    expected_requests = len(report["concurrent"]) + int("single" in report) + len(report.get("cancelled", []))
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         try:
@@ -534,7 +539,8 @@ def main():
                         raise RuntimeError("Continuous archive did not finalize every submitted request")
                     validate_archive(report, archived)
                     if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
-                            or archived.get("packed_assembly", False) != args.packed_assembly):
+                            or archived.get("packed_assembly", False) != args.packed_assembly
+                            or archived.get("direct_pinned_reads", False) != args.direct_pinned_reads):
                         raise RuntimeError("Worker did not apply requested cache/assembly options")
                     expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
                     if archived.get("archive_verification", "full_checksum") != expected_verification:
@@ -557,6 +563,13 @@ def main():
                         raise RuntimeError("Real K128K/G64K compressed replay did not pass")
                     report["compression"] = compressed
                 if args.bounded_target:
+                    scheduled_queries = json.loads((args.output / 'capture/scheduled_queries.json').read_text())
+                    if scheduled_queries['prefill_cadence'] != args.prefill_cadence:
+                        raise RuntimeError('Scheduler did not apply the requested prefill cadence')
+                    if args.prefill_request_token_cap and any(int(size) > args.prefill_request_token_cap
+                            for size in scheduled_queries['queries']['prefill']):
+                        raise RuntimeError('Actual scheduled prefill exceeds the requested per-request query cap')
+                    report['scheduled_queries'] = scheduled_queries
                     workers = [json.loads(line) for line in (args.output / "capture/bounded_refresh.jsonl").read_text().splitlines()]
                     schedulers = [json.loads(line) for line in (args.output / "capture/scheduler_refresh.jsonl").read_text().splitlines()]
                     if args.cancel_during_refresh:

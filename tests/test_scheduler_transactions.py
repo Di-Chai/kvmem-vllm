@@ -31,6 +31,41 @@ def setup_scheduler():
     return scheduler, request, (pool, second_pool)
 
 
+def test_native_prefill_cadence_releases_regularly_and_never_waits_on_unavailable_decode():
+    scheduler, request, _ = setup_scheduler()
+    scheduler._bounded_target = True
+    scheduler.prefill_cadence = 4
+    scheduler._mixed_steps = scheduler._cadence_requested = 0
+    scheduler.current_step = 7
+    scheduler.prefill_capacity_bound = False
+    request.is_prefill_chunk = False
+    prefill = SimpleNamespace(is_prefill_chunk=True)
+    scheduler.running = [request, prefill]
+    scheduler.waiting = []
+    assert [scheduler._throttle_mixed_prefill() for _ in range(8)] == [True, True, True, False] * 2
+    assert scheduler._cadence_requested == 6
+    request.next_decode_eligible_step = 8
+    assert not scheduler._throttle_mixed_prefill()
+    request.next_decode_eligible_step = 7
+    request.num_in_flight_tokens = 1
+    assert not scheduler._throttle_mixed_prefill()
+    request.num_in_flight_tokens = 0
+    scheduler.transactions['a'] = object()
+    assert not scheduler._throttle_mixed_prefill()
+    scheduler.transactions.clear()
+    scheduler.prefill_capacity_bound = True
+    assert not scheduler._throttle_mixed_prefill()
+    scheduler.prefill_capacity_bound = False
+    scheduler.running = [prefill]
+    assert not scheduler._throttle_mixed_prefill()
+    scheduler.running = [request]
+    assert not scheduler._throttle_mixed_prefill()
+    scheduler.waiting = [object()]
+    assert scheduler._throttle_mixed_prefill()
+    scheduler.prefill_cadence = 1
+    assert not scheduler._throttle_mixed_prefill()
+
+
 def test_suspended_refresh_commits_all_group_tables_and_resumes_request():
     scheduler, request, pools = setup_scheduler()
     scheduler.begin_refresh(request, 32)

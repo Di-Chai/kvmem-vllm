@@ -11,6 +11,7 @@ class RuntimeOptions:
     packed_assembly: bool = False
     verify_archive_on_finish: bool = True
     direct_pinned_reads: bool = False
+    prefill_cadence: int = 1
 
     def __post_init__(self):
         if type(self.cpu_read_cache_bytes) is not int or self.cpu_read_cache_bytes < 0:
@@ -20,6 +21,8 @@ class RuntimeOptions:
             raise ValueError("Assembly and archive verification settings must be boolean")
         if self.direct_pinned_reads and not self.packed_assembly:
             raise ValueError("Direct pinned reads require packed assembly")
+        if type(self.prefill_cadence) is not int or not 1 <= self.prefill_cadence <= 64:
+            raise ValueError("Prefill cadence must be an integer in [1, 64]")
 
     @classmethod
     def from_vllm(cls, config):
@@ -35,10 +38,11 @@ class RuntimeOptions:
         packed = payload.pop('packed_assembly', False)
         verify = payload.pop('verify_archive_on_finish', True)
         direct = payload.pop('direct_pinned_reads', False)
+        cadence = payload.pop('prefill_cadence', 1)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
             raise ValueError(f"Unknown KVMem setting: {error}") from error
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
-        return cls(memory, cache_bytes, packed, verify, direct)
+        return cls(memory, cache_bytes, packed, verify, direct, cadence)

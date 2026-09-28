@@ -45,7 +45,12 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Compressed runtime not yet enabled; scheduler currently exposes the explicit identity probe")
         if self._bounded_target and hashlib.sha256(Path(inspect.getfile(Scheduler)).read_bytes()).hexdigest() != SCHEDULER_SHA256:
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
-        config = RuntimeOptions.from_vllm(self.vllm_config).memory
+        options = RuntimeOptions.from_vllm(self.vllm_config)
+        config = options.memory
+        self.prefill_cadence = options.prefill_cadence
+        self._mixed_steps = 0
+        self._scheduled_queries = {"prefill": {}, "decode": {}}
+        self._cadence_requested = 0
         self.query_policy = QueryPolicy(config.block_tokens, config.select_budget, config.gen_budget)
         if self.draft_contract is not None:
             from .speculative_admission import SpeculativeQueryPolicy
@@ -180,6 +185,10 @@ class KVMemScheduler(Scheduler):
         if getattr(self, "_bounded_target", False):
             for request_id, query_tokens in output.num_scheduled_tokens.items():
                 request = self.requests[request_id]
+                if hasattr(self, '_scheduled_queries'):
+                    stage = 'prefill' if request.num_computed_tokens < request.num_prompt_tokens else 'decode'
+                    histogram = self._scheduled_queries[stage]
+                    histogram[str(query_tokens)] = histogram.get(str(query_tokens), 0) + 1
                 offset = next(iter(self.window_managers.values())).offsets.get(request_id, 0)
                 if self.query_policy.refresh(request.num_computed_tokens, request.num_prompt_tokens, offset):
                     self.begin_refresh(request, self.query_policy.select_budget, replay_tokens=query_tokens)
@@ -187,6 +196,27 @@ class KVMemScheduler(Scheduler):
                     # forward. The query command must exist before this forward.
                     output.has_sync_kv_loads = True
         return super()._build_kv_connector_meta(connector, output)
+
+    def _throttle_mixed_prefill(self):
+        """Ask the native scheduler for decode-only steps, preserving its gates.
+
+        Every cadence-th step releases prefills. Capacity-bound native scheduling
+        can override the request; transactions and unavailable decode work never
+        justify delaying prefill. No query sizes or request ordering are changed.
+        """
+        if not getattr(self, '_bounded_target', False) or getattr(self, 'prefill_cadence', 1) == 1:
+            return False
+        mixed = (any(r.is_prefill_chunk for r in self.running) or bool(self.waiting)) and any(
+            not r.is_prefill_chunk and not r.is_finished() and not r.num_in_flight_tokens
+            and r.request_id not in self.transactions and r.next_decode_eligible_step <= self.current_step
+            for r in self.running)
+        if not mixed or self.prefill_capacity_bound:
+            self._mixed_steps = 0
+            return False
+        self._mixed_steps += 1
+        throttle = self._mixed_steps % self.prefill_cadence != 0
+        self._cadence_requested += int(throttle)
+        return throttle
 
     def schedule(self, throttle_prefills=False):
         armed = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "armed"
@@ -196,7 +226,16 @@ class KVMemScheduler(Scheduler):
                     self.begin_refresh(request, request.num_computed_tokens)
                     self._probe_submitted = True
                     break
-        output = super().schedule(throttle_prefills)
+        output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
+        if hasattr(self, '_scheduled_queries'):
+            # Actual admitted sizes, including native draft reservations and
+            # alignment, are the evidence for a matched query-policy comparison.
+            path = Path(os.environ['KVMEM_RUNNER_PROBE_DIR'])
+            temporary = path / 'scheduled_queries.tmp'
+            temporary.write_text(json.dumps({"queries": self._scheduled_queries,
+                "prefill_cadence": self.prefill_cadence,
+                "throttle_requests": self._cadence_requested}))
+            temporary.replace(path / 'scheduled_queries.json')
         if self.table_updates:
             # Scheduling can allocate another block after the refresh commit.
             # Publish the complete current row, including those new allocations.
