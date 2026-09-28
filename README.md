@@ -11,8 +11,9 @@ identity restore/replay is qualified. A long compressed replay completed byte
 checks, but its recurrent metadata classification required a subsequent correction;
 corrected bounded target serving has now passed one real 197K-history C1 lifecycle
 check and subsequent short C4. Native long C4 also passes lifecycle checks, with
-severe prefill/retirement interference. DFlash refresh, capacity pressure and
-performance qualification are still pending.
+severe prefill/retirement interference. DFlash2 compressed prefill plus decode
+now passes a real 197K C1 and short C4 lifecycle check. Long DFlash C4,
+decode-time refresh, capacity pressure and performance qualification remain pending.
 **Production bounded KVMem serving is not implemented yet. Installing the plugin
 does not enable historical reselection; the experimental paths require explicit
 diagnostic flags.** See [development milestones](docs/development.md) and

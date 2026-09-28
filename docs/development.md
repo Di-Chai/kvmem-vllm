@@ -66,7 +66,7 @@ reference. Detailed measurements and limitations are in
 in [measurement.md](measurement.md) and boundaries in [support.md](support.md).
 
 
-## Experimental bounded DFlash2 wiring (GPU qualification pending)
+## Experimental bounded DFlash2 wiring
 
 The new diagnostic `scripts/qualify_engine.py --bounded-dflash` enables a narrow
 contract for the existing BF16 DFlash2 draft while retaining Q8_0 target / FP8
@@ -117,7 +117,12 @@ was 1024, but native draft-slot reservation followed by KVMem alignment produces
 896-token prefill chunks. It is a correctness run, not a matched 1024-query
 performance comparison. Future matched C1 uses budget 1152 / request cap 1024;
 C4 uses budget 4224 / cap 1024, and must verify the actual scheduled queries.
-Its final result is pending; a successful launch is not qualification.
+It has now passed 74 matched refreshes and complete five-request archive cleanup.
+C1 generated 77 natural-stop tokens at 85.509 arrival decode tok/s over 0.889 s;
+the subsequent short C4 reached 91.956 aggregate tok/s. C1 token IDs match the
+cached target control and all short C4 texts match prior native DFlash controls.
+This is compressed-prefill / later-decode evidence; decode-time refresh and long
+DFlash C4 are still pending. See the qualification record for timing caveats.
 
 ## Direct pinned archive reads and reproducible workers
 
@@ -132,7 +137,9 @@ zeroed bytearray and second host copy. Namespace/generation checks and archive
 leases remain mandatory; CPU preparation and DMA both own their staging slot.
 Injected read failure after an earlier GPU chunk must retain the transaction
 failure fence. The default path remains unchanged. CPU suite: 104 passed,
-28 GPU tests skipped; direct-path native/GPU qualification is still pending.
+28 GPU tests skipped at that stage. The complete CPU/GPU suite subsequently
+passed 136 tests at `82e504c`, including direct-path bytes and failed-read fences.
+Direct-path native model serving/performance qualification is still pending.
 `assembly_host_prepare_seconds` now includes staging copy/submission and waits
 for a bounded slot in both paths; earlier reports excluded the upload call, so
 use total `assembly_seconds` for comparisons spanning this instrumentation change.

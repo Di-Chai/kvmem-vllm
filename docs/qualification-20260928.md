@@ -451,3 +451,49 @@ API/worker RSS of 39020924 KiB; no foreign GPU processes or sampling errors were
 observed. Its 5 s sampling interval and partial coverage cannot establish the
 whole-run instantaneous peak. These memory definitions differ from the end
 whole-device snapshot.
+
+## Compressed DFlash2 C1 and short C4 — 2026-09-29
+
+`engine_deepswe_effect_bounded_dflash_01` passed from launch commit `62726f0`:
+Q8_0 target / FP8 e4m3 target KV, BF16 DFlash2 draft and draft KV, K131072/G65536,
+B128, CPU cache 36 GiB, packed assembly and full checksum retirement. Exact Effect
+input request_24 contains 197110 tokens. All 74 worker/scheduler refreshes matched,
+native BF16 sliding draft group 14 was preserved, unverified draft rows were
+excluded from reselection, and all five requests released their archive/cache
+resources. 291 native batches completed. This qualifies compressed prefill
+followed by speculative decode, not a decode-time K+G refresh or persistent reuse.
+
+| Observation | Result |
+| --- | ---: |
+| C1 output | 77 tokens, natural stop |
+| C1 TTFT / service | 1271.183 / 1272.072 s |
+| C1 arrival decode | 85.509 tok/s, 0.888792 s window |
+| Short C4 aggregate arrival decode | 91.956 tok/s, 5.524390 s window |
+| Short C4 service | 18.519 s, 512 capped output tokens |
+| Max owned GPU-process memory, sampled every 2 s | 74264 MiB |
+| Max summed API/worker RSS, sampled | 36896540 KiB |
+| End whole-device GPU snapshot | 74288 MiB |
+
+The 77 C1 output IDs exactly match corrected target-only cached/packed C1. All
+four short C4 output texts exactly match the earlier uncompressed native DFlash
+and archive-DFlash runs. The raw short prompts can produce incomplete/invalid
+code; this agreement is a regression/lifecycle check, not executed code or SWE
+task quality. The long continuation's tool call was not executed either.
+
+Native draft reservation reduces the requested 1024-token batch to actual
+896-token aligned prefill chunks (last chunk 630), versus target C1's 1024.
+Despite matching final C1 outputs, do not infer a clean DFlash speedup from these
+different selection queries or claim a stable rate from less than one second of
+generation. Short C4 is not long C4. The resource monitor had 702 samples, 690
+with GPU ownership, no errors or foreign GPU processes; sampled maxima are not
+instantaneous peaks. The pre-existing native DFlash one-semaphore shutdown warning
+also recurred; this does not establish that process synchronization cleanup is fixed.
+
+Assembly totalled 341.630 s, of which 295.243 s was host preparation. Allocating
+and zeroing intermediate CPU read buffers accounted for 218.719 s. This motivates
+the direct pinned-read candidate. The later complete component run at `82e504c`
+passed **136 tests**, including all 28 explicit GPU cases and the direct-read
+byte checks, exclusive-slot ownership and failure-after-first-chunk recovery.
+JUnit evidence: `artifacts/components_82e504c.xml`. Native direct-read serving,
+prefill cadence, cancellation/pressure, long DFlash C4 and the final matched
+performance/quality gates remain pending.
