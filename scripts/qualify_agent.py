@@ -62,7 +62,8 @@ def scored_result(task_output):
 def make_command(pier, task_id, task_path, task_output, api_base, model):
     model_kwargs = {'drop_params': True, 'extra_headers': {
         'x-kvmem-harness': 'mini-swe-agent', 'x-kvmem-task-id': task_id}}
-    return [str(pier), 'run', '--jobs-dir', str(task_output / 'pier_jobs'),
+    return [str(pier.with_name('python')), str(task_output.parent / 'agent_source' / 'pier_transport_entry.py'),
+            'run', '--jobs-dir', str(task_output / 'pier_jobs'),
             '--job-name', task_id, '--n-attempts', '1', '--n-concurrent', '1',
             '--max-retries', '0', '--timeout-multiplier', '4', '--yes',
             '--agent-timeout-multiplier', '1.0', '--path', str(task_path),
@@ -248,12 +249,14 @@ def main():
     report['native_metrics'] = {}
     for task in args.task:
         records = [r for r in requests if r['task_id'] == task]
-        timed = [r for r in records if r.get('status') == 200 and r.get('native_decode_tokens_per_second') is not None]
+        timed = [r for r in records if r.get('status') == 200 and r.get('response_delivered')
+                 and not r.get('relay_error') and r.get('native_decode_tokens_per_second') is not None]
         seconds = sum(r['native_metrics']['generation_time_ms'] for r in timed) / 1000
         tokens = sum(r['usage']['completion_tokens'] - 1 for r in timed)
         report['native_metrics'][task] = {
             'recorded_requests': len(records), 'timed_decode_requests': len(timed),
             'http_error_requests': sum(r.get('status') != 200 for r in records),
+            'undelivered_requests': sum(not r.get('response_delivered') for r in records),
             'weighted_per_request_decode_tokens_per_second': tokens / seconds if seconds else None,
             'summed_decode_seconds': seconds, 'decode_tokens': tokens,
             'scope': 'sum(tokens-1)/sum(native decode intervals); not aggregate throughput under overlap'}

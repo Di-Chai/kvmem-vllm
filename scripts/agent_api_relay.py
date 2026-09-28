@@ -10,6 +10,8 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
+import select
+import socket
 from pathlib import Path
 import threading
 import time
@@ -85,10 +87,35 @@ def make_handler(upstream_host, upstream_port, output):
                       'request_bytes': length, 'request_sha256': hashlib.sha256(payload).hexdigest()}
             conn = http.client.HTTPConnection(upstream_host, upstream_port, timeout=21600)
             replied = False
+            stopped, disconnected = threading.Event(), threading.Event()
+            watcher = None
+            record['response_delivered'] = False
             try:
                 headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS | {'accept-encoding'}}
                 headers['Accept-Encoding'] = 'identity'
                 conn.request(self.command, self.path, body=payload, headers=headers)
+                upstream_socket = conn.sock
+                def watch_disconnect():
+                    while not stopped.wait(.05):
+                        try:
+                            readable, _, _ = select.select([self.connection], [], [], 0)
+                            if not readable or self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT):
+                                continue
+                        except BlockingIOError:
+                            continue
+                        except OSError:
+                            pass
+                        disconnected.set()
+                        # close() alone can leave getresponse()/read() blocked on
+                        # their socket file wrapper. Shutdown interrupts both and
+                        # lets native ASGI cancellation abort the model request.
+                        try:
+                            upstream_socket.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        break
+                watcher = threading.Thread(target=watch_disconnect, daemon=True)
+                watcher.start()
                 response = conn.getresponse()
                 body = response.read(MAX_BODY + 1)
                 if len(body) > MAX_BODY:
@@ -107,12 +134,21 @@ def make_handler(upstream_host, upstream_port, output):
                 self.end_headers()
                 replied = True
                 self.wfile.write(body)
+                self.wfile.flush()
+                record['response_delivered'] = True
             except (OSError, ValueError, http.client.HTTPException) as error:
                 record['relay_error'] = repr(error)
-                if not replied:
-                    self.send_error(502)
+                if not replied and not disconnected.is_set():
+                    try:
+                        self.send_error(502)
+                    except OSError:
+                        disconnected.set()
                 self.close_connection = True
             finally:
+                stopped.set()
+                if watcher is not None:
+                    watcher.join(timeout=1)
+                record['downstream_disconnected'] = disconnected.is_set()
                 conn.close()
                 record['finished_monotonic'] = time.monotonic()
                 with lock, output.open('a') as stream:
