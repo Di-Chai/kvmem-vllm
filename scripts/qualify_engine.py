@@ -1,6 +1,7 @@
 """Local GPU prerequisite smoke; deliberately not a KVMem throughput benchmark."""
 import argparse
 import concurrent.futures
+from dataclasses import asdict
 import fcntl
 import hashlib
 import json
@@ -24,9 +25,13 @@ def fetch(url, payload=None, timeout=180):
 def validate_archive(report, archived):
     if archived["active_requests"] or archived["archive_used_slots"] or archived["pending_downloads"]:
         raise RuntimeError("Finalized requests retained authority resources")
-    if not all(r["sealed_records_verified"] and r["history_end"] == r["accepted_tokens"]
+    block_tokens = archived.get("block_tokens", 128)
+    if not all(r["sealed_records_verified"] == r["history_end"] // block_tokens
+               and r["history_end"] == r["accepted_tokens"]
                for r in archived["completed"]):
         raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
+    if not sum(r["sealed_records_verified"] for r in archived["completed"]):
+        raise RuntimeError("Archive qualification did not exercise a complete immutable record")
     items = [report["single"], *report["concurrent"]]
     if len(items) != len(archived["completed"]):
         raise RuntimeError("Native and HTTP request sets differ")
@@ -50,6 +55,25 @@ def validate_archive(report, archived):
         raise RuntimeError("DFlash qualification did not exercise any rejected candidates")
 
 
+def read_frozen(path, digest, output_tokens):
+    path = Path(path)
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("Frozen input SHA256 does not match its manifest")
+    frozen = json.loads(data)
+    ids = frozen["input_ids"]
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 262144 - output_tokens or
+            any(type(token) is not int or not 0 <= token < 248320 for token in ids)):
+        raise ValueError("Frozen Qwen input contains invalid token IDs or exceeds context capacity")
+    if (type(frozen["query_begin"]) is not int or type(frozen["query_end"]) is not int or
+            not 0 <= frozen["query_begin"] < frozen["query_end"] <= len(ids)):
+        raise ValueError("Frozen query boundaries are outside the original input")
+    provenance = {"path": str(path.resolve()), "sha256": digest,
+        "id": frozen["id"], "tokens": len(ids), "query_begin": frozen["query_begin"],
+        "query_end": frozen["query_end"], "tool_execution": False}
+    return frozen, provenance
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", type=Path, required=True)
@@ -62,9 +86,44 @@ def main():
     parser.add_argument("--replay-probe", action="store_true")
     parser.add_argument("--compression-probe", action="store_true",
                         help="Single long-request K131072/G65536 selection/replay diagnostic")
+    parser.add_argument("--bounded-target", action="store_true",
+                        help="Scheduled semantic prefill and bounded target page ownership (no DFlash)")
+    parser.add_argument("--frozen-input", type=Path,
+                        help="Hash-checked native DeepSWE JSON; preserve its exact input IDs")
+    parser.add_argument("--frozen-sha256")
+    parser.add_argument("--concurrent-frozen-input", nargs=2, action="append", metavar=("PATH", "SHA256"),
+                        help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
+    parser.add_argument("--output-tokens", type=int, default=128)
+    parser.add_argument("--stream-metrics", action="store_true",
+                        help="Record HTTP token bursts, TTFT and correctly overlapping group rates")
     parser.add_argument("--history-repeat", type=int, default=0,
                         help="Prepend deterministic repository-like history to exercise chunked prefill")
     args = parser.parse_args()
+    if not 1 <= args.output_tokens <= 8192:
+        parser.error("output-tokens must be in [1, 8192]")
+    if args.bounded_target:
+        if any((args.dflash, args.compression_probe, args.replay_probe, args.rebuild_probe,
+                args.scheduled_rebuild_probe, args.history_repeat)):
+            parser.error("Bounded target requires its own non-speculative scheduled qualification")
+        args.archive_probe = True
+    frozen = frozen_provenance = None
+    frozen_concurrent = []
+    if bool(args.frozen_input) != bool(args.frozen_sha256):
+        parser.error("frozen-input and frozen-sha256 must be supplied together")
+    if args.concurrent_frozen_input and len(args.concurrent_frozen_input) != 4:
+        parser.error("concurrent-frozen-input must specify exactly four path/hash pairs")
+    try:
+        if args.frozen_input:
+            frozen, frozen_provenance = read_frozen(args.frozen_input, args.frozen_sha256, args.output_tokens)
+        frozen_concurrent = [read_frozen(path, digest, args.output_tokens)
+                             for path, digest in args.concurrent_frozen_input or ()]
+    except (ValueError, KeyError, OSError) as error:
+        parser.error(str(error))
+    if frozen is not None or frozen_concurrent:
+        if args.history_repeat or args.rebuild_probe or args.scheduled_rebuild_probe or args.replay_probe:
+            parser.error("Frozen history is not interchangeable with synthetic/identity probe fixtures")
+        if frozen_concurrent and args.compression_probe:
+            parser.error("Compression diagnostic has not qualified multi-request refresh")
     if args.compression_probe:
         if args.dflash or args.replay_probe or args.rebuild_probe or args.scheduled_rebuild_probe or args.history_repeat:
             parser.error("Compression diagnostic requires its own synchronous target-only long workload")
@@ -84,6 +143,10 @@ def main():
              "native identity-refresh diagnostic; no compressed KVMem serving"
              if args.rebuild_probe else "engine prerequisite, no KVMem enabled")
     report = {"scope": scope, "dflash": args.dflash}
+    if frozen_provenance is not None:
+        report["frozen_input"] = frozen_provenance
+    if frozen_concurrent:
+        report["frozen_concurrent"] = [provenance for _, provenance in frozen_concurrent]
     root = Path(__file__).resolve().parent.parent
     sources = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
                                       cwd=root, text=True).splitlines()
@@ -103,7 +166,7 @@ def main():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("KVMEM_")}
         env.update(HF_HUB_OFFLINE="1", VLLM_USE_V2_MODEL_RUNNER="1", MAX_JOBS="2",
                    CUDA_HOME="/usr/local/cuda-13", VLLM_PLUGINS="gguf,kvmem")
         env["PATH"] = f"{Path(sys.executable).parent}:/usr/local/cuda-13/bin:" + env["PATH"]
@@ -118,6 +181,9 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
+        if args.bounded_target:
+            env["KVMEM_BOUNDED_TARGET"] = "1"
+            env["KVMEM_WINDOW_METADATA"] = "1"
         if args.scheduled_rebuild_probe:
             env["KVMEM_SCHEDULED_REBUILD_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
@@ -128,15 +194,18 @@ def main():
                    "--hf-config-path", str(models / "Qwen3.8-27B-BF16"),
                    "--config-format", "hf", "--dtype", "bfloat16", "--language-model-only",
                    "--model-loader-extra-config", json.dumps({"mm_proj": str(models / "Qwen3.8-27B-mmproj-f16.gguf")}),
-                   "--kv-cache-dtype", "fp8_e4m3", "--max-model-len", "262144" if args.compression_probe else "8192",
+                   "--kv-cache-dtype", "fp8_e4m3", "--max-model-len", "262144" if args.compression_probe or args.bounded_target or frozen is not None or frozen_concurrent else str(max(8192, args.output_tokens + 4096)),
                    "--max-num-seqs", "4", "--max-num-batched-tokens", "1024",
                    "--gpu-memory-utilization", "0.72", "--no-enable-prefix-caching",
                    "--generation-config", "vllm", "--enforce-eager"]
-        if args.compression_probe:
+        if args.compression_probe or args.bounded_target or args.scheduled_rebuild_probe or frozen is not None or frozen_concurrent:
             command += ["--no-async-scheduling"]
+        if args.compression_probe:
             report["scope"] = "real K128K/G64K target compression/replay; unbounded native allocation; long C1 only"
-        if args.scheduled_rebuild_probe:
-            command += ["--no-async-scheduling", "--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
+        if args.bounded_target:
+            report["scope"] = "scheduled semantic target refresh and bounded native allocation; long C1, " + ("frozen long C4" if frozen_concurrent else "short C4")
+        if args.scheduled_rebuild_probe or args.bounded_target:
+            command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({
                             "kv_connector": "KVMemConnector", "kv_role": "kv_both",
                             "kv_connector_module_path": "vllm_kvmem.connector"})]
@@ -146,6 +215,7 @@ def main():
                 "num_speculative_tokens": 7, "draft_load_config": {"load_format": "safetensors"},
                 "kv_cache_dtype": "bfloat16"})]
         report["command"] = command
+        report["plugin_options"] = {key: value for key, value in env.items() if key.startswith("KVMEM_")}
         (args.output / "command.json").write_text(json.dumps(report, indent=2))
         process = None
         try:
@@ -183,28 +253,51 @@ def main():
                         f"Revision {i}: utilities.py defines add(a, b) returning a + b; its tests cover zero and negative values.\n"
                         for i in range(args.history_repeat))
                     prompts = [history + "\nCurrent task:\n" + prompt for prompt in prompts]
-                def complete(item):
+                def complete(item, phase="concurrent"):
                     index, prompt = item
                     begin = time.monotonic()
-                    result = fetch(url + "/v1/completions", {
+                    payload = {
                         "model": "qualification", "prompt": prompt, "temperature": 0,
-                        "max_tokens": 128, "seed": 104729, "return_token_ids": True},
-                        timeout=3600 if args.compression_probe else 180)
-                    return {"index": index, "elapsed_seconds": time.monotonic() - begin, "result": result}
+                        "max_tokens": args.output_tokens, "seed": 104729, "return_token_ids": True}
+                    timeout = 3600 if args.compression_probe or args.bounded_target or frozen is not None or frozen_concurrent else 180
+                    measured = None
+                    if args.stream_metrics:
+                        from vllm_kvmem.measurement import stream_completion
+                        measured = stream_completion(url + "/v1/completions", payload, timeout=timeout,
+                            trace_path=args.output / f"{phase}_{index}_stream.jsonl")
+                        result = {"id": measured.response_id, "usage": measured.usage,
+                            "choices": [{"index": 0, "text": measured.text, "token_ids": measured.token_ids,
+                                         "finish_reason": measured.finish_reason}]}
+                    else:
+                        result = fetch(url + "/v1/completions", payload, timeout=timeout)
+                    entry = {"index": index, "elapsed_seconds": time.monotonic() - begin, "result": result}
+                    if measured is not None:
+                        entry["trace"] = asdict(measured)
+                    return entry
                 single_prompt = prompts[0]
-                if args.compression_probe:
+                if frozen is not None:
+                    single_prompt = frozen["input_ids"]
+                    report["long_single_prompt_tokens"] = len(single_prompt)
+                elif args.compression_probe or args.bounded_target:
                     history = fetch(url + "/tokenize", {"model": "qualification", "prompt":
                         "Repository history: utilities.py defines add(a, b) returning a + b; tests cover zero and negative values.\n"})["tokens"]
                     task = fetch(url + "/tokenize", {"model": "qualification", "prompt":
                         "\nCurrent task:\n" + prompts[0]})["tokens"]
-                    length = 198656  # K+G+2048: crosses the genuine mainline refresh boundary.
+                    length = 134144 if args.bounded_target else 198656
                     single_prompt = (history * ((length + len(history) - 1) // len(history)))[:length-len(task)] + task
                     report["long_single_prompt_tokens"] = len(single_prompt)
-                report["single"] = complete((0, single_prompt))
+                report["single"] = complete((0, single_prompt), phase="single")
+                if frozen_concurrent:
+                    prompts = [item["input_ids"] for item, _ in frozen_concurrent]
                 begin = time.monotonic()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     report["concurrent"] = list(executor.map(complete, enumerate(prompts)))
                 report["concurrent_wall_seconds"] = time.monotonic() - begin
+                if args.stream_metrics:
+                    from vllm_kvmem.measurement import StreamTrace, summarize_group
+                    report["http_measurements"] = {
+                        "single": summarize_group([StreamTrace(**report["single"]["trace"])]),
+                        "concurrent": summarize_group([StreamTrace(**item["trace"]) for item in report["concurrent"]])}
                 report["memory"] = subprocess.check_output([
                     "nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader"], text=True).strip()
                 if args.capture_probe:
@@ -244,6 +337,23 @@ def main():
                             for r in compressed["refreshes"]):
                         raise RuntimeError("Real K128K/G64K compressed replay did not pass")
                     report["compression"] = compressed
+                if args.bounded_target:
+                    workers = [json.loads(line) for line in (args.output / "capture/bounded_refresh.jsonl").read_text().splitlines()]
+                    schedulers = [json.loads(line) for line in (args.output / "capture/scheduler_refresh.jsonl").read_text().splitlines()]
+                    by_command = {(x["request_id"], x["command_id"]): x for x in schedulers}
+                    if len(by_command) != len(workers) or not any(x["history_begin"] > 131072 for x in workers):
+                        raise RuntimeError("Bounded run lacks actual compressed refreshes or matching acknowledgments")
+                    for worker in workers:
+                        scheduler = by_command[(worker["request_id"], worker["command_id"])]
+                        selected = worker["selected_tokens"]
+                        query = worker["query_tokens"]
+                        if selected != scheduler["selected_tokens"] or query != scheduler["replay_tokens"]:
+                            raise RuntimeError("Worker and scheduler disagree on selected/query extent")
+                        for group in scheduler["groups"]:
+                            if (group["offset"] != worker["history_begin"] - selected or
+                                    group["blocks"] != (selected + query + group["block_tokens"] - 1) // group["block_tokens"]):
+                                raise RuntimeError("Native allocation does not match acknowledged working window")
+                    report["bounded"] = {"worker_refreshes": workers, "scheduler_commits": schedulers}
                 report["status"] = "passed"
         except Exception as error:
             report["status"] = "failed"

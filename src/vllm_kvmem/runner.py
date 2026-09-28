@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 
+from .cache_groups import full_attention_groups
 from .capture import capture_to, install_qwen_capture
 
 
@@ -25,6 +26,7 @@ def make_probe_runner(base):
             self._kvmem_probe_done = False
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
+            self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None
@@ -33,6 +35,12 @@ def make_probe_runner(base):
             self._kvmem_pending_capture = None
             self._kvmem_request_generations = {}
             self._kvmem_next_generation = 0
+            if self._kvmem_bounded_target:
+                if any(os.getenv(flag) == "1" for flag in (
+                        "KVMEM_REPLAY_PROBE", "KVMEM_COMPRESSION_PROBE", "KVMEM_REBUILD_PROBE", "KVMEM_SCHEDULED_REBUILD_PROBE")):
+                    raise ValueError("Bounded target execution requires its own scheduled refresh lifecycle")
+                from .bounded_runtime import install_bounded_target
+                install_bounded_target(self)
             if os.getenv("KVMEM_REPLAY_PROBE") == "1":
                 from .replay_probe import install_replay_probe
                 install_replay_probe(self)
@@ -105,9 +113,9 @@ def make_probe_runner(base):
                 window = self._kvmem_window_adapter.prepare(input_batch)
                 self._kvmem_window_batch = window
                 if window is not None:
-                    active_groups = {i for i, enabled in enumerate(self.block_tables._slot_mapping_enabled) if enabled}
+                    active_groups = set(full_attention_groups(self.kv_cache_config))
                     if active_groups != set(window.groups):
-                        raise ValueError("Window mapping must cover exactly the slot-mapped attention groups")
+                        raise ValueError("Window mapping must cover exactly the full-attention cache groups")
                     return super().prepare_attn(replace(input_batch, positions=window.positions))
             return super().prepare_attn(input_batch)
 
@@ -140,6 +148,10 @@ def make_probe_runner(base):
                     and (self._kvmem_probe_output / "armed").is_file()):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 get_kv_transfer_group().runtime = self._kvmem_refresh
+            if (getattr(self, "_kvmem_bounded_target", False) and not dummy_run
+                    and (self._kvmem_probe_output / "armed").is_file()):
+                from vllm.distributed.kv_transfer import get_kv_transfer_group
+                get_kv_transfer_group().runtime = self._kvmem_query_refresh
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
                     (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or

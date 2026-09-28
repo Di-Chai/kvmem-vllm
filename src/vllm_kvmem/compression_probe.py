@@ -14,6 +14,7 @@ from types import MethodType
 
 import torch
 
+from .cache_groups import full_attention_groups
 from .capture import capture_to
 from .native_state import NativeRecurrentState
 from .replay_probe import _clone, _equal
@@ -89,7 +90,7 @@ def install_compression_probe(runner):
         state_adapter.validate(bundle)
         checkpoints.restore(before, bundle.tensors)
         if runner._kvmem_window_adapter is None:
-            groups = tuple(i for i, enabled in enumerate(runner.block_tables._slot_mapping_enabled) if enabled)
+            groups = full_attention_groups(runner.kv_cache_config)
             runner._kvmem_window_adapter = WindowBatchAdapter(groups, cfg.select_budget + cfg.gen_budget)
         runner._kvmem_window_adapter.commit(request_id, history, selected)
 

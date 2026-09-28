@@ -7,10 +7,13 @@ checkpoints, MeanK scoring and fused raw-Q/K capture. Versioned vLLM hooks quali
 the draft loader, scheduler/worker identity refresh, and continuous target capture
 with native DFlash rejection counts. Raw K and FP8 V use bounded pinned transfers,
 mutable partial tails and immutable complete archive records. Actual native GDN
-restore/replay and a K131072/G65536 long-request compression diagnostic now pass.
+identity restore/replay is qualified. A long compressed replay completed byte
+checks, but its recurrent metadata classification required a subsequent correction;
+corrected bounded target serving is under GPU qualification.
 **Production bounded KVMem serving is not implemented yet. Installing the plugin
 does not enable historical reselection; the experimental paths require explicit
-diagnostic flags.** See [development milestones](docs/development.md).
+diagnostic flags.** See [development milestones](docs/development.md) and
+[qualification boundaries](docs/support.md).
 
 ## Host core development
 

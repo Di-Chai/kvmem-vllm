@@ -89,6 +89,32 @@ page ownership next. `RefreshTicket.replay_tokens` now retains destination pages
 for a query executed before acknowledgment, in addition to the selected prefix.
 Unit tests verify that commit cannot free those freshly written query pages.
 
+An opt-in `KVMEM_BOUNDED_TARGET=1` integration now wires the query into the native
+scheduler. Its source-checked `_reserve_prefill_lookahead` override clips admission
+at K and keeps non-final prefill chunks block-aligned. The existing
+`_build_kv_connector_meta` hook runs after native allocation and before counter
+advance; it reserves every attention group and marks `has_sync_kv_loads`, so V2
+delivers the command before model forward rather than deferring it to post-forward.
+Worker acknowledgments carry actual selected lengths. The scheduler validates all
+groups, retains selected-prefix plus replay-query pages, trims the remainder and
+sends a full updated page table on the next step. GDN allocation/history is intact.
+
+`bounded_runtime.py` performs the all-history bootstrap at K, then query-conditioned
+semantic prefill after K. It snapshots and restores every request in a provisional
+batch, including neighbours not being refreshed. Only the final native forward is
+sampled/captured. Target decode refresh is scheduled at an aligned boundary with
+one block of provisional headroom. This integration is synchronous, target-only,
+eager and APC-off; native long-request GPU qualification is in progress, so it is
+not an advertised production mode or a DFlash/concurrency performance result.
+
+Live request preemption is temporarily disabled rather than discarding GDN state
+without a qualified restore path. Cross-request capacity reservations/admission
+must therefore be completed before claiming arbitrary-load deadlock freedom;
+native full-input-size checks alone are not a reservation of all future growth.
+The shared archive currently allocates a logical quota of repository_blocks times
+max_num_seqs in this mode. Disk-capacity admission, background GC and asynchronous
+retirement remain necessary; sparse logical capacity is not guaranteed free space.
+
 Failed assembly marks its host transaction FAILED and installs a cleanup fence
 owning the plan, cache views and staging. It cannot commit or admit more work.
 Cancellation waits for that fence. A real GPU test injects an archive read failure
@@ -106,3 +132,21 @@ The first full integration should use explicit supported graph modes, prefix
 caching off, text-only, TP=1 and bounded C1/C4. Extend model/quantization/graph
 support only after these lifecycle tests pass. Unsupported cases must fail rather
 than falling back to a different KVMem algorithm or precision.
+
+Cache-group selection must use the semantic cache spec, not `uses_slot_mapping`:
+Qwen's native `MambaSpec` inherits that flag as true. `cache_groups.py` selects
+only supported causal `FullAttentionSpec` groups (unwrapping uniform specs), and
+both window metadata and worker refresh validation use that same set. A regression
+uses real native attention/Mamba specs and verifies that recurrent metadata gets
+no dense-window overrides. Earlier compression diagnostic results made before
+this correction cannot establish recurrent-metadata correctness.
+
+A separate `ReservedKVCacheManager` adapter now passes native CPU allocation tests
+but is not yet attached to the running qualification server. It holds lifetime
+credits for each request's bounded full-attention window plus fixed GDN state,
+and subtracts other requests' unallocated credits through native `reserved_blocks`.
+A refresh may return physical pages without surrendering its future growth credit.
+Free/pop operations release credits only after native bookkeeping succeeds;
+deferred physical pages remain unavailable in the original pool. Source hashes
+pin the allocation/free contract. This is GPU-page admission only: CPU/NVMe quota
+and I/O scheduling still require separate lifecycle integration.

@@ -1,0 +1,104 @@
+"""Reserve each admitted target request's future native GPU-page growth.
+
+The native allocator still owns every physical block. Reservations are credits,
+not extra allocations: trimming a window returns physical pages while retaining
+that request's right to grow again. This adapter is target-only, APC-off, TP=1.
+"""
+import hashlib
+import inspect
+from pathlib import Path
+
+from .window_manager import WorkingSetManager
+
+KV_MANAGER_SHA256 = "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2c8afa"
+
+
+class ReservedKVCacheManager:
+    def __init__(self, native, vllm_config):
+        from vllm.v1.core.kv_cache_manager import KVCacheManager
+        from vllm.v1.core.single_type_kv_cache_manager import MambaManager
+        from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
+
+        if hashlib.sha256(Path(inspect.getfile(KVCacheManager)).read_bytes()).hexdigest() != KV_MANAGER_SHA256:
+            raise ValueError("Unqualified native page reservation/free hooks")
+        if (vllm_config.speculative_config is not None or
+                vllm_config.cache_config.enable_prefix_caching or
+                vllm_config.cache_config.mamba_cache_mode != "none" or
+                vllm_config.max_concurrent_batches != 1):
+            raise ValueError("Capacity reservation requires synchronous target-only APC-off execution")
+        self.native = native
+        self.groups = tuple(native.coordinator.single_type_managers)
+        self.static_blocks = {}
+        for index, manager in enumerate(self.groups):
+            if manager.block_pool is not native.block_pool:
+                raise ValueError("Capacity reservation requires the native shared page pool")
+            if isinstance(manager, WorkingSetManager):
+                continue
+            if type(manager) is not MambaManager:
+                raise ValueError("Unqualified cache manager for lifetime reservation")
+            spec = manager.kv_cache_spec
+            if isinstance(spec, UniformTypeKVCacheSpecs):
+                spec = spec.first_spec
+            if (type(spec) is not MambaSpec or spec.num_speculative_blocks or spec.num_prefill_checkpoint_blocks or
+                    spec.mamba_cache_mode != "none" or spec.block_size < native.max_model_len):
+                raise ValueError("Unqualified recurrent-state reservation geometry")
+            self.static_blocks[index] = spec.max_num_blocks_per_req(vllm_config, native.max_model_len)
+        self.reservations = {}
+        self.rejections = 0
+        if self._demand(native.max_model_len) > native.block_pool.get_num_free_blocks():
+            raise ValueError("GPU page pool cannot fit one worst-case KVMem request")
+
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+
+    def _demand(self, tokens):
+        return sum(self.static_blocks[index] if index in self.static_blocks else
+                   (min(tokens, manager.capacity) + manager.block_size - 1) // manager.block_size
+                   for index, manager in enumerate(self.groups))
+
+    def _owned(self, request_id):
+        # APC is disabled: live pages are exclusive and null pages own no credit.
+        return sum(not block.is_null for manager in self.groups
+                   for block in manager.req_to_blocks.get(request_id, ()))
+
+    def _remaining(self, request_id, demand):
+        remaining = demand - self._owned(request_id)
+        if remaining < 0:
+            raise RuntimeError("Native request allocation exceeds its admitted lifetime bound")
+        return remaining
+
+    def allocate_slots(self, request, num_new_tokens, *args, **kwargs):
+        request_id = request.request_id
+        existing = self.reservations.get(request_id)
+        if existing is not None and existing[0] is not request:
+            raise ValueError("Request identity reused before releasing capacity")
+        tokens = min(self.native.max_model_len, request.num_prompt_tokens + request.max_tokens)
+        demand = self._demand(tokens)
+        if existing is not None and existing[1] != demand:
+            raise ValueError("Request lifetime bound changed after admission")
+        others = sum(self._remaining(key, quota) for key, (_, quota) in self.reservations.items()
+                     if key != request_id)
+        extra = kwargs.get("reserved_blocks", 0)
+        # Preserve any additional native connector constraint conservatively.
+        # This target-only connector normally contributes zero extra credits.
+        reserved = others + extra
+        if existing is None and self._remaining(request_id, demand) + reserved > self.block_pool.get_num_free_blocks():
+            self.rejections += 1
+            return None
+        result = self.native.allocate_slots(request, num_new_tokens, *args,
+                                             **{**kwargs, "reserved_blocks": reserved})
+        if result is not None:
+            self.reservations[request_id] = (request, demand)
+            self._remaining(request_id, demand)
+        return result
+
+    def free(self, request):
+        self.native.free(request)
+        self.reservations.pop(request.request_id, None)
+
+    def pop_blocks_for_free(self, request):
+        blocks = self.native.pop_blocks_for_free(request)
+        # Deferred physical blocks remain unavailable in the native pool. The
+        # completed request no longer needs credits for future growth.
+        self.reservations.pop(request.request_id, None)
+        return blocks

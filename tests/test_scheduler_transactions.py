@@ -109,3 +109,37 @@ def test_published_rows_include_blocks_allocated_in_resume_step(monkeypatch, tmp
     output = scheduler.schedule()
     assert all(len(row) == 3 for row in output.block_table_updates["a"])
     assert not scheduler.table_updates
+
+
+def test_query_command_precedes_counter_advance_and_ack_uses_actual_selected_extent(monkeypatch, tmp_path):
+    from vllm_kvmem.admission import QueryPolicy
+    scheduler, request, pools = setup_scheduler()
+    scheduler._bounded_target = True
+    scheduler.query_policy = QueryPolicy(16, 32, 32)
+    request.num_computed_tokens = 48
+    request.num_prompt_tokens = 80
+    output = SimpleNamespace(num_scheduled_tokens={"a": 16}, has_sync_kv_loads=False)
+    monkeypatch.setenv("KVMEM_RUNNER_PROBE_DIR", str(tmp_path))
+    metadata = scheduler._build_kv_connector_meta(scheduler.connector, output)
+    command, = metadata.commands
+    assert output.has_sync_kv_loads
+    assert request.num_computed_tokens == 48
+    assert all(ticket.history_end == 48 and ticket.replay_tokens == 16 for _, ticket in command.groups)
+    assert all(len(ticket.retained_block_ids) == 3 for _, ticket in command.groups)
+    request.num_computed_tokens += 16  # Native scheduler advance, not plugin accounting.
+    scheduler.connector.update_connector_output(KVConnectorOutput(kv_connector_worker_meta=
+        ControlCompletions([("a", command.command_id)], {"a": 16})))
+    assert all(m.offsets["a"] == 32 for m in scheduler.window_managers.values())
+    assert all(len(row) == 2 for row in scheduler.table_updates["a"])
+    assert request.num_computed_tokens == 64 and request.next_decode_eligible_step == 7
+    assert [p.get_num_free_blocks() for p in pools] == [12, 12]
+
+
+def test_invalid_worker_extent_cannot_partially_free_native_groups():
+    scheduler, request, pools = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    command = scheduler.connector.commands[0]
+    with pytest.raises(ValueError, match="selected extent"):
+        scheduler._complete_refresh("a", command.command_id, selected_tokens=33)
+    assert [p.get_num_free_blocks() for p in pools] == [10, 10]
+    assert request.request_id in scheduler.transactions

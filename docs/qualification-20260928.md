@@ -255,13 +255,21 @@ KVMEM_RUN_GPU_TESTS=1 .venv/bin/python -m pytest -q
 
 ## Real K128K/G64K target compression (2026-09-29)
 
-`engine_compression_k128g64_02` passed on the same Q8_0/FP8 target. The single
+`engine_compression_k128g64_02` completed its mechanical checks on the same Q8_0/FP8 target.
+**Correction (2026-09-29): this run does not qualify preservation of recurrent
+metadata.** The worker incorrectly classified all slot-mapped groups as attention;
+native `MambaSpec` also inherits `uses_slot_mapping=True`. This included recurrent
+groups in the dense-length override. Repeated execution can be byte-equal while
+using the same wrong metadata. The observed counts and byte equality below remain
+historical measurements, but semantic qualification is withdrawn pending a rerun.
+The corrected bridge identifies actual `FullAttentionSpec` groups, including
+uniform wrappers, and keeps recurrent length metadata outside window overrides. The single
 request contains exactly 198656 synthetic repository-history tokens and generates
 128 tokens. At logical history 195584, the original MeanK selector chooses 131072
 historical tokens. The assembler rebuilds 115200 tokens in 29 bounded transfer
 chunks and skips 15872 stable tokens. The 1024-token query is replayed with dense
-positions and attention lengths, while GDN and native request counters retain
-logical history. A second restored replay has identical output and GDN state bytes.
+positions and attention lengths. Native request counters retained logical history;
+the correction above supersedes the earlier assertion about GDN length metadata. A second restored replay has identical output and GDN state bytes.
 Only the final pass is sampled and published to the authority.
 
 Four subsequent short requests each generate 128 tokens. Across the long C1 and

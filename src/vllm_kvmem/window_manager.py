@@ -101,28 +101,32 @@ class WorkingSetManager:
         self.pending[request_id] = ticket
         return ticket
 
-    def validate_refresh(self, ticket: RefreshTicket):
+    def validate_refresh(self, ticket: RefreshTicket, selected_tokens=None):
         if self.pending.get(ticket.request_id) is not ticket:
             raise ValueError("Stale or foreign refresh completion")
         blocks = self.native.req_to_blocks[ticket.request_id]
         if tuple(b.block_id for b in blocks) != ticket.original_block_ids:
             raise RuntimeError("Native allocation changed while refresh was pending")
+        if selected_tokens is not None and (type(selected_tokens) is not int or
+                                           not 0 < selected_tokens <= ticket.window_tokens):
+            raise ValueError("Worker selected extent exceeds the reserved historical prefix")
 
     def abort_preparation(self, ticket: RefreshTicket):
         """Undo preparation only before a worker command has been published."""
         self.validate_refresh(ticket)
         del self.pending[ticket.request_id]
 
-    def commit_refresh(self, ticket: RefreshTicket, completion) -> bool:
-        self.validate_refresh(ticket)
+    def commit_refresh(self, ticket: RefreshTicket, completion, selected_tokens=None) -> bool:
+        self.validate_refresh(ticket, selected_tokens)
         if not completion.query():
             return False
         blocks = self.native.req_to_blocks[ticket.request_id]
-        keep = len(ticket.retained_block_ids)
+        selected_tokens = ticket.window_tokens if selected_tokens is None else selected_tokens
+        keep = (selected_tokens + ticket.replay_tokens + self.native.block_size - 1) // self.native.block_size
         removed = blocks[keep:]
         del blocks[keep:]
         self.native.block_pool.free_blocks(reversed(removed))
-        self.offsets[ticket.request_id] = ticket.history_end - ticket.window_tokens
+        self.offsets[ticket.request_id] = ticket.history_end - selected_tokens
         del self.pending[ticket.request_id]
         return True
 

@@ -46,10 +46,10 @@ class CaptureRuntime:
         self.row_elements = len(self.layers) * self.heads * self.dim
         record_bytes = self.row_elements * self.config.block_tokens * 3
         output.mkdir(parents=True, exist_ok=True)
-        self.archive = AsyncArchive(str(output / "continuous_archive"), record_bytes,
-                                    self.config.repository_blocks)
         max_tokens = runner.vllm_config.scheduler_config.max_num_batched_tokens
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
+        archive_records = self.config.repository_blocks * (max_reqs if getattr(runner, "_kvmem_bounded_target", False) else 1)
+        self.archive = AsyncArchive(str(output / "continuous_archive"), record_bytes, archive_records)
         self.downloads = PackedDownloads(max_tokens * self.row_elements * 3 + (4 * max_reqs + 1) * 8,
                                          2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)

@@ -18,7 +18,8 @@ def register_plugin() -> None:
     if os.getenv("KVMEM_WINDOW_METADATA") == "1":
         from .compat import enable_window_metadata
         enable_window_metadata()
-    # No global monkeypatches and no CUDA initialization in discovery.
+    # Discovery alone changes nothing and initializes no CUDA. Explicit options
+    # above install version-checked import adapters in this worker process.
     _registered = True
 
 

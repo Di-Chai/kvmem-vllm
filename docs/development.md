@@ -37,8 +37,9 @@ bindings are implemented. Reference FP8 materialization, packed GPU transfers,
 checkpoint ownership and MeanK scoring are implemented; fused raw-Q/K capture
 preserves upstream kernel outputs in GPU tests. Narrow versioned runner hooks
 are being qualified on the actual model. The scheduler/worker identity-refresh
-transaction is now qualified on the actual model. A real long-request compressed
-replay also passes, while production bounded serving remains unimplemented.
+transaction is now qualified on the actual model. A long-request compressed replay completed determinism checks, but its recurrent
+metadata classification was subsequently found incorrect; that semantic claim is
+withdrawn. Experimental bounded target serving is now under live qualification.
 No qualified KVMem throughput result exists.
 
 Follow-up: real native FP8 pages have now completed an identity roundtrip through
@@ -84,3 +85,26 @@ are necessary. The old frozen DeepSWE native input manifest is available at
 it must be hash-checked and used without synthetic padding for future comparison.
 That reference used block=32, whereas these mechanical integrations use block=128;
 freeze matching granularity and query policy before reporting a matched speedup.
+
+The initial bounded target scheduler/worker path is now wired and CPU-tested,
+using native allocation, per-query commands and actual-length acknowledgments.
+Its full-model run is still pending. A real frozen Effect DeepSWE input containing
+197110 tokens has completed on the native uncompressed reference: 77 output tokens,
+natural EOS and a contextually relevant complete tool call. This is one continuation
+check, not executed SWE task success. The same input is now used for the bounded
+candidate, with all K/G/weight/KV settings preserved. No throughput improvement is
+asserted. The first bounded startup found a native warmup lifecycle issue (the
+global connector is temporarily disabled); callback installation now waits for the
+armed real-request phase, with a dedicated regression test.
+
+A second bounded run (`engine_deepswe_effect_bounded_02`) reached 131072 accepted
+history tokens and failed before its first refresh. Worker validation correctly
+rejected a mismatch between scheduler full-attention groups and the worker's
+slot-mapped groups. `MambaSpec` inherits slot-mapping capability too, so that flag
+cannot classify semantic attention. A shared helper now selects actual
+`FullAttentionSpec` groups, including uniform wrappers. This also corrects the
+older compression diagnostic: its repeated byte equality did not prove recurrent
+metadata was unmodified. The original result is retained with this correction in
+the qualification record. The combined CPU/GPU component suite now passes 80 tests.
+The same real 197110-token request is being rerun with SSE token-arrival recording;
+there is still no qualified bounded throughput or long-concurrency result.

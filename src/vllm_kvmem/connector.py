@@ -28,6 +28,7 @@ class ControlMetadata(KVConnectorMetadata):
 @dataclass
 class ControlCompletions(KVConnectorWorkerMetadata):
     completed: list[tuple[str, int]] = field(default_factory=list)
+    selected_windows: dict[str, int] = field(default_factory=dict)
 
     def aggregate(self, other):
         raise RuntimeError("Working-set control currently requires a single worker rank")
@@ -44,6 +45,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.cancel_updates = set()
         self.worker_jobs = {}
         self.worker_completions = []
+        self.worker_selected_windows = {}
         self.runtime = None
         self.scheduler_completion = None
 
@@ -74,6 +76,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         for request_id, (command, job) in list(self.worker_jobs.items()):
             if job.query():
                 self.worker_completions.append((request_id, command.command_id))
+                if getattr(job, "selected_tokens", None) is not None:
+                    self.worker_selected_windows[request_id] = job.selected_tokens
                 del self.worker_jobs[request_id]
         done = {request_id for request_id in self.cancelled if request_id not in self.worker_jobs}
         self.cancelled.difference_update(done)
@@ -82,8 +86,9 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
     def build_connector_worker_meta(self):
         if not self.worker_completions:
             return None
-        result = ControlCompletions(self.worker_completions)
+        result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
         self.worker_completions = []
+        self.worker_selected_windows = {}
         return result
 
     def update_connector_output(self, connector_output):
@@ -96,7 +101,11 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                     raise ValueError("Stale or foreign worker completion")
                 if self.scheduler_completion is None:
                     raise RuntimeError("Missing scheduler completion handler")
-                self.scheduler_completion(request_id, command_id)
+                if request_id in metadata.selected_windows:
+                    self.scheduler_completion(request_id, command_id,
+                                              selected_tokens=metadata.selected_windows[request_id])
+                else:
+                    self.scheduler_completion(request_id, command_id)
                 del self.pending[request_id]
         self.cancelled.difference_update(connector_output.finished_sending or ())
 

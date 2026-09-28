@@ -107,3 +107,22 @@ def test_ordinary_finish_needs_no_fake_prefix_hit_or_delayed_free():
     assert not scheduler.has_pending_push_work()
     with pytest.raises(ValueError, match="prefix"):
         scheduler.update_state_after_alloc(request, None, 1)
+
+
+def test_worker_selected_extent_is_carried_only_with_its_completed_command():
+    from vllm_kvmem.bounded_runtime import QueryJob
+    scheduler, worker = pair()
+    event = Event()
+    job = QueryJob(RefreshCommand("a", 7, ()), selected_tokens=123)
+    worker.runtime = lambda _: job
+    commits = []
+    scheduler.scheduler_completion = lambda *args, **kwargs: commits.append((args, kwargs))
+    scheduler.queue(job.command)
+    send(scheduler, worker)
+    assert poll(scheduler, worker).is_empty()
+    job.event = event
+    assert poll(scheduler, worker).is_empty()
+    event.done = True
+    poll(scheduler, worker)
+    assert commits == [(("a", 7), {"selected_tokens": 123})]
+    assert poll(scheduler, worker).is_empty()
