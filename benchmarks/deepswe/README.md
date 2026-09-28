@@ -45,6 +45,7 @@ substitution is introduced.
      --api-base http://BRIDGE_ADDRESS:443/v1 \
      --health-api-base http://127.0.0.1:SERVER_PORT/v1 \
      --engine-evidence /path/to/server-artifact/server_state.json \
+     --relay-evidence /path/to/relay-artifact/resources.json \
      --output /path/to/new-agent-artifact
    ```
 
@@ -54,6 +55,9 @@ substitution is introduced.
    Pier commit/version, mini-swe-agent version and task-manifest hash are checked.
    The wheel SHA in the historical lock is retained as provenance; this runner
    does not claim to have reverified the wheel downloaded inside every container.
+   Actual execution checks that the ready backend, managed relay and host health
+   URL describe the same endpoint. It retains the per-task native request records
+   and token-weighted per-request decode separately from concurrent throughput.
 4. Inspect every task's official result, full trajectory and produced patch,
    plus relay metrics and server archive/resource state. Then stop the owned
    relay and server using their recorded manager PIDs. Do not stop other

@@ -94,6 +94,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--engine-evidence', type=Path, required=True,
                         help='Exact server command/config/source manifest for this running service')
+    parser.add_argument('--relay-evidence', type=Path,
+                        help='Required for execution: ready managed relay resources.json and its native request journal')
     parser.add_argument('--prepare-only', action='store_true', help='Validate/snapshot without invoking Pier; not a quality result')
     args = parser.parse_args()
     # Resolving the interpreter symlink would select the base Python and lose
@@ -115,10 +117,23 @@ def main():
     actual = check_runtime(args.pier_python, lock)
     # Read and freeze evidence; never alter an existing inference service.
     evidence = json.loads(args.engine_evidence.read_text())
+    relay = None
+    if not args.prepare_only:
+        if args.relay_evidence is None:
+            parser.error('Executed qualification requires relay-evidence for native timing and backend identity')
+        relay = json.loads(args.relay_evidence.read_text())
+        if (evidence.get('state') != 'ready' or relay.get('state') != 'ready'
+                or relay.get('upstream_port') != evidence.get('port')
+                or relay.get('api_base') != args.api_base
+                or (args.health_api_base or '').rstrip('/') != evidence.get('api_base')):
+            raise RuntimeError('Ready backend, relay address/port and host health endpoint must describe the same service')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(Path(__file__), out / 'qualify_agent.py')
     shutil.copytree(POLICY, out / 'agent_source', ignore=shutil.ignore_patterns('__pycache__'))
     (out / 'engine_evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    if relay is not None:
+        (out / 'relay_evidence.json').write_text(json.dumps(relay, indent=2) + '\n')
     tasks = []
     for task_id in args.task:
         task_out = out / task_id
@@ -130,6 +145,7 @@ def main():
         tasks.append({'task_id': task_id, 'task_files': files, 'command': command})
     report = {'scope': 'official executed DeepSWE tasks on one shared existing API; no persistent-session claim',
               'created_at': datetime.now(timezone.utc).isoformat(), 'runtime': actual,
+              'harness_sha256': digest(out / 'qualify_agent.py'),
               'engine_evidence_sha256': digest(args.engine_evidence), 'concurrency': args.concurrency,
               'tasks': tasks, 'prepared_only': args.prepare_only, 'status': 'prepared'}
     (out / 'plan.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -205,6 +221,29 @@ def main():
             raise
     report.update(status='interrupted' if stopped.is_set() else 'finished', results=results,
                   all_scored=all(r['status'] == 'scored' for r in results))
+    journal = args.relay_evidence.parent / 'requests.jsonl'
+    lines = journal.read_text().splitlines() if journal.exists() else []
+    requests = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # The live relay may be appending its next record.
+        if record.get('task_id') in set(args.task) and record.get('path') in ('/v1/chat/completions', '/v1/completions'):
+            requests.append(record)
+    (out / 'native_requests.json').write_text(json.dumps(requests, indent=2) + '\n')
+    report['native_metrics'] = {}
+    for task in args.task:
+        records = [r for r in requests if r['task_id'] == task]
+        timed = [r for r in records if r.get('status') == 200 and r.get('native_decode_tokens_per_second') is not None]
+        seconds = sum(r['native_metrics']['generation_time_ms'] for r in timed) / 1000
+        tokens = sum(r['usage']['completion_tokens'] - 1 for r in timed)
+        report['native_metrics'][task] = {
+            'recorded_requests': len(records), 'timed_decode_requests': len(timed),
+            'http_error_requests': sum(r.get('status') != 200 for r in records),
+            'weighted_per_request_decode_tokens_per_second': tokens / seconds if seconds else None,
+            'summed_decode_seconds': seconds, 'decode_tokens': tokens,
+            'scope': 'sum(tokens-1)/sum(native decode intervals); not aggregate throughput under overlap'}
     (out / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({'results': results, 'all_scored': report['all_scored']}))
     if not report['all_scored']:

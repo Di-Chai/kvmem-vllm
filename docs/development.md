@@ -427,3 +427,24 @@ existing QW3 containers and its occupied port 443 were untouched. Artifacts:
 `agent_prepare_02`, `agent_relay_smoke_01`, `agent_harness_complete_cpu.xml`.
 See `benchmarks/deepswe/README.md` for execution/measurement scope. Actual agent
 attempts and native-metric collection on those attempts remain to be run.
+
+The long-C4 Tensor Core gate has now completed: same frozen inputs/output
+lengths, ten matching refreshes and complete resource cleanup. Whole-window
+arrival decode is 18.619 tok/s versus 10.443 earlier; service time falls from
+1862.795 to 761.158 s and longest gap from 25.789 to 14.846 s. Mixed prefill /
+refresh interference remains. Three outputs differ, so executed task-quality
+qualification is still mandatory. The first shared agent backend is being
+started from this completed recipe with native per-request timing enabled.
+
+The shared Tensor Core agent backend is ready with native timing and speculative
+summary metrics. A new owned relay links it to two concurrent official attempts:
+`termenv-preserve-ansi-resets` and `tomlkit-toml-table-converters`, under
+`artifacts/agent_tensorcore_c2_initial_01`. The attempts are still in environment
+build/setup, not scored. Their task/adapter/harness and ready backend/relay
+evidence are detached snapshots. No retry or solver-policy change is introduced.
+
+An additional packaging check builds an sdist, extracts it into a fresh directory
+with no `.so`, recompiles the native extension, installs that wheel into the
+isolated CPU environment and passes 22 core/storage/GC cases. Archive/wheel hashes
+and logs are in `artifacts/source-build-smoke`. Full GPU clean installation and
+release qualification remain separate gates.

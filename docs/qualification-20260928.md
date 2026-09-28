@@ -653,3 +653,41 @@ interval, long-context benchmark or task-quality acceptance. The four measured
 C4 token streams still differ (common prefixes 121, 3, 1 and 43), so the opt-in
 adapter remains experimental. The next gate uses the same four frozen long
 histories as the corrected long-C4 lifecycle run.
+
+## Long C4 with Q8 Tensor Core (2026-09-29)
+
+`engine_long_c4_dflash_tensorcore_01` at `2eae320` passes four compressed
+requests, ten matched worker/scheduler refreshes and final native/resource
+cleanup. It uses the same four frozen input IDs (532797 prompt tokens),
+Q8_0/FP8/DFlash2, K131072/G65536, batch4224/per-request1024, cadence8,
+36 GiB CPU read cache, packed/direct assembly and async publication-only
+retirement as `engine_long_c4_dflash_direct_cadence_02`.
+
+| Metric | Earlier corrected native Q8 | Tensor Core |
+| --- | ---: | ---: |
+| Output tokens | 498 | 498 |
+| Whole-group arrival decode | 10.443 tok/s | 18.619 tok/s |
+| Arrival decode window | 47.303 s | 26.533 s |
+| Whole-group service time | 1862.795 s | 761.158 s |
+| Longest burst gap | 25.789 s | 14.846 s |
+| Sampled owned GPU peak | 81222 MiB | 80018 MiB |
+
+Observed ratios are 1.783x for the complete arrival-decode window and 2.447x
+for service time. No prefill-interference interval is removed. The earlier
+baseline predates exact terminal clipping; this is not a repeated controlled
+single-change confidence estimate. Request lengths/finish reasons match, but
+three output streams differ (common prefixes 5, 128 [identical], 66 and 0).
+Task-quality equivalence and persistent sessions remain unqualified.
+
+Per-input decode rates are 59.223 / 11.916 / 5.033 / 50.090 tok/s; TTFT is
+758.644 / 750.400 / 734.598 / 758.597 seconds. Mixed prefill and refresh still
+block already-generating requests. Distinct refresh intervals total 41.989 s;
+assembly totals 12.296 s, including 10.065 s host preparation, with unchanged
+36660314112 uploaded bytes. All four terminal archive lengths now equal
+prompt+output-1 (494 archived generation rows overall). Native requests,
+reservations, owned blocks, authorities, archive slots and pending downloads
+return to zero; 1072 of 1073 physical blocks are free (one null block).
+
+This run verifies long-context lifecycle and measures useful improvement, but
+does not satisfy final long-running agent or high-throughput acceptance.
+Full derived evidence: `artifacts/engine_long_c4_dflash_tensorcore_01/comparison_summary.json`.

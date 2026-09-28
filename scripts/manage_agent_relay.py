@@ -1,9 +1,11 @@
 """Own a dedicated Docker bridge address and metrics relay; no GPU/model work."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -24,12 +26,15 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     script = Path(__file__).with_name('agent_api_relay.py').resolve()
+    snapshot = output / 'agent_api_relay.py'
+    shutil.copy2(script, snapshot)
     name = 'kvmem-vllm-agent-' + uuid.uuid4().hex[:12]
     stopped = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopped.set())
     signal.signal(signal.SIGTERM, lambda *_: stopped.set())
     network = container = None
     record = {'name': name, 'manager_pid': os.getpid(), 'upstream_port': args.upstream_port, 'state': 'starting'}
+    record['relay_source_sha256'] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     state_path = output / 'resources.json'
 
     def save():
@@ -47,7 +52,7 @@ def main():
         address = data['IPAM']['Config'][0]['Gateway']
         container = docker('run', '--rm', '-d', '--pull', 'never', '--name', name,
             '--label', 'kvmem-vllm.owner=' + name, '--network', 'host', '--entrypoint', 'python3',
-            '-v', f'{script}:/opt/kvmem/agent_api_relay.py:ro',
+            '-v', f'{snapshot}:/opt/kvmem/agent_api_relay.py:ro',
             '-v', f'{output}:/records', image['Id'], '/opt/kvmem/agent_api_relay.py',
             '--listen-host', address, '--listen-port', '443', '--upstream-port', str(args.upstream_port),
             '--output', '/records/requests.jsonl')
