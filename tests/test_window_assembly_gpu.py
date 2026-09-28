@@ -108,6 +108,7 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
     assert assembler.close()
     del plan, result
     if retain_sink:
+        checkpoint = authority.memory.checkpoint_window()
         # Alternately overwrite position 16, then restore a cold block whose
         # previous baked position is also 16. It must never use the skip path.
         for cold in (1, 2, 1):
@@ -128,5 +129,32 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
             authority.memory.attach_completion(result)
             assert authority.memory.commit_selection() and assembler.close()
             del plan, result
+        # A session import gets different native pages. Restore the checkpoint's
+        # original noncontiguous frame and reload V as well as re-RoPE K, even
+        # where a record's dense position did not change.
+        fresh_table = table.flip(0).contiguous()
+        for layer, (rk, rv) in zip(native_layers, expected):
+            layer.kernel_page_table = fresh_table
+            layer.key.view(torch.uint8).fill_(19)
+            layer.value.view(torch.uint8).fill_(19)
+            rk.view(torch.uint8).fill_(19)
+            rv.view(torch.uint8).fill_(19)
+        plan = authority.memory.restore_window(checkpoint)
+        assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1,
+            packed=packed, direct_pinned_reads=direct)
+        result = assembler.assemble(authority, plan)
+        result.event.synchronize()
+        assert result.rebuilt_tokens == 32 and result.skipped_tokens == 0
+        fresh_slots = fresh_table[positions // 8].long() * 8 + positions % 8
+        for i, (rk, rv) in enumerate(expected):
+            selected_raw = raw[i, chosen].cuda()
+            rotated = neox_rope(selected_raw, trig[positions, :16], trig[positions, 16:])
+            ops.reshape_and_cache_flash(rotated, values[i, chosen].cuda(),
+                rk, rv, fresh_slots, 'fp8_e4m3', scale, scale)
+            assert torch.equal(native_layers[i].key.view(torch.uint8), rk.view(torch.uint8))
+            assert torch.equal(native_layers[i].value.view(torch.uint8), rv.view(torch.uint8))
+        authority.memory.attach_completion(result)
+        assert authority.memory.commit_selection() and assembler.close()
+        del plan, result, checkpoint
     assert authority.close()
     assert archive.close()

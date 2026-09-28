@@ -83,6 +83,13 @@ The imported core's bounded repository checkpoint/rewind transactions are expose
 through `RequestMemory`. A checkpoint pins its current working prefix. Rewind
 requires a completion fence before publishing shorter history, holds discarded
 suffix leases through cleanup, and permanently invalidates later checkpoints.
+The authority adapter waits for publication, removes discarded suffixes from the
+retrieval index and retains their archive resources until all readers drain.
+GC continues running and keeps its hole count relative to the retained branch.
+`WindowCheckpoint` preserves selected generations and their original dense frame;
+restore prepares a full K/V rebuild into newly allocated native pages, including
+unchanged-position records. Host tests cover repeated rewind with GC and new
+generations. The corresponding new-page FP8 GPU assembly checks are still pending.
 The Python adapter currently accepts sealed-record boundaries only. Partial-tail
 branching requires archive generation handling; it must not overwrite immutable
 published records in place. These are host ownership primitives, not completed

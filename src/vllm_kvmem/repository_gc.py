@@ -55,12 +55,18 @@ class AuthorityGc:
         # One request step, not a manufactured step per prefill chunk/token.
         memory._store.gc_begin_step()
 
-    def drain(self, records):
+    def drain(self, records, discarded=None):
+        discarded = {} if discarded is None else discarded
         while True:
             try:
                 key = self.tombstones.get_nowait()
             except Empty:
                 break
+            if discarded.pop(key, None) is not None:
+                # A rewind suffix is no longer accepted history. It can include
+                # an unpublished mutable tail; do not count it as a GC hole in
+                # the retained branch or demand a durable complete record.
+                continue
             record = records.pop(key, None)
             if record is None or not record.archived:
                 raise RuntimeError('GC released a missing or unpublished authority generation')

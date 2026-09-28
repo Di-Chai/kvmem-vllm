@@ -52,6 +52,9 @@ class RequestAuthority:
         self.records: dict[tuple[int, int], Record] = {}
         self.writes = []
         self.closing = False
+        self.discarded_records: dict[tuple[int, int], Record] = {}
+        self._rewind_position = None
+        self._rewind_committed = False
         self.gc = None
         if gc_config is not None:
             from .repository_gc import AuthorityGc
@@ -63,7 +66,7 @@ class RequestAuthority:
 
     def poll(self):
         if self.gc is not None:
-            self.gc.drain(self.records)
+            self.gc.drain(self.records, self.discarded_records)
         remaining = []
         completed = 0
         for job, keys in self.writes:
@@ -80,10 +83,27 @@ class RequestAuthority:
                 self.memory._store.gc_flags(record.handle, flags, flags)
             completed += 1
         self.writes = remaining
+        for key, record in list(self.discarded_records.items()):
+            result = self.memory.repository.reclaim(record.handle,
+                lambda entry: self.archive.reclaim(self.memory.request_id, entry))
+            if result == _native.ReclaimResult.RECLAIMED:
+                del self.discarded_records[key]
+        if self.gc is not None:
+            # The background reclaimer may have finished a discarded generation
+            # between our first drain and reclaim attempt. Its tombstone owns
+            # index removal; neither worker fabricates a second release.
+            self.gc.drain(self.records, self.discarded_records)
         return completed
+
+    def _require_open(self):
+        if self.closing:
+            raise RuntimeError('Authority is closing')
+        if self._rewind_position is not None:
+            raise RuntimeError('Authority rewind has not finished suffix cleanup')
 
     def flush(self):
         """Submit complete blocks only; false means archive queue/capacity pressure."""
+        self._require_open()
         self.poll()
         records = [r for r in self.records.values()
                    if r.count == self.shape[1] and not r.submitted]
@@ -118,8 +138,7 @@ class RequestAuthority:
         raw/values: [layers, candidate tokens, KV heads, head_dim]. The caller
         must have observed its DMA fence before passing these CPU tensors.
         """
-        if self.closing:
-            raise RuntimeError("Authority is closing")
+        self._require_open()
         if (raw.device.type != "cpu" or values.device.type != "cpu" or
                 raw.dtype != self.raw_dtype or values.dtype != torch.uint8 or
                 raw.ndim != 4 or raw.shape != values.shape or
@@ -146,7 +165,7 @@ class RequestAuthority:
         if self.gc is not None:
             # Recycled reservations become ready after their release callback
             # queued the old generation. Drop it before installing a new index.
-            self.gc.drain(self.records)
+            self.gc.drain(self.records, self.discarded_records)
         # Validate the complete write map before mutating any existing tail.
         for span in spans:
             key = record_key(span.handle)
@@ -183,6 +202,7 @@ class RequestAuthority:
     @contextmanager
     def index_snapshot(self):
         """Pin every scored generation until selection has acquired its leases."""
+        self._require_open()
         self.poll()
         leases, ordered = [], []
         try:
@@ -210,6 +230,7 @@ class RequestAuthority:
 
     def read_records(self, handles):
         """Read a bounded batch through one coalescible native archive I/O job."""
+        self._require_open()
         self.poll()
         records = [self.records[record_key(handle)] for handle in handles]
         leases = [self.memory.repository.pin(handle) for handle in handles]
@@ -248,8 +269,7 @@ class RequestAuthority:
         The returned plan still needs fenced GPU assembly and commit_selection.
         Queries must come from the model's content-frame query probe/replay.
         """
-        if self.closing:
-            raise RuntimeError("Authority is closing")
+        self._require_open()
         from .retrieval import mean_key_scores
         with self.index_snapshot() as (records, means):
             handles = [r.handle for r in records]
@@ -267,6 +287,54 @@ class RequestAuthority:
             return self.memory.select({h.slot: score for h, score in zip(handles, scores)},
                                       tuple(slot for slot, _ in mandatory))
 
+    def begin_rewind(self, checkpoint):
+        """Quiesce publication and prepare a block-aligned branch rollback.
+
+        None means existing archive publication must drain first; an empty tuple
+        is a valid no-suffix transaction. The caller must also quiesce GPU/model
+        users and supply their cleanup fence before poll_rewind can commit.
+        """
+        self._require_open()
+        if not self.memory.checkpoint_valid(checkpoint):
+            raise ValueError('Stale or foreign authority checkpoint')
+        if checkpoint.position % self.shape[1]:
+            raise ValueError('Rewind requires a sealed-record boundary')
+        if not self.flush() or self.writes:
+            return None
+        spans = self.memory.begin_rewind(checkpoint)
+        self._rewind_position = checkpoint.position
+        self._rewind_committed = False
+        return spans
+
+    def attach_rewind_completion(self, fence):
+        if self._rewind_position is None or self._rewind_committed:
+            raise RuntimeError('No uncommitted authority rewind')
+        self.memory.attach_completion(fence)
+
+    def poll_rewind(self):
+        """Retire the old index, then yield until all suffix I/O readers release."""
+        if self._rewind_position is None or self.closing:
+            raise RuntimeError('No live authority rewind')
+        if not self._rewind_committed:
+            if not self.memory.commit_rewind():
+                return False
+            self._rewind_committed = True
+            for key, record in list(self.records.items()):
+                if record.history_begin >= self._rewind_position:
+                    self.discarded_records[key] = self.records.pop(key)
+            if self.gc is not None:
+                # GC accounting is branch-relative. Previously collected suffix
+                # records are not holes in the now-shorter accepted prefix.
+                self.gc.reclaimed_records = self.history_end // self.shape[1] - len(self.records)
+                if self.gc.reclaimed_records < 0:
+                    raise RuntimeError('Rewound index exceeds its sealed prefix')
+        self.poll()
+        if self.discarded_records:
+            return False
+        self._rewind_position = None
+        self._rewind_committed = False
+        return True
+
     def close(self):
         self.closing = True
         self.stop_gc()
@@ -274,20 +342,21 @@ class RequestAuthority:
         if self.writes or not self.memory.close():
             return False
         all_reclaimed = True
-        for key, record in list(self.records.items()):
-            result = self.memory.repository.reclaim(record.handle,
-                lambda entry: self.archive.reclaim(self.memory.request_id, entry))
-            if result == _native.ReclaimResult.RECLAIMED:
-                del self.records[key]
-            else:
-                all_reclaimed = False
+        for records in (self.records, self.discarded_records):
+            for key, record in list(records.items()):
+                result = self.memory.repository.reclaim(record.handle,
+                    lambda entry: self.archive.reclaim(self.memory.request_id, entry))
+                if result == _native.ReclaimResult.RECLAIMED:
+                    del records[key]
+                else:
+                    all_reclaimed = False
         return all_reclaimed
 
     def stop_gc(self):
         """Freeze the live index before final checksum iteration and teardown."""
         if self.gc is not None:
             self.gc.stop()
-            self.gc.drain(self.records)
+            self.gc.drain(self.records, self.discarded_records)
 
     @property
     def gc_reclaimed_records(self):

@@ -254,6 +254,20 @@ PYBIND11_MODULE(_native, m) {
         .def("checkpoint", &KvMemStore::repository_checkpoint,
              py::arg("position"), py::arg("pin_working_set") = true)
         .def("checkpoint_valid", &KvMemStore::repository_checkpoint_valid)
+        .def("working_records", [](const KvMemStore &store) {
+            // Value tuples only: no block/Store views survive into a checkpoint.
+            std::vector<std::tuple<uint32_t, uint64_t, uint64_t, uint32_t, int64_t>> records;
+            for (const auto &block : store.blocks()) {
+                if (block.repository_generation && block.n_tokens &&
+                        (block.in_working_set || block.tier == KvTier::GPU))
+                    records.emplace_back(block.block_id, block.repository_generation,
+                        block.history_pos_start, block.n_tokens, block.baked_pos);
+            }
+            std::sort(records.begin(), records.end(), [](const auto &a, const auto &b) {
+                return std::get<4>(a) < std::get<4>(b);
+            });
+            return records;
+        })
         .def("prepare_rewind", &KvMemStore::prepare_repository_rewind, py::keep_alive<0, 1>())
         .def("read", [](const KvMemStore &s, uint64_t b, uint32_t n) {
             return OwnedRead(s.repository_storage_read(b, n));

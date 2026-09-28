@@ -659,3 +659,41 @@ index rewind, GDN/draft restoration, exact prompt comparison and idle-session
 admission remain to be connected and GPU-tested. `engine-integration.md` now
 describes the current execution path and these remaining boundaries instead of
 the earlier staged probe-only architecture.
+
+## Authority rewind and exact window reconstruction
+
+`RequestAuthority.begin_rewind` now waits nonblockingly for its existing archive
+publication before creating the native transaction. A supplied model/page cleanup
+fence gates commit. After commit, discarded generations leave the retrieval index
+but remain in a bounded cleanup set until archive readers release them. Append,
+selection and new reads cannot resume during this transition. Shared archive
+namespaces remain independent and recycled suffix slots receive new generations.
+Close can drain an interrupted rewind without bypassing its fence or checkpoint
+leases.
+
+Background GC remains running through rewind. Its tombstones distinguish discarded
+suffixes (including unarchived partial tails) from retained-history collection.
+GC hole accounting is reset against the shorter branch; collected old suffixes
+cannot inflate a new branch's publication count. Tests force foreground release
+to defer to the real GC thread, verifying at least 40 suffix releases, repeated
+branching after more than 50 normal GC collections, and unchanged prefix data.
+39 targeted tests pass (`authority_rewind_cpu_02.xml`).
+
+`WindowCheckpoint` also captures the original chronological selected records,
+repository generations and dense positions. The original Store supplies value
+tuples, without hidden native owner references. Restore validates the whole frame
+and requires authority history to have already rewound. It invalidates working
+residency and prepares full K **and V** reload into fresh native pages: equal dense
+positions cannot prove new allocation contents. Ordinary assembly fences still
+gate publication. The sealed frame may include K plus the accepted prefill chunk,
+so it is bounded by K+G, not incorrectly forced back to K.
+
+25 focused host tests pass (`checkpoint_window_cpu_01.xml`); the rebuilt extension
+and full host suite pass 223 tests with 41 GPU cases deferred
+(`components_checkpoint_window_host_20260929.xml`). The existing ordinary/packed/
+direct GPU assembly gate now includes restoration into a different poisoned page
+table and byte comparison against native FP8 kernels; these added GPU checks have
+**not yet run**, because the two official agent trials still own the GPU.
+Neither change is activated by the frozen live backend. Persistent HTTP reuse
+still requires model/draft state export/import, exact prompt matching, scheduler
+admission and completion acknowledgment; these host results do not establish it.
