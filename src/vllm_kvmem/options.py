@@ -9,12 +9,13 @@ class RuntimeOptions:
     memory: KVMemConfig = field(default_factory=KVMemConfig)
     cpu_read_cache_bytes: int = 0
     packed_assembly: bool = False
+    verify_archive_on_finish: bool = True
 
     def __post_init__(self):
         if type(self.cpu_read_cache_bytes) is not int or self.cpu_read_cache_bytes < 0:
             raise ValueError("CPU read-cache capacity must be a nonnegative byte count")
-        if type(self.packed_assembly) is not bool:
-            raise ValueError("packed_assembly must be boolean")
+        if type(self.packed_assembly) is not bool or type(self.verify_archive_on_finish) is not bool:
+            raise ValueError("Assembly and archive verification settings must be boolean")
 
     @classmethod
     def from_vllm(cls, config):
@@ -28,10 +29,11 @@ class RuntimeOptions:
         payload = dict(payload)
         cache_bytes = payload.pop('cpu_read_cache_bytes', 0)
         packed = payload.pop('packed_assembly', False)
+        verify = payload.pop('verify_archive_on_finish', True)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
             raise ValueError(f"Unknown KVMem setting: {error}") from error
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
-        return cls(memory, cache_bytes, packed)
+        return cls(memory, cache_bytes, packed, verify)

@@ -130,3 +130,17 @@ def test_bounded_dflash_reselection_cannot_score_unverified_candidates():
     workers[0]['query_score_tokens'] = 8
     with pytest.raises(RuntimeError, match='unverified draft'):
         qualification.validate_bounded(report, workers, schedulers)
+
+
+def test_publication_only_measurements_cannot_claim_checksum_verification_or_skip_publication():
+    report, archived = fixture()
+    archived['archive_verification'] = 'publication_only'
+    record = archived['completed'][0]
+    record.update(sealed_records_archived=1, sealed_records_verified=0)
+    qualification.validate_archive(report, archived)
+    record['sealed_records_verified'] = 1
+    with pytest.raises(RuntimeError, match='Incomplete archive'):
+        qualification.validate_archive(report, archived)
+    record.update(sealed_records_archived=0, sealed_records_verified=0)
+    with pytest.raises(RuntimeError, match='Incomplete archive'):
+        qualification.validate_archive(report, archived)

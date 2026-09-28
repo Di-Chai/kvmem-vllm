@@ -23,6 +23,7 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'block_toknes': 32}}, 'Unknown'),
     ({'kvmem': {'cpu_read_cache_bytes': True}}, 'capacity'),
     ({'kvmem': {'packed_assembly': 'true'}}, 'boolean'),
+    ({'kvmem': {'verify_archive_on_finish': 0}}, 'boolean'),
     ({'kvmem': {'kv_dtype': 'bfloat16'}}, 'codec'),
     ({'kvmem': []}, 'object'),
 ])

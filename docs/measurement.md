@@ -56,3 +56,15 @@ and implies `--dflash --bounded-target`; it is not yet GPU-qualified. It preserv
 native accepted/rejected accounting, applies the same frozen input and natural EOS
 contract, and rejects refresh evidence that scores unverified draft rows. Keep
 its results separate from target-only measurements and from identity-replay tests.
+
+
+For bounded serving performance runs, `--skip-archive-readback` disables the
+**diagnostic** full-record checksum readback at request retirement. It still
+waits for accepted capture and archive writes, requires every complete record to
+be published, and checks final resource cleanup. Native reports explicitly label
+this `archive_verification: publication_only` and the harness records
+`archive_checksum_qualified: false`; zero checksums must never be reported as a
+byte-correctness pass. The default remains full checksum verification. Compare
+performance runs using the same retirement mode and retain separate checksum
+qualification. This option does not implement asynchronous/background retirement:
+publication draining and record reclamation still happen synchronously.

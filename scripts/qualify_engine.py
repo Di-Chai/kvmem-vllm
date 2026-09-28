@@ -27,11 +27,15 @@ def validate_archive(report, archived):
             archived.get("cpu_cache_used_bytes", 0)):
         raise RuntimeError("Finalized requests retained authority resources")
     block_tokens = archived.get("block_tokens", 128)
-    if not all(r["sealed_records_verified"] == r["history_end"] // block_tokens
+    mode = archived.get("archive_verification", "full_checksum")
+    if mode not in ("full_checksum", "publication_only"):
+        raise RuntimeError("Unknown archive verification mode")
+    if not all(r.get("sealed_records_archived", r["sealed_records_verified"]) == r["history_end"] // block_tokens
                and r["history_end"] == r["accepted_tokens"]
+               and r["sealed_records_verified"] == (r["history_end"] // block_tokens if mode == "full_checksum" else 0)
                for r in archived["completed"]):
         raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
-    if not sum(r["sealed_records_verified"] for r in archived["completed"]):
+    if not sum(r.get("sealed_records_archived", r["sealed_records_verified"]) for r in archived["completed"]):
         raise RuntimeError("Archive qualification did not exercise a complete immutable record")
     items = ([report["single"]] if "single" in report else []) + report["concurrent"]
     if len(items) != len(archived["completed"]):
@@ -164,6 +168,8 @@ def main():
     parser.add_argument("--concurrent-only", action="store_true",
                         help="Run only the four frozen histories; avoid repeating an already qualified C1")
     parser.add_argument("--output-tokens", type=int, default=128)
+    parser.add_argument("--skip-archive-readback", action="store_true",
+                        help="Measure serving without diagnostic finish checksums; still drain and check publication/cleanup")
     parser.add_argument("--stream-metrics", action="store_true",
                         help="Record HTTP token bursts, TTFT and correctly overlapping group rates")
     parser.add_argument("--history-repeat", type=int, default=0,
@@ -213,6 +219,8 @@ def main():
         parser.error("history-repeat must be in [0, 128] for this 8192-context diagnostic")
     if args.rebuild_probe or args.scheduled_rebuild_probe or args.archive_probe or args.replay_probe:
         args.capture_probe = True
+    if args.skip_archive_readback and not args.bounded_target:
+        parser.error("skip-archive-readback requires bounded serving and its public connector options")
     if args.archive_probe and (args.rebuild_probe or args.scheduled_rebuild_probe):
         parser.error("Continuous archive qualification uses its own lifecycle diagnostic")
     if args.scheduled_rebuild_probe and (args.dflash or args.rebuild_probe):
@@ -298,7 +306,8 @@ def main():
                             "kv_connector_module_path": "vllm_kvmem.connector",
                             "kv_connector_extra_config": {"kvmem": {
                                 "cpu_read_cache_bytes": args.cpu_read_cache_mib * 1024**2,
-                                "packed_assembly": args.packed_assembly}}})]
+                                "packed_assembly": args.packed_assembly,
+                                "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
                 "method": "dflash", "model": str(models / "Qwen3.8-27B-DFlash2-BF16"),
@@ -417,6 +426,10 @@ def main():
                     if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
                             or archived.get("packed_assembly", False) != args.packed_assembly):
                         raise RuntimeError("Worker did not apply requested cache/assembly options")
+                    expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
+                    if archived.get("archive_verification", "full_checksum") != expected_verification:
+                        raise RuntimeError("Worker did not apply requested archive verification mode")
+                    report["archive_checksum_qualified"] = expected_verification == "full_checksum"
                     report["archive"] = archived
                 if args.replay_probe:
                     replay = json.loads((args.output / "capture/replay.json").read_text())

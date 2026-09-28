@@ -91,3 +91,11 @@ transaction / harness tests pass; they are not compressed DFlash GPU evidence.
 The long target C4 run `engine_long_c4_cached_packed_01` was launched from commit
 `776bb7a` before these DFlash changes and continues with that loaded runtime and
 its saved source manifest. Do not attribute its eventual results to later code.
+
+
+A separate retirement measurement option now allows omitting diagnostic archive
+readback, while preserving publication fences and complete cleanup. Both modes
+are covered by real host-archive retirement tests; the publication-only mode has
+not yet been measured with the native GPU server. The default still verifies
+all checksums. Its implementation does not change the live C4 run, which retains
+full readback, and does not satisfy the outstanding background-retirement gate.

@@ -3,7 +3,7 @@
 All target layers and requests share one packed D2H operation per batch. Native
 sampling rejection counts travel in that same fenced packet. This stage provides
 the immutable authority for refresh, but does not yet trigger retrieval/replay.
-Qualification finalization drains I/O and verifies sealed records synchronously.
+Finalization always drains I/O; diagnostic checksum readback is separately gated.
 """
 from dataclasses import asdict, dataclass
 import hashlib
@@ -171,7 +171,7 @@ class CaptureRuntime:
             job.result()
 
     def finish(self, request_ids):
-        """Diagnostic drain + checksum verification before reclaiming this request."""
+        """Drain publication, optionally checksum records, then reclaim the request."""
         if not request_ids:
             return
         self.drain(wait=True)
@@ -186,9 +186,12 @@ class CaptureRuntime:
             for job, _ in authority.writes:
                 job.result()
             authority.poll()
+            published = sum(record.archived for record in authority.records.values())
+            if published != authority.history_end // self.config.block_tokens:
+                raise RuntimeError("Finalized authority has unpublished complete archive records")
             verified = 0
             for record in authority.records.values():
-                if record.archived:
+                if record.archived and self.options.verify_archive_on_finish:
                     raw, values = authority.read_record(record.handle)
                     digest = hashlib.sha256(raw.view(torch.uint8).numpy().tobytes()
                                            + values.numpy().tobytes()).hexdigest()
@@ -199,7 +202,8 @@ class CaptureRuntime:
                 "accepted_tokens": self.accepted.pop(request_id),
                 "rejected_tokens": self.rejected.pop(request_id),
                 "last_steps": self.last_steps.pop(request_id),
-                "records": len(authority.records), "sealed_records_verified": verified})
+                "records": len(authority.records), "sealed_records_archived": published,
+                "sealed_records_verified": verified})
             if not authority.close():
                 raise RuntimeError("Finalized authority still has unexpected live storage leases")
             del self.authorities[request_id]
@@ -210,6 +214,7 @@ class CaptureRuntime:
                   "cpu_cache_capacity_bytes": self.options.cpu_read_cache_bytes,
                   "cpu_cache_used_bytes": getattr(getattr(self.archive, 'read_cache', None), 'used_bytes', 0),
                   "packed_assembly": self.options.packed_assembly,
+                  "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,
                   "active_requests": len(self.authorities),
