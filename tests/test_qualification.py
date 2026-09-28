@@ -144,3 +144,40 @@ def test_publication_only_measurements_cannot_claim_checksum_verification_or_ski
     record.update(sealed_records_archived=0, sealed_records_verified=0)
     with pytest.raises(RuntimeError, match='Incomplete archive'):
         qualification.validate_archive(report, archived)
+
+
+def test_cancellation_requires_actual_refresh_overlap_and_native_abort_status():
+    cancelled = [{'request_id': 'cmpl-victim', 'cancelled_at': 20,
+                  'trigger': {'request_id': 'cmpl-victim-0-worker', 'command_id': 7}}]
+    workers = [{'request_id': 'cmpl-victim-0-worker', 'command_id': 7,
+                'refresh_started_at': 10, 'refresh_finished_at': 30}]
+    finished = [{'request_id': 'cmpl-victim-0-worker', 'at': 31, 'status': 'FINISHED_ABORTED'}]
+    qualification.validate_cancellation(cancelled, workers, finished)
+    finished[0]['status'] = 'FINISHED_LENGTH_CAPPED'
+    with pytest.raises(RuntimeError, match='acknowledge'):
+        qualification.validate_cancellation(cancelled, workers, finished)
+    finished[0]['status'] = 'FINISHED_ABORTED'
+    cancelled[0]['cancelled_at'] = 35
+    with pytest.raises(RuntimeError, match='during'):
+        qualification.validate_cancellation(cancelled, workers, finished)
+
+
+def test_cancelled_prefill_archive_is_checked_without_fabricating_http_completion_tokens():
+    report, archived = fixture()
+    report['dflash'] = False
+    report['cancelled'] = [{'request_id': 'r', 'prompt_tokens': 180,
+                            'trigger': {'history_begin': 128}}]
+    del report['single']
+    qualification.validate_archive(report, archived)
+    report['cancelled'][0]['prompt_tokens'] = 153
+    with pytest.raises(RuntimeError, match='stop with'):
+        qualification.validate_archive(report, archived)
+
+
+def test_final_scheduler_gate_requires_physical_gpu_pages_not_only_request_cleanup():
+    snapshot = dict(requests=0, refresh_pending=0, connector_pending=0,
+                    reservations=[], owned_blocks=0, free_blocks=0, total_blocks=17)
+    with pytest.raises(RuntimeError, match='GPU pages'):
+        qualification.validate_released_scheduler(snapshot)
+    snapshot['free_blocks'] = 16
+    qualification.validate_released_scheduler(snapshot)

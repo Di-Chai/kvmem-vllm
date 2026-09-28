@@ -7,6 +7,7 @@ import os
 import hashlib
 import inspect
 import json
+import time
 from pathlib import Path
 
 from vllm.v1.core.sched.scheduler import Scheduler
@@ -91,6 +92,41 @@ class KVMemScheduler(Scheduler):
         self.transactions[request.request_id] = (command, request.next_decode_eligible_step)
         request.next_decode_eligible_step = 2**62
         self.connector.queue(command)
+
+    def _write_lifecycle_snapshot(self):
+        if not getattr(self, "_bounded_target", False) or os.getenv("KVMEM_LIFECYCLE_TRACE") != "1":
+            return
+        gate = self.kv_cache_manager
+        owned = sum(not block.is_null for manager in gate.coordinator.single_type_managers
+                    for blocks in manager.req_to_blocks.values() for block in blocks)
+        report = {"at": time.perf_counter(), "requests": len(self.requests),
+            "refresh_pending": len(self.transactions), "connector_pending": len(self.connector.pending),
+            "reservations": list(gate.reservations), "owned_blocks": owned,
+            "free_blocks": gate.block_pool.get_num_free_blocks(),
+            "total_blocks": gate.block_pool.num_gpu_blocks}
+        path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+        temporary = path / "scheduler_resources.tmp"
+        temporary.write_text(json.dumps(report))
+        temporary.replace(path / "scheduler_resources.json")
+
+    def update_from_output(self, *args, **kwargs):
+        result = super().update_from_output(*args, **kwargs)
+        # Include native deferred frees and connector completions from this
+        # output. A snapshot at schedule() alone can precede the final free.
+        self._write_lifecycle_snapshot()
+        return result
+
+    def _free_request(self, request, delay_free_blocks=False):
+        result = super()._free_request(request, delay_free_blocks=delay_free_blocks)
+        if getattr(self, "_bounded_target", False) and os.getenv("KVMEM_LIFECYCLE_TRACE") == "1":
+            report = {"request_id": request.request_id, "status": request.status.name,
+                      "at": time.perf_counter(), "history_end": request.num_computed_tokens,
+                      "in_flight_tokens": request.num_in_flight_tokens,
+                      "refresh_pending": request.request_id in self.transactions,
+                      "lifetime_reservation_retained": request.request_id in self.kv_cache_manager.reservations}
+            with (Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "scheduler_finished.jsonl").open("a") as stream:
+                stream.write(json.dumps(report) + "\n")
+        return result
 
     def _request_blocks_can_be_freed(self, request):
         if request.request_id in self.transactions:

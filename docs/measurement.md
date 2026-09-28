@@ -78,3 +78,14 @@ make `exclusive_gpu_observed` false; do not use such a run to establish an
 exclusive-GPU performance result. The prior `memory` field remains an end snapshot.
 A manually attached `resources_partial.jsonl` monitor covers only its recorded
 interval and cannot establish a whole-run peak.
+
+`--cancel-during-refresh` requires a frozen C1 and bounded serving. It submits an
+explicit native HTTP request identity, waits for an atomic worker trace of an
+actual compressed refresh, and shuts down only that owned client socket. Four
+subsequent requests exercise recovery. Acceptance requires the disconnect time
+to fall within the completed native refresh interval, a native `FINISHED_ABORTED`
+status, a finalized incomplete-prefill authority, and the complete native GPU
+pool (apart from its null page) plus all lifetime reservations to be released.
+The interrupted request contributes no invented completion count or throughput.
+A localhost socket test qualifies the client's interruption mechanism; native GPU
+cancellation is still pending and must be established separately.

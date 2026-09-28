@@ -60,6 +60,17 @@ def install_bounded_target(runner):
         if not jobs:
             return original(*args, **kwargs)
         batch = runner._kvmem_last_batch
+        started_at = time.perf_counter()
+        lifecycle_trace = os.getenv("KVMEM_LIFECYCLE_TRACE") == "1"
+        if lifecycle_trace:
+            active = {"started_at": started_at, "requests": [
+                {"request_id": request_id, "command_id": job.command.command_id,
+                 "history_begin": job.command.groups[0][1].history_end,
+                 "query_tokens": job.command.groups[0][1].replay_tokens}
+                for request_id, job in jobs.items()]}
+            temporary = runner._kvmem_probe_output / "bounded_active.tmp"
+            temporary.write_text(json.dumps(active))
+            temporary.replace(runner._kvmem_probe_output / "bounded_active.json")
         runtime = runner._kvmem_capture_runtime
         if runtime is None or not set(jobs).issubset(batch.req_ids):
             raise ValueError("Scheduled refresh is missing its archived history or query batch")
@@ -180,6 +191,11 @@ def install_bounded_target(runner):
             assert checkpoints.release(0)
         for assembler, _, _ in owners:
             assert assembler.close()
+        finished_at = time.perf_counter()
+        if lifecycle_trace:
+            (runner._kvmem_probe_output / "bounded_active.json").unlink()
+            for report in reports:
+                report.update(refresh_started_at=started_at, refresh_finished_at=finished_at)
         with (runner._kvmem_probe_output / "bounded_refresh.jsonl").open("a") as stream:
             for report in reports:
                 stream.write(json.dumps(report) + "\n")

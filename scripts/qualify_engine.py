@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 
 def fetch(url, payload=None, timeout=180):
@@ -38,7 +39,7 @@ def validate_archive(report, archived):
     if not sum(r.get("sealed_records_archived", r["sealed_records_verified"]) for r in archived["completed"]):
         raise RuntimeError("Archive qualification did not exercise a complete immutable record")
     items = ([report["single"]] if "single" in report else []) + report["concurrent"]
-    if len(items) != len(archived["completed"]):
+    if len(items) + len(report.get("cancelled", [])) != len(archived["completed"]):
         raise RuntimeError("Native and HTTP request sets differ")
     bound = archived["max_concurrent_batches"] * archived["decode_query_len"]
     for item in items:
@@ -56,6 +57,17 @@ def validate_archive(report, archived):
         step = record["last_steps"][-1]
         if step["history_begin"] + step["accepted"] != record["history_end"]:
             raise RuntimeError("Final native capture packet disagrees with archive extent")
+    for cancelled in report.get("cancelled", []):
+        matched = [record for record in archived["completed"]
+                   if record["request_id"].startswith(cancelled["request_id"] + "-0-")]
+        if len(matched) != 1:
+            raise RuntimeError("Missing or ambiguous cancelled request authority")
+        record = matched[0]
+        if not cancelled["trigger"]["history_begin"] <= record["history_end"] < cancelled["prompt_tokens"]:
+            raise RuntimeError("Cancelled prefill did not stop with its captured accepted prefix")
+        step = record["last_steps"][-1]
+        if step["history_begin"] + step["accepted"] != record["history_end"]:
+            raise RuntimeError("Cancelled authority disagrees with its last native packet")
     if report["dflash"] and not sum(item["rejected_tokens"] for item in archived["completed"]):
         raise RuntimeError("DFlash qualification did not exercise any rejected candidates")
 
@@ -72,6 +84,8 @@ def validate_bounded(report, workers, schedulers, *, require_concurrent=False):
     if not workers or by_worker.keys() != by_scheduler.keys():
         raise RuntimeError("Bounded worker and scheduler transaction sets differ")
     items = ([report["single"]] if "single" in report else []) + report["concurrent"]
+    items += [{"result": {"id": item["request_id"], "usage": {"prompt_tokens": item["prompt_tokens"]}}}
+              for item in report.get("cancelled", [])]
     for key, worker in by_worker.items():
         scheduler = by_scheduler[key]
         request_id = worker["request_id"]
@@ -117,6 +131,30 @@ def validate_bounded(report, workers, schedulers, *, require_concurrent=False):
             raise RuntimeError("Long C4 did not exercise a native four-request refresh batch")
     return {"worker_refreshes": workers, "scheduler_commits": schedulers,
             "compressed_requests": len(compressed), "max_refresh_batch_requests": max_batch}
+
+
+def validate_cancellation(cancelled, workers, finished):
+    for item in cancelled:
+        trigger = item["trigger"]
+        matches = [worker for worker in workers if worker["request_id"] == trigger["request_id"]
+                   and worker["command_id"] == trigger["command_id"]]
+        if len(matches) != 1:
+            raise RuntimeError("Cancellation trigger lacks a completed native refresh")
+        refresh = matches[0]
+        if not refresh["refresh_started_at"] <= item["cancelled_at"] <= refresh["refresh_finished_at"]:
+            raise RuntimeError("HTTP disconnect did not occur during the native refresh transaction")
+        statuses = [entry for entry in finished if entry["request_id"] == trigger["request_id"]]
+        if len(statuses) != 1 or statuses[0]["status"] != "FINISHED_ABORTED":
+            raise RuntimeError("Native scheduler did not acknowledge client cancellation")
+        if statuses[0]["at"] < item["cancelled_at"]:
+            raise RuntimeError("Native request ended before client cancellation")
+
+
+def validate_released_scheduler(snapshot):
+    if (snapshot["requests"] or snapshot["refresh_pending"] or snapshot["connector_pending"] or
+            snapshot["reservations"] or snapshot["owned_blocks"] or
+            snapshot["free_blocks"] != snapshot["total_blocks"] - 1):
+        raise RuntimeError("Native scheduler retained requests, reservations or GPU pages")
 
 
 def read_frozen(path, digest, output_tokens):
@@ -165,6 +203,8 @@ def main():
                         help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
     parser.add_argument("--prefill-request-token-cap", type=int, default=0,
                         help="Native vLLM long-prefill token cap per request (0 keeps the default)")
+    parser.add_argument("--cancel-during-refresh", action="store_true",
+                        help="Disconnect the frozen C1 during a real compressed refresh, then run the four survivors")
     parser.add_argument("--concurrent-only", action="store_true",
                         help="Run only the four frozen histories; avoid repeating an already qualified C1")
     parser.add_argument("--output-tokens", type=int, default=128)
@@ -204,6 +244,8 @@ def main():
                              for path, digest in args.concurrent_frozen_input or ()]
     except (ValueError, KeyError, OSError) as error:
         parser.error(str(error))
+    if args.cancel_during_refresh and (not args.bounded_target or frozen is None or args.concurrent_only):
+        parser.error("cancel-during-refresh requires bounded serving, a frozen C1, and the subsequent C4 recovery group")
     if args.concurrent_only and (not frozen_concurrent or frozen is not None):
         parser.error("concurrent-only requires four concurrent frozen inputs and no separate single input")
     if frozen is not None or frozen_concurrent:
@@ -272,6 +314,8 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
+        if args.cancel_during_refresh:
+            env["KVMEM_LIFECYCLE_TRACE"] = "1"
         if args.bounded_dflash:
             env["KVMEM_BOUNDED_DFLASH"] = "1"
         if args.bounded_target:
@@ -389,7 +433,15 @@ def main():
                         length = 134144 if args.bounded_target else 198656
                         single_prompt = (history * ((length + len(history) - 1) // len(history)))[:length-len(task)] + task
                         report["long_single_prompt_tokens"] = len(single_prompt)
-                    report["single"] = complete((0, single_prompt), phase="single")
+                    if args.cancel_during_refresh:
+                        from vllm_kvmem.cancellation import cancel_during_refresh
+                        payload = {"model": "qualification", "prompt": single_prompt,
+                            "request_id": "kvmem-cancel-" + uuid.uuid4().hex,
+                            "temperature": 0, "seed": 104729, "max_tokens": args.output_tokens}
+                        report["cancelled"] = [cancel_during_refresh(url + "/v1/completions", payload,
+                            args.output / "capture/bounded_active.json", args.output / "cancelled_stream.jsonl")]
+                    else:
+                        report["single"] = complete((0, single_prompt), phase="single")
                 if frozen_concurrent:
                     prompts = [item["input_ids"] for item, _ in frozen_concurrent]
                 begin = time.monotonic()
@@ -452,6 +504,13 @@ def main():
                 if args.bounded_target:
                     workers = [json.loads(line) for line in (args.output / "capture/bounded_refresh.jsonl").read_text().splitlines()]
                     schedulers = [json.loads(line) for line in (args.output / "capture/scheduler_refresh.jsonl").read_text().splitlines()]
+                    if args.cancel_during_refresh:
+                        finished = [json.loads(line) for line in (args.output / "capture/scheduler_finished.jsonl").read_text().splitlines()]
+                        validate_cancellation(report["cancelled"], workers, finished)
+                        report["scheduler_finished"] = finished
+                        released = json.loads((args.output / "capture/scheduler_resources.json").read_text())
+                        validate_released_scheduler(released)
+                        report["scheduler_resources"] = released
                     report["bounded"] = validate_bounded(report, workers, schedulers,
                         require_concurrent=bool(args.concurrent_frozen_input))
                 report["status"] = "passed"

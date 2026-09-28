@@ -99,3 +99,11 @@ are covered by real host-archive retirement tests; the publication-only mode has
 not yet been measured with the native GPU server. The default still verifies
 all checksums. Its implementation does not change the live C4 run, which retains
 full readback, and does not satisfy the outstanding background-retirement gate.
+
+The native cancellation diagnostic is now wired behind `--cancel-during-refresh`.
+Worker transaction timestamps, native termination status and post-output capacity
+snapshots support a client-disconnect test with subsequent C4 recovery. The
+validator requires physical page return, not just cleared request IDs or credits.
+CPU/socket and scheduler tests pass; the actual native GPU cancellation run remains
+pending. Source changes made after `engine_long_c4_cached_packed_01` launched do
+not affect its already loaded runtime.

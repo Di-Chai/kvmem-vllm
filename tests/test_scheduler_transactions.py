@@ -143,3 +143,29 @@ def test_invalid_worker_extent_cannot_partially_free_native_groups():
         scheduler._complete_refresh("a", command.command_id, selected_tokens=33)
     assert [p.get_num_free_blocks() for p in pools] == [10, 10]
     assert request.request_id in scheduler.transactions
+
+
+def test_lifecycle_snapshot_does_not_confuse_released_credits_with_deferred_physical_pages(tmp_path, monkeypatch):
+    import json
+    from test_capacity import make_gate, request
+    gate, _, pool = make_gate(blocks=5)
+    req = request('a')
+    assert gate.allocate_slots(req, 64) is not None
+    scheduler = KVMemScheduler.__new__(KVMemScheduler)
+    scheduler._bounded_target = True
+    scheduler.kv_cache_manager = gate
+    scheduler.requests = {'a': req}
+    scheduler.transactions = {}
+    scheduler.connector = SimpleNamespace(pending={})
+    monkeypatch.setenv('KVMEM_LIFECYCLE_TRACE', '1')
+    monkeypatch.setenv('KVMEM_RUNNER_PROBE_DIR', str(tmp_path))
+    scheduler._write_lifecycle_snapshot()
+    read = lambda: json.loads((tmp_path / 'scheduler_resources.json').read_text())
+    assert read()['owned_blocks'] == 4 and read()['reservations'] == ['a']
+    held = gate.pop_blocks_for_free(req)
+    scheduler.requests.clear()
+    scheduler._write_lifecycle_snapshot()
+    assert not read()['reservations'] and read()['free_blocks'] == 0
+    pool.free_blocks(reversed(held))
+    scheduler._write_lifecycle_snapshot()
+    assert read()['free_blocks'] == read()['total_blocks'] - 1
