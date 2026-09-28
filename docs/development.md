@@ -408,3 +408,22 @@ in short C4 versus the baseline 88.203 (1.9626x), with longest measured gap
 The same long frozen C4 is the next gate. Output IDs differ under concurrency;
 long-history and executed task-quality acceptance remain open, and the adapter
 is still opt-in. See the qualification record for full measurement scope.
+
+## Official agent execution entry point
+
+`scripts/qualify_agent.py` snapshots the fixed DeepSWE tasks and invokes pinned
+Pier/mini-swe-agent against one shared API, preserving original solver/tool/
+verifier behavior and one-attempt outcomes. Companion backend/relay launchers
+freeze worker code, collect native per-request metrics, and own only their
+new processes/containers/network. Fifteen host tests cover scored failures,
+invalid/duplicate evidence, detached snapshots, recipe preservation and exact
+relay HTTP payloads. A prepare-only task snapshot validates actual installed
+versions and task provenance; it is not a quality score.
+
+A real fresh Docker client reaches the current API through the newly owned
+bridge relay. Only `/v1/models` was queried, adding no generation work to the
+ongoing GPU benchmark. The relay container/network were subsequently removed;
+existing QW3 containers and its occupied port 443 were untouched. Artifacts:
+`agent_prepare_02`, `agent_relay_smoke_01`, `agent_harness_complete_cpu.xml`.
+See `benchmarks/deepswe/README.md` for execution/measurement scope. Actual agent
+attempts and native-metric collection on those attempts remain to be run.

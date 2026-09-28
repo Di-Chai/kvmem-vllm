@@ -4,3 +4,4 @@ recursive-include third_party/vllm *.py LICENSE *.json
 include CMakeLists.txt requirements-cu130.lock
 recursive-include docs *.md
 recursive-include scripts *.py *.sh
+recursive-include benchmarks/deepswe *.py *.json LICENSE *.md

@@ -1,0 +1,6 @@
+{
+  "source": "/home/chaidi/qw3/benchmark/mini_swe_deepswe/reliable_mini_swe_agent.py",
+  "source_sha256": "a680b3bc7b89402344e25d7469a0358cb5babccb0ca26cb10a5ff1de769e2be8",
+  "extraction": "ReliableMiniSweAgent and its helper/imports only; exact prefix before CompactingMiniSweAgent; no solver prompt/tool/loop changes",
+  "adapter_sha256": "be6429c9ff2dfad513bd5cd04ecb5376a5f68e2950031d9d9c3dc3929c3209ce"
+}
