@@ -26,6 +26,11 @@ substitution is introduced.
    It refuses an occupied GPU, failed recipe or profiler recipe. Use matched
    recipes for native Q8 and the optional Tensor Core backend; preserve all
    K/G, precision and scheduler settings.
+   It also enables native Qwen XML auto tool calls and the Qwen reasoning parser,
+   matching the qualified tokenizer's `<function=...>/<parameter=...>` format.
+   A completion-only recipe without these API flags rejects the official
+   agent's `tool_choice=auto` before inference; that configuration failure is
+   not a model outcome.
 2. Start `scripts/manage_agent_relay.py --upstream-port <server-port>
    --image <existing-task-image-with-python3> --output <new-relay-artifact>`.
    It creates its own Docker bridge address and container, exposing port 443

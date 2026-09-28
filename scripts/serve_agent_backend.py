@@ -31,7 +31,9 @@ def server_command(recipe, python, port):
     command[0] = str(python)
     command[command.index('--port') + 1] = str(port)
     command[command.index('--host') + 1] = '127.0.0.1'
-    command += ['--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary']
+    command += ['--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
+                '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml',
+                '--reasoning-parser', 'qwen3']
     return command
 
 

@@ -448,3 +448,13 @@ with no `.so`, recompiles the native extension, installs that wheel into the
 isolated CPU environment and passes 22 core/storage/GC cases. Archive/wheel hashes
 and logs are in `artifacts/source-build-smoke`. Full GPU clean installation and
 release qualification remain separate gates.
+
+The first real agent launch reached the API but exposed missing tool-serving
+flags inherited from the completion-only recipe. All observed model calls
+returned HTTP 400 before inference (`auto` tool choice requires an enabled
+parser). This is retained as a setup failure, not a model score; the attempts
+and their owned backend/relay were stopped. The qualified tokenizer explicitly
+uses `<function=...>/<parameter=...>` XML. The agent backend now enables native
+`qwen3_xml` tool parsing, auto tool choice, and `qwen3` reasoning parsing. Existing
+QW3 services remain untouched. Requalification must verify actual tool calls and
+native metrics before accepting any agent measurement.

@@ -26,7 +26,9 @@ def test_agent_backend_preserves_qualified_model_precision_and_adds_native_metri
     command = backend.server_command(original, '/new-python', 54321)
     expected = list(original['command'])
     expected[0], expected[expected.index('--port') + 1] = '/new-python', '54321'
-    assert command == expected + ['--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary']
+    assert command == expected + ['--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
+                                  '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml',
+                                  '--reasoning-parser', 'qwen3']
     assert original == recipe()
 
 
