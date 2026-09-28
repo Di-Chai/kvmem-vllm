@@ -101,7 +101,8 @@ class KVMemScheduler(Scheduler):
                     for blocks in manager.req_to_blocks.values() for block in blocks)
         report = {"at": time.perf_counter(), "requests": len(self.requests),
             "refresh_pending": len(self.transactions), "connector_pending": len(self.connector.pending),
-            "reservations": list(gate.reservations), "owned_blocks": owned,
+            "reservations": list(gate.reservations), "reservation_rejections": gate.rejections,
+            "owned_blocks": owned,
             "free_blocks": gate.block_pool.get_num_free_blocks(),
             "total_blocks": gate.block_pool.num_gpu_blocks}
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])

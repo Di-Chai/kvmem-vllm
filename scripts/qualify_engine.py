@@ -203,6 +203,10 @@ def main():
                         help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
     parser.add_argument("--prefill-request-token-cap", type=int, default=0,
                         help="Native vLLM long-prefill token cap per request (0 keeps the default)")
+    parser.add_argument("--kv-cache-memory-mib", type=int, default=0,
+                        help="Explicit native GPU KV pool budget; 0 uses native utilization-based sizing")
+    parser.add_argument("--require-capacity-pressure", action="store_true",
+                        help="Long C4 admission test: require rejected reservations and complete physical cleanup")
     parser.add_argument("--cancel-during-refresh", action="store_true",
                         help="Disconnect the frozen C1 during a real compressed refresh, then run the four survivors")
     parser.add_argument("--concurrent-only", action="store_true",
@@ -244,6 +248,11 @@ def main():
                              for path, digest in args.concurrent_frozen_input or ()]
     except (ValueError, KeyError, OSError) as error:
         parser.error(str(error))
+    if args.kv_cache_memory_mib < 0:
+        parser.error("kv-cache-memory-mib must be nonnegative")
+    if args.require_capacity_pressure and (not args.bounded_target or not args.concurrent_only or
+            not frozen_concurrent or not args.kv_cache_memory_mib):
+        parser.error("capacity pressure requires bounded concurrent-only frozen C4 and an explicit native KV pool budget")
     if args.cancel_during_refresh and (not args.bounded_target or frozen is None or args.concurrent_only):
         parser.error("cancel-during-refresh requires bounded serving, a frozen C1, and the subsequent C4 recovery group")
     if args.concurrent_only and (not frozen_concurrent or frozen is not None):
@@ -314,7 +323,7 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
-        if args.cancel_during_refresh:
+        if args.cancel_during_refresh or args.require_capacity_pressure:
             env["KVMEM_LIFECYCLE_TRACE"] = "1"
         if args.bounded_dflash:
             env["KVMEM_BOUNDED_DFLASH"] = "1"
@@ -335,6 +344,8 @@ def main():
                    "--max-num-seqs", "4", "--max-num-batched-tokens", "1024",
                    "--gpu-memory-utilization", "0.72", "--no-enable-prefix-caching",
                    "--generation-config", "vllm", "--enforce-eager"]
+        if args.kv_cache_memory_mib:
+            command += ["--kv-cache-memory-bytes", str(args.kv_cache_memory_mib * 1024**2)]
         if args.prefill_request_token_cap:
             command += ["--long-prefill-token-threshold", str(args.prefill_request_token_cap)]
         if args.compression_probe or args.bounded_target or args.scheduled_rebuild_probe or frozen is not None or frozen_concurrent:
@@ -508,11 +519,14 @@ def main():
                         finished = [json.loads(line) for line in (args.output / "capture/scheduler_finished.jsonl").read_text().splitlines()]
                         validate_cancellation(report["cancelled"], workers, finished)
                         report["scheduler_finished"] = finished
+                    if args.cancel_during_refresh or args.require_capacity_pressure:
                         released = json.loads((args.output / "capture/scheduler_resources.json").read_text())
                         validate_released_scheduler(released)
                         report["scheduler_resources"] = released
+                        if args.require_capacity_pressure and not released["reservation_rejections"]:
+                            raise RuntimeError("Requested capacity test never exercised admission backpressure")
                     report["bounded"] = validate_bounded(report, workers, schedulers,
-                        require_concurrent=bool(args.concurrent_frozen_input))
+                        require_concurrent=bool(args.concurrent_frozen_input) and not args.require_capacity_pressure)
                 report["status"] = "passed"
         except Exception as error:
             report["status"] = "failed"

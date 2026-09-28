@@ -89,3 +89,13 @@ pool (apart from its null page) plus all lifetime reservations to be released.
 The interrupted request contributes no invented completion count or throughput.
 A localhost socket test qualifies the client's interruption mechanism; native GPU
 cancellation is still pending and must be established separately.
+
+`--kv-cache-memory-mib` sets native vLLM's GPU KV pool size without changing
+weight/KV precision or K/G. With bounded `--concurrent-only` and four frozen
+histories, `--require-capacity-pressure` requires actual lifetime-reservation
+rejections and complete physical-page/credit cleanup after every request finishes.
+This is an admission-pressure test: it permits fewer than four simultaneously
+executing requests and must not be presented as full GPU C4 throughput. The
+ordinary long-C4 gate still requires an actual four-request compressed batch.
+A pool unable to fit even one worst-case KVMem window is rejected at startup;
+do not weaken that check to make a pressure run start.
