@@ -337,6 +337,7 @@ def main():
     report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     report["source_manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     worker_source, worker_hash = freeze_worker_package(root, args.output, manifest)
+    sys.path.insert(0, str(worker_source))  # Freeze late-imported client measurement helpers too.
     report["worker_source"] = str(worker_source)
     report["worker_manifest_sha256"] = worker_hash
     if args.archive_probe:
