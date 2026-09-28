@@ -1,0 +1,111 @@
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("vllm")
+from vllm.v1.outputs import KVConnectorOutput
+from vllm_kvmem.connector import ControlCompletions
+from vllm_kvmem.scheduler import KVMemScheduler
+from test_connector import pair
+from test_window_manager import make_manager
+
+
+def setup_scheduler():
+    scheduler = KVMemScheduler.__new__(KVMemScheduler)
+    scheduler.connector, _ = pair()
+    scheduler.connector.scheduler_completion = scheduler._complete_refresh
+    manager, pool = make_manager()
+    second, second_pool = make_manager()
+    scheduler.window_managers = {0: manager, 1: second}
+    scheduler.kv_cache_manager = SimpleNamespace(coordinator=SimpleNamespace(
+        single_type_managers=(manager, second)))
+    request = SimpleNamespace(request_id="a", num_in_flight_tokens=0,
+                              num_computed_tokens=64, next_decode_eligible_step=7,
+                              is_finished=lambda: False)
+    scheduler.requests = {"a": request}
+    scheduler.transactions = {}
+    scheduler.table_updates = {}
+    for m in (manager, second):
+        m.allocate_new_blocks("a", 64, 64)
+        m.allocate_new_blocks("b", 32, 32)
+    return scheduler, request, (pool, second_pool)
+
+
+def test_suspended_refresh_commits_all_group_tables_and_resumes_request():
+    scheduler, request, pools = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    assert request.next_decode_eligible_step == 2**62
+    assert [p.get_num_free_blocks() for p in pools] == [10, 10]
+    command = scheduler.connector.commands[0]
+    scheduler.connector.update_connector_output(KVConnectorOutput(
+        kv_connector_worker_meta=ControlCompletions([("a", command.command_id)])))
+    assert request.next_decode_eligible_step == 7
+    assert [p.get_num_free_blocks() for p in pools] == [12, 12]
+    assert not scheduler.transactions
+    assert all(len(row) == 2 for row in scheduler.table_updates["a"])
+    assert all(m.offsets["a"] == 32 and len(m.req_to_blocks["b"]) == 2
+               for m in scheduler.window_managers.values())
+
+
+def test_second_group_prepare_failure_rolls_back_first_without_suspending():
+    scheduler, request, pools = setup_scheduler()
+    scheduler.window_managers[1].free("a")
+    with pytest.raises(ValueError, match="unallocated"):
+        scheduler.begin_refresh(request, 32)
+    assert request.next_decode_eligible_step == 7
+    assert not scheduler.window_managers[0].pending
+    assert not scheduler.transactions
+    assert not scheduler.connector.pending
+    assert pools[0].get_num_free_blocks() == 10
+
+
+def test_commit_validates_all_groups_before_freeing_any_page():
+    scheduler, request, pools = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    command = scheduler.connector.commands[0]
+    # Simulate an illegal native mutation while the worker uses the old table.
+    manager = scheduler.window_managers[1]
+    manager.native.allocate_new_blocks("a", 80, 80)
+    with pytest.raises(RuntimeError, match="allocation changed"):
+        scheduler._complete_refresh("a", command.command_id)
+    assert pools[0].get_num_free_blocks() == 10
+    assert len(scheduler.window_managers[0].req_to_blocks["a"]) == 4
+    assert request.next_decode_eligible_step == 2**62
+
+
+def test_cancelled_request_commits_before_free_but_never_publishes_worker_table():
+    scheduler, request, pools = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    command = scheduler.connector.commands[0]
+    request.is_finished = lambda: True
+    scheduler._complete_refresh("a", command.command_id)
+    assert not scheduler.table_updates
+    for m in scheduler.window_managers.values():
+        m.free("a")
+    assert [p.get_num_free_blocks() for p in pools] == [14, 14]
+
+
+def test_refresh_pages_cannot_be_preempted_before_ack():
+    scheduler, request, _ = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    assert not scheduler._request_blocks_can_be_freed(request)
+
+
+def test_published_rows_include_blocks_allocated_in_resume_step(monkeypatch, tmp_path):
+    from vllm.v1.core.sched.scheduler import Scheduler
+    scheduler, request, _ = setup_scheduler()
+    scheduler.begin_refresh(request, 32)
+    command = scheduler.connector.commands[0]
+    scheduler._complete_refresh("a", command.command_id)
+    scheduler._probe_submitted = True
+    monkeypatch.setenv("KVMEM_RUNNER_PROBE_DIR", str(tmp_path))
+
+    def allocate_on_resume(self, throttle):
+        for manager in self.window_managers.values():
+            manager.allocate_new_blocks("a", 80, 80)
+        return SimpleNamespace(block_table_updates=None)
+
+    monkeypatch.setattr(Scheduler, "schedule", allocate_on_resume)
+    output = scheduler.schedule()
+    assert all(len(row) == 3 for row in output.block_table_updates["a"])
+    assert not scheduler.table_updates

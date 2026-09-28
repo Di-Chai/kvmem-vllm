@@ -36,12 +36,16 @@ Host core imported unchanged from qw3 working tree; hashes and source HEAD are i
 bindings are implemented. Reference FP8 materialization, packed GPU transfers,
 checkpoint ownership and MeanK scoring are implemented; fused raw-Q/K capture
 preserves upstream kernel outputs in GPU tests. Narrow versioned runner hooks
-are being qualified on the actual model. End-to-end KVMem serving and scheduler
-integration are not implemented yet. No qualified KVMem throughput result exists.
+are being qualified on the actual model. The scheduler/worker identity-refresh
+transaction is now qualified on the actual model. End-to-end compressed KVMem
+serving remains unimplemented. No qualified KVMem throughput result exists.
 
 Follow-up: real native FP8 pages have now completed an identity roundtrip through
 the bounded repository and NVMe archive, followed by fused assembly and commit.
 All 16 target layers' cache bytes and the 128-token continuation matched baseline.
 The full-attention allocation adapter also passes native-manager tests for bounded
-windows and deferred release. Scheduler suspension/acknowledgment wiring, actual
-compressed selections and recurrent/draft replay still remain.
+windows and deferred release. Scheduler suspension/acknowledgment wiring has now
+passed a real native request: command-only worker rebuild, all-layer byte equality,
+page-table replacement and baseline-equal continuation. The combined CPU/GPU suite
+passes 43 tests, plus 5 original CTests. Actual compressed selections, automatic
+bounded prefill/decode admission and recurrent/draft replay still remain.

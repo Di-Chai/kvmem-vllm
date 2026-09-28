@@ -13,6 +13,13 @@ must connect them through the following ownership boundaries:
    A complete integration must replace full-attention history allocation with
    bounded working-set allocation while preserving the recurrent group's native
    state ownership. Do not mutate Request.num_computed_tokens to represent K.
+   `KVMemScheduler` now wraps native full-attention managers with
+   `WorkingSetManager` in an explicit identity-refresh diagnostic. It suspends
+   the request via native decode eligibility, protects pending pages against
+   preemption, and uses `KVMemConnector` commands/acknowledgments for commit.
+   Native `SchedulerOutput.block_table_updates` replaces complete rows, including
+   allocations made in the resume step. This closed loop passed a real GPU request;
+   automatic compressed admission and production refresh policies remain pending.
 2. **Worker batch.** Keep logical processed-token counts for input IDs, sampling,
    generation limits and recurrent state. Prepare separate dense working-window
    RoPE positions and attention lengths. `WorkingSetMetadata` forwards all native

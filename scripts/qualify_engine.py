@@ -27,12 +27,19 @@ def main():
     parser.add_argument("--dflash", action="store_true")
     parser.add_argument("--capture-probe", action="store_true")
     parser.add_argument("--rebuild-probe", action="store_true")
+    parser.add_argument("--scheduled-rebuild-probe", action="store_true")
     args = parser.parse_args()
-    if args.rebuild_probe:
+    if args.rebuild_probe or args.scheduled_rebuild_probe:
         args.capture_probe = True
+    if args.scheduled_rebuild_probe and (args.dflash or args.rebuild_probe):
+        parser.error("Scheduled identity probe currently requires target-only execution")
     args.output.mkdir(parents=True, exist_ok=False)
     models = args.models.resolve()
-    report = {"scope": "engine prerequisite, no KVMem enabled", "dflash": args.dflash}
+    scope = ("scheduler/worker identity-refresh diagnostic; no compressed KVMem serving"
+             if args.scheduled_rebuild_probe else
+             "native identity-refresh diagnostic; no compressed KVMem serving"
+             if args.rebuild_probe else "engine prerequisite, no KVMem enabled")
+    report = {"scope": scope, "dflash": args.dflash}
     with open("/tmp/kvmem-vllm-gpu.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         processes = subprocess.check_output([
@@ -50,6 +57,8 @@ def main():
             env["KVMEM_RUNNER_PROBE_DIR"] = str((args.output / "capture").resolve())
         if args.rebuild_probe:
             env["KVMEM_REBUILD_PROBE"] = "1"
+        if args.scheduled_rebuild_probe:
+            env["KVMEM_SCHEDULED_REBUILD_PROBE"] = "1"
         command = [sys.executable, "-m", "vllm_kvmem", "--draft-load-compat", "vllm", "serve",
                    str(models / "Qwen3.8-27B-Q8_0.gguf"),
                    "--served-model-name", "qualification", "--host", "127.0.0.1", "--port", str(port),
@@ -61,6 +70,11 @@ def main():
                    "--max-num-seqs", "4", "--max-num-batched-tokens", "1024",
                    "--gpu-memory-utilization", "0.72", "--no-enable-prefix-caching",
                    "--generation-config", "vllm", "--enforce-eager"]
+        if args.scheduled_rebuild_probe:
+            command += ["--no-async-scheduling", "--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
+                        "--kv-transfer-config", json.dumps({
+                            "kv_connector": "KVMemConnector", "kv_role": "kv_both",
+                            "kv_connector_module_path": "vllm_kvmem.connector"})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
                 "method": "dflash", "model": str(models / "Qwen3.8-27B-DFlash2-BF16"),
@@ -118,6 +132,8 @@ def main():
                     if any(r.startswith("_warmup_") for r in capture_report["requests"]):
                         raise RuntimeError("Probe captured warmup instead of a real request")
                     report["capture"] = capture_report
+                    if args.scheduled_rebuild_probe and not capture_report.get("scheduled_rebuild", {}).get("all_byte_equal"):
+                        raise RuntimeError("Scheduler-driven rebuild did not complete")
                 report["status"] = "passed"
         except Exception as error:
             report["status"] = "failed"

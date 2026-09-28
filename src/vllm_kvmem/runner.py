@@ -23,8 +23,34 @@ def make_probe_runner(base):
             self._kvmem_layers = install_qwen_capture(self.model)
             self._kvmem_probe_done = False
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+            self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
+            self._kvmem_saved_capture = None
             if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
+
+        def _kvmem_refresh(self, command):
+            from .refresh_probe import rebuild_native_batch
+            captured, request_id = self._kvmem_saved_capture
+            if (command.request_id != request_id or
+                    self._kvmem_last_batch.req_ids != [request_id]):
+                raise ValueError("Scheduled probe refers to a different request")
+            if any(ticket.history_end != self._kvmem_last_batch.num_tokens
+                   or ticket.window_tokens != ticket.history_end
+                   for _, ticket in command.groups):
+                raise ValueError("Scheduled probe only qualifies initial identity refresh")
+            report = rebuild_native_batch(self, captured, self._kvmem_probe_output)
+            if not report["all_byte_equal"]:
+                raise RuntimeError("Scheduled refresh changed native KV bytes")
+            report["command_id"] = command.command_id
+            report["request_id"] = command.request_id
+            path = self._kvmem_probe_output / "capture.json"
+            capture_report = json.loads(path.read_text())
+            capture_report["scheduled_rebuild"] = report
+            path.write_text(json.dumps(capture_report, indent=2))
+            self._kvmem_saved_capture = None
+            event = torch.cuda.Event()
+            event.record()
+            return event
 
         def prepare_attn(self, input_batch):
             self._kvmem_last_batch = input_batch
@@ -37,6 +63,10 @@ def make_probe_runner(base):
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
+            if (getattr(self, "_kvmem_scheduled", False) and not dummy_run
+                    and (self._kvmem_probe_output / "armed").is_file()):
+                from vllm.distributed.kv_transfer import get_kv_transfer_group
+                get_kv_transfer_group().runtime = self._kvmem_refresh
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
                     getattr(self, "_kvmem_probe_done", True) or
@@ -48,6 +78,10 @@ def make_probe_runner(base):
             if not captured:
                 raise RuntimeError("Real native batch executed without any KVMem captures")
             self._kvmem_probe_done = True
+            if self._kvmem_scheduled:
+                if self._kvmem_last_batch.num_reqs != 1:
+                    raise ValueError("First scheduled probe must be a single request")
+                self._kvmem_saved_capture = (captured, self._kvmem_last_batch.req_ids[0])
             output = self._kvmem_probe_output
             output.mkdir(parents=True, exist_ok=True)
             rebuild = None

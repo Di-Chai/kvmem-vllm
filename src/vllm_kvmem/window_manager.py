@@ -96,14 +96,23 @@ class WorkingSetManager:
         self.pending[request_id] = ticket
         return ticket
 
-    def commit_refresh(self, ticket: RefreshTicket, completion) -> bool:
+    def validate_refresh(self, ticket: RefreshTicket):
         if self.pending.get(ticket.request_id) is not ticket:
             raise ValueError("Stale or foreign refresh completion")
-        if not completion.query():
-            return False
         blocks = self.native.req_to_blocks[ticket.request_id]
         if tuple(b.block_id for b in blocks) != ticket.original_block_ids:
             raise RuntimeError("Native allocation changed while refresh was pending")
+
+    def abort_preparation(self, ticket: RefreshTicket):
+        """Undo preparation only before a worker command has been published."""
+        self.validate_refresh(ticket)
+        del self.pending[ticket.request_id]
+
+    def commit_refresh(self, ticket: RefreshTicket, completion) -> bool:
+        self.validate_refresh(ticket)
+        if not completion.query():
+            return False
+        blocks = self.native.req_to_blocks[ticket.request_id]
         keep = len(ticket.retained_block_ids)
         removed = blocks[keep:]
         del blocks[keep:]

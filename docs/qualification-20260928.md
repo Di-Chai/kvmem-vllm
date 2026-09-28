@@ -9,7 +9,8 @@ Exact Python dependencies: `requirements-cu130.lock`.
 
 ## Completed checks
 
-- Current combined suite: 30/30 Python CPU/GPU tests pass with explicit GPU opt-in.
+- Current combined suite: 43/43 Python CPU/GPU tests pass with explicit GPU opt-in
+  (32 CPU/control tests and 11 GPU tests).
 - Original host-core CTest: 5/5 pass, Debug build (assertions enabled).
 - Python host tests cover bindings, speculative accepted-prefix publication,
   completion fences, request cancellation, immutable FP8 remap planning, stale
@@ -18,8 +19,8 @@ Exact Python dependencies: `requirements-cu130.lock`.
   three explicit physical cache views and pinned asynchronous copies.
 - Fused capture: 3/3 pass. Original Q/K/gate tensors exactly equal the upstream
   kernel at three shapes, including the 256-dimensional Qwen gated-attention path.
-- Fused immutable-K assembly: 2/2 GPU cases pass for token-major and head-major
-  physical strides. K/V bytes exactly match vLLM's native FP8 cache writer for
+- Fused immutable-K assembly: 3/3 GPU cases pass for token-major, head-major and
+  native interleaved physical strides. K/V bytes match vLLM's native FP8 writer for
   the tested inputs; rebuilding moved K leaves resident V unchanged.
 - Native vLLM BlockPool lease ownership: pass. Capacity remains unavailable until
   the correct retiring request receives a worker completion; stale acknowledgments
@@ -89,11 +90,49 @@ The WorkingSetManager adapter passes two tests using the actual native vLLM
 FullAttentionManager/BlockPool. They cover repeated refreshes as logical history
 grows beyond K+G, native page return only after a completion fence, unchanged
 other-request allocations, stale completion rejection and bounded long-prompt
-admission. The adapter is not yet inserted into the serving scheduler.
+admission. It is now inserted into the explicitly enabled diagnostic scheduler
+described below; automatic compressed serving remains unimplemented.
+
+## Scheduler/worker transaction qualification
+
+`engine_scheduled_rebuild_02` passed with the native scheduler subclass and public
+KVConnector metadata channel. The first real prefill request was suspended in
+the scheduler, rebuilt by a command-only worker step, acknowledged, and resumed
+with complete native block-table rows. All 16 layers' K/V bytes were unchanged;
+the 128-token continuation exactly matched `engine_baseline_01`. Four subsequent
+requests each produced 128 tokens successfully. This is not a simultaneous
+four-request refresh test.
+
+The diagnostic took 6.237 seconds for the first single request and 6.626 seconds
+for the subsequent 512-token concurrent group. These include JIT/cold effects and
+blocking diagnostic archive operations: they are **not warmed decode throughput**.
+Observed device memory after generation was 71446 MiB with the configured 72%
+native pool. The single archive record was 6 MiB with one write and one read syscall.
+
+`engine_scheduled_rebuild_01` failed during warmup because native vLLM temporarily
+disables its connector there. Binding the runtime only after HTTP readiness fixed
+that lifecycle error. Failed logs are retained alongside the successful run.
+
+Ten added connector/scheduler tests cover delayed completion, cancellation before
+and after dispatch, out-of-order per-request acknowledgments, stale commands,
+multi-group prepare rollback and pre-commit validation, protected pending pages,
+and inclusion of new allocations in the block tables published on resume.
+They use real connector API types and native FullAttentionManager/BlockPool.
+Cancellation and capacity pressure still need end-to-end GPU qualification.
+
+Reproduce the live identity diagnostic on an idle GPU:
+
+```sh
+.venv/bin/python scripts/qualify_engine.py --models /path/to/models \
+  --output artifacts/engine_scheduled_rebuild_repeat --scheduled-rebuild-probe
+```
+
+This opt-in path requires eager TP=1, synchronous target-only execution and APC
+off. It does not enable compressed retrieval or DFlash refresh semantics.
 
 ## Remaining before any success/performance claim
 
-Actual scheduler-owned page leases and per-request working-set commits; immutable
-KV archive integration; query-conditioned refresh and DeltaNet replay; target and
+Automatic bounded scheduling and compacted per-request working-set commits;
+continuous immutable KV archive integration; query-conditioned refresh and DeltaNet replay; target and
 draft rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
 throughput and latency comparison; actual agent-task quality and independent repeats.
