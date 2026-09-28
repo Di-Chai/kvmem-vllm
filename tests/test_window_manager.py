@@ -61,3 +61,31 @@ def test_admission_reserves_bounded_capacity_for_long_logical_prompt():
     manager, _ = make_manager()
     assert manager.get_num_blocks_to_allocate("a", 1_000_000, (), 0, 0, 1_000_000,
                                                apply_admission_cap=True) == 4
+
+
+def test_refresh_ack_preserves_pages_written_by_query_replay():
+    manager, pool = make_manager()
+    manager.allocate_new_blocks("a", 64, 64)
+    ticket = manager.prepare_refresh("a", 48, 32, replay_tokens=16)
+    assert len(ticket.retained_block_ids) == 3
+    event = Event()
+    assert not manager.commit_refresh(ticket, event)
+    assert len(manager.req_to_blocks["a"]) == 4
+    event.done = True
+    assert manager.commit_refresh(ticket, event)
+    assert manager.offsets["a"] == 16
+    assert len(manager.req_to_blocks["a"]) == 3
+    # The completed query is already resident; admission must not replace it.
+    assert manager.get_num_blocks_to_allocate("a", 64, (), 64, 64, 64) == 0
+    manager.free("a")
+    assert pool.get_num_free_blocks() == 16
+
+
+def test_refresh_query_requires_original_allocation_and_capacity():
+    manager, _ = make_manager()
+    manager.allocate_new_blocks("a", 48, 48)
+    with pytest.raises(ValueError, match="unallocated"):
+        manager.prepare_refresh("a", 48, 32, replay_tokens=16)
+    with pytest.raises(ValueError, match="admitted"):
+        manager.prepare_refresh("a", 48, 32, replay_tokens=17)
+    assert not manager.pending

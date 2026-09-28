@@ -54,14 +54,19 @@ class PackedTransfers:
                          for owner in source_owners)
         staging = self.buffers[slot][:payload.numel()]
         staging.copy_(payload.flatten())
+        if ready is None:
+            # Allocation/reuse is ordered on the caller's stream. A write on
+            # our copy stream must wait for earlier uses there, even if the
+            # caller obtained the destination via a fresh torch.empty().
+            ready = torch.cuda.Event()
+            ready.record(torch.cuda.current_stream(self.device))
         with torch.cuda.stream(self.stream):
-            if ready is not None:
-                self.stream.wait_event(ready)
+            self.stream.wait_event(ready)
             destination.flatten().copy_(staging, non_blocking=True)
             destination.record_stream(self.stream)
             event = torch.cuda.Event()
             event.record(self.stream)
-        txn = Transfer(event, (destination, staging, *retained), slot)
+        txn = Transfer(event, (destination, staging, ready, *retained), slot)
         self.pending[slot] = txn
         return txn
 

@@ -99,6 +99,23 @@ def test_request_state_isolation_and_cancel():
     assert a.close()
 
 
+def test_failed_assembly_cannot_commit_or_recycle_before_cleanup_fence():
+    memory = small()
+    append(memory, 64)
+    memory.select({})
+    event = Event()
+    memory.fail_transaction(event)
+    assert memory.phase is Phase.FAILED
+    with pytest.raises(RuntimeError, match="ASSEMBLING"):
+        memory.commit_selection()
+    with pytest.raises(RuntimeError, match="READY"):
+        memory.begin_append(1, 32)
+    assert not memory.close()
+    event.done = True
+    assert memory.close()
+    assert memory.phase is Phase.CLOSED
+
+
 def test_binding_keeps_store_alive_until_append_destructor():
     cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=4,
                      sink_blocks=1, recent_blocks=0)

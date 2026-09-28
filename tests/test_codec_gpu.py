@@ -59,3 +59,22 @@ def test_packed_upload_owns_payload_until_cuda_completion():
     for dest in destinations:
         assert torch.equal(dest.cpu(), source)
     assert pool.close()
+
+
+def test_upload_waits_for_prior_destination_use_on_caller_stream():
+    import torch
+    from vllm_kvmem.transfer import PackedTransfers
+    device = torch.device("cuda", torch.cuda.current_device())
+    caller = torch.cuda.Stream(device=device)
+    pool = PackedTransfers(4096, 1, device)
+    source = torch.full((4096,), 73, dtype=torch.uint8)
+    with torch.cuda.stream(caller):
+        destination = torch.empty(4096, dtype=torch.uint8, device=device)
+        # A delayed previous writer must finish before the H2D writer starts.
+        torch.cuda._sleep(20_000_000)
+        destination.fill_(11)
+        transfer = pool.upload(source, destination)
+    transfer.event.synchronize()
+    caller.synchronize()
+    assert torch.equal(destination.cpu(), source)
+    assert pool.close()

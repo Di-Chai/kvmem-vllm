@@ -60,6 +60,7 @@ class CaptureRuntime:
         self.last_steps = {}
         self.completed = []
         self.batches = 0
+        self._progress_batch = -1
 
     def submit(self, captured, batch, rejected):
         if tuple(c.name for c in captured) != self.names:
@@ -135,7 +136,20 @@ class CaptureRuntime:
                 packet.next_request += 1
             assert self.downloads.release(packet.download)
             self.queue.pop(0)
+            if self.batches // 8 != self._progress_batch:
+                self._progress_batch = self.batches // 8
+                self._write_progress()
         return True
+
+    def _write_progress(self):
+        progress = {"batches_submitted": self.batches,
+            "accepted_history": {req: owner.history_end for req, owner in self.authorities.items()},
+            "archive_used_slots": self.archive.tier.used_slots,
+            "pending_downloads": len(self.downloads.pending),
+            "completed_requests": len(self.completed)}
+        temporary = self.output / "progress.tmp"
+        temporary.write_text(json.dumps(progress, indent=2))
+        temporary.replace(self.output / "progress.json")
 
     def _wait_archive_progress(self):
         # Shared queue pressure may come from another request, even when this
@@ -182,7 +196,7 @@ class CaptureRuntime:
             if not authority.close():
                 raise RuntimeError("Finalized authority still has unexpected live storage leases")
             del self.authorities[request_id]
-        report = {"scope": "continuous target authority; no compressed refresh/replay",
+        report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": self.completed,
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,
@@ -190,3 +204,4 @@ class CaptureRuntime:
                   "archive_used_slots": self.archive.tier.used_slots,
                   "pending_downloads": len(self.downloads.pending)}
         (self.output / "archive.json").write_text(json.dumps(report, indent=2))
+        self._write_progress()

@@ -31,12 +31,35 @@ def make_probe_runner(base):
             self._kvmem_continuous = os.getenv("KVMEM_ARCHIVE_PROBE") == "1"
             self._kvmem_capture_runtime = None
             self._kvmem_pending_capture = None
+            self._kvmem_request_generations = {}
+            self._kvmem_next_generation = 0
+            if os.getenv("KVMEM_REPLAY_PROBE") == "1":
+                from .replay_probe import install_replay_probe
+                install_replay_probe(self)
+            if os.getenv("KVMEM_COMPRESSION_PROBE") == "1":
+                if os.getenv("KVMEM_REPLAY_PROBE") == "1" or not self._kvmem_continuous:
+                    raise ValueError("Compression probe requires its own replay and continuous authority")
+                from .compression_probe import install_compression_probe
+                install_compression_probe(self)
             if os.getenv("KVMEM_WINDOW_METADATA") == "1":
                 from .window_bridge import install_window_bridge
                 install_window_bridge(self.model_state, lambda batch:
                     self._kvmem_window_batch if batch is getattr(self, "_kvmem_last_batch", None) else None)
             if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
+
+        def add_requests(self, scheduler_output):
+            result = super().add_requests(scheduler_output)
+            for request in scheduler_output.scheduled_new_reqs:
+                self._kvmem_next_generation += 1
+                self._kvmem_request_generations[request.req_id] = self._kvmem_next_generation
+            return result
+
+        def finish_requests(self, scheduler_output):
+            result = super().finish_requests(scheduler_output)
+            for request_id in scheduler_output.finished_req_ids:
+                self._kvmem_request_generations.pop(request_id, None)
+            return result
 
         def _kvmem_refresh(self, command):
             from .refresh_probe import rebuild_native_batch
@@ -152,7 +175,7 @@ def make_probe_runner(base):
                                 "k": c.key.cpu(), "v": c.value.cpu()}
                        for c in captured}
             torch.save(payload, output / "target_capture.pt")
-            report = {"scope": "native target capture probe; no reselection enabled",
+            report = {"scope": "native target capture; refresh qualification is recorded separately",
                       "layers_expected": self._kvmem_layers,
                       "layers_captured": list(payload),
                       "scheduled_tokens": scheduler_output.total_num_scheduled_tokens,

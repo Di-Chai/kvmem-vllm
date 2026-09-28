@@ -37,8 +37,9 @@ bindings are implemented. Reference FP8 materialization, packed GPU transfers,
 checkpoint ownership and MeanK scoring are implemented; fused raw-Q/K capture
 preserves upstream kernel outputs in GPU tests. Narrow versioned runner hooks
 are being qualified on the actual model. The scheduler/worker identity-refresh
-transaction is now qualified on the actual model. End-to-end compressed KVMem
-serving remains unimplemented. No qualified KVMem throughput result exists.
+transaction is now qualified on the actual model. A real long-request compressed
+replay also passes, while production bounded serving remains unimplemented.
+No qualified KVMem throughput result exists.
 
 Follow-up: real native FP8 pages have now completed an identity roundtrip through
 the bounded repository and NVMe archive, followed by fused assembly and commit.
@@ -47,11 +48,11 @@ The full-attention allocation adapter also passes native-manager tests for bound
 windows and deferred release. Scheduler suspension/acknowledgment wiring has now
 passed a real native request: command-only worker rebuild, all-layer byte equality,
 page-table replacement and baseline-equal continuation. The combined CPU/GPU suite
-passes 57 tests, plus 5 original CTests. Dense-window metadata and position mapping
+passes 67 tests, plus 5 original CTests. Dense-window metadata and position mapping
 are integrated with the native model state; nonzero-offset mapping is GPU-tested,
 and the full-model identity diagnostic with the hook enabled remains byte/token
-equal. Actual compressed selections, automatic
-bounded prefill/decode admission and recurrent/draft replay still remain.
+equal. A nonzero-offset long-request compressed selection and target replay now
+also pass. Automatic bounded prefill/decode admission and draft refresh remain.
 
 Continuous raw-K/FP8-V authority is now integrated in an opt-in native runner path.
 It follows native query offsets and rejection counts, seals complete blocks only,
@@ -66,3 +67,20 @@ prefix acknowledgment before persistent-session publication; verifier acceptance
 can extend beyond HTTP output when asynchronous batches are in flight. Automatic
 admission, background policy GC, nonblocking retirement and graph-compatible
 capture still need integration before performance qualification.
+
+Native recurrent restore/identity replay is qualified with actual target-only
+and DFlash engine batches, including all four requests' states. Output/state bytes
+match on initial prefill and decode, and the 128-token C1 continuations match their
+corresponding baselines. A bounded native-window assembler also passes independent
+GPU byte checks for moved/noncontiguous selected blocks. A real K131072/G65536
+long-request compression diagnostic now passes: 198656 input tokens, one actual
+selection at history 195584, a 1024-token query replay, and 128 output tokens.
+Repeated compressed replay is output/state byte-equal; all authority resources
+are reclaimed. It retains the native allocation, uses a synthetic repetitive
+prompt and does not qualify task quality, production refresh policy or throughput.
+Its generated text repeats prompt material, so real-task matched quality checks
+are necessary. The old frozen DeepSWE native input manifest is available at
+`/home/chaidi/qw3-dflash2/benchmark/dflash2/long_concurrency_inputs01/manifest.json`;
+it must be hash-checked and used without synthetic padding for future comparison.
+That reference used block=32, whereas these mechanical integrations use block=128;
+freeze matching granularity and query policy before reporting a matched speedup.

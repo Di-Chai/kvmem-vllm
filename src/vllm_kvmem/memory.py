@@ -70,6 +70,14 @@ class RequestMemory:
         self._fence = fence
         self._submitted = True
 
+    def fail_transaction(self, fence: Fence) -> None:
+        """Retain partially submitted work through its cleanup fence; never commit."""
+        if self.phase not in (Phase.APPENDING, Phase.ASSEMBLING) or self._submitted:
+            raise RuntimeError("No unsubmitted transaction to fail")
+        self._fence = fence
+        self._submitted = True
+        self.phase = Phase.FAILED
+
     def _completed(self) -> bool:
         if not self._submitted:
             raise RuntimeError("No completion fence; refusing to publish/recycle unwritten data")

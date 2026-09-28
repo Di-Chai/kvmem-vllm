@@ -28,6 +28,7 @@ class RefreshTicket:
     window_tokens: int
     original_block_ids: tuple[int, ...]
     retained_block_ids: tuple[int, ...]
+    replay_tokens: int = 0
 
 
 class WorkingSetManager:
@@ -80,19 +81,23 @@ class WorkingSetManager:
         return self.native.allocate_new_blocks(request_id, self._local(request_id, num_tokens),
                                                self._local(request_id, num_tokens_main_model))
 
-    def prepare_refresh(self, request_id: str, history_end: int, window_tokens: int):
+    def prepare_refresh(self, request_id: str, history_end: int, window_tokens: int, *, replay_tokens=0):
         if request_id in self.pending:
             raise RefreshPending(request_id)
         old_window = self._local(request_id, history_end)
         if not 0 < window_tokens <= min(old_window, self.select_budget):
             raise ValueError("Refresh must select a nonempty subset within K")
+        if type(replay_tokens) is not int or replay_tokens < 0 or old_window + replay_tokens > self.capacity:
+            raise ValueError("Query probe exceeds the admitted old working window")
         blocks = self.native.req_to_blocks.get(request_id)
-        if not blocks or old_window > len(blocks) * self.native.block_size:
+        if not blocks or old_window + replay_tokens > len(blocks) * self.native.block_size:
             raise ValueError("Refresh references unallocated history")
-        count_kept = (window_tokens + self.native.block_size - 1) // self.native.block_size
+        # The worker can replay the scheduled query before acknowledging. Keep
+        # its destination pages as well as the selected historical prefix.
+        count_kept = (window_tokens + replay_tokens + self.native.block_size - 1) // self.native.block_size
         ticket = RefreshTicket(request_id, next(_ticket_ids), history_end, window_tokens,
                                tuple(b.block_id for b in blocks),
-                               tuple(b.block_id for b in blocks[:count_kept]))
+                               tuple(b.block_id for b in blocks[:count_kept]), replay_tokens)
         self.pending[request_id] = ticket
         return ticket
 

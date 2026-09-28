@@ -32,8 +32,10 @@ must connect them through the following ownership boundaries:
    overrides to the model-state call and supplies dense text MRoPE input positions.
    GPU tests cover different per-request offsets, reordered requests, mixed query
    lengths and padded rows using actual native BlockTables. The full-model identity
-   run with this hook enabled still matches baseline. A nonzero-offset full-model
-   compressed refresh and query replay have not yet been qualified.
+   run with this hook enabled still matches baseline. A full-model compressed
+   replay now also passes at logical history 195584 with a 64512-token offset,
+   preserving logical history while attention uses its 131072-token prefix.
+   Automatic bounded scheduling and multi-request compressed refresh remain.
 3. **Raw authority.** `capture.py` retains batched quantized projections and adds
    raw Q/K stores to the existing fusion. Layer capture is verified in a real
    Q8_0/FP8 request. Per-request slicing must use the runner's actual query offsets,
@@ -63,11 +65,36 @@ must connect them through the following ownership boundaries:
    The authority's MeanK bridge can now feed accepted-key scores into the original
    native selector. Its returned plan still needs scheduler commit, assembly and
    query replay; the bridge alone does not enable compressed serving.
+   `NativeWindowAssembler` now resolves actual kernel-page tables and consumes
+   bounded coalesced record reads. Its completion retains the selected plan,
+   authority and cache views until fused raw-K/FP8-V assembly completes. The
+   scheduler must continue holding the physical allocation until acknowledgment.
 6. **Query replay / speculation.** Restore pre-query convolution and recurrent
    state using a generation-qualified checkpoint, replay the required query,
    refresh target/draft context and commit only accepted tokens. Rejected pages
    must be cleaned before repository slots become reclaimable. Checkpoints and
-   their completion fences are implemented as primitives; full replay is pending.
+   their completion fences are implemented. `NativeRecurrentState` now borrows all
+   actual native convolution/SSM rows and acceptance counters. It checks request
+   incarnations and page tables before restoring. Native identity query replay
+   is byte-equal for prefill, decode and four-request batches with and without
+   DFlash. The probe samples and publishes only the final pass, and restores all
+   neighboring requests before replay. A long target-only compressed replay now
+   passes separately; draft refresh still needs full-model qualification.
+
+The `--compression-probe` diagnostic keeps the native allocation and performs one
+capacity-boundary selection, rather than enabling production semantic prefill.
+The original semantic policy reselects query-conditioned history on each aligned
+prefill chunk after K; this must be integrated with scheduler clipping and native
+page ownership next. `RefreshTicket.replay_tokens` now retains destination pages
+for a query executed before acknowledgment, in addition to the selected prefix.
+Unit tests verify that commit cannot free those freshly written query pages.
+
+Failed assembly marks its host transaction FAILED and installs a cleanup fence
+owning the plan, cache views and staging. It cannot commit or admit more work.
+Cancellation waits for that fence. A real GPU test injects an archive read failure
+after the first assembly chunk and verifies cleanup without publishing the partial
+window. Packed H2D writes also wait for prior destination use on the caller stream;
+an allocation obtained from torch.empty may reuse storage still busy on that stream.
 
 Physical allocator blocks are not logical KVMem blocks. In the qualification
 configuration vLLM chooses 1568-token attention allocator blocks without DFlash

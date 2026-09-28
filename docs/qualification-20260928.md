@@ -215,9 +215,86 @@ Reproduce the chunked lifecycle check:
   --history-repeat 128
 ```
 
+## Native recurrent checkpoint and replay
+
+`NativeRecurrentState` borrows the actual convolution and SSM tensor rows for all
+48 GDN layers, including every allocated speculative row and the native accepted
+token counter. It validates request incarnations, state-slot indices and page IDs
+before restoring. This first adapter requires APC off, Mamba cache mode `none`,
+and a single worker rank. It rejects unsupported state layouts explicitly.
+
+| Run | Initial prefill, decode, four-request forward | State bytes per single / four-request snapshot |
+|---|---|---:|
+| engine_recurrent_replay_01 | Output and all recurrent state byte-equal | 153944068 / 615776272 |
+| engine_recurrent_replay_dflash_01 | Output and all recurrent state byte-equal | 1286602756 / 5146411024 |
+
+Both runs also passed continuous archive verification and reclaimed all archive
+resources. Their 128-token single-request outputs exactly match the corresponding
+target-only and DFlash baseline outputs. These identity replays prove restoration
+of actual native state; they do not prove compression quality or DFlash refresh.
+The draft run includes all allocated speculation state rows: snapshotting them
+has a substantial memory and kernel-launch cost that still needs optimization.
+
+`NativeWindowAssembler` now reads selected immutable records in bounded archive
+batches, uploads them through two packed staging slots and rebuilds native FP8
+pages at dense positions. GPU tests force noncontiguous selection, moved blocks,
+multiple chunks and an unchanged sink. Every resulting K/V byte matches an
+independent RoPE plus native CUDA cache-write reference. Unselected physical
+storage remains unchanged. These are small mechanical tests, not K/G benchmarks.
+
+The complete component suite passes **67 tests**: 48 CPU and 19 explicitly enabled
+GPU cases. All five unchanged C++ core tests were rerun and passed. New cases also
+cover query-page retention after refresh acknowledgment, H2D destination stream
+ordering, and an I/O failure after partial GPU assembly. Reproduce:
+
+```sh
+KVMEM_RUN_GPU_TESTS=1 .venv/bin/python -m pytest -q
+.venv/bin/python scripts/qualify_engine.py --models /path/to/models \
+  --output artifacts/recurrent_replay_repeat --archive-probe --replay-probe --dflash
+```
+
+## Real K128K/G64K target compression (2026-09-29)
+
+`engine_compression_k128g64_02` passed on the same Q8_0/FP8 target. The single
+request contains exactly 198656 synthetic repository-history tokens and generates
+128 tokens. At logical history 195584, the original MeanK selector chooses 131072
+historical tokens. The assembler rebuilds 115200 tokens in 29 bounded transfer
+chunks and skips 15872 stable tokens. The 1024-token query is replayed with dense
+positions and attention lengths, while GDN and native request counters retain
+logical history. A second restored replay has identical output and GDN state bytes.
+Only the final pass is sampled and published to the authority.
+
+Four subsequent short requests each generate 128 tokens. Across the long C1 and
+short C4 requests, 199361 native KV rows are accepted; 1556 sealed archive records
+are read back and checksum-verified. Final active authorities, archive slots and
+pending downloads are all zero. The long request's cold elapsed time is 735.49 s;
+the final device-memory snapshot is 73336 MiB. Neither is a warmed decode metric
+or a measured memory peak. The diagnostic synchronizes replay checks and performs
+complete archive readback; short requests can wait behind that retirement work.
+
+This is a mechanical integration result, **not a quality or throughput pass**.
+Generated text repeats parts of the synthetic prompt. No same-input uncompressed
+quality control has been run, so this cannot be attributed specifically to
+compression or dismissed as a prompt-only effect. Real frozen DeepSWE inputs,
+matched controls, and task execution are still required. The native allocation
+also remains untrimmed; this does not demonstrate bounded GPU serving or long C4.
+It uses 128-token records and a capacity-boundary refresh, not the prior qw3
+32-token-record semantic-prefill policy. Keep those distinctions in comparisons.
+
+The first attempt was manually stopped after insufficient progress visibility;
+that was not evidence of an engine failure. Native NVMe arenas are anonymous,
+unlinked files, so directory size is not a valid write-progress signal. The repeat
+adds accepted-history and archive-slot counters and completed successfully.
+Later harness runs also save a hash manifest of source files with the Git revision.
+
+```sh
+.venv/bin/python scripts/qualify_engine.py --models /path/to/models \
+  --output artifacts/compression_repeat --compression-probe
+```
+
 ## Remaining before any success/performance claim
 
 Automatic bounded scheduling and compacted per-request working-set commits;
-production archive admission/GC and asynchronous retirement; query-conditioned refresh and DeltaNet replay; target and
-draft rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
+production archive admission/GC and asynchronous retirement; production query-conditioned refresh and target/draft
+rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
 throughput and latency comparison; actual agent-task quality and independent repeats.

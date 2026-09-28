@@ -174,28 +174,41 @@ class RequestAuthority:
                 torch.stack([r.key_sum / r.count for r in ordered], dim=1))
 
     def read_record(self, handle):
-        """Synchronous reference read; the serving assembler should batch async reads."""
+        return self.read_records([handle])[0]
+
+    def read_records(self, handles):
+        """Read a bounded batch through one coalescible native archive I/O job."""
         self.poll()
-        record = self.records[record_key(handle)]
-        lease = self.memory.repository.pin(handle)
-        if not lease:
-            raise ValueError("Stale authority handle")
+        records = [self.records[record_key(handle)] for handle in handles]
+        leases = [self.memory.repository.pin(handle) for handle in handles]
         try:
-            if record.raw is not None:
-                return record.raw[:, :record.count].clone(), record.values[:, :record.count].clone()
-            if not record.archived:
+            if not all(leases):
+                raise ValueError("Stale authority handle")
+            disk_indices = [i for i, record in enumerate(records) if record.raw is None]
+            if any(not records[i].archived for i in disk_indices):
                 raise BlockingIOError("Immutable record write is still in flight")
-            job = self.archive.read(self.memory.request_id, [lease])
+            result = [None] * len(records)
+            for i, record in enumerate(records):
+                if record.raw is not None:
+                    result[i] = (record.raw[:, :record.count].clone(), record.values[:, :record.count].clone())
+            if not disk_indices:
+                return result
+            job = self.archive.read(self.memory.request_id, [leases[i] for i in disk_indices])
             if job is None:
                 raise BlockingIOError("Archive read queue is full")
             data, _ = job.result()
             elements = self.record_bytes // 3
-            raw = torch.frombuffer(data, dtype=self.raw_dtype, count=elements).reshape(self.shape)
-            values = torch.frombuffer(data, dtype=torch.uint8, count=elements,
-                                      offset=elements * 2).reshape(self.shape)
-            return raw[:, :record.count].clone(), values[:, :record.count].clone()
+            for packet_index, i in enumerate(disk_indices):
+                offset = packet_index * self.record_bytes
+                raw = torch.frombuffer(data, dtype=self.raw_dtype, count=elements, offset=offset).reshape(self.shape)
+                values = torch.frombuffer(data, dtype=torch.uint8, count=elements,
+                                          offset=offset + elements * 2).reshape(self.shape)
+                count = records[i].count
+                result[i] = (raw[:, :count].clone(), values[:, :count].clone())
+            return result
         finally:
-            lease.reset()
+            for lease in leases:
+                lease.reset()
 
     def select_for_queries(self, queries, mandatory_handles=()):
         """Reference MeanK-to-native-selection bridge over accepted history only.
