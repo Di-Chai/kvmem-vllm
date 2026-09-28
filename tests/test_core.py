@@ -84,6 +84,22 @@ def test_selection_preserves_sink_and_rebuilds_moved_fp8_k():
     assert memory.phase is Phase.READY
 
 
+def test_reselected_cold_block_cannot_skip_an_overwritten_same_position():
+    memory = small()
+    spans = append(memory, 48)
+    handles = [span.handle for span in spans]
+    for chosen in (2, 1, 2):
+        plan = memory.select({h.slot: float(index == chosen) for index, h in enumerate(handles)})
+        remap = next(r for r in plan.remaps if r.block_id == handles[chosen].slot)
+        assert remap.to_base == 16
+        assert not remap.skip  # Same baked position cannot prove working residency.
+        fence = Event()
+        memory.attach_completion(fence)
+        assert not memory.commit_selection()
+        fence.done = True
+        assert memory.commit_selection()
+
+
 def test_request_state_isolation_and_cancel():
     a, b = small("a"), small("b")
     append(a, 32)

@@ -3,6 +3,7 @@
 #include <pybind11/stl.h>
 #include "qw3/kvmem_store.hpp"
 #include "qw3/nvme_kv_tier.hpp"
+#include "qw3/kvmem_repository_gc.hpp"
 
 namespace py = pybind11;
 using namespace qw3;
@@ -15,7 +16,101 @@ struct OwnedRead : KvMemStorageRead {
     OwnedRead(OwnedRead &&) = default;
 };
 
+// Python callbacks run only on the CPU policy worker. Joining it while holding
+// the GIL would deadlock a pending release callback. Store's keep_alive binding
+// below retains this bridge as long as native Store retains its GC instance.
+struct RepositoryGcBridge {
+    py::function release;
+    std::shared_ptr<KvMemRepositoryGc> native;
+    std::mutex stop_mutex, error_mutex;
+    std::string callback_error;
+
+    RepositoryGcBridge(KvMemRepositoryGc::Config config,
+                       std::shared_ptr<KvMemRepository> repository, py::function callback)
+        : release(std::move(callback)) {
+        native = std::make_shared<KvMemRepositoryGc>(config, std::move(repository),
+            [this](const KvMemRepository::Record &record) {
+                py::gil_scoped_acquire gil;
+                try {
+                    return release(py::cast(record, py::return_value_policy::copy)).cast<bool>();
+                } catch (py::error_already_set &error) {
+                    const std::string message = error.what();
+                    {
+                        std::lock_guard<std::mutex> guard(error_mutex);
+                        if (callback_error.empty()) callback_error = message;
+                    }
+                    // The native worker records failures and retains Releasing
+                    // generations for retry. Surface the error on the foreground.
+                    throw std::runtime_error(message);
+                }
+            });
+    }
+    void stop() {
+        py::gil_scoped_release no_gil;
+        std::lock_guard<std::mutex> guard(stop_mutex);
+        native->stop();
+    }
+    ~RepositoryGcBridge() {
+        stop();
+        native.reset();  // Callback and py::function destruct with the GIL held.
+    }
+    std::string last_error() {
+        std::lock_guard<std::mutex> guard(error_mutex);
+        return callback_error;
+    }
+};
+
 PYBIND11_MODULE(_native, m) {
+    py::class_<KvMemGcConfig>(m, "GcPolicy")
+        .def(py::init<>())
+#define GCP(x) .def_readwrite(#x, &KvMemGcConfig::x)
+        GCP(max_live_blocks) GCP(half_life_steps) GCP(grace_steps)
+        GCP(candidate_steps) GCP(low_observations) GCP(scan_blocks) GCP(batch_blocks)
+        GCP(poll_ms) GCP(worker_cpu) GCP(shadow) GCP(trace)
+#undef GCP
+        ;
+    py::enum_<KvMemRepositoryGc::Mode>(m, "GcMode")
+        .value("OFF", KvMemRepositoryGc::Mode::Off)
+        .value("SHADOW", KvMemRepositoryGc::Mode::Shadow)
+        .value("DELETE", KvMemRepositoryGc::Mode::Delete);
+    py::class_<KvMemRepositoryGc::Config>(m, "RepositoryGcConfig")
+        .def(py::init<>())
+#define GCC(x) .def_readwrite(#x, &KvMemRepositoryGc::Config::x)
+        GCC(policy) GCC(ready_low) GCC(ready_high) GCC(recent_tokens)
+        GCC(candidate_ingest_tokens) GCC(tick_budget_us) GCC(mode) GCC(background)
+#undef GCC
+        ;
+    py::class_<RepositoryGcBridge, std::shared_ptr<RepositoryGcBridge>>(m, "RepositoryGc")
+        .def(py::init<KvMemRepositoryGc::Config, std::shared_ptr<KvMemRepository>, py::function>())
+        .def("stop", &RepositoryGcBridge::stop)
+        .def("poll", [](RepositoryGcBridge &gc) {
+            py::gil_scoped_release no_gil;
+            gc.native->poll();
+        })
+        .def("notify_progress", [](RepositoryGcBridge &gc) { gc.native->notify_progress(); })
+        .def("begin_step", [](RepositoryGcBridge &gc) { return gc.native->begin_step(); })
+        .def("set_history_end", [](RepositoryGcBridge &gc, uint64_t end) { gc.native->set_history_end(end); })
+        .def("publish", [](RepositoryGcBridge &gc, const KvMemRepository::Lease &lease, uint32_t flags, bool used) {
+            gc.native->publish(lease, flags, used);
+        }, py::arg("lease"), py::arg("flags"), py::arg("used") = false)
+        .def_property_readonly("last_error", &RepositoryGcBridge::last_error)
+        .def_property_readonly("stats", [](RepositoryGcBridge &gc) {
+            const auto s = gc.native->stats(); py::dict d;
+#define GCS(x) d[#x] = s.x
+            GCS(ticks); GCS(examined); GCS(retired); GCS(reclaimed); GCS(protected_blocks);
+            GCS(deferred); GCS(failures); GCS(raced_updates); GCS(score_gaps); GCS(stale_scores);
+            GCS(shadow_candidates); GCS(shadow_reuses); GCS(worker_ns); GCS(max_tick_ns);
+            GCS(metadata_bytes); GCS(policy_fallback_retired); GCS(incomplete_backing); GCS(reader_conflicts);
+#undef GCS
+            return d;
+        });
+#define GCF(label, value) m.attr(label) = py::int_(uint32_t(value))
+    GCF("GC_REGISTERED", KvMemGc::Registered); GCF("GC_SEALED", KvMemGc::Sealed);
+    GCF("GC_GPU", KvMemGc::Gpu); GCF("GC_IO", KvMemGc::Io);
+    GCF("GC_VALUE_BACKED", KvMemGc::ValueBacked); GCF("GC_RAW_BACKED", KvMemGc::RawBacked);
+    GCF("GC_ANCHOR", KvMemGc::Anchor); GCF("GC_MANDATORY", KvMemGc::Mandatory);
+    GCF("GC_CPU_CACHED", KvMemGc::CpuCached); GCF("GC_INDEXED", KvMemRepositoryGc::Indexed);
+#undef GCF
     m.def("resolve_keep_bands", [](uint32_t block_tokens, uint32_t select_budget,
                                    int64_t sink_blocks, int64_t recent_blocks) {
         const auto bands = resolve_kvmem_keep_allocation(
@@ -117,6 +212,19 @@ PYBIND11_MODULE(_native, m) {
         .def("discarded_page_ranges", &KvMemStore::RepositoryAppend::discarded_page_ranges);
     py::class_<KvMemStore>(m, "Store")
         .def(py::init<KvMemStoreConfig, std::shared_ptr<KvMemRepository>>())
+        .def("attach_gc", [](KvMemStore &store, std::shared_ptr<RepositoryGcBridge> gc) {
+            py::gil_scoped_release no_gil;
+            store.attach_repository_gc(gc ? gc->native : nullptr);
+        }, py::keep_alive<1, 2>())
+        .def("gc_begin_step", &KvMemStore::gc_begin_step)
+        .def("gc_end_step", &KvMemStore::gc_end_step)
+        .def("gc_flags", &KvMemStore::set_repository_gc_flags)
+        .def("working_resident", [](KvMemStore &store, KvMemBlockHandle handle, bool resident) {
+            // The plugin owns archive locations; no fictitious native CPU/SSD
+            // slot is installed. Durable raw/V/index flags are independent.
+            store.set_block_tier(handle.slot, resident ? KvTier::GPU : KvTier::SSD,
+                                 -1, -1, handle.generation);
+        })
         .def("prepare_append", &KvMemStore::prepare_repository_append, py::keep_alive<0, 1>())
         .def("read", [](const KvMemStore &s, uint64_t b, uint32_t n) {
             return OwnedRead(s.repository_storage_read(b, n));

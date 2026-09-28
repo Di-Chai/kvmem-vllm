@@ -116,8 +116,11 @@ class RequestMemory:
         self._require(Phase.ASSEMBLING)
         if not self._completed():
             return False
+        for slot in self._plan.stage_out:
+            self._store.working_resident(self._store.handle(slot), False)
         for remap in self._plan.remaps:
             handle = self._store.handle(remap.block_id)
+            self._store.working_resident(handle, True)
             self._store.set_baked(handle.slot, remap.to_base, handle.generation)
         self._plan = None
         self._reset()

@@ -205,3 +205,33 @@ Latest CPU regression after this integration: **120 passed, 28 GPU tests skipped
 to avoid contention with the active model run. The earlier complete CPU/GPU suite
 of 136 tests qualifies the previous code, not asynchronous retirement. Evidence
 for this CPU run is `artifacts/components_async_retirement_cpu.xml`.
+
+## Correction: cold-block residency, 2026-09-29
+
+A repeated reselection defect was reproduced after the earlier model runs:
+a dropped block retained GPU residency. If its old dense position was reused by
+another block, selecting it again at that position could incorrectly skip the
+archive reload. `RequestMemory.commit_selection` now changes working residency
+only after the assembly completion fence, preserving generation-qualified leases.
+
+Earlier compressed model timings and lifecycle observations remain historical
+measurements, but **do not establish compressed numerical correctness or accepted
+performance**. The metadata classification correction described elsewhere did not
+fix this separate issue. Corrected model qualification is pending. The optimized
+long-C4 run `engine_long_c4_dflash_direct_cadence_01` was deliberately interrupted
+before compression, and is not a completed benchmark.
+
+The regression cycles different blocks through the same dense position and back.
+Ordinary, packed and direct-pinned GPU assembly match independent native FP8 K/V
+bytes. The complete updated suite passes **154 tests**, plus **5 original C++
+CTest tests**. Evidence: `artifacts/components_cold_residency_fixed.xml` and
+`artifacts/cold_reselection_regression.xml`. This qualifies the component fix;
+it does not replace native model, task-quality or throughput qualification.
+
+The original repository GC now has Python bindings, including generation leases,
+backing flags, policy configuration and GIL-safe background callback shutdown.
+Five new host tests cover protection, callback failures/retry and shutdown.
+These bindings are not yet activated in the serving authority: durable backing
+publication, full retrieval-snapshot leases and bundle cleanup must be integrated
+before enabling active-history GC. The qualification harness now stops its owned
+server before joining interrupted streaming readers.

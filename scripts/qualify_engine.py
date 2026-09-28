@@ -50,6 +50,21 @@ def fetch(url, payload=None, timeout=180):
         return json.load(response)
 
 
+def stop_owned_server(process):
+    """Stop our start_new_session child before joining blocked HTTP readers."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
 def validate_archive(report, archived):
     if (archived["active_requests"] or archived.get('retiring_requests', 0) or
             archived["archive_used_slots"] or archived["pending_downloads"] or
@@ -513,7 +528,13 @@ def main():
                     prompts = [item["input_ids"] for item, _ in frozen_concurrent]
                 begin = time.monotonic()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                    report["concurrent"] = list(executor.map(complete, enumerate(prompts)))
+                    try:
+                        report["concurrent"] = list(executor.map(complete, enumerate(prompts)))
+                    except BaseException:
+                        # Executor.__exit__ otherwise waits for still-streaming
+                        # clients before the outer finally can stop the engine.
+                        stop_owned_server(process)
+                        raise
                 report["concurrent_wall_seconds"] = time.monotonic() - begin
                 if args.stream_metrics:
                     from vllm_kvmem.measurement import StreamTrace, summarize_group
@@ -605,23 +626,14 @@ def main():
                     report["bounded"] = validate_bounded(report, workers, schedulers,
                         require_concurrent=bool(args.concurrent_frozen_input) and not args.require_capacity_pressure)
                 report["status"] = "passed"
-        except Exception as error:
-            report["status"] = "failed"
+        except BaseException as error:
+            report["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
             report["error"] = repr(error)
             raise
         finally:
             if monitor is not None:
                 report["resources"] = monitor.stop()
-            if process is not None:
-                try:
-                    process.send_signal(signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
+            stop_owned_server(process)
             (args.output / "results.json").write_text(json.dumps(report, indent=2))
 
 
