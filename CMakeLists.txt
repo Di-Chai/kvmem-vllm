@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(kvmem_core LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(Threads REQUIRED)
+add_library(kvmem_core STATIC
+  third_party/qw3/src/kvmem_store.cpp
+  third_party/qw3/src/kvmem_repository.cpp
+  third_party/qw3/src/kvmem_repository_gc.cpp
+  third_party/qw3/src/kvmem_gc.cpp)
+target_include_directories(kvmem_core PUBLIC third_party/qw3/include)
+target_link_libraries(kvmem_core PUBLIC Threads::Threads)
+enable_testing()
+foreach(name kvmem_store kvmem_repository kvmem_repository_gc kvmem_gc nvme_kv_tier)
+  add_executable(${name}_test third_party/qw3/tests/${name}_test.cpp)
+  target_link_libraries(${name}_test PRIVATE kvmem_core)
+  add_test(NAME ${name} COMMAND ${name}_test)
+  set_tests_properties(${name} PROPERTIES TIMEOUT 120)
+endforeach()

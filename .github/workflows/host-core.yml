@@ -1,0 +1,15 @@
+name: host-core
+on: [push, pull_request]
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - run: python -m pytest tests/test_core.py tests/test_nvme.py tests/test_storage.py -q
+      - run: cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build/core -j2
+      - run: ctest --test-dir build/core --output-on-failure

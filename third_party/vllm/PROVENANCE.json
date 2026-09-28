@@ -1,0 +1,7 @@
+{
+  "version": "0.30.0",
+  "source": "vllm/model_executor/layers/fused_qk_norm_rope.py",
+  "sha256": "182a13b20ac5857674a368d030268161ae0d4f358a38114cded804c1791abcaa",
+  "derived_file": "src/vllm_kvmem/_fused_capture.py",
+  "changes": "Additional pre-RoPE Q/K output stores; original Q/K/gate arithmetic unchanged."
+}

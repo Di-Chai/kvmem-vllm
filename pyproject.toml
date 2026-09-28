@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77,<81", "pybind11>=3,<4", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-kvmem"
+version = "0.1.0.dev0"
+description = "Bounded, query-selected long-context memory for vLLM"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+[project.optional-dependencies]
+vllm = ["vllm==0.30.0"]
+test = ["pytest>=8,<10"]
+
+[project.entry-points."vllm.general_plugins"]
+kvmem = "vllm_kvmem:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

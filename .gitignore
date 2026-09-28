@@ -1,0 +1,11 @@
+.venv/
+.deps/
+build/
+dist/
+*.egg-info/
+*.so
+__pycache__/
+.pytest_cache/
+artifacts/
+*.gguf
+*.safetensors

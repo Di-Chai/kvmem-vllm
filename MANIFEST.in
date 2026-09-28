@@ -1,0 +1,3 @@
+recursive-include csrc *.cpp
+recursive-include third_party/qw3 *.hpp *.cpp LICENSE *.json
+recursive-include third_party/vllm *.py LICENSE *.json
