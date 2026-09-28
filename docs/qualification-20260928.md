@@ -404,3 +404,50 @@ boundary and exclude unverified draft rows from reselection. That policy is not
 yet wired into bounded DFlash serving. Latest default test run: 83 passed,
 24 GPU tests skipped. Long C4 and all remaining gates in `development.md` remain
 outstanding; this is not production or final performance qualification.
+
+## Real long-history C4 — 2026-09-29
+
+`artifacts/engine_long_c4_cached_packed_01` passed from commit `776bb7a`.
+Q8_0 target / FP8 KV, no DFlash, K131072/G65536, B128, batch budget 1024,
+per-request prefill cap 256, CPU read cache 36 GiB, packed assembly, full checksum
+retirement. The four exact frozen inputs were request_10 (Quill, 134067 tokens),
+request_22 (Effect, 132563), request_36 (DynamoDB, 132233) and request_37
+(DynamoDB, 133934), with hashes retained in the run manifest. The per-request cap
+changes query chunking relative to C1's 1024 and prevents a clean C1 speedup claim.
+
+All four requests underwent actual compressed refreshes; the worker reports
+include real four-request batches, including mixed prefill/decode neighbours.
+All 35 worker refreshes matched native scheduler commits and bounded page extents.
+652 native batches completed. Archived generations were checksum-verified and
+all authorities, archive slots, pending downloads and CPU cache bytes were freed.
+Outputs remained on their respective Quill, Effect and DynamoDB topics; no tools
+were executed, so this does not establish SWE task success or a per-request
+fixed-prefix numerical equivalence result.
+
+| Request | Output tokens | TTFT (s) | Arrival decode (tok/s) | Max burst gap (s) | Finish |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Quill 10 | 114 | 2067.706 | 11.480 | 3.669 | natural stop |
+| Effect 22 | 128 | 1992.587 | 1.214 | 16.283 | length cap |
+| DynamoDB 36 | 128 | 1971.384 | 1.105 | 21.184 | length cap |
+| DynamoDB 37 | 128 | 2071.359 | 3.729 | 10.912 | length cap |
+
+Total 498 outputs, group service 2105.441 s, cold service 0.2365 tok/s.
+Aggregate arrival decode was **3.6856 tok/s** over 134.035 s. After all four first
+outputs and before the first request finished, a diagnostic 6.1687 s subinterval
+contained 447 arrivals (72.462 tok/s); this excludes the earlier prefill and later
+retirement interference and must not replace the full-window metric.
+
+Assembly alone consumed 170.669 s, including 148.786 s host preparation, and
+uploaded 164452368384 bytes. Finished requests also synchronously verified their
+archives while neighbours were active. The run demonstrates native concurrent
+correctness/lifecycle progress and severe scheduling/assembly interference,
+**not the final high-throughput goal**. Next priorities are compressed DFlash
+qualification, matched query-granularity batching, less blocking preparation,
+retirement, and persistent-session reuse.
+
+The end GPU snapshot was 74274 MiB. A monitor attached partway through prefill
+observed a maximum owned GPU-process memory of 74248 MiB and a maximum summed
+API/worker RSS of 39020924 KiB; no foreign GPU processes or sampling errors were
+observed. Its 5 s sampling interval and partial coverage cannot establish the
+whole-run instantaneous peak. These memory definitions differ from the end
+whole-device snapshot.

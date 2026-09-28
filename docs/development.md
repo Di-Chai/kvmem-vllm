@@ -16,7 +16,7 @@ and generation-qualified repository handles must remain distinct.
 | Requirement | Current evidence | Remaining acceptance |
 | --- | --- | --- |
 | Original selection/storage semantics | Unchanged host core with file hashes in `third_party/qw3/PROVENANCE.json`; MeanK score bridge; immutable raw K; dense position assembly; original sink/recent bands | Match old controller's final-query override and record granularity before declaring an equivalent-workload speedup |
-| Bounded native target execution | `engine_deepswe_effect_bounded_03`: real 197110-token history, 65 matched refresh commits, bounded native attention allocation, coherent natural-EOS continuation and complete cleanup | Long C4, cancellation and GPU/CPU/NVMe capacity-pressure tests |
+| Bounded native target execution | `engine_deepswe_effect_bounded_03`: real 197110-token history, 65 matched refresh commits, bounded native attention allocation, coherent natural-EOS continuation and complete cleanup | Cancellation and GPU/CPU/NVMe capacity-pressure tests; long C4 passes but performance is poor |
 | DeltaNet and transaction correctness | Native target/DFlash identity replay, C4 recurrent-state restoration, rejected candidate exclusion, per-generation leases and failure fencing | Compressed target/draft refresh, accepted-boundary checkpoints, terminal-prefix rollback and persistent sessions |
 | Efficient transfers and storage | Packed D2H; fenced H2D; moved-block FP8 assembly; coalesced native NVMe I/O; opt-in archive-layout assembly and bounded CPU read cache | Independent performance repeats, overlapping preparation, background policy GC and nonblocking retirement |
 | Cross-request resources | Native lifetime GPU-page reservation adapter with hybrid-manager tests; shared archive namespace isolation; bounded queue/cache components | Native pressure/cancellation proof, disk admission, CPU total-budget accounting, long-running reclamation |
@@ -48,8 +48,9 @@ improvement, not a decode gain or a warmed performance pass. Native lifetime
 GPU-page reservation was attached. The latest CPU suite passed 83 tests; 24 GPU
 component tests were skipped to avoid interfering with the live model run.
 
-Then run long-history C4 with actual native batch participation, followed by
-cancellation/pressure tests. Finish DFlash refresh and accepted-prefix/session
+Long-history C4 now passes with actual native four-request compressed batches,
+but aggregate arrival decode is 3.686 tok/s due to prefill/retirement interference.
+Proceed with compressed DFlash and cancellation/pressure tests. Finish DFlash refresh and accepted-prefix/session
 lifecycle before the final warmed performance and agent-quality gates. A client
 submitting four HTTP requests does not itself prove four-request GPU batching.
 
@@ -107,3 +108,9 @@ validator requires physical page return, not just cleared request IDs or credits
 CPU/socket and scheduler tests pass; the actual native GPU cancellation run remains
 pending. Source changes made after `engine_long_c4_cached_packed_01` launched do
 not affect its already loaded runtime.
+
+
+`engine_deepswe_effect_bounded_dflash_01` is now running the same exact 197110-token
+Effect input as the corrected target C1, from commit `62726f0`. It retains full
+checksum verification, per-request 1024-token query chunks and the same K/G and
+precision. Its final result is pending; a successful launch is not qualification.

@@ -11,7 +11,7 @@ explicit flags and pinned source hashes; no installed vLLM files are rewritten.
 | Target KV | Native FP8 e4m3 layouts; raw pre-RoPE K authority and FP8 V; byte-checked assembly | Other native KV codecs and scale layouts |
 | Hybrid state | Qwen3.5-family GDN native state identity restore/replay | Cancellation and session persistence; corrected bounded real C1 passes |
 | DFlash2 | Native generation, accepted/rejected capture and identity replay; experimental bounded refresh wired with CPU checks | Native compressed GPU qualification, terminal-prefix rollback and persistent sessions |
-| Bounded target | Scheduled semantic prefill/selection, actual-length acknowledgment, page trimming implemented | Corrected real long C1 passes; long C4 and pressure qualification remain |
+| Bounded target | Scheduled semantic prefill/selection, actual-length acknowledgment, page trimming implemented | Corrected real long C1/C4 pass; pressure tests and performance acceptance remain |
 | GPU admission | Future growth reservations tested with native full-attention/Mamba allocator | Attached to bounded scheduler; native GPU pressure tests remain |
 | Storage | Immutable archive, generation-qualified leases, packed transfers and fenced failures | Per-request disk/CPU quota admission, background GC, asynchronous retirement |
 | Measurements | Exact frozen-token inputs, SSE arrival/usage validation, C1/C4 aggregation | Native SSE C1/short-C4 passes; matched warm repeats and executed agent-task success remain |
