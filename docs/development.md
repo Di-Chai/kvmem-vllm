@@ -56,8 +56,8 @@ parser flags. A subsequent short preflight exposed a missing capture-directory
 creation in the backend launcher. Both infrastructure failures are retained;
 neither is a model score. The corrected launcher enables native Qwen XML tools
 and reasoning parsing and prepares telemetry before starting engine processes.
-The latest full host suite passes 181 tests, with 41 GPU cases skipped while the
-model service is active (`components_serving_gc_host_20260929.xml`).
+The latest full host suite passes 194 tests, with 41 GPU cases skipped while the
+model service is active (`components_nvme_reservation_host_20260929.xml`).
 
 The backend launcher also now arms capture after native warmup. An initial
 HTTP-only preflight succeeded but the unarmed engine then failed at retirement;
@@ -66,9 +66,12 @@ record. The replacement preflight requires tool parsing, native metrics, exact
 terminal archive, zero archive/physical-page ownership and a live API. It passes
 on `agent_backend_tensorcore_04` (source `9cf462a`): 284 prompt/31 output tokens,
 314 archived rows, 1072/1073 free native blocks (one null), no remaining request,
-reservation, download or archive slot. The two official attempts have started in
-`agent_tensorcore_c2_initial_02` with instance-bound preflight evidence. Results
-and executed task quality are still pending.
+reservation, download or archive slot. The two official attempts in
+`agent_tensorcore_c2_initial_02` subsequently exposed the original proxy's
+900-second read timeout and were stopped as infrastructure failures. No score
+or clean C2 performance claim is made. Replacement backend `_05` passes tool
+and actual GPU cancellation preflights; `agent_tensorcore_c2_initial_03` has now
+started through the timeout-aligned proxy and disconnect-aware relay.
 
 All earlier compressed model runs predate the cold-block residency correction.
 Their timings and cleanup observations are retained in the qualification record,
@@ -544,3 +547,50 @@ GPU behaviour and reduction of capture-thread waits are unverified. This covers
 repository-record credits; it does not yet implement global host/NVMe admission
 or asynchronous treatment of every I/O-queue/staging pressure condition. The
 live agent test remains on its frozen earlier worker package.
+
+## Strict shared NVMe reservation
+
+Optional `nvme_preallocate` reserves and verifies the physical disk blocks for
+the full shared arena during model loading, before API readiness. The binding
+uses the original tier's preallocation path and verifies the private inode's
+size/allocation; unsupported or failed allocation cannot silently become sparse
+success. The private file is unlinked on both success and failure, with the tier
+fd retaining ownership until shutdown. Imported qw3 source remains unchanged.
+`nvme_max_bytes` rejects an oversized geometry-derived shared arena before any
+arena is created. It is a startup capacity quota, not dynamic cross-service
+quota management. Defaults remain off/geometry-derived for existing recipes.
+
+The GPU harness exposes `--nvme-preallocate` and `--nvme-max-mib` and verifies
+the corresponding runtime report. Native CPU tests verify physical allocation,
+I/O, an injected file-size reservation failure, unlink/close lifecycle, and
+global quota rejection. 45 targeted tests and the full 194-case host suite pass;
+41 GPU cases were deferred. GPU startup reservation and global CPU-buffer byte
+admission remain unqualified.
+
+## Agent transport correction and real cancellation
+
+The official generated Squid proxy in `_02` returned `TCP_MISS_TIMEDOUT/504`
+after 900642 ms. The client retried while the old relay kept upstream inference
+alive, creating three active requests for two serial agents. Both attempts were
+stopped, retained as unscored infrastructure failures, and their owned backend,
+relay, task containers and networks were removed. `transport_failure.json` and
+the saved proxy log preserve the evidence. Host builds/tests also overlapped
+this run; it is not an exclusive performance benchmark.
+
+The new process-local `pier_transport_entry.py` verifies the pinned official
+network-setup source hash and changes only read/forward timeouts to the existing
+21600-second model-call budget. It does not edit the installed Pier package or
+alter allowlists, authentication, solver policy, retry count or verifier. The
+relay now monitors client disconnects during silent upstream work, shuts down
+the native API socket and records delivery/cancellation separately. Undelivered
+responses are excluded from completed-request timing. 14 transport/harness host
+tests pass; the pinned real Pier CLI entry point also loads successfully.
+
+`agent_backend_tensorcore_05/cancel_preflight.json` proves actual native GPU
+abort through the new relay: after 2048 accepted prefill tokens, client disconnect
+releases all request, reservation, physical-page, archive and download ownership
+in 1.107 seconds. The terminal prefix is `FINISHED_ABORTED` at 2048; another 1024
+in-flight rows are discarded. The API stays healthy. This is active-prefill
+cancellation, not the still-required compressed-refresh cancellation gate.
+The next real attempts are `_03`, with instance-bound tool and cancellation
+evidence. No task score is available yet.
