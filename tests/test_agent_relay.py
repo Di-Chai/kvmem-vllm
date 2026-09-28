@@ -22,12 +22,14 @@ def test_metrics_use_first_to_last_generation_interval_and_exclude_first_token()
 
 
 @pytest.mark.parametrize('status', [200, 400])
-def test_relay_preserves_request_response_and_records_native_metrics(tmp_path, status):
+@pytest.mark.parametrize('sessions', [False, True])
+def test_relay_preserves_request_response_and_records_native_metrics(tmp_path, status, sessions):
     received = []
     response = b'{"id":"native-id","usage":{"completion_tokens":11},"metrics":{"generation_time_ms":200}}'
     class Upstream(BaseHTTPRequestHandler):
         def do_POST(self):
-            received.append((self.path, self.rfile.read(int(self.headers['Content-Length'])), self.headers.get('x-kvmem-task-id')))
+            received.append((self.path, self.rfile.read(int(self.headers['Content-Length'])),
+                             self.headers.get('x-kvmem-task-id'), self.headers.get('X-Session-ID')))
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(response)))
@@ -37,7 +39,8 @@ def test_relay_preserves_request_response_and_records_native_metrics(tmp_path, s
             pass
     upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
     journal = tmp_path / 'requests.jsonl'
-    proxy = ThreadingHTTPServer(('127.0.0.1', 0), relay.make_handler('127.0.0.1', upstream.server_port, journal))
+    options = {'session_scope': 'run-a', 'session_tasks': ['task-a']} if sessions else {}
+    proxy = ThreadingHTTPServer(('127.0.0.1', 0), relay.make_handler('127.0.0.1', upstream.server_port, journal, **options))
     threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (upstream, proxy)]
     for thread in threads:
         thread.start()
@@ -48,12 +51,20 @@ def test_relay_preserves_request_response_and_records_native_metrics(tmp_path, s
                        {'Content-Type': 'application/json', 'x-kvmem-task-id': 'task-a'})
         result = client.getresponse()
         assert result.status == status and result.read() == response
-        assert received == [('/v1/chat/completions', payload, 'task-a')]
+        session = relay.task_session_id('run-a', 'task-a') if sessions else None
+        assert received == [('/v1/chat/completions', payload, 'task-a', session)]
         client.request('POST', '/v1/chat/completions', b'{"stream":true}')
         result = client.getresponse()
         assert result.status == 400
         result.read()
         assert len(received) == 1
+        if sessions:
+            client.request('POST', '/v1/chat/completions', b'{"session_id":"override"}',
+                           {'Content-Type': 'application/json', 'x-kvmem-task-id': 'task-a'})
+            result = client.getresponse()
+            assert result.status == 400
+            result.read()
+            assert len(received) == 1
     finally:
         client.close()
         for server in (proxy, upstream):
@@ -66,6 +77,16 @@ def test_relay_preserves_request_response_and_records_native_metrics(tmp_path, s
     assert record['native_decode_tokens_per_second'] == 50
     assert record['response_id'] == 'native-id'
     assert record['response_delivered'] and not record['downstream_disconnected']
+    assert record.get('session_id') == session
+
+
+def test_agent_session_namespace_is_stable_and_separates_tasks_and_runs(tmp_path):
+    value = relay.task_session_id('run-a', 'task-a')
+    assert value == relay.task_session_id('run-a', 'task-a')
+    assert value != relay.task_session_id('run-b', 'task-a')
+    assert value != relay.task_session_id('run-a', 'task-b')
+    with pytest.raises(ValueError, match='allowlist'):
+        relay.make_handler('127.0.0.1', 1, tmp_path/'out', session_scope='scope')
 
 
 def test_downstream_disconnect_interrupts_silent_upstream_and_does_not_count_delivery(tmp_path):

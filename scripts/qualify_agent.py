@@ -83,6 +83,27 @@ def snapshot_task(source, destination):
             for p in sorted(destination.rglob('*')) if p.is_file()}
 
 
+def validate_session_gates(paths, engine, concurrency):
+    long_passed = concurrent_passed = False
+    gates = []
+    for path in paths:
+        data = json.loads(path.read_text())
+        identity = data.get('engine')
+        if identity is None:
+            identity = json.loads((path.parent / 'engine_evidence.json').read_text())
+        if data.get('status') != 'passed' or any(identity.get(key) != engine.get(key) for key in
+                ('manager_pid', 'api_base', 'worker_manifest_sha256')):
+            raise ValueError('Session gate must have passed on this same frozen backend instance')
+        long_passed |= data.get('prompt_tokens', 0) > 131072 and data.get('imported_tokens', 0) >= 131072
+        concurrent_passed |= (data.get('concurrency', 0) >= concurrency and
+                             'same_session_overlap' in data.get('phases', {}) and
+                             data.get('cancellation', {}).get('terminal', {}).get('terminal_prefix', {}).get('status') == 'FINISHED_ABORTED')
+        gates.append({'path': str(path.resolve()), 'sha256': digest(path)})
+    if not long_passed or not concurrent_passed:
+        raise ValueError('Session agent execution needs long exact-restore and concurrent cancellation gates')
+    return gates
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--pier-python', type=Path, required=True)
@@ -101,6 +122,8 @@ def main():
                         help='Required for execution: passed tool/capture/retirement check for this backend')
     parser.add_argument('--cancel-preflight-evidence', type=Path,
                         help='Required for execution: native cancellation/release proof through this relay')
+    parser.add_argument('--session-evidence', type=Path, action='append', default=[],
+                        help='Passed exact long restore and concurrent session/cancellation results on this backend')
     parser.add_argument('--prepare-only', action='store_true', help='Validate/snapshot without invoking Pier; not a quality result')
     args = parser.parse_args()
     # Resolving the interpreter symlink would select the base Python and lose
@@ -125,6 +148,7 @@ def main():
     relay = None
     preflight = None
     cancel_preflight = None
+    session_gates = []
     if not args.prepare_only:
         if args.relay_evidence is None:
             parser.error('Executed qualification requires relay-evidence for native timing and backend identity')
@@ -149,6 +173,13 @@ def main():
                 or cancel_preflight.get('engine_manager_pid') != evidence.get('manager_pid')
                 or cancel_preflight.get('relay_manager_pid') != relay.get('manager_pid')):
             raise RuntimeError('Cancellation preflight must qualify this same backend and relay')
+        if relay.get('session_tasks'):
+            command = evidence['command']
+            options = json.loads(command[command.index('--kv-transfer-config')+1])['kv_connector_extra_config']['kvmem']
+            if (not relay.get('session_scope') or not set(args.task) <= set(relay['session_tasks']) or
+                    options.get('session_capacity', 0) < args.concurrency or not options.get('session_checkpoint_bytes')):
+                raise RuntimeError('Session relay task scopes and backend capacity do not cover this run')
+            session_gates = validate_session_gates(args.session_evidence, evidence, args.concurrency)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     shutil.copy2(Path(__file__), out / 'qualify_agent.py')
@@ -160,6 +191,8 @@ def main():
         (out / 'preflight_evidence.json').write_text(json.dumps(preflight, indent=2) + '\n')
     if cancel_preflight is not None:
         (out / 'cancel_preflight_evidence.json').write_text(json.dumps(cancel_preflight, indent=2) + '\n')
+    for index, gate in enumerate(session_gates):
+        shutil.copy2(gate['path'], out / f'session_gate_{index}.json')
     tasks = []
     for task_id in args.task:
         task_out = out / task_id
@@ -174,6 +207,9 @@ def main():
               'harness_sha256': digest(out / 'qualify_agent.py'),
               'engine_evidence_sha256': digest(args.engine_evidence), 'concurrency': args.concurrency,
               'tasks': tasks, 'prepared_only': args.prepare_only, 'status': 'prepared'}
+    if session_gates:
+        report['scope'] = 'official executed DeepSWE tasks with task-scoped exact prompt sessions; agent quality under test'
+        report['session_gates'] = session_gates
     (out / 'plan.json').write_text(json.dumps(report, indent=2) + '\n')
     if args.prepare_only:
         print(out / 'plan.json')

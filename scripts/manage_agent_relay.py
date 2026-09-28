@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--upstream-port', type=int, required=True)
     parser.add_argument('--image', required=True, help='Existing task image with Python3; no unrelated container is reused')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--session-task', action='append', default=[],
+                        help='Opt-in per-task native prompt session header; benchmark-local isolation only')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -35,6 +37,8 @@ def main():
     network = container = None
     record = {'name': name, 'manager_pid': os.getpid(), 'upstream_port': args.upstream_port, 'state': 'starting'}
     record['relay_source_sha256'] = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    record['session_tasks'] = list(args.session_task)
+    record['session_scope'] = name if args.session_task else None
     state_path = output / 'resources.json'
 
     def save():
@@ -50,12 +54,15 @@ def main():
         save()
         data = json.loads(docker('network', 'inspect', network))[0]
         address = data['IPAM']['Config'][0]['Gateway']
+        session_args = ['--session-scope', name] if args.session_task else []
+        for task in args.session_task:
+            session_args.extend(['--session-task', task])
         container = docker('run', '--rm', '-d', '--pull', 'never', '--name', name,
             '--label', 'kvmem-vllm.owner=' + name, '--network', 'host', '--entrypoint', 'python3',
             '-v', f'{snapshot}:/opt/kvmem/agent_api_relay.py:ro',
             '-v', f'{output}:/records', image['Id'], '/opt/kvmem/agent_api_relay.py',
             '--listen-host', address, '--listen-port', '443', '--upstream-port', str(args.upstream_port),
-            '--output', '/records/requests.jsonl')
+            '--output', '/records/requests.jsonl', *session_args)
         record.update(container_id=container, api_base=f'http://{address}:443/v1')
         save()
         # Proxies on the host are irrelevant to a private bridge health check.

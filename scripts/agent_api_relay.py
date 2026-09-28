@@ -38,7 +38,14 @@ def response_measurement(body):
             'error': value.get('error')}
 
 
-def make_handler(upstream_host, upstream_port, output):
+def task_session_id(scope, task_id):
+    return 'kvmem-agent-' + hashlib.sha256(json.dumps([scope, task_id]).encode()).hexdigest()
+
+
+def make_handler(upstream_host, upstream_port, output, *, session_scope=None, session_tasks=()):
+    if bool(session_scope) != bool(session_tasks):
+        raise ValueError('Agent sessions require an explicit run scope and task allowlist together')
+    session_tasks = frozenset(session_tasks)
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -73,6 +80,7 @@ def make_handler(upstream_host, upstream_port, output):
             if len(payload) != length:
                 self.close_connection = True
                 return
+            session = None
             if self.command == 'POST':
                 try:
                     request = json.loads(payload)
@@ -82,9 +90,19 @@ def make_handler(upstream_host, upstream_port, output):
                 if not isinstance(request, dict) or request.get('stream'):
                     self.send_error(400, 'This relay only qualifies non-streaming agent calls')
                     return
+                task = self.headers.get('x-kvmem-task-id')
+                if session_scope and task in session_tasks:
+                    xargs = request.get('vllm_xargs') or {}
+                    if (request.get('session_id') or self.headers.get('X-Session-ID') or
+                            (isinstance(xargs, dict) and xargs.get('session_id'))):
+                        self.send_error(400, 'Task relay owns the benchmark session identity')
+                        return
+                    session = task_session_id(session_scope, task)
             record = {'submitted_monotonic': time.monotonic(), 'submitted_unix': time.time(),
                       'path': self.path, 'task_id': self.headers.get('x-kvmem-task-id'),
                       'request_bytes': length, 'request_sha256': hashlib.sha256(payload).hexdigest()}
+            if session is not None:
+                record['session_id'] = session
             conn = http.client.HTTPConnection(upstream_host, upstream_port, timeout=21600)
             replied = False
             stopped, disconnected = threading.Event(), threading.Event()
@@ -93,6 +111,10 @@ def make_handler(upstream_host, upstream_port, output):
             try:
                 headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS | {'accept-encoding'}}
                 headers['Accept-Encoding'] = 'identity'
+                if session is not None:
+                    # Native vLLM recognizes this header. Input JSON, sampling,
+                    # task policy and response bytes remain exactly unchanged.
+                    headers['X-Session-ID'] = session
                 conn.request(self.command, self.path, body=payload, headers=headers)
                 upstream_socket = conn.sock
                 def watch_disconnect():
@@ -164,10 +186,13 @@ def main():
     parser.add_argument('--upstream-host', default='127.0.0.1')
     parser.add_argument('--upstream-port', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--session-scope')
+    parser.add_argument('--session-task', action='append', default=[])
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with ThreadingHTTPServer((args.listen_host, args.listen_port), make_handler(
-            args.upstream_host, args.upstream_port, args.output)) as server:
+            args.upstream_host, args.upstream_port, args.output,
+            session_scope=args.session_scope, session_tasks=args.session_task)) as server:
         server.serve_forever()
 
 

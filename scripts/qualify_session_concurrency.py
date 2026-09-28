@@ -57,9 +57,9 @@ def main():
         return state
     def read_archive():
         return json.loads((capture / 'archive.json').read_text())
-    def complete(tokens, session, request_id=None, cache_salt=None):
+    def complete(tokens, session, request_id=None, cache_salt=None, output=64):
         payload = {'model': 'qualification', 'prompt': tokens, 'session_id': session,
-                   'temperature': 0, 'seed': 104729, 'max_tokens': 64, 'return_token_ids': True}
+                   'temperature': 0, 'seed': 104729, 'max_tokens': output, 'return_token_ids': True}
         if request_id:
             payload['request_id'] = request_id
         if cache_salt is not None:
@@ -194,7 +194,8 @@ def main():
             raise RuntimeError('Cancellation changed the next exact continuation')
         # The same visible session ID in another gateway isolation scope must
         # cold-compute. At a full pool this also exercises fenced idle eviction.
-        result = complete(prompts[0], sessions[0], cache_salt='different-scope-'+uuid.uuid4().hex)
+        other_scope = 'different-scope-'+uuid.uuid4().hex
+        result = complete(prompts[0], sessions[0], cache_salt=other_scope)
         isolated_scope = snapshot()
         reuse_delta(recovered, isolated_scope, 0, [])
         if output_tokens(result['result']) != output_tokens(controls[0]['result']):
@@ -213,6 +214,17 @@ def main():
             report['calls']['evicted_session'] = result
             report['phases']['evicted_session'] = {'before': recovered, 'after': after_eviction}
             recovered = after_eviction
+        # A shorter prompt explicitly misses its old checkpoint and is too
+        # short to create another. Exercise reclamation through normal HTTP.
+        for i, session in enumerate(sessions):
+            report['calls'][f'release_{i}'] = complete(prompts[i][:512], session, output=8)
+            snapshot()
+        report['calls']['release_other_scope'] = complete(prompts[0][:512], sessions[0],
+                                                          cache_salt=other_scope, output=8)
+        recovered = snapshot()
+        if options['session_capacity'] == args.concurrency and any(recovered['archive'][key] for key in
+                ('session_checkpoints', 'session_checkpoint_payload_bytes', 'archive_used_slots')):
+            raise RuntimeError('Owned prompt sessions did not fully reclaim their checkpoints and archives')
         report['status'] = 'passed'
         report['final_state'] = recovered
     except BaseException as error:

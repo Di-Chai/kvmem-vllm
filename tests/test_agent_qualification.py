@@ -55,3 +55,24 @@ def test_snapshots_are_detached_and_external_symlinks_are_rejected(tmp_path):
     (source / 'external').symlink_to(tmp_path / 'copy')
     with pytest.raises(ValueError, match='symlinks'):
         agent.snapshot_task(source, tmp_path / 'second')
+
+
+def test_session_agent_gate_requires_same_worker_long_restore_and_cancel(tmp_path):
+    engine = {'manager_pid': 123, 'api_base': 'local', 'worker_manifest_sha256': 'frozen'}
+    long = tmp_path/'long.json'
+    concurrent = tmp_path/'concurrent.json'
+    long.write_text(json.dumps({'engine': engine, 'status': 'passed',
+                                'prompt_tokens': 134067, 'imported_tokens': 133120}))
+    data = {'engine': engine, 'status': 'passed', 'concurrency': 4,
+            'phases': {'same_session_overlap': {}},
+            'cancellation': {'terminal': {'terminal_prefix': {'status': 'FINISHED_ABORTED'}}}}
+    concurrent.write_text(json.dumps(data))
+    assert len(agent.validate_session_gates([long, concurrent], engine, 4)) == 2
+    with pytest.raises(ValueError, match='concurrent cancellation'):
+        agent.validate_session_gates([long], engine, 2)
+    with pytest.raises(ValueError, match='same frozen backend'):
+        agent.validate_session_gates([long, concurrent], {**engine, 'manager_pid': 124}, 4)
+    data['status'] = 'failed'
+    concurrent.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='same frozen backend'):
+        agent.validate_session_gates([long, concurrent], engine, 4)
