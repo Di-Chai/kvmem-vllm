@@ -150,3 +150,8 @@ after fresh tool and disconnect preflights. No score is available yet. The previ
 non-session pair timed out with reward 0 for both tasks; it is retained in full.
 Relay measurements are restricted to the new execution interval and task identities,
 so preflight calls or earlier runs cannot enter the agent throughput statistics.
+Early live evidence confirms that the native header reaches the actual growing
+agent histories: scheduler hits increase from the recorded baseline 18 to 25,
+with two session entries and no checkpoint byte-admission deferrals. Both tasks
+continue issuing tool calls; this is real reuse evidence, not a final score or
+long-task throughput result.
