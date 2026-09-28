@@ -31,28 +31,28 @@ precision, K/G, histories or output stopping rules to manufacture an improvement
 There is no hard 130 tok/s or 48 GiB acceptance threshold. Substantial concurrent
 throughput improvement must be supported by actual matched measurements.
 
-## Current execution stage
+## Current execution stage (2026-09-29)
 
-The CPU/GPU component suite passed 102 tests at commit `dbd7451`; all five original
-C++ tests passed before these Python-only integrations. The corrected bounded C1
-run completed 77 tokens at 20.491 HTTP arrival decode tok/s **without DFlash**, with
-1877.601 s TTFT. Subsequent short C4 produced 512 capped tokens at 76.225 aggregate
-arrival decode tok/s, but waited about 23.75 s for synchronous archive retirement.
-These are diagnostic observations, not the goal's performance pass or long C4.
+The latest source includes the cold-block residency correction, background GC
+at the authority/component layer, and scheduler terminal-prefix capture clipping.
+The residency correction passed 154 CPU/GPU component tests and all 5 original
+C++ tests. Subsequent terminal-prefix changes passed 143 CPU tests with 28 GPU
+tests deferred while the model test runs. GC serving activation, exact terminal
+GPU qualification and persistent sessions remain incomplete.
 
-The cached/packed candidate `engine_deepswe_effect_cached_packed_01` passed the
-same 197K C1 and short C4 with exactly matching output token IDs and complete
-cleanup. C1 TTFT decreased from 1877.601 to 1280.156 s (31.82%); arrival decode
-was 19.448 rather than 20.491 tok/s. This demonstrates a cold prefill/refresh
-improvement, not a decode gain or a warmed performance pass. Native lifetime
-GPU-page reservation was attached. The latest CPU suite passed 83 tests; 24 GPU
-component tests were skipped to avoid interfering with the live model run.
+`engine_long_c4_dflash_direct_cadence_02` is the active corrected native model run,
+from frozen commit `053383f`. It uses the same four long inputs, Q8_0/FP8,
+DFlash2 and K131072/G65536, with direct pinned reads, packed assembly, cadence 8
+and asynchronous archive retirement. No completed decode result is available yet.
+It predates terminal-prefix clipping and therefore cannot qualify reusable final
+checkpoints. A completed timing is also not a matched optimization speedup.
 
-Long-history C4 now passes with actual native four-request compressed batches,
-but aggregate arrival decode is 3.686 tok/s due to prefill/retirement interference.
-Proceed with compressed DFlash and cancellation/pressure tests. Finish DFlash refresh and accepted-prefix/session
-lifecycle before the final warmed performance and agent-quality gates. A client
-submitting four HTTP requests does not itself prove four-request GPU batching.
+All earlier compressed model runs predate the cold-block residency correction.
+Their timings and cleanup observations are retained in the qualification record,
+but their compressed numerical-correctness/performance acceptance is withdrawn.
+The requirement table above is a roadmap of historical evidence, not an override
+of this correction. Corrected model runs, matched warmed repeats and executed
+agent-task quality remain required.
 
 ## Evidence corrections
 
@@ -294,3 +294,24 @@ persistent sessions remain disabled until final restore/replay is implemented
 and qualified. The running long-C4 uses its earlier frozen source and therefore
 does not qualify this new boundary path. Its finished namespaces are discarded,
 not reused as sessions; its final report must retain that limitation.
+
+## Canonical accepted GDN state (GPU qualification pending)
+
+`NativeRecurrentState.canonicalize_accepted` can move a nonempty retained native
+speculative prefix to the base SSM row and canonical convolution window, then
+reset native acceptance to one for a subsequent prefill/decode. It supports the
+native SD and DS convolution layouts, validates all groups before mutation and
+returns a CUDA completion fence. Source hashes pin the native Qwen GDN layer,
+convolution kernel, recurrent kernel and hybrid-state lifecycle. This operation
+is not enabled in serving or claimed as session support yet.
+
+Zero retained rows and partial ordinary prefill fail explicitly: their previous
+recurrent states require checkpoint restore/replay. The independent DFlash draft
+KV/hidden lifecycle and logical-position limits also still require session
+integration. GPU cases compare speculative-prefix normalization with independently
+executed native convolution and GDN prefixes, including a subsequent ordinary
+convolution step and untouched neighbouring pages. These six cases are staged,
+not yet executed while the long-C4 model owns the GPU.
+
+Latest host regression: **146 passed, 34 skipped** (28 existing GPU tests plus
+6 new native-prefix GPU cases), `artifacts/components_accepted_state_cpu.xml`.

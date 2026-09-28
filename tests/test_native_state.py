@@ -57,3 +57,27 @@ def test_checkpoint_rejects_page_changes_and_cross_request_aliases():
     table[1, 0] = 1
     with pytest.raises(ValueError, match="share"):
         owner.borrow(["a", "b"])
+
+
+def test_canonicalization_rejects_lost_history_instead_of_fabricating_state():
+    owner, conv, recurrent, _ = adapter()
+    original = conv.clone(), recurrent.clone()
+    with pytest.raises(ValueError, match='checkpoint replay'):
+        owner.canonicalize_accepted('a', retained_tokens=0, query_tokens=2, speculative=True)
+    with pytest.raises(ValueError, match='checkpoint replay'):
+        owner.canonicalize_accepted('a', retained_tokens=1, query_tokens=2, speculative=False)
+    assert torch.equal(conv, original[0]) and torch.equal(recurrent, original[1])
+
+
+def test_canonicalization_validates_all_native_rows_before_any_write():
+    owner, conv, recurrent, _ = adapter()
+    original = conv.clone(), recurrent.clone()
+    with pytest.raises(ValueError, match='allocated recurrent rows'):
+        owner.canonicalize_accepted('a', retained_tokens=2, query_tokens=3, speculative=True)
+    assert torch.equal(conv, original[0]) and torch.equal(recurrent, original[1])
+
+
+def test_recurrent_source_contract_matches_installed_native_implementation():
+    pytest.importorskip('vllm')
+    from vllm_kvmem.native_state import verify_state_sources
+    verify_state_sources()

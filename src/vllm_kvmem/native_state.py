@@ -5,8 +5,29 @@ tensors, every allocated speculation row, and the native acceptance counter are
 included. Prefix-cached/aligned and context-parallel layouts need separate adapters.
 """
 from dataclasses import dataclass
+from functools import lru_cache
+import hashlib
+from importlib.metadata import distribution
 
 import torch
+
+
+STATE_SOURCES = {
+    'model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py': 'b80f8e6f3fff442fb880aebb3209c52f814f66490009f4ac4003de603576d10a',
+    'model_executor/layers/mamba/ops/causal_conv1d.py': '044d005cfe59fd0818ed421274e04f3e8dd679b8cdb64fca9f4422f2643484b2',
+    'third_party/flash_linear_attention/ops/fused_sigmoid_gating.py': '000ab8996af9788fdb8843a6a3b91833e7a14c8acc0e1ea073a536330f64cb6f',
+    'v1/worker/gpu/model_states/mamba_hybrid.py': '573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c',
+}
+
+
+@lru_cache(maxsize=1)
+def verify_state_sources():
+    from .integration import check_engine_version
+    check_engine_version()
+    package = distribution('vllm')
+    for relative, expected in STATE_SOURCES.items():
+        if hashlib.sha256(package.locate_file('vllm/' + relative).read_bytes()).hexdigest() != expected:
+            raise ValueError(f'Unqualified native recurrent-state lifecycle source: {relative}')
 
 
 @dataclass
@@ -25,8 +46,8 @@ class NativeRecurrentState:
     def __init__(self, runner):
         from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import QwenGatedDeltaNetAttention
         from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
-        from .integration import check_engine_version
-        check_engine_version()
+        from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+        verify_state_sources()
         config = runner.vllm_config
         if config.cache_config.mamba_cache_mode != "none" or config.cache_config.enable_prefix_caching:
             raise ValueError("Native GDN replay currently requires non-prefix-cached 'none' state layout")
@@ -39,6 +60,8 @@ class NativeRecurrentState:
             raise ValueError("RecoverSSM state is not part of the qualified replay schema")
         self.runner = runner
         self.groups = {}
+        self.conv_widths = {}
+        self.conv_dim_first = is_conv_state_dim_first()
         modules = config.compilation_config.static_forward_context
         for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups):
             spec = group.kv_cache_spec
@@ -53,6 +76,7 @@ class NativeRecurrentState:
                 if not isinstance(module.kv_cache, (tuple, list)) or len(module.kv_cache) != 2:
                     raise ValueError("Expected native convolution and recurrent cache tensors")
                 layers[name] = module.kv_cache
+                self.conv_widths[name] = module.conv1d.weight.shape[-1]
             if runner.block_tables.blocks_per_kv_block[group_id] != 1:
                 raise ValueError("Recurrent state rows must not use attention page expansion")
             self.groups[group_id] = layers
@@ -103,3 +127,47 @@ class NativeRecurrentState:
             _, current = self._rows(request_id, group_id)
             if current != rows:
                 raise ValueError("Native recurrent page table changed since checkpoint")
+
+    def canonicalize_accepted(self, request_id, *, retained_tokens, query_tokens, speculative):
+        """Move a verified prefix's native state to base rows before continuation.
+
+        Caller must supply the actual last native query and scheduler-retained
+        input count at a quiescent boundary, and hold its physical page leases.
+        Zero retention and partial non-speculative prefill require checkpoint
+        replay; those earlier states are no longer present in these cache rows.
+        This does not restore the independent draft KV/hidden-state lifecycle.
+        """
+        if (type(speculative) is not bool or type(retained_tokens) is not int or
+                type(query_tokens) is not int or not 0 < retained_tokens <= query_tokens):
+            raise ValueError('Retained prefix requires positive query rows; zero needs checkpoint replay')
+        if not speculative and retained_tokens != query_tokens:
+            raise ValueError('Partial non-speculative query requires checkpoint replay')
+        bundle = self.borrow([request_id])
+        copies = []
+        for group_id, layers in self.groups.items():
+            rows = bundle.page_rows[request_id, group_id]
+            if speculative and query_tokens > len(rows):
+                raise ValueError('Speculative query exceeds allocated recurrent rows')
+            offset = retained_tokens - 1 if speculative else 0
+            for name, (conv, ssm) in layers.items():
+                width = self.conv_widths[name] - 1
+                base_conv = conv[rows[0]]
+                # Normalize both native SD and DS representations to [time, dim].
+                temporal = base_conv.transpose(0, 1) if self.conv_dim_first else base_conv
+                if temporal.ndim != 2 or width <= 0 or offset + width > temporal.shape[0]:
+                    raise ValueError('Native convolution state cannot represent retained prefix')
+                if offset:
+                    copies.append((temporal[:width], temporal[offset:offset+width]))
+                    copies.append((ssm[rows[0]], ssm[rows[offset]]))
+        # Validate every group before modifying any state. Cloning handles
+        # overlapping convolution windows; scratch is bounded to one copy.
+        self.validate(bundle)
+        for destination, source in copies:
+            destination.copy_(source.clone())
+        counter = self.runner.model_state.num_accepted_tokens_gpu
+        counter[bundle.request_indices[request_id]].fill_(1)
+        if counter.device.type == 'cuda':
+            event = torch.cuda.Event()
+            event.record(torch.cuda.current_stream(counter.device))
+            return event
+        return None
