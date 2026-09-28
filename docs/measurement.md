@@ -42,3 +42,10 @@ execution must be integrated before the matched C1/C4 performance gate. Use the
 same token IDs, precision, K/G, record granularity, query policy and sampling across
 the intended comparison, preserve natural EOS, and repeat independently. A frozen
 conversation continuation does not execute tools or establish SWE task success.
+
+Use `--concurrent-only` with four frozen inputs to avoid rerunning an already
+qualified single request. `--prefill-request-token-cap` maps to vLLM's native
+`long_prefill_token_threshold`; a cap of 256 with a 1024-token batch permits four
+aligned prefill chunks in a native batch. This changes per-request query chunking,
+so matched controls must use the same cap. It is a scheduling setting, not evidence
+of speedup: report actual worker batch membership and both TTFT and makespan.

@@ -68,3 +68,51 @@ def test_frozen_workload_preserves_exact_ids_and_validates_hash_and_query(tmp_pa
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match='boundaries'):
         qualification.read_frozen(path, hashlib.sha256(path.read_bytes()).hexdigest(), 128)
+
+
+def test_concurrent_only_archive_validation_does_not_invent_a_single_request():
+    report, archived = fixture()
+    report['concurrent'] = [report.pop('single')]
+    qualification.validate_archive(report, archived)
+    archived['completed'].append(copy.deepcopy(archived['completed'][0]))
+    with pytest.raises(RuntimeError, match='request sets'):
+        qualification.validate_archive(report, archived)
+
+
+def bounded_fixture():
+    report = {'concurrent': [{'result': {'id': f'r{i}', 'usage': {'prompt_tokens': 134000}}}
+                             for i in range(4)]}
+    ids = [f'r{i}-0-worker' for i in range(4)]
+    workers = [{'request_id': request_id, 'command_id': i, 'history_begin': 133120,
+                'selected_tokens': 131072, 'query_tokens': 256, 'batch_requests': ids}
+               for i, request_id in enumerate(ids)]
+    schedulers = [{'request_id': request_id, 'command_id': i, 'selected_tokens': 131072,
+                   'replay_tokens': 256, 'groups': [{'offset': 2048, 'blocks': 1026, 'block_tokens': 128}]}
+                  for i, request_id in enumerate(ids)]
+    return report, workers, schedulers
+
+
+def test_long_c4_requires_exact_transactions_and_real_native_co_batch():
+    report, workers, schedulers = bounded_fixture()
+    result = qualification.validate_bounded(report, workers, schedulers, require_concurrent=True)
+    assert result['compressed_requests'] == result['max_refresh_batch_requests'] == 4
+    with pytest.raises(RuntimeError, match='Duplicate'):
+        qualification.validate_bounded(report, workers + [workers[0]], schedulers)
+    wrong = copy.deepcopy(schedulers)
+    wrong[0]['command_id'] = 999
+    with pytest.raises(RuntimeError, match='transaction sets'):
+        qualification.validate_bounded(report, workers, wrong)
+    serial = copy.deepcopy(workers)
+    for worker in serial:
+        worker['batch_requests'] = [worker['request_id']]
+    with pytest.raises(RuntimeError, match='four-request'):
+        qualification.validate_bounded(report, serial, schedulers, require_concurrent=True)
+
+
+def test_long_c4_requires_compression_for_each_history_and_bounded_pages():
+    report, workers, schedulers = bounded_fixture()
+    with pytest.raises(RuntimeError, match='lacks an actual'):
+        qualification.validate_bounded(report, workers[:-1], schedulers[:-1])
+    schedulers[0]['groups'][0]['blocks'] += 1
+    with pytest.raises(RuntimeError, match='allocation'):
+        qualification.validate_bounded(report, workers, schedulers)

@@ -361,3 +361,46 @@ Native long C4, cancellation and capacity-pressure qualification;
 production archive admission/GC and asynchronous retirement; target/draft
 refresh and rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
 throughput and latency comparison; actual agent-task quality and independent repeats.
+
+
+## Cached archive and packed native assembly — 2026-09-29
+
+`artifacts/engine_deepswe_effect_cached_packed_01` passed: Q8_0 target, FP8 e4m3
+KV, K131072/G65536, B128, exact Effect 197110-token input with SHA256
+`55e734bd7cf8d462e3d44f5ceb6b6b3066b9792f64e495feea857c7b42cf39e2`,
+target-only synchronous execution, 36 GiB global / 9 GiB per-request non-authoritative
+CPU archive cache, packed assembly, and attached native lifetime GPU admission.
+All 65 worker refreshes matched scheduler commits. C1 emitted the same 77 token
+IDs as corrected `engine_deepswe_effect_bounded_03`, including natural EOS;
+all four subsequent short completions also matched their baseline token IDs.
+All request authorities, archive slots, cache bytes and pending downloads were
+released. No generated tool call was executed.
+
+| HTTP metric | Corrected bounded baseline | Cached + packed candidate |
+| --- | ---: | ---: |
+| C1 TTFT | 1877.601 s | 1280.156 s |
+| C1 service duration | 1881.310 s | 1284.064 s |
+| C1 arrival decode | 20.491 tok/s | 19.448 tok/s |
+| Subsequent short C4 aggregate arrival decode | 76.225 tok/s | 75.613 tok/s |
+| Short C4 group service duration | 30.418 s | 22.872 s |
+| First short C4 request TTFT | 23.752 s | 16.152 s |
+| End-of-run GPU memory snapshot, not peak | 73616 MiB | 73604 MiB |
+
+C1 TTFT improved by 31.82% in this one cold comparison. Decode did not improve;
+DFlash was disabled in both. The reduced delay before short C4 also includes
+synchronous diagnostic retirement of C1, so it is not a long-C4 performance result.
+The candidate still spent 336.225 s in window assembly (median actual refresh
+5.125 s), mostly host preparation. A 10 s `/proc/3130323/io` sample late in the
+run saw 4096 physical read bytes and 50,335,744 write bytes: cache hits removed
+the bulk of NVMe reads in that interval, not the host assembly cost. The sample
+alone does not attribute all remaining latency. Cache/packed changes were tested
+together; their individual contributions are not isolated.
+
+New harness checks reject duplicate/missing refresh transactions, validate native
+page extents, require compression for each sufficiently long input, and require
+actual four-request native refresh batch membership for long C4. Added acceptance
+policy tests ensure speculative accepted prefixes cannot jump the aligned refresh
+boundary and exclude unverified draft rows from reselection. That policy is not
+yet wired into bounded DFlash serving. Latest default test run: 83 passed,
+24 GPU tests skipped. Long C4 and all remaining gates in `development.md` remain
+outstanding; this is not production or final performance qualification.

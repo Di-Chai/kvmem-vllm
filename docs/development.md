@@ -1,120 +1,65 @@
 # Development goal and acceptance
 
-Develop an out-of-tree KVMem plugin, with explicit versioned vLLM hooks where
-public extension points cannot represent working-set reselection. New development
-lives in this repository. The qw3 executor is a reference, never the serving backend.
+Develop an out-of-tree KVMem plugin in this repository, with explicit versioned
+vLLM hooks where public extension points cannot represent historical working-set
+reselection. The qw3 executor is a read-only semantic reference, never the serving
+backend. The goal remains active until the full acceptance scope below is proved.
 
-Primary qualification: Qwen3.8-27B Q8_0 weights, FP8 target KV, BF16 DFlash2 draft,
-per-request K=131072 and G=65536. Activation BF16 does not mean BF16 target weights.
-vLLM owns GPU allocation and native batched execution. Histories, working positions,
-physical pages and generation-qualified repository handles remain separate.
+Primary qualification is Qwen3.8-27B Q8_0 target weights, FP8 e4m3 target KV,
+DFlash2, and per-request K131072/G65536. BF16 activations and draft weights do not
+change the Q8_0 target path. vLLM owns native GPU allocation, scheduling, batching,
+attention and sampling. Logical history, dense working positions, physical pages
+and generation-qualified repository handles must remain distinct.
 
-## Ordered milestones
+## Acceptance scope and current evidence
 
-1. Extract actual host selection/repository/GC logic, preserve source provenance,
-   bind Python and pass CPU lifecycle tests.
-2. Qualify pinned vLLM/GGUF/DFlash dependencies. Diagnose baseline speculative
-   differences using fixed-prefix logits, not only free-running token equality.
-3. Capture immutable pre-RoPE K, implement KV layout/scale codecs and packed
-   transfers. Never reconstruct authoritative K by undoing quantized RoPE.
-4. Implement atomic per-request working-set changes and native scheduler waiting,
-   query replay, DeltaNet checkpoints, speculation commit/rollback and cancellation.
-5. Validate single-request semantics, then C4 state isolation, capacity pressure,
-   refreshes, HTTP/session lifetimes and bounded CPU/NVMe reclamation.
-6. Measure fixed real-history workloads (C1/C4 first), natural EOS and independent
-   repeats. Report cold service, warm decode, prefill, stalls, acceptance, transfer,
-   selection/verification cost, memory and actual agent quality separately.
+| Requirement | Current evidence | Remaining acceptance |
+| --- | --- | --- |
+| Original selection/storage semantics | Unchanged host core with file hashes in `third_party/qw3/PROVENANCE.json`; MeanK score bridge; immutable raw K; dense position assembly; original sink/recent bands | Match old controller's final-query override and record granularity before declaring an equivalent-workload speedup |
+| Bounded native target execution | `engine_deepswe_effect_bounded_03`: real 197110-token history, 65 matched refresh commits, bounded native attention allocation, coherent natural-EOS continuation and complete cleanup | Long C4, cancellation and GPU/CPU/NVMe capacity-pressure tests |
+| DeltaNet and transaction correctness | Native target/DFlash identity replay, C4 recurrent-state restoration, rejected candidate exclusion, per-generation leases and failure fencing | Compressed target/draft refresh, accepted-boundary checkpoints, terminal-prefix rollback and persistent sessions |
+| Efficient transfers and storage | Packed D2H; fenced H2D; moved-block FP8 assembly; coalesced native NVMe I/O; opt-in archive-layout assembly and bounded CPU read cache | Independent performance repeats, overlapping preparation, background policy GC and nonblocking retirement |
+| Cross-request resources | Native lifetime GPU-page reservation adapter with hybrid-manager tests; shared archive namespace isolation; bounded queue/cache components | Native pressure/cancellation proof, disk admission, CPU total-budget accounting, long-running reclamation |
+| Model/quantization extensibility | Separate state, position, capture and KV-layout adapters; public connector options; explicit source/version checks | Broader qualified model, quantization and KV-format matrix; unsupported cases must remain explicit |
+| Performance and task quality | Exact frozen DeepSWE token inputs and provenance; native SSE token/usage agreement; cold/arrival-decode measurements kept separate | Matched warmed C1/C4 throughput and latency, independent repeats, DFlash acceptance/verification cost, memory peaks, executed agent-task success |
+| Delivery | Independent repository, reproducible GPU setup and dependency pins, local commits and qualification records | Clean install/release verification and final publication/review artifacts |
 
-No 130 tok/s or 48 GiB hard limit. A plugin import or successful generation is not
-evidence that KVMem or a throughput improvement works. Unsupported modes must fail
-explicitly. Do not silently replace Q8_0, FP8, retrieval, K/G, or workload lengths.
+The current corrected bounded target diagnostic uses 128-token records and a
+1024-token batch budget. The old qw3 frozen reference used 32-token records and
+its own final-query override. Keep those differences visible; do not change
+precision, K/G, histories or output stopping rules to manufacture an improvement.
+There is no hard 130 tok/s or 48 GiB acceptance threshold. Substantial concurrent
+throughput improvement must be supported by actual matched measurements.
 
-## Status
+## Current execution stage
 
-Host core imported unchanged from qw3 working tree; hashes and source HEAD are in
-`third_party/qw3/PROVENANCE.json`. Its Python transaction and asynchronous archive
-bindings are implemented. Reference FP8 materialization, packed GPU transfers,
-checkpoint ownership and MeanK scoring are implemented; fused raw-Q/K capture
-preserves upstream kernel outputs in GPU tests. Narrow versioned runner hooks
-are being qualified on the actual model. The scheduler/worker identity-refresh
-transaction is now qualified on the actual model. A long-request compressed replay completed determinism checks, but its recurrent
-metadata classification was subsequently found incorrect; that semantic claim is
-withdrawn. Experimental bounded target serving is now under live qualification.
-No qualified KVMem throughput result exists.
+The CPU/GPU component suite passed 102 tests at commit `dbd7451`; all five original
+C++ tests passed before these Python-only integrations. The corrected bounded C1
+run completed 77 tokens at 20.491 HTTP arrival decode tok/s **without DFlash**, with
+1877.601 s TTFT. Subsequent short C4 produced 512 capped tokens at 76.225 aggregate
+arrival decode tok/s, but waited about 23.75 s for synchronous archive retirement.
+These are diagnostic observations, not the goal's performance pass or long C4.
 
-Follow-up: real native FP8 pages have now completed an identity roundtrip through
-the bounded repository and NVMe archive, followed by fused assembly and commit.
-All 16 target layers' cache bytes and the 128-token continuation matched baseline.
-The full-attention allocation adapter also passes native-manager tests for bounded
-windows and deferred release. Scheduler suspension/acknowledgment wiring has now
-passed a real native request: command-only worker rebuild, all-layer byte equality,
-page-table replacement and baseline-equal continuation. The combined CPU/GPU suite
-passes 67 tests, plus 5 original CTests. Dense-window metadata and position mapping
-are integrated with the native model state; nonzero-offset mapping is GPU-tested,
-and the full-model identity diagnostic with the hook enabled remains byte/token
-equal. A nonzero-offset long-request compressed selection and target replay now
-also pass. Automatic bounded prefill/decode admission and draft refresh remain.
+The cached/packed candidate `engine_deepswe_effect_cached_packed_01` passed the
+same 197K C1 and short C4 with exactly matching output token IDs and complete
+cleanup. C1 TTFT decreased from 1877.601 to 1280.156 s (31.82%); arrival decode
+was 19.448 rather than 20.491 tok/s. This demonstrates a cold prefill/refresh
+improvement, not a decode gain or a warmed performance pass. Native lifetime
+GPU-page reservation was attached. The latest CPU suite passed 83 tests; 24 GPU
+component tests were skipped to avoid interfering with the live model run.
 
-Continuous raw-K/FP8-V authority is now integrated in an opt-in native runner path.
-It follows native query offsets and rejection counts, seals complete blocks only,
-and retains an incomplete tail in bounded memory. Target-only and DFlash C1/C4
-checks passed; a 3.5K-token chunked-prefill check verified 139 complete archive
-records and excluded 474 rejected candidate rows. Request completion reclaimed
-all archive/download resources. The MeanK-to-native-selector bridge is tested.
+Then run long-history C4 with actual native batch participation, followed by
+cancellation/pressure tests. Finish DFlash refresh and accepted-prefix/session
+lifecycle before the final warmed performance and agent-quality gates. A client
+submitting four HTTP requests does not itself prove four-request GPU batching.
 
-Next, connect this authority to scheduler-owned compressed assembly and native
-recurrent checkpoint/query replay, then draft refresh/rollback. Add native terminal
-prefix acknowledgment before persistent-session publication; verifier acceptance
-can extend beyond HTTP output when asynchronous batches are in flight. Automatic
-admission, background policy GC, nonblocking retirement and graph-compatible
-capture still need integration before performance qualification.
+## Evidence corrections
 
-Native recurrent restore/identity replay is qualified with actual target-only
-and DFlash engine batches, including all four requests' states. Output/state bytes
-match on initial prefill and decode, and the 128-token C1 continuations match their
-corresponding baselines. A bounded native-window assembler also passes independent
-GPU byte checks for moved/noncontiguous selected blocks. A real K131072/G65536
-long-request compression diagnostic now passes: 198656 input tokens, one actual
-selection at history 195584, a 1024-token query replay, and 128 output tokens.
-Repeated compressed replay is output/state byte-equal; all authority resources
-are reclaimed. It retains the native allocation, uses a synthetic repetitive
-prompt and does not qualify task quality, production refresh policy or throughput.
-Its generated text repeats prompt material, so real-task matched quality checks
-are necessary. The old frozen DeepSWE native input manifest is available at
-`/home/chaidi/qw3-dflash2/benchmark/dflash2/long_concurrency_inputs01/manifest.json`;
-it must be hash-checked and used without synthetic padding for future comparison.
-That reference used block=32, whereas these mechanical integrations use block=128;
-freeze matching granularity and query policy before reporting a matched speedup.
-
-The initial bounded target scheduler/worker path is now wired and CPU-tested,
-using native allocation, per-query commands and actual-length acknowledgments.
-Its full-model run is still pending. A real frozen Effect DeepSWE input containing
-197110 tokens has completed on the native uncompressed reference: 77 output tokens,
-natural EOS and a contextually relevant complete tool call. This is one continuation
-check, not executed SWE task success. The same input is now used for the bounded
-candidate, with all K/G/weight/KV settings preserved. No throughput improvement is
-asserted. The first bounded startup found a native warmup lifecycle issue (the
-global connector is temporarily disabled); callback installation now waits for the
-armed real-request phase, with a dedicated regression test.
-
-A second bounded run (`engine_deepswe_effect_bounded_02`) reached 131072 accepted
-history tokens and failed before its first refresh. Worker validation correctly
-rejected a mismatch between scheduler full-attention groups and the worker's
-slot-mapped groups. `MambaSpec` inherits slot-mapping capability too, so that flag
-cannot classify semantic attention. A shared helper now selects actual
-`FullAttentionSpec` groups, including uniform wrappers. This also corrects the
-older compression diagnostic: its repeated byte equality did not prove recurrent
-metadata was unmodified. The original result is retained with this correction in
-the qualification record. The combined CPU/GPU component suite now passes 80 tests.
-The same real 197110-token request is being rerun with SSE token-arrival recording;
-there is still no qualified bounded throughput or long-concurrency result.
-
-The corrected real bounded C1 run has now passed (`engine_deepswe_effect_bounded_03`):
-65 matched native refresh commits, 77 coherent output tokens, then short C4 and
-complete cleanup. HTTP arrival decode is 20.491 tok/s without DFlash, with a large
-1877.601 s TTFT. This is a correctness milestone and exposes substantial prefill
-host overhead; it is not the goal's performance pass. The next opt-in candidate
-uses a bounded CPU read cache and direct archive-layout GPU assembly, with native
-future-page admission attached. Public connector extra config now propagates
-runtime options. All 102 CPU/GPU component tests pass; native candidate, long C4,
-pressure/cancellation, DFlash refresh and persistent-session work remain.
+`engine_compression_k128g64_02` completed deterministic repeated replay but used
+an incorrect cache-group classifier: native Mamba specs also advertise slot
+mapping. Its recurrent-metadata semantic claim was withdrawn. The corrected
+helper selects actual full-attention specs, and the corrected real bounded run
+above passes. Keep the old artifact as a historical observation, not a semantic
+reference. Detailed measurements and limitations are in
+[the qualification record](qualification-20260928.md), with measurement definitions
+in [measurement.md](measurement.md) and boundaries in [support.md](support.md).

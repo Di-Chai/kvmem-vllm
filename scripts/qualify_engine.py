@@ -33,7 +33,7 @@ def validate_archive(report, archived):
         raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
     if not sum(r["sealed_records_verified"] for r in archived["completed"]):
         raise RuntimeError("Archive qualification did not exercise a complete immutable record")
-    items = [report["single"], *report["concurrent"]]
+    items = ([report["single"]] if "single" in report else []) + report["concurrent"]
     if len(items) != len(archived["completed"]):
         raise RuntimeError("Native and HTTP request sets differ")
     bound = archived["max_concurrent_batches"] * archived["decode_query_len"]
@@ -54,6 +54,59 @@ def validate_archive(report, archived):
             raise RuntimeError("Final native capture packet disagrees with archive extent")
     if report["dflash"] and not sum(item["rejected_tokens"] for item in archived["completed"]):
         raise RuntimeError("DFlash qualification did not exercise any rejected candidates")
+
+
+def validate_bounded(report, workers, schedulers, *, require_concurrent=False):
+    """Match transactions exactly and prove compression for every long input."""
+    def indexed(records):
+        result = {(x["request_id"], x["command_id"]): x for x in records}
+        if len(result) != len(records):
+            raise RuntimeError("Duplicate bounded refresh transaction")
+        return result
+
+    by_worker, by_scheduler = indexed(workers), indexed(schedulers)
+    if not workers or by_worker.keys() != by_scheduler.keys():
+        raise RuntimeError("Bounded worker and scheduler transaction sets differ")
+    items = ([report["single"]] if "single" in report else []) + report["concurrent"]
+    http_ids = [item["result"]["id"] for item in items]
+    for key, worker in by_worker.items():
+        scheduler = by_scheduler[key]
+        request_id = worker["request_id"]
+        if sum(request_id.startswith(value + "-0-") for value in http_ids) != 1:
+            raise RuntimeError("Bounded transaction does not belong to the HTTP request set")
+        selected, query = worker["selected_tokens"], worker["query_tokens"]
+        if (not 0 < selected <= 131072 or query <= 0 or
+                selected != scheduler["selected_tokens"] or query != scheduler["replay_tokens"]):
+            raise RuntimeError("Worker and scheduler disagree on selected/query extent")
+        groups = scheduler["groups"]
+        if not groups:
+            raise RuntimeError("Bounded transaction has no attention allocation")
+        for group in groups:
+            if (group["offset"] != worker["history_begin"] - selected or
+                    group["blocks"] != (selected + query + group["block_tokens"] - 1) // group["block_tokens"]):
+                raise RuntimeError("Native allocation does not match acknowledged working window")
+        batch = worker["batch_requests"]
+        if request_id not in batch or len(set(batch)) != len(batch):
+            raise RuntimeError("Invalid native query batch membership")
+    compressed = {w["request_id"] for w in workers if w["history_begin"] > 131072}
+    if not compressed:
+        raise RuntimeError("Bounded run lacks actual compressed refreshes")
+    for item in items:
+        response = item["result"]
+        # A prompt only slightly above K can finish within its first query;
+        # require actual selection when input crosses a full 1024-token chunk.
+        if response["usage"]["prompt_tokens"] > 132096 and not any(
+                request_id.startswith(response["id"] + "-0-") for request_id in compressed):
+            raise RuntimeError("Long HTTP request lacks an actual compressed refresh")
+    max_batch = max(len(w["batch_requests"]) for w in workers)
+    if require_concurrent:
+        concurrent_ids = {item["result"]["id"] for item in report["concurrent"]}
+        co_batched = any(all(any(native.startswith(http + "-0-") for native in w["batch_requests"])
+                            for http in concurrent_ids) for w in workers)
+        if len(concurrent_ids) != 4 or not co_batched:
+            raise RuntimeError("Long C4 did not exercise a native four-request refresh batch")
+    return {"worker_refreshes": workers, "scheduler_commits": schedulers,
+            "compressed_requests": len(compressed), "max_refresh_batch_requests": max_batch}
 
 
 def read_frozen(path, digest, output_tokens):
@@ -98,6 +151,10 @@ def main():
     parser.add_argument("--frozen-sha256")
     parser.add_argument("--concurrent-frozen-input", nargs=2, action="append", metavar=("PATH", "SHA256"),
                         help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
+    parser.add_argument("--prefill-request-token-cap", type=int, default=0,
+                        help="Native vLLM long-prefill token cap per request (0 keeps the default)")
+    parser.add_argument("--concurrent-only", action="store_true",
+                        help="Run only the four frozen histories; avoid repeating an already qualified C1")
     parser.add_argument("--output-tokens", type=int, default=128)
     parser.add_argument("--stream-metrics", action="store_true",
                         help="Record HTTP token bursts, TTFT and correctly overlapping group rates")
@@ -106,6 +163,9 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.output_tokens <= 8192:
         parser.error("output-tokens must be in [1, 8192]")
+    if args.prefill_request_token_cap < 0 or (args.prefill_request_token_cap and
+            (args.prefill_request_token_cap > 1024 or args.prefill_request_token_cap % 128)):
+        parser.error("prefill-request-token-cap must be 0 or a multiple of 128 up to the 1024 batch budget")
     if args.cpu_read_cache_mib < 0:
         parser.error("cpu-read-cache-mib must be nonnegative")
     if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
@@ -128,6 +188,8 @@ def main():
                              for path, digest in args.concurrent_frozen_input or ()]
     except (ValueError, KeyError, OSError) as error:
         parser.error(str(error))
+    if args.concurrent_only and (not frozen_concurrent or frozen is not None):
+        parser.error("concurrent-only requires four concurrent frozen inputs and no separate single input")
     if frozen is not None or frozen_concurrent:
         if args.history_repeat or args.rebuild_probe or args.scheduled_rebuild_probe or args.replay_probe:
             parser.error("Frozen history is not interchangeable with synthetic/identity probe fixtures")
@@ -151,7 +213,7 @@ def main():
              if args.scheduled_rebuild_probe else
              "native identity-refresh diagnostic; no compressed KVMem serving"
              if args.rebuild_probe else "engine prerequisite, no KVMem enabled")
-    report = {"scope": scope, "dflash": args.dflash,
+    report = {"scope": scope, "dflash": args.dflash, "concurrent_only": args.concurrent_only,
               "sampling": {"temperature": 0, "seed": 104729, "max_tokens": args.output_tokens,
                            "natural_eos": True}}
     if frozen_provenance is not None:
@@ -209,12 +271,14 @@ def main():
                    "--max-num-seqs", "4", "--max-num-batched-tokens", "1024",
                    "--gpu-memory-utilization", "0.72", "--no-enable-prefix-caching",
                    "--generation-config", "vllm", "--enforce-eager"]
+        if args.prefill_request_token_cap:
+            command += ["--long-prefill-token-threshold", str(args.prefill_request_token_cap)]
         if args.compression_probe or args.bounded_target or args.scheduled_rebuild_probe or frozen is not None or frozen_concurrent:
             command += ["--no-async-scheduling"]
         if args.compression_probe:
             report["scope"] = "real K128K/G64K target compression/replay; unbounded native allocation; long C1 only"
         if args.bounded_target:
-            report["scope"] = "scheduled semantic target refresh and bounded native allocation; long C1, " + ("frozen long C4" if frozen_concurrent else "short C4")
+            report["scope"] = "scheduled semantic target refresh and bounded native allocation; " + ("" if args.concurrent_only else "long C1, ") + ("frozen long C4" if frozen_concurrent else "short C4")
         if args.scheduled_rebuild_probe or args.bounded_target:
             command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({
@@ -288,19 +352,20 @@ def main():
                     if measured is not None:
                         entry["trace"] = asdict(measured)
                     return entry
-                single_prompt = prompts[0]
-                if frozen is not None:
-                    single_prompt = frozen["input_ids"]
-                    report["long_single_prompt_tokens"] = len(single_prompt)
-                elif args.compression_probe or args.bounded_target:
-                    history = fetch(url + "/tokenize", {"model": "qualification", "prompt":
-                        "Repository history: utilities.py defines add(a, b) returning a + b; tests cover zero and negative values.\n"})["tokens"]
-                    task = fetch(url + "/tokenize", {"model": "qualification", "prompt":
-                        "\nCurrent task:\n" + prompts[0]})["tokens"]
-                    length = 134144 if args.bounded_target else 198656
-                    single_prompt = (history * ((length + len(history) - 1) // len(history)))[:length-len(task)] + task
-                    report["long_single_prompt_tokens"] = len(single_prompt)
-                report["single"] = complete((0, single_prompt), phase="single")
+                if not args.concurrent_only:
+                    single_prompt = prompts[0]
+                    if frozen is not None:
+                        single_prompt = frozen["input_ids"]
+                        report["long_single_prompt_tokens"] = len(single_prompt)
+                    elif args.compression_probe or args.bounded_target:
+                        history = fetch(url + "/tokenize", {"model": "qualification", "prompt":
+                            "Repository history: utilities.py defines add(a, b) returning a + b; tests cover zero and negative values.\n"})["tokens"]
+                        task = fetch(url + "/tokenize", {"model": "qualification", "prompt":
+                            "\nCurrent task:\n" + prompts[0]})["tokens"]
+                        length = 134144 if args.bounded_target else 198656
+                        single_prompt = (history * ((length + len(history) - 1) // len(history)))[:length-len(task)] + task
+                        report["long_single_prompt_tokens"] = len(single_prompt)
+                    report["single"] = complete((0, single_prompt), phase="single")
                 if frozen_concurrent:
                     prompts = [item["input_ids"] for item, _ in frozen_concurrent]
                 begin = time.monotonic()
@@ -310,8 +375,9 @@ def main():
                 if args.stream_metrics:
                     from vllm_kvmem.measurement import StreamTrace, summarize_group
                     report["http_measurements"] = {
-                        "single": summarize_group([StreamTrace(**report["single"]["trace"])]),
                         "concurrent": summarize_group([StreamTrace(**item["trace"]) for item in report["concurrent"]])}
+                    if "single" in report:
+                        report["http_measurements"]["single"] = summarize_group([StreamTrace(**report["single"]["trace"])])
                 report["memory"] = subprocess.check_output([
                     "nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader"], text=True).strip()
                 if args.capture_probe:
@@ -323,17 +389,18 @@ def main():
                         raise RuntimeError("Scheduler-driven rebuild did not complete")
                 if args.archive_probe:
                     path = args.output / "capture/archive.json"
+                    expected_requests = len(report["concurrent"]) + int("single" in report)
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         try:
                             archived = json.loads(path.read_text())
-                            if len(archived["completed"]) == 5:
+                            if len(archived["completed"]) == expected_requests:
                                 break
                         except (FileNotFoundError, json.JSONDecodeError):
                             pass
                         time.sleep(0.05)
                     else:
-                        raise RuntimeError("Continuous archive did not finalize all five requests")
+                        raise RuntimeError("Continuous archive did not finalize every submitted request")
                     validate_archive(report, archived)
                     if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
                             or archived.get("packed_assembly", False) != args.packed_assembly):
@@ -357,20 +424,8 @@ def main():
                 if args.bounded_target:
                     workers = [json.loads(line) for line in (args.output / "capture/bounded_refresh.jsonl").read_text().splitlines()]
                     schedulers = [json.loads(line) for line in (args.output / "capture/scheduler_refresh.jsonl").read_text().splitlines()]
-                    by_command = {(x["request_id"], x["command_id"]): x for x in schedulers}
-                    if len(by_command) != len(workers) or not any(x["history_begin"] > 131072 for x in workers):
-                        raise RuntimeError("Bounded run lacks actual compressed refreshes or matching acknowledgments")
-                    for worker in workers:
-                        scheduler = by_command[(worker["request_id"], worker["command_id"])]
-                        selected = worker["selected_tokens"]
-                        query = worker["query_tokens"]
-                        if selected != scheduler["selected_tokens"] or query != scheduler["replay_tokens"]:
-                            raise RuntimeError("Worker and scheduler disagree on selected/query extent")
-                        for group in scheduler["groups"]:
-                            if (group["offset"] != worker["history_begin"] - selected or
-                                    group["blocks"] != (selected + query + group["block_tokens"] - 1) // group["block_tokens"]):
-                                raise RuntimeError("Native allocation does not match acknowledged working window")
-                    report["bounded"] = {"worker_refreshes": workers, "scheduler_commits": schedulers}
+                    report["bounded"] = validate_bounded(report, workers, schedulers,
+                        require_concurrent=bool(args.concurrent_frozen_input))
                 report["status"] = "passed"
         except Exception as error:
             report["status"] = "failed"
