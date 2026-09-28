@@ -30,6 +30,7 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'prefill_cadence': 0}}, 'cadence'),
     ({'kvmem': {'prefill_cadence': 65}}, 'cadence'),
     ({'kvmem': {'async_archive_retirement': 1}}, 'boolean'),
+    ({'kvmem': {'repository_gc': 1}}, 'boolean'),
     ({'kvmem': {'kv_dtype': 'bfloat16'}}, 'codec'),
     ({'kvmem': []}, 'object'),
 ])

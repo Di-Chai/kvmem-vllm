@@ -49,6 +49,11 @@ class KVMemScheduler(Scheduler):
         if options.async_archive_retirement and not self._bounded_target:
             raise ValueError('Asynchronous archive retirement requires bounded execution')
         config = options.memory
+        if options.repository_gc:
+            if not self._bounded_target:
+                raise ValueError('Serving repository GC requires bounded execution')
+            from .repository_gc import serving_gc_config
+            serving_gc_config(config, self.scheduler_config.max_num_batched_tokens)
         self.prefill_cadence = options.prefill_cadence
         self._mixed_steps = 0
         self._scheduled_queries = {"prefill": {}, "decode": {}}

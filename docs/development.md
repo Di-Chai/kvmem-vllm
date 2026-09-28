@@ -481,3 +481,32 @@ uses `<function=...>/<parameter=...>` XML. The agent backend now enables native
 `qwen3_xml` tool parsing, auto tool choice, and `qwen3` reasoning parsing. Existing
 QW3 services remain untouched. Requalification must verify actual tool calls and
 native metrics before accepting any agent measurement.
+
+## Repository GC serving integration (experimental, default off)
+
+`repository_gc: true` in the public connector's KVMem options now attaches one
+original CPU policy worker to each captured request authority. Its ready reserve
+matches `QwenExecutor::kvmem_start_repository_gc`: low=max(capacity/20,
+2*append_blocks), high=max(capacity/10, low+append_blocks), with recent-band and
+accepted-ingestion grace preserved. K+G plus the high reserve must fit strictly
+below repository capacity; startup rejects configurations that would need to
+evict protected working state to make space. Neither native GPU pages nor
+speculative/recurrent state is freed by the CPU policy worker.
+
+Reclamation signals the capture runtime after generation-bound archive release.
+No-write capacity exhaustion can now wait for this background progress instead
+of immediately raising BufferError. This is a measured synchronous fallback,
+not nonblocking scheduler admission: `gc_wait_count`/`gc_wait_seconds` are exported,
+and absence of append progress for 30 seconds fails explicitly. Scheduler-side
+ready-capacity feedback, CPU/NVMe global quotas and GPU pressure qualification
+remain necessary before production activation.
+
+The native CPU integration test drives two namespaces sharing one archive through
+336 accepted tokens each, with only 24 repository slots per namespace. Both
+reclaim more than 50 generations, preserve sink data and release all slots at
+shutdown. Separate checks cover reserve rejection and bounded pressure waiting.
+38 targeted tests pass (`serving_gc_cpu_02.xml`); this is not GPU or quality proof.
+The GPU harness exposes `--repository-gc`, `--repository-blocks` and
+`--require-gc-reclamation`; the latter prevents an enabled-but-idle policy from
+passing a pressure gate. Current official agent runs use their frozen prior code
+and do not activate this change.

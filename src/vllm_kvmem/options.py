@@ -13,13 +13,14 @@ class RuntimeOptions:
     direct_pinned_reads: bool = False
     prefill_cadence: int = 1
     async_archive_retirement: bool = False
+    repository_gc: bool = False
 
     def __post_init__(self):
         if type(self.cpu_read_cache_bytes) is not int or self.cpu_read_cache_bytes < 0:
             raise ValueError("CPU read-cache capacity must be a nonnegative byte count")
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
-                self.async_archive_retirement)):
+                self.async_archive_retirement, self.repository_gc)):
             raise ValueError("Assembly and archive verification settings must be boolean")
         if self.direct_pinned_reads and not self.packed_assembly:
             raise ValueError("Direct pinned reads require packed assembly")
@@ -42,10 +43,11 @@ class RuntimeOptions:
         direct = payload.pop('direct_pinned_reads', False)
         cadence = payload.pop('prefill_cadence', 1)
         retirement = payload.pop('async_archive_retirement', False)
+        gc = payload.pop('repository_gc', False)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
             raise ValueError(f"Unknown KVMem setting: {error}") from error
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
-        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement)
+        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc)

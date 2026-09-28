@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import time
+from threading import Event
 
 import torch
 
@@ -50,6 +51,16 @@ class CaptureRuntime:
         output.mkdir(parents=True, exist_ok=True)
         max_tokens = runner.vllm_config.scheduler_config.max_num_batched_tokens
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
+        self.gc_config = None
+        self.gc_progress = Event()
+        self.gc_wait_seconds = 0.0
+        self.gc_wait_count = 0
+        self._archive_wait_deadline = None
+        if self.options.repository_gc:
+            if not getattr(runner, '_kvmem_bounded_target', False):
+                raise ValueError('Serving repository GC requires bounded execution')
+            from .repository_gc import serving_gc_config
+            self.gc_config = serving_gc_config(self.config, max_tokens)
         archive_records = self.config.repository_blocks * (max_reqs if getattr(runner, "_kvmem_bounded_target", False) else 1)
         archive_type, archive_options = AsyncArchive, {}
         if self.options.cpu_read_cache_bytes:
@@ -131,7 +142,8 @@ class CaptureRuntime:
                 authority = self.authorities.get(request_id)
                 if authority is None:
                     authority = RequestAuthority(request_id, self.config, self.archive,
-                        len(self.layers), self.heads, self.dim, resident_records=self.resident_records)
+                        len(self.layers), self.heads, self.dim, resident_records=self.resident_records,
+                        gc_config=self.gc_config, gc_progress=self.gc_progress)
                     self.authorities[request_id] = authority
                     self.accepted[request_id] = self.rejected[request_id] = 0
                     self.last_steps[request_id] = []
@@ -153,6 +165,7 @@ class CaptureRuntime:
                     self._wait_archive_progress()
                     continue
                 self.accepted[request_id] += accepted
+                self._archive_wait_deadline = None
                 self.rejected[request_id] += rejected[i]
                 self.terminal_discarded[request_id] = self.terminal_discarded.get(request_id, 0) + discarded
                 steps = self.last_steps[request_id]
@@ -186,6 +199,22 @@ class CaptureRuntime:
         jobs = [job for authority in self.authorities.values() for job, _ in authority.writes]
         if not jobs:
             if progressed:
+                self._archive_wait_deadline = None
+                return
+            if self.options.repository_gc:
+                # The CPU policy worker may be reclaiming durable generations
+                # even with no outstanding archive write. Never run policy on
+                # this engine thread or silently discard captured accepted rows.
+                # This synchronous fallback is measured; scheduler-side capacity
+                # feedback is still required to remove such serving stalls.
+                started = time.monotonic()
+                self._archive_wait_deadline = self._archive_wait_deadline or started + 30
+                if started >= self._archive_wait_deadline:
+                    raise TimeoutError('Repository GC made no append progress for 30 seconds')
+                self.gc_progress.wait(min(.05, self._archive_wait_deadline - started))
+                self.gc_progress.clear()
+                self.gc_wait_seconds += time.monotonic() - started
+                self.gc_wait_count += 1
                 return
             raise BufferError("Authority capacity exhausted; scheduler admission/GC must yield")
         for job in jobs:
@@ -297,6 +326,9 @@ class CaptureRuntime:
                   "direct_pinned_reads": self.options.direct_pinned_reads,
                   "async_archive_retirement": self.options.async_archive_retirement,
                   "terminal_prefix_required": bool(getattr(self.runner, '_kvmem_bounded_target', False)),
+                  "repository_gc": self.options.repository_gc,
+                  "gc_wait_seconds": getattr(self, 'gc_wait_seconds', 0.0),
+                  "gc_wait_count": getattr(self, 'gc_wait_count', 0),
                   "retiring_requests": len(getattr(self, 'retiring', {})),
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,

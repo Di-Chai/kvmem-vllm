@@ -254,6 +254,12 @@ def main():
                         help="Use archive-layout GPU assembly; requires bounded-target")
     parser.add_argument('--q8-tensorcore', action='store_true',
                         help='Experimental precision-preserving Q8_0 batch linear, SM120 only')
+    parser.add_argument('--repository-gc', action='store_true',
+                        help='Experimental original background policy; requires bounded serving')
+    parser.add_argument('--repository-blocks', type=int, default=4096,
+                        help='Per-request archive capacity, independent of unchanged K/G')
+    parser.add_argument('--require-gc-reclamation', action='store_true',
+                        help='Fail unless accepted history actually recycles archive generations')
     parser.add_argument("--direct-pinned-reads", action="store_true",
                         help="Experimental archive reads directly into bounded pinned H2D slots; requires packed-assembly")
     parser.add_argument("--frozen-input", type=Path,
@@ -294,6 +300,17 @@ def main():
         parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
+    if ((args.repository_gc or args.repository_blocks != 4096) and not args.bounded_target
+            or args.require_gc_reclamation and not args.repository_gc):
+        parser.error('Repository GC/capacity options require bounded serving; reclamation requires GC')
+    try:
+        from vllm_kvmem.config import KVMemConfig
+        memory_options = KVMemConfig(repository_blocks=args.repository_blocks)
+        if args.repository_gc:
+            from vllm_kvmem.repository_gc import serving_gc_config
+            serving_gc_config(memory_options, args.batch_token_budget)
+    except ValueError as error:
+        parser.error(str(error))
     if args.warmup_short_concurrent and (not args.bounded_short_lifecycle or not args.stream_metrics or args.profile_concurrent_steps):
         parser.error('Short C4 warmup requires short lifecycle and stream metrics without profiling')
     if args.bounded_short_lifecycle and (not args.bounded_target or any((
@@ -472,6 +489,8 @@ def main():
                                 "direct_pinned_reads": args.direct_pinned_reads,
                                 "prefill_cadence": args.prefill_cadence,
                                 "async_archive_retirement": args.async_archive_retirement,
+                                "repository_gc": args.repository_gc,
+                                "repository_blocks": args.repository_blocks,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
@@ -631,8 +650,12 @@ def main():
                     if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
                             or archived.get("packed_assembly", False) != args.packed_assembly
                             or archived.get("direct_pinned_reads", False) != args.direct_pinned_reads
-                            or archived.get("async_archive_retirement", False) != args.async_archive_retirement):
+                            or archived.get("async_archive_retirement", False) != args.async_archive_retirement
+                            or archived.get('repository_gc', False) != args.repository_gc
+                            or archived['memory_config']['repository_blocks'] != args.repository_blocks):
                         raise RuntimeError("Worker did not apply requested cache/assembly options")
+                    if args.require_gc_reclamation and not sum(r.get('gc_reclaimed_records', 0) for r in archived['completed']):
+                        raise RuntimeError('GC qualification never reclaimed an archive generation')
                     expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
                     if archived.get("archive_verification", "full_checksum") != expected_verification:
                         raise RuntimeError("Worker did not apply requested archive verification mode")

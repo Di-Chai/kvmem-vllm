@@ -38,7 +38,7 @@ def record_key(handle):
 
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
-                 raw_dtype=torch.bfloat16, resident_records=16, gc_config=None):
+                 raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (torch.bfloat16, torch.float16):
             raise ValueError("Invalid authority geometry or staging budget")
         self.memory = RequestMemory(request_id, config)
@@ -55,7 +55,7 @@ class RequestAuthority:
         self.gc = None
         if gc_config is not None:
             from .repository_gc import AuthorityGc
-            self.gc = AuthorityGc(self.memory, archive, gc_config)
+            self.gc = AuthorityGc(self.memory, archive, gc_config, gc_progress)
 
     @property
     def history_end(self):
