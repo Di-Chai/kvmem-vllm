@@ -38,3 +38,10 @@ checkpoint ownership and MeanK scoring are implemented; fused raw-Q/K capture
 preserves upstream kernel outputs in GPU tests. Narrow versioned runner hooks
 are being qualified on the actual model. End-to-end KVMem serving and scheduler
 integration are not implemented yet. No qualified KVMem throughput result exists.
+
+Follow-up: real native FP8 pages have now completed an identity roundtrip through
+the bounded repository and NVMe archive, followed by fused assembly and commit.
+All 16 target layers' cache bytes and the 128-token continuation matched baseline.
+The full-attention allocation adapter also passes native-manager tests for bounded
+windows and deferred release. Scheduler suspension/acknowledgment wiring, actual
+compressed selections and recurrent/draft replay still remain.

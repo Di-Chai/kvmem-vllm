@@ -71,6 +71,26 @@ This verifies target capture, not working-set reselection or long-history qualit
 Full logs, commands, output token IDs and capture tensors reside in ignored
 `artifacts/`. This document records results without checking model data into Git.
 
+## Native-page archive/rebuild follow-up
+
+`engine_rebuild_01` passed. A real 14-token initial prefill was captured across all
+16 target attention layers, registered in a bounded repository, packed into one
+6 MiB block record, written/read through AsyncArchive, selected without dropping
+tokens, and rebuilt into the original engine-owned FP8 pages. K and V bytes were
+identical in every layer. The 128-token continuation exactly matched the original
+baseline. The native cache exposes logical BHN(2D) uint8 views; the observed kernel
+page size is 32 tokens. A new GPU case covers this interleaved K/V view explicitly.
+
+This is an identity refresh correctness diagnostic. It deliberately synchronizes,
+does not compact history, does not exercise query replay, and is not a throughput
+result. No end-to-end bounded KVMem serving claim follows from it.
+
+The WorkingSetManager adapter passes two tests using the actual native vLLM
+FullAttentionManager/BlockPool. They cover repeated refreshes as logical history
+grows beyond K+G, native page return only after a completion fence, unchanged
+other-request allocations, stale completion rejection and bounded long-prompt
+admission. The adapter is not yet inserted into the serving scheduler.
+
 ## Remaining before any success/performance claim
 
 Actual scheduler-owned page leases and per-request working-set commits; immutable

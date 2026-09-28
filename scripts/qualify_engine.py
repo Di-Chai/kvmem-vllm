@@ -26,7 +26,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dflash", action="store_true")
     parser.add_argument("--capture-probe", action="store_true")
+    parser.add_argument("--rebuild-probe", action="store_true")
     args = parser.parse_args()
+    if args.rebuild_probe:
+        args.capture_probe = True
     args.output.mkdir(parents=True, exist_ok=False)
     models = args.models.resolve()
     report = {"scope": "engine prerequisite, no KVMem enabled", "dflash": args.dflash}
@@ -45,6 +48,8 @@ def main():
         env["PATH"] = f"{Path(sys.executable).parent}:/usr/local/cuda-13/bin:" + env["PATH"]
         if args.capture_probe:
             env["KVMEM_RUNNER_PROBE_DIR"] = str((args.output / "capture").resolve())
+        if args.rebuild_probe:
+            env["KVMEM_REBUILD_PROBE"] = "1"
         command = [sys.executable, "-m", "vllm_kvmem", "--draft-load-compat", "vllm", "serve",
                    str(models / "Qwen3.8-27B-Q8_0.gguf"),
                    "--served-model-name", "qualification", "--host", "127.0.0.1", "--port", str(port),

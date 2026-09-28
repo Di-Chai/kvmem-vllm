@@ -85,3 +85,19 @@ def paged_nhd_view(cache: torch.Tensor, fmt: KVFormat, layout: str):
     if tuple(k.shape[1:]) != (fmt.page_tokens, fmt.kv_heads, fmt.head_size):
         raise ValueError("Physical cache shape does not match codec")
     return k, v
+
+
+def native_vllm_fp8_views(cache: torch.Tensor, heads: int, head_size: int):
+    """vLLM 0.30 canonical logical BHNC view, C=concatenated K/V bytes.
+
+    Physical LBNHC/LBHNC packing is represented by strides. Do not permute based
+    on physical layout names; the bound layer view always has logical BHNC axes.
+    """
+    if (cache.ndim != 4 or cache.shape[1] != heads or cache.shape[-1] != head_size * 2
+            or cache.stride(-1) != 1):
+        raise ValueError("Expected native vLLM BHN(2D) attention layer cache")
+    if cache.dtype == torch.uint8:
+        cache = cache.view(torch.float8_e4m3fn)
+    elif cache.dtype != torch.float8_e4m3fn:
+        raise ValueError("Native adapter currently qualifies FP8 e4m3 only")
+    return cache.transpose(1, 2).split(head_size, dim=-1)

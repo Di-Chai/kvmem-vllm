@@ -23,6 +23,12 @@ def make_probe_runner(base):
             self._kvmem_layers = install_qwen_capture(self.model)
             self._kvmem_probe_done = False
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+            if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
+                raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
+
+        def prepare_attn(self, input_batch):
+            self._kvmem_last_batch = input_batch
+            return super().prepare_attn(input_batch)
 
         def execute_model(self, scheduler_output, intermediate_tensors=None,
                           dummy_run=False, skip_attn_for_dummy_run=False,
@@ -44,6 +50,10 @@ def make_probe_runner(base):
             self._kvmem_probe_done = True
             output = self._kvmem_probe_output
             output.mkdir(parents=True, exist_ok=True)
+            rebuild = None
+            if os.getenv("KVMEM_REBUILD_PROBE") == "1":
+                from .refresh_probe import rebuild_native_batch
+                rebuild = rebuild_native_batch(self, captured, output)
             # Diagnostic-only synchronized export, once after the first real batch.
             payload = {c.name: {"positions": c.positions.cpu(), "q": c.query.cpu(),
                                 "k": c.key.cpu(), "v": c.value.cpu()}
@@ -54,10 +64,13 @@ def make_probe_runner(base):
                       "layers_captured": list(payload),
                       "scheduled_tokens": scheduler_output.total_num_scheduled_tokens,
                       "requests": scheduler_output.num_scheduled_tokens,
+                      "rebuild": rebuild,
                       "finite": all(torch.isfinite(t).all().item() for c in payload.values() for t in c.values())}
             (output / "capture.json").write_text(json.dumps(report, indent=2))
             if report["layers_captured"] != self._kvmem_layers or not report["finite"]:
                 raise RuntimeError("Incomplete or non-finite native target capture")
+            if rebuild is not None and not rebuild["all_byte_equal"]:
+                raise RuntimeError("Native-page archive/rebuild differs from original cache bytes")
             return result
 
     return KVMemProbeRunner
