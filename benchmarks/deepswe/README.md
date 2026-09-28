@@ -32,8 +32,9 @@ substitution is introduced.
    agent's `tool_choice=auto` before inference; that configuration failure is
    not a model outcome.
    Once ready, run `scripts/preflight_agent_api.py --api-base <host-api-base>
-   --output <new-preflight.json>` to check one native tool call and decode/spec
-   metrics before launching tasks. This short diagnostic executes no shell tool
+   --engine-evidence <server-artifact>/server_state.json --output <new-preflight.json>`
+   to check one native tool call, decode/spec metrics, exact terminal archive and
+   complete resource retirement before launching tasks. This executes no shell tool
    and is not a task or throughput result. Failures are saved, never overwritten.
 2. Start `scripts/manage_agent_relay.py --upstream-port <server-port>
    --image <existing-task-image-with-python3> --output <new-relay-artifact>`.
@@ -55,6 +56,7 @@ substitution is introduced.
      --health-api-base http://127.0.0.1:SERVER_PORT/v1 \
      --engine-evidence /path/to/server-artifact/server_state.json \
      --relay-evidence /path/to/relay-artifact/resources.json \
+     --preflight-evidence /path/to/new-preflight.json \
      --output /path/to/new-agent-artifact
    ```
 

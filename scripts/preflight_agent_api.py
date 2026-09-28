@@ -74,6 +74,8 @@ def main():
                 raise TimeoutError('Preflight authority or native resources did not retire')
             time.sleep(.1)
         report['engine_source_commit'] = engine['source_commit']
+        report['engine_manager_pid'] = engine['manager_pid']
+        report['engine_api_base'] = engine['api_base']
         report['status'] = 'passed'
     except Exception as error:
         report['error'] = repr(error)

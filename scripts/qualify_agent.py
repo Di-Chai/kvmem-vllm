@@ -96,6 +96,8 @@ def main():
                         help='Exact server command/config/source manifest for this running service')
     parser.add_argument('--relay-evidence', type=Path,
                         help='Required for execution: ready managed relay resources.json and its native request journal')
+    parser.add_argument('--preflight-evidence', type=Path,
+                        help='Required for execution: passed tool/capture/retirement check for this backend')
     parser.add_argument('--prepare-only', action='store_true', help='Validate/snapshot without invoking Pier; not a quality result')
     args = parser.parse_args()
     # Resolving the interpreter symlink would select the base Python and lose
@@ -118,6 +120,7 @@ def main():
     # Read and freeze evidence; never alter an existing inference service.
     evidence = json.loads(args.engine_evidence.read_text())
     relay = None
+    preflight = None
     if not args.prepare_only:
         if args.relay_evidence is None:
             parser.error('Executed qualification requires relay-evidence for native timing and backend identity')
@@ -127,6 +130,14 @@ def main():
                 or relay.get('api_base') != args.api_base
                 or (args.health_api_base or '').rstrip('/') != evidence.get('api_base')):
             raise RuntimeError('Ready backend, relay address/port and host health endpoint must describe the same service')
+        if args.preflight_evidence is None:
+            parser.error('Executed qualification requires preflight-evidence for native tools and KVMem retirement')
+        preflight = json.loads(args.preflight_evidence.read_text())
+        if (preflight.get('status') != 'passed' or not preflight.get('archive_completion')
+                or preflight.get('engine_manager_pid') != evidence.get('manager_pid')
+                or preflight.get('engine_api_base') != evidence.get('api_base')
+                or preflight.get('engine_source_commit') != evidence.get('source_commit')):
+            raise RuntimeError('Tool/capture/retirement preflight must qualify this same backend instance')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     shutil.copy2(Path(__file__), out / 'qualify_agent.py')
@@ -134,6 +145,8 @@ def main():
     (out / 'engine_evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
     if relay is not None:
         (out / 'relay_evidence.json').write_text(json.dumps(relay, indent=2) + '\n')
+    if preflight is not None:
+        (out / 'preflight_evidence.json').write_text(json.dumps(preflight, indent=2) + '\n')
     tasks = []
     for task_id in args.task:
         task_out = out / task_id
