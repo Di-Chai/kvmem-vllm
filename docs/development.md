@@ -594,3 +594,33 @@ in-flight rows are discarded. The API stays healthy. This is active-prefill
 cancellation, not the still-required compressed-refresh cancellation gate.
 The next real attempts are `_03`, with instance-bound tool and cancellation
 evidence. No task score is available yet.
+
+## Shared in-flight archive byte admission
+
+`archive_io_max_bytes` (harness: `--archive-io-max-mib`) now bounds the sum of
+logical payload bytes across admitted archive reads and writes, in addition to
+the existing job-count cap. It applies across request namespaces, cache hits,
+direct reads into caller-owned buffers and detached finalization. Write snapshots
+are taken only after admission; publication, I/O failure, executor rejection and
+preparation rollback release credits and generation leases. A permanently oversized
+batch fails explicitly. Model startup checks that the configured cap fits a full
+K+G read and the maximal capture flush, rather than discovering an impossible
+quota during inference. Default zero preserves prior count-only recipes.
+
+Current/peak bytes and deferrals are exported in archive evidence. Capacity held
+by detached finalizers is recognized by capture backpressure instead of falsely
+reporting repository exhaustion. This remains a synchronous fallback. The cap
+is **in-flight I/O extent**, not a whole-process RSS limit: completed read results,
+resident authority tensors, pinned pools, read-cache entries and serialization
+scratch still have separate owners/bounds. End-to-end host-byte admission and
+fair asynchronous scheduling remain pending. No throughput gain is claimed.
+
+The targeted native CPU suite passes 56 tests, including mixed-size namespace
+competition, all-cache/direct reads, refused/oversized writes before snapshot,
+read/write errors, executor rejection, lease reclamation and detached-retirement
+pressure (`archive_io_budget_cpu_03.xml`). The complete host suite passes
+212 tests with 41 GPU cases deferred (`components_archive_io_host_20260929.xml`).
+The live `_03` official agent pair uses frozen prior code and does not activate
+this quota; at this checkpoint 19 model calls have completed without relay error,
+but neither task has a verifier score. These counts are not a quality result or
+an exclusive performance measurement.

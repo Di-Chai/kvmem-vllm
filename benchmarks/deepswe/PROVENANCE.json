@@ -2,5 +2,11 @@
   "source": "/home/chaidi/qw3/benchmark/mini_swe_deepswe/reliable_mini_swe_agent.py",
   "source_sha256": "a680b3bc7b89402344e25d7469a0358cb5babccb0ca26cb10a5ff1de769e2be8",
   "extraction": "ReliableMiniSweAgent and its helper/imports only; exact prefix before CompactingMiniSweAgent; no solver prompt/tool/loop changes",
-  "adapter_sha256": "be6429c9ff2dfad513bd5cd04ecb5376a5f68e2950031d9d9c3dc3929c3209ce"
+  "adapter_sha256": "be6429c9ff2dfad513bd5cd04ecb5376a5f68e2950031d9d9c3dc3929c3209ce",
+  "transport_entry": {
+    "file": "pier_transport_entry.py",
+    "upstream_module": "pier.environments.agent_setup",
+    "upstream_sha256": "0b5c8d55a2bc66356b5fd7b20b915f3e07d8eac920bf16aa232514c3719686b6",
+    "change": "Process-local generated Squid read_timeout/forward_timeout=21600 seconds, matching the existing model-call budget. Installed package, allowlists, authentication, solver, retry policy and scoring are unchanged."
+  }
 }

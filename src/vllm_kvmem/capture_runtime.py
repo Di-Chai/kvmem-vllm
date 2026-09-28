@@ -64,7 +64,8 @@ class CaptureRuntime:
         self.archive = getattr(runner, '_kvmem_prepared_archive', None)
         if self.archive is None:
             self.archive = make_shared_archive(self.options, output / 'continuous_archive', record_bytes,
-                max_reqs if getattr(runner, '_kvmem_bounded_target', False) else 1)
+                max_reqs if getattr(runner, '_kvmem_bounded_target', False) else 1,
+                max_query_tokens=max_tokens)
         self.downloads = PackedDownloads(max_tokens * self.row_elements * 3 + (4 * max_reqs + 1) * 8,
                                          2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)
@@ -214,6 +215,14 @@ class CaptureRuntime:
             if progressed:
                 self._archive_wait_deadline = None
                 return
+            if getattr(self, 'retiring', {}):
+                # Detached finalizers share the same count/byte queue. Their
+                # I/O is absent from active authority.writes; do not report a
+                # false repository-capacity failure while they still own it.
+                if self.archive.io_usage()['archive_io_pending_bytes']:
+                    if not self.archive.wait_for_idle(30):
+                        raise TimeoutError('Detached archive I/O did not release capacity')
+                    return
             if self.options.repository_gc:
                 # The CPU policy worker may be reclaiming durable generations
                 # even with no outstanding archive write. Never run policy on
@@ -350,6 +359,7 @@ class CaptureRuntime:
                   "archive_used_slots": self.archive.tier.used_slots,
                   "nvme_capacity_bytes": self.archive.capacity_bytes,
                   "nvme_preallocated": self.archive.preallocated,
+                  **self.archive.io_usage(),
                   "pending_downloads": len(self.downloads.pending)}
         temporary = self.output / 'archive.tmp'
         temporary.write_text(json.dumps(report, indent=2))

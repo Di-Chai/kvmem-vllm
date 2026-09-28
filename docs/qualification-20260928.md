@@ -711,7 +711,26 @@ slots return to zero, with 1072/1073 native blocks free (the null block remains)
 The API remains healthy. Its 0.306-second decode interval is a tool/lifecycle
 diagnostic, not a throughput benchmark or task score.
 
-`agent_tensorcore_c2_initial_02` now runs the same two official tasks through a
-new owned relay, retaining the exact model recipe and official task policy.
-Neither task has a score yet. The latest host suite passes 176 cases with 41
-GPU cases deferred during serving; artifact `components_agent_preflight_host_20260929.xml`.
+The subsequent `agent_tensorcore_c2_initial_02` is **unscored infrastructure
+failure**, not a quality or clean C2 performance result. Its generated Squid
+proxy timed out a silent model call after 900642 ms (`TCP_MISS_TIMEDOUT/504`).
+The client retried while the old relay kept inference alive, producing three
+active requests for two serial agents. Both attempts and all failure evidence
+are retained; only owned processes/containers were stopped. Host tests/builds
+also overlapped this run. One completed 30763-prompt/12519-output request had
+30.345 tok/s decode and 19.516% draft acceptance, but cannot establish matched
+framework or model-quality differences.
+
+The replacement relay propagates disconnects and the pinned process-local Pier
+entry point aligns the proxy with the existing 21600-second model-call timeout.
+On `agent_backend_tensorcore_05`, actual GPU cancellation after 2048 accepted
+prefill tokens releases all archive/native ownership in 1.107 s. Another 1024
+in-flight rows are correctly discarded; the API remains healthy. This is active
+prefill cancellation, **not compressed-refresh cancellation**. The new official
+pair is `agent_tensorcore_c2_initial_03`, with matching tool and cancellation
+preflight evidence; no task score is available at this checkpoint.
+
+The latest full host suite passes 194 cases with 41 GPU cases deferred during
+serving (`components_nvme_reservation_host_20260929.xml`). Strict physical NVMe
+reservation and shared byte quotas pass native CPU tests; serving GC/capacity
+feedback, GPU pressure/reservation and persistent sessions remain unqualified.

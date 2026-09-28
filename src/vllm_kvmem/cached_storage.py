@@ -15,36 +15,33 @@ class CachedArchive(AsyncArchive):
         self.read_cache = RecordReadCache(cache_bytes, namespace_bytes)
         super().__init__(*args, **kwargs)
 
-    def write(self, namespace, leases, payload):
-        payload = bytes(payload)
-        keys = [self.key(namespace, lease) for lease in leases]
-        job = super().write(namespace, leases, payload)
-        if job is None:
-            return None
-
-        with self._lock:
-            for index, key in enumerate(keys):
-                if key in self._entries:
-                    # Cache admission does not publish authority. read() still
-                    # requires native I/O to mark the entry ready; failed writes
-                    # release the entry and evict this speculative cache copy.
-                    begin = index * self.record_bytes
-                    self.read_cache.put(key, payload[begin:begin+self.record_bytes])
-        return job
+    def _cache_write(self, keys, payload):
+        for index, key in enumerate(keys):
+            # Cache admission does not publish authority. read() still requires
+            # completed native I/O; write failure evicts this speculative copy.
+            begin = index * self.record_bytes
+            self.read_cache.put(key, payload[begin:begin+self.record_bytes])
 
     def read(self, namespace, leases, *, destination=None):
         if not leases:
             raise ValueError("Empty read")
         destination = read_destination(destination, len(leases) * self.record_bytes)
+        size = len(leases) * self.record_bytes
         keys = [self.key(namespace, lease) for lease in leases]
         with self._lock:
             entries = [self._entries.get(key) for key in keys]
             if any(entry is None or not entry.ready for entry in entries):
                 raise KeyError("Archive record missing, stale, or not yet published")
-            if not self._admit():
+            if not self._admit(size):
                 return None
-            owned = [lease.clone() for lease in leases]
-            cached = [self.read_cache.get(key) for key in keys]
+            owned = []
+            try:
+                owned = [lease.clone() for lease in leases]
+                cached = [self.read_cache.get(key) for key in keys]
+            except BaseException:
+                owned.clear()
+                self._complete(size)
+                raise
         spans = [_native.IoSpan(entry.allocation.slot, i*self.record_bytes, self.record_bytes)
                  for i, (entry, hit) in enumerate(zip(entries, cached)) if hit is None]
 
@@ -76,11 +73,15 @@ class CachedArchive(AsyncArchive):
             finally:
                 owned.clear()
                 with self._lock:
-                    self._pending -= 1
-                    self._capacity_changed.notify_all()
+                    self._complete(size)
 
         with self._lock:
-            return ArchiveJob(self.executor.submit(work))
+            try:
+                return ArchiveJob(self.executor.submit(work))
+            except BaseException:
+                owned.clear()
+                self._complete(size)
+                raise
 
     def _release(self, key):
         released = super()._release(key)

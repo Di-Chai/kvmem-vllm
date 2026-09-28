@@ -32,11 +32,11 @@ explicit flags and pinned source hashes; no installed vLLM files are rewritten.
 | Engine | vLLM 0.30.0 V2 runner; native scheduling, batching, attention and sampling | Additional engine versions and graph modes |
 | Target weights | Qwen3.8-27B GGUF Q8_0 through pinned vllm-gguf-plugin | Other quantizations and model families |
 | Target KV | Native FP8 e4m3 layouts; raw pre-RoPE K authority and FP8 V; byte-checked assembly | Other native KV codecs and scale layouts |
-| Hybrid state | Qwen3.5-family GDN native state identity restore/replay | Cancellation and session persistence; corrected bounded real C1 passes |
+| Hybrid state | Qwen3.5-family GDN native state identity restore/replay; active-prefill HTTP cancellation releases all resources | Compressed-refresh cancellation and persistent-session state continuation |
 | DFlash2 | Corrected long compressed C4 lifecycle; short native exact terminal archive clipping and checksums pass | Matched performance, decode-time refresh/cancellation, recurrent terminal rollback in serving and persistent sessions |
 | Bounded target | Scheduled semantic prefill/selection, actual-length acknowledgment, page trimming implemented | Corrected real long C1/C4 pass; pressure tests and performance acceptance remain |
 | GPU admission | Future growth reservations tested with native full-attention/Mamba allocator | Attached to bounded scheduler; native GPU pressure tests remain |
-| Storage | Immutable archive, generation-qualified leases, packed/direct transfers; async retirement passes native long C4; original GC passes component reuse tests | Matched direct-read performance, disk/CPU quota admission and native serving GC/backpressure |
+| Storage | Immutable archive, generation-qualified leases, packed/direct transfers; async retirement passes native long C4; CPU tests cover serving GC, strict NVMe reservation and shared I/O byte admission | GPU GC/quota/backpressure qualification; whole-process host-byte admission and fair I/O scheduling |
 | Measurements | Exact frozen-token inputs, SSE arrival/usage validation, C1/C4 aggregation | Native SSE C1/short-C4 passes; matched warm repeats and executed agent-task success remain |
 
 BF16 is used for activations and the draft model; it does not change the Q8_0
@@ -53,5 +53,6 @@ GGUF batch linear adapter on SM120, for BF16 input batches of at least 16 rows.
 It preserves original Q8_0 bytes/FP16 scales and the native fast-math Q8_1
 activation quantization, using grouped integer Tensor Core dots and FP32 scaling.
 It changes floating-point reduction order. It is disabled by default and has not
-yet passed native model/task quality or performance qualification. This does not
+yet passed task-quality equivalence or repeated matched performance acceptance;
+single short and long native comparisons are recorded in the qualification log. This does not
 add BF16 target weights or change target FP8 KV.

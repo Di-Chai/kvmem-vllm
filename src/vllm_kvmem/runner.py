@@ -31,7 +31,7 @@ def make_probe_runner(base):
             options = RuntimeOptions.from_vllm(self.vllm_config)
             self._kvmem_repository_gc = options.repository_gc
             self._kvmem_prepared_archive = None
-            if options.nvme_preallocate or options.nvme_max_bytes:
+            if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes:
                 from .storage import make_shared_archive
                 modules = dict(self.model.named_modules())
                 layers = [modules[name] for name in self._kvmem_layers]
@@ -42,7 +42,8 @@ def make_probe_runner(base):
                 record_bytes = len(layers) * heads * dim * options.memory.block_tokens * 3
                 self._kvmem_prepared_archive = make_shared_archive(options,
                     self._kvmem_probe_output / 'continuous_archive', record_bytes,
-                    self.vllm_config.scheduler_config.max_num_seqs if self._kvmem_bounded_target else 1)
+                    self.vllm_config.scheduler_config.max_num_seqs if self._kvmem_bounded_target else 1,
+                    max_query_tokens=self.vllm_config.scheduler_config.max_num_batched_tokens)
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None

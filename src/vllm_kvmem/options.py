@@ -16,10 +16,12 @@ class RuntimeOptions:
     repository_gc: bool = False
     nvme_preallocate: bool = False
     nvme_max_bytes: int = 0
+    archive_io_max_bytes: int = 0
 
     def __post_init__(self):
-        if any(type(value) is not int or value < 0 for value in (self.cpu_read_cache_bytes, self.nvme_max_bytes)):
-            raise ValueError("CPU read-cache capacity must be a nonnegative byte count")
+        if any(type(value) is not int or value < 0 for value in
+               (self.cpu_read_cache_bytes, self.nvme_max_bytes, self.archive_io_max_bytes)):
+            raise ValueError("Storage capacity must be a nonnegative byte count")
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
                 self.async_archive_retirement, self.repository_gc, self.nvme_preallocate)):
@@ -48,10 +50,12 @@ class RuntimeOptions:
         gc = payload.pop('repository_gc', False)
         preallocate = payload.pop('nvme_preallocate', False)
         nvme_bytes = payload.pop('nvme_max_bytes', 0)
+        io_bytes = payload.pop('archive_io_max_bytes', 0)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
             raise ValueError(f"Unknown KVMem setting: {error}") from error
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
-        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes)
+        return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
+                   io_bytes)

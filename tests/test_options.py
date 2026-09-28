@@ -10,11 +10,13 @@ def config(payload):
 
 def test_public_connector_config_propagates_granularity_and_resource_options_without_mutation():
     values = {'kvmem': {'block_tokens': 32, 'repository_blocks': 16384,
-                       'cpu_read_cache_bytes': 9 * 1024**3, 'packed_assembly': True}}
+                       'cpu_read_cache_bytes': 9 * 1024**3, 'packed_assembly': True,
+                       'archive_io_max_bytes': 2 * 1024**3}}
     options = RuntimeOptions.from_vllm(config(values))
     assert options.memory.block_tokens == 32
     assert (options.memory.select_budget, options.memory.gen_budget) == (131072, 65536)
     assert options.cpu_read_cache_bytes == 9 * 1024**3 and options.packed_assembly
+    assert options.archive_io_max_bytes == 2 * 1024**3
     assert values['kvmem']['cpu_read_cache_bytes'] == 9 * 1024**3
     assert RuntimeOptions.from_vllm(config({})).memory.block_tokens == 128
 
@@ -34,6 +36,8 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'nvme_preallocate': 1}}, 'boolean'),
     ({'kvmem': {'nvme_max_bytes': True}}, 'capacity'),
     ({'kvmem': {'nvme_max_bytes': -1}}, 'capacity'),
+    ({'kvmem': {'archive_io_max_bytes': -1}}, 'capacity'),
+    ({'kvmem': {'archive_io_max_bytes': True}}, 'capacity'),
     ({'kvmem': {'kv_dtype': 'bfloat16'}}, 'codec'),
     ({'kvmem': []}, 'object'),
 ])

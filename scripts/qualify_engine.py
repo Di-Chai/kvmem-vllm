@@ -298,12 +298,16 @@ def main():
                         help="Record HTTP token bursts, TTFT and correctly overlapping group rates")
     parser.add_argument("--history-repeat", type=int, default=0,
                         help="Prepend deterministic repository-like history to exercise chunked prefill")
+    parser.add_argument('--archive-io-max-mib', type=int, default=0,
+                        help='Shared in-flight archive payload byte cap; 0 retains count-only admission')
     args = parser.parse_args()
     if (not 0 <= args.profile_concurrent_steps <= 32 or args.profile_delay_steps < 0 or
             (args.profile_delay_steps and not args.profile_concurrent_steps)):
         parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
+    if args.archive_io_max_mib < 0 or (args.archive_io_max_mib and not args.bounded_target):
+        parser.error('Archive I/O byte quota must be nonnegative and requires bounded serving')
     if args.nvme_max_mib < 0 or ((args.nvme_preallocate or args.nvme_max_mib) and not args.bounded_target):
         parser.error('NVMe quota must be nonnegative; reservation/quota qualification requires bounded serving')
     if ((args.repository_gc or args.repository_blocks != 4096) and not args.bounded_target
@@ -499,6 +503,7 @@ def main():
                                 "repository_blocks": args.repository_blocks,
                                 "nvme_preallocate": args.nvme_preallocate,
                                 "nvme_max_bytes": args.nvme_max_mib * 1024**2,
+                                "archive_io_max_bytes": args.archive_io_max_mib * 1024**2,
                                 "verify_archive_on_finish": not args.skip_archive_readback}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
@@ -668,6 +673,10 @@ def main():
                             or (args.nvme_max_mib and archived.get('nvme_capacity_bytes', float('inf')) > args.nvme_max_mib * 1024**2)):
                         raise RuntimeError('Worker did not apply the requested NVMe reservation/quota')
                     expected_verification = "publication_only" if args.skip_archive_readback else "full_checksum"
+                    if (archived.get('archive_io_max_bytes', 0) != args.archive_io_max_mib * 1024**2
+                            or archived.get('archive_io_pending_bytes', 0)
+                            or args.archive_io_max_mib and archived.get('archive_io_peak_bytes', float('inf')) > args.archive_io_max_mib * 1024**2):
+                        raise RuntimeError('Archive I/O byte quota or final cleanup was not respected')
                     if archived.get("archive_verification", "full_checksum") != expected_verification:
                         raise RuntimeError("Worker did not apply requested archive verification mode")
                     report["archive_checksum_qualified"] = expected_verification == "full_checksum"

@@ -44,6 +44,13 @@ substitution is introduced.
    only those resources. The relay supports ordinary non-streaming agent calls;
    it passes JSON request/response bytes unchanged, requesting identity content
    encoding, and journals native response metrics without API credentials.
+   During a silent upstream call it monitors client disconnects and closes the
+   native API socket so timed-out callers do not leave orphaned GPU requests.
+   Before starting tasks, run `scripts/preflight_agent_cancel.py --engine-evidence
+   <server-artifact>/server_state.json --relay-evidence <relay-artifact>/resources.json
+   --output <new-cancel-preflight.json>`. The idle backend must demonstrate actual
+   accepted prefill, native abort, exact terminal clipping and full resource
+   release through this relay. This is not compressed-refresh cancellation.
 3. Run the pinned Pier environment against that address:
 
    ```sh
@@ -57,6 +64,7 @@ substitution is introduced.
      --engine-evidence /path/to/server-artifact/server_state.json \
      --relay-evidence /path/to/relay-artifact/resources.json \
      --preflight-evidence /path/to/new-preflight.json \
+     --cancel-preflight-evidence /path/to/new-cancel-preflight.json \
      --output /path/to/new-agent-artifact
    ```
 
@@ -69,6 +77,13 @@ substitution is introduced.
    Actual execution checks that the ready backend, managed relay and host health
    URL describe the same endpoint. It retains the per-task native request records
    and token-weighted per-request decode separately from concurrent throughput.
+   Both preflight files must match these running backend/relay instances.
+   The copied `pier_transport_entry.py` verifies the pinned official network
+   setup source and aligns generated Squid read/forward timeouts with the existing
+   21600-second model-call limit. The default 900-second proxy timeout previously
+   caused HTTP 504 and overlapping retries. Installed Pier files, allowlists,
+   solver/retry policy and scoring remain unchanged; this transport adjustment
+   is recorded separately from the unchanged agent-adapter extraction.
 4. Inspect every task's official result, full trajectory and produced patch,
    plus relay metrics and server archive/resource state. Then stop the owned
    relay and server using their recorded manager PIDs. Do not stop other
@@ -88,6 +103,8 @@ wall time, tool time, aggregate service throughput and verifier reward. Summing
 overlapping request durations is not aggregate GPU throughput. Missing native
 metrics, one-token outputs, failed requests, context-limit errors and retries
 must remain visible.
+Only successfully delivered HTTP responses enter completed-request timings;
+disconnects, undelivered responses and relay errors remain in the journal.
 
 These scripts are an execution/measurement entry point, not evidence of task
 success. Current bounded DFlash serving still has a 262144 logical-position
