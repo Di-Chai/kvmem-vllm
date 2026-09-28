@@ -31,3 +31,12 @@ def test_missing_invalid_or_truncated_token_evidence_cannot_pass():
                    {'choices': [{'token_ids': [1]}], 'usage': {'completion_tokens': 2}}):
         with pytest.raises(RuntimeError):
             gate.output_tokens(output)
+
+
+def test_concurrent_gate_rejects_missing_or_cross_counted_imports(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / 'scripts'))
+    import qualify_session_concurrency as concurrent
+    concurrent.reuse_delta(state(1024, 1), state(10240, 4), 3, [3072]*3)
+    for tokens, hits in ((10240, 3), (9216, 4), (13312, 5)):
+        with pytest.raises(RuntimeError, match='Incorrect session imports'):
+            concurrent.reuse_delta(state(1024, 1), state(tokens, hits), 3, [3072]*3)
