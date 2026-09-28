@@ -125,3 +125,23 @@ physical GPU-page release after HTTP completion and records that extra drain
 duration separately. Deferred work is not silently counted as already reclaimed
 or removed from lifecycle acceptance. Compare the same checksum mode when
 isolating the effect of asynchronous retirement; GPU qualification is pending.
+
+## Bounded native profiler diagnostic
+
+`qualify_engine.py --profile-concurrent-steps N --profile-delay-steps D` enables
+vLLM's native torch profiler only around the concurrent phase. N is bounded to
+1..32 engine steps; D skips engine iterations after `/start_profile`. Frontend
+profiling and Python stacks are disabled, while native shape/phase annotations
+are retained. The actual trace determines whether prefill, refresh or decode was
+captured; the requested delay alone proves no phase coverage. An empty GPU trace
+fails the diagnostic rather than passing on a configuration flag.
+
+Such runs carry `performance_eligible: false`, irrespective of lifecycle success.
+Their instrumented TTFT/decode numbers must not be used as throughput acceptance
+or compared to uninstrumented results. `true` on an uninstrumented run only removes
+this profiling exclusion; matched workload, correctness, warmup, and repeat gates
+still apply. The summary separates summed kernel durations from the union of
+kernel intervals per trace device, since different streams can overlap. Gaps in
+those intervals do not by themselves prove CPU launch overhead or GPU idleness.
+The top-kernel table is a starting point for inspecting the native trace, not a
+model/draft/verification attribution inferred from kernel names.

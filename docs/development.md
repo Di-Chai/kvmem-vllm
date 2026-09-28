@@ -315,3 +315,21 @@ not yet executed while the long-C4 model owns the GPU.
 
 Latest host regression: **146 passed, 34 skipped** (28 existing GPU tests plus
 6 new native-prefix GPU cases), `artifacts/components_accepted_state_cpu.xml`.
+
+## Next performance evidence and agent gate preparation
+
+The harness now exposes an optional native profiler window for concurrent work,
+with a fixed step limit and an explicit instrumented-only timing label. Host
+checks validate against the installed vLLM ProfilerConfig and cover overlapping
+GPU kernel interval accounting; targeted profiling/qualification tests: 18 pass.
+No GPU profile has been run yet and no bottleneck improvement is claimed.
+
+Read-only inspection confirms the existing official DeepSWE environment uses
+Pier `datacurve-pier` 0.3.1 and mini-swe-agent 2.4.6. The original requestplan10
+runner restarts QW3 for every task and allows a 3M logical context; invoking it
+unchanged would violate this plugin's shared-vLLM test scope and current 262K
+draft-position boundary. Agent evaluation must therefore get its own vLLM
+runner with the same task/agent/verifier provenance, explicit limits, and actual
+container/verifier results. Frozen prompts and parseable tool calls remain
+insufficient quality evidence. Existing containers/services were only inspected,
+not stopped or replaced.

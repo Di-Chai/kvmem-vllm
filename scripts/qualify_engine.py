@@ -270,6 +270,10 @@ def main():
     parser.add_argument("--concurrent-only", action="store_true",
                         help="Run only the four frozen histories; avoid repeating an already qualified C1")
     parser.add_argument("--output-tokens", type=int, default=128)
+    parser.add_argument('--profile-concurrent-steps', type=int, default=0,
+                        help='Native GPU profiler for 1..32 C4 engine steps; timings become diagnostic only')
+    parser.add_argument('--profile-delay-steps', type=int, default=0,
+                        help='Engine iterations to skip after starting the C4 profiler')
     parser.add_argument("--skip-archive-readback", action="store_true",
                         help="Measure serving without diagnostic finish checksums; still drain and check publication/cleanup")
     parser.add_argument("--async-archive-retirement", action="store_true",
@@ -279,6 +283,9 @@ def main():
     parser.add_argument("--history-repeat", type=int, default=0,
                         help="Prepend deterministic repository-like history to exercise chunked prefill")
     args = parser.parse_args()
+    if (not 0 <= args.profile_concurrent_steps <= 32 or args.profile_delay_steps < 0 or
+            (args.profile_delay_steps and not args.profile_concurrent_steps)):
+        parser.error('Profile steps must be 0..32; delay requires profiling and must be nonnegative')
     if args.bounded_dflash:
         args.bounded_target = args.dflash = True
     if not 1 <= args.output_tokens <= 8192:
@@ -423,6 +430,13 @@ def main():
                    "--generation-config", "vllm", "--enforce-eager"]
         if args.kv_cache_memory_mib:
             command += ["--kv-cache-memory-bytes", str(args.kv_cache_memory_mib * 1024**2)]
+        report['performance_eligible'] = not bool(args.profile_concurrent_steps)
+        if args.profile_concurrent_steps:
+            from vllm_kvmem.profiling import native_profiler_config
+            profiler = native_profiler_config(args.output / 'profile',
+                args.profile_concurrent_steps, args.profile_delay_steps)
+            command += ['--profiler-config', json.dumps(profiler)]
+            report['profiling'] = {'config': profiler, 'scope': 'instrumented concurrent phase; actual trace determines prefill/decode coverage'}
         if args.prefill_request_token_cap:
             command += ["--long-prefill-token-threshold", str(args.prefill_request_token_cap)]
         if args.compression_probe or args.bounded_target or args.scheduled_rebuild_probe or frozen is not None or frozen_concurrent:
@@ -535,6 +549,9 @@ def main():
                         report["single"] = complete((0, single_prompt), phase="single")
                 if frozen_concurrent:
                     prompts = [item["input_ids"] for item, _ in frozen_concurrent]
+                if args.profile_concurrent_steps:
+                    from vllm_kvmem.profiling import control_profiler
+                    control_profiler(url, 'start')
                 begin = time.monotonic()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     try:
@@ -545,6 +562,13 @@ def main():
                         stop_owned_server(process)
                         raise
                 report["concurrent_wall_seconds"] = time.monotonic() - begin
+                if args.profile_concurrent_steps:
+                    from vllm_kvmem.profiling import summarize_trace
+                    control_profiler(url, 'stop')
+                    traces = sorted((args.output / 'profile').rglob('*.pt.trace.json*'))
+                    if not traces:
+                        raise RuntimeError('Native profiler did not produce its requested trace')
+                    report['profiling']['traces'] = [summarize_trace(path) for path in traces]
                 if args.stream_metrics:
                     from vllm_kvmem.measurement import StreamTrace, summarize_group
                     report["http_measurements"] = {
