@@ -11,6 +11,20 @@ import urllib.error
 import urllib.request
 
 
+def retired_completion(result, archived, released):
+    completed = [item for item in archived.get('completed', [])
+                 if item['request_id'] == result['id'] or item['request_id'].startswith(result['id'] + '-')]
+    if (len(completed) != 1 or any(archived.get(key) != 0 for key in
+            ('active_requests', 'retiring_requests', 'archive_used_slots', 'pending_downloads'))
+            or released.get('requests') != 0 or released.get('owned_blocks') != 0
+            or released.get('reservations') != []):
+        return None
+    expected = result['usage']['prompt_tokens'] + result['usage']['completion_tokens'] - 1
+    if completed[0]['history_end'] != expected or not completed[0].get('terminal_prefix'):
+        raise RuntimeError('Preflight terminal authority does not match native token usage')
+    return completed[0]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--api-base', required=True)
@@ -59,16 +73,9 @@ def main():
                 pass
             archived = json.loads((capture / 'archive.json').read_text()) if (capture / 'archive.json').exists() else {}
             released = json.loads((capture / 'scheduler_resources.json').read_text()) if (capture / 'scheduler_resources.json').exists() else {}
-            completed = [item for item in archived.get('completed', [])
-                         if item['request_id'] == result['id'] or item['request_id'].startswith(result['id'] + '-')]
-            if (len(completed) == 1 and archived.get('active_requests') == 0
-                    and archived.get('retiring_requests') == 0 and archived.get('archive_used_slots') == 0
-                    and archived.get('pending_downloads') == 0 and released.get('requests') == 0
-                    and released.get('owned_blocks') == 0 and released.get('reservations') == []):
-                expected = result['usage']['prompt_tokens'] + result['usage']['completion_tokens'] - 1
-                if completed[0]['history_end'] != expected or not completed[0].get('terminal_prefix'):
-                    raise RuntimeError('Preflight terminal authority does not match native token usage')
-                report.update(archive_completion=completed[0], scheduler_resources=released)
+            completed = retired_completion(result, archived, released)
+            if completed is not None:
+                report.update(archive_completion=completed, scheduler_resources=released)
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError('Preflight authority or native resources did not retire')
