@@ -200,6 +200,7 @@ class CaptureRuntime:
                     "last_steps": self.last_steps.pop(request_id)}
                 del self.authorities[request_id]
                 continue
+            authority.stop_gc()
             if not authority.flush():
                 self._wait_archive_progress()
                 if not authority.flush():
@@ -208,7 +209,7 @@ class CaptureRuntime:
                 job.result()
             authority.poll()
             published = sum(record.archived for record in authority.records.values())
-            if published != authority.history_end // self.config.block_tokens:
+            if published + authority.gc_reclaimed_records != authority.history_end // self.config.block_tokens:
                 raise RuntimeError("Finalized authority has unpublished complete archive records")
             verified = 0
             for record in authority.records.values():
@@ -224,7 +225,8 @@ class CaptureRuntime:
                 "rejected_tokens": self.rejected.pop(request_id),
                 "last_steps": self.last_steps.pop(request_id),
                 "records": len(authority.records), "sealed_records_archived": published,
-                "sealed_records_verified": verified})
+                "sealed_records_verified": verified,
+                "gc_reclaimed_records": authority.gc_reclaimed_records})
             if not authority.close():
                 raise RuntimeError("Finalized authority still has unexpected live storage leases")
             del self.authorities[request_id]

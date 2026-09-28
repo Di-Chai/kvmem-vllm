@@ -14,6 +14,7 @@ import torch
 
 def retire_authority(authority, verify, timeout=180):
     started_at = time.perf_counter()
+    authority.stop_gc()
     deadline = time.monotonic() + timeout
     retry = Event()
     def remaining():
@@ -34,7 +35,8 @@ def retire_authority(authority, verify, timeout=180):
         job.result(timeout=remaining())
     authority.poll()
     published = sum(record.archived for record in authority.records.values())
-    if published != authority.history_end // authority.memory.config.block_tokens:
+    reclaimed = authority.gc_reclaimed_records
+    if published + reclaimed != authority.history_end // authority.memory.config.block_tokens:
         raise RuntimeError('Finalized authority has unpublished complete archive records')
     published_at = time.perf_counter()
     verified = 0
@@ -56,7 +58,8 @@ def retire_authority(authority, verify, timeout=180):
             verified += 1
     verified_at = time.perf_counter()
     result = {"history_end": authority.history_end, "records": len(authority.records),
-              "sealed_records_archived": published, "sealed_records_verified": verified}
+              "sealed_records_archived": published, "sealed_records_verified": verified,
+              "gc_reclaimed_records": reclaimed}
     while not authority.close():
         # A concurrent archive operation can temporarily own its release lock;
         # readers must drop their generation lease before storage can recycle.

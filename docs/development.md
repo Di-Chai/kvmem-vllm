@@ -235,3 +235,35 @@ These bindings are not yet activated in the serving authority: durable backing
 publication, full retrieval-snapshot leases and bundle cleanup must be integrated
 before enabling active-history GC. The qualification harness now stops its owned
 server before joining interrupted streaming readers.
+
+## Authority GC integration (CPU qualified, serving activation pending)
+
+An optional `RequestAuthority(gc_config=...)` now attaches the original policy
+worker. It publishes RawBacked/ValueBacked/Indexed only after successful durable
+write completion. Scoring holds generation-qualified leases over the entire
+live index through native selection; returning copied handle values alone does
+not protect against concurrent retirement.
+
+Background release reclaims the generation's disk allocation and optional CPU
+read-cache entry, then queues a bounded tombstone. The foreground removes old
+index generations before installing recycled reservations. The callback owns no
+Store/authority/GC bridge reference, touches no GPU data, and never mutates the
+foreground dictionary. Finalization stops policy GC before checksum iteration;
+reports distinguish previously reclaimed records from live records actually
+verified. Request-step aging advances once at construction; ingestion grace can
+make progress within that request without inventing per-token request steps.
+
+Seven integration cases cover fixed-capacity reuse across 272 accepted tokens
+in an eight-block repository, original sink protection, cache invalidation,
+scoring leases and exception cleanup, unobserved durable writes, background
+single-request ingestion, and final checksum accounting. Combined CPU regression:
+**133 passed, 28 GPU tests skipped** while the model run owns the GPU. Evidence:
+`artifacts/components_authority_gc_cpu.xml`. Native serving options, scheduler
+backpressure on repository exhaustion, and GPU GC qualification remain pending;
+this component is not activated in the current model test.
+
+The corrected long-C4 combined-path run is
+`engine_long_c4_dflash_direct_cadence_02`, launched from `053383f` with a frozen
+worker snapshot. It additionally opts into asynchronous archive retirement.
+Actual decode rates and final lifecycle results remain pending; no speedup is
+claimed from the earlier interrupted run or from the component tests.

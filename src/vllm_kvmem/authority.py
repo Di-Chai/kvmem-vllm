@@ -5,6 +5,7 @@ The caller retries after poll() on backpressure. An incomplete tail is never
 published to the immutable archive; repeated decode appends extend it in memory.
 """
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 
 import torch
@@ -37,7 +38,7 @@ def record_key(handle):
 
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
-                 raw_dtype=torch.bfloat16, resident_records=16):
+                 raw_dtype=torch.bfloat16, resident_records=16, gc_config=None):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (torch.bfloat16, torch.float16):
             raise ValueError("Invalid authority geometry or staging budget")
         self.memory = RequestMemory(request_id, config)
@@ -51,12 +52,18 @@ class RequestAuthority:
         self.records: dict[tuple[int, int], Record] = {}
         self.writes = []
         self.closing = False
+        self.gc = None
+        if gc_config is not None:
+            from .repository_gc import AuthorityGc
+            self.gc = AuthorityGc(self.memory, archive, gc_config)
 
     @property
     def history_end(self):
         return self.memory.history_end
 
     def poll(self):
+        if self.gc is not None:
+            self.gc.drain(self.records)
         remaining = []
         completed = 0
         for job, keys in self.writes:
@@ -65,7 +72,12 @@ class RequestAuthority:
                 continue
             job.result()  # Failed I/O is fatal, never a successfully archived record.
             for key in keys:
-                self.records[key].archived = True
+                record = self.records[key]
+                record.archived = True
+                # Publish only after durable write completion, never on CPU
+                # cache admission or asynchronous I/O submission.
+                flags = _native.GC_RAW_BACKED | _native.GC_VALUE_BACKED | _native.GC_INDEXED
+                self.memory._store.gc_flags(record.handle, flags, flags)
             completed += 1
         self.writes = remaining
         return completed
@@ -131,6 +143,10 @@ class RequestAuthority:
         spans = self.memory.begin_append(count, local_rope_begin)
         if spans is None:
             return False
+        if self.gc is not None:
+            # Recycled reservations become ready after their release callback
+            # queued the old generation. Drop it before installing a new index.
+            self.gc.drain(self.records)
         # Validate the complete write map before mutating any existing tail.
         for span in spans:
             key = record_key(span.handle)
@@ -164,14 +180,30 @@ class RequestAuthority:
         self.flush()
         return True
 
-    def mean_keys(self):
-        """Bounded CPU index snapshot in logical history order, with generation IDs."""
+    @contextmanager
+    def index_snapshot(self):
+        """Pin every scored generation until selection has acquired its leases."""
         self.poll()
-        ordered = sorted(self.records.values(), key=lambda r: r.history_begin)
-        if not ordered:
-            raise ValueError("No accepted tokens in the index")
-        return ([r.handle for r in ordered],
-                torch.stack([r.key_sum / r.count for r in ordered], dim=1))
+        leases, ordered = [], []
+        try:
+            for record in sorted(self.records.values(), key=lambda r: r.history_begin):
+                lease = self.memory.repository.pin(record.handle)
+                if lease:
+                    leases.append(lease)
+                    ordered.append(record)
+            if not ordered:
+                raise ValueError("No accepted tokens in the index")
+            yield ordered, torch.stack([r.key_sum / r.count for r in ordered], dim=1)
+        finally:
+            for lease in leases:
+                lease.reset()
+            if self.gc is not None:
+                self.gc.worker.notify_progress()
+
+    def mean_keys(self):
+        """Detached diagnostic copy; use index_snapshot() for retrieval/selection."""
+        with self.index_snapshot() as (records, means):
+            return [r.handle for r in records], means
 
     def read_record(self, handle):
         return self.read_records([handle])[0]
@@ -219,22 +251,25 @@ class RequestAuthority:
         if self.closing:
             raise RuntimeError("Authority is closing")
         from .retrieval import mean_key_scores
-        handles, means = self.mean_keys()
-        keys = [record_key(h) for h in handles]
-        mandatory = {record_key(h) for h in mandatory_handles}
-        if not mandatory.issubset(self.records):
-            raise ValueError("Mandatory selection uses a stale or foreign record")
-        cfg = self.memory.config
-        eligible = torch.tensor([
-            self.records[key].history_begin >= cfg.sink_blocks * cfg.block_tokens
-            and i < len(keys) - cfg.recent_blocks and key not in mandatory
-            for i, key in enumerate(keys)], dtype=torch.bool, device=queries.device)
-        scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
-        return self.memory.select({h.slot: score for h, score in zip(handles, scores)},
-                                  tuple(slot for slot, _ in mandatory))
+        with self.index_snapshot() as (records, means):
+            handles = [r.handle for r in records]
+            keys = [record_key(h) for h in handles]
+            mandatory = {record_key(h) for h in mandatory_handles}
+            if not mandatory.issubset(keys):
+                raise ValueError("Mandatory selection uses a stale or foreign record")
+            cfg = self.memory.config
+            eligible = torch.tensor([
+                record.history_begin >= cfg.sink_blocks * cfg.block_tokens
+                and i < len(keys) - cfg.recent_blocks and key not in mandatory
+                for i, (key, record) in enumerate(zip(keys, records))],
+                dtype=torch.bool, device=queries.device)
+            scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+            return self.memory.select({h.slot: score for h, score in zip(handles, scores)},
+                                      tuple(slot for slot, _ in mandatory))
 
     def close(self):
         self.closing = True
+        self.stop_gc()
         self.poll()
         if self.writes or not self.memory.close():
             return False
@@ -247,3 +282,13 @@ class RequestAuthority:
             else:
                 all_reclaimed = False
         return all_reclaimed
+
+    def stop_gc(self):
+        """Freeze the live index before final checksum iteration and teardown."""
+        if self.gc is not None:
+            self.gc.stop()
+            self.gc.drain(self.records)
+
+    @property
+    def gc_reclaimed_records(self):
+        return self.gc.reclaimed_records if self.gc is not None else 0
