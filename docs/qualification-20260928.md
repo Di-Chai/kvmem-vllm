@@ -734,3 +734,15 @@ The latest full host suite passes 194 cases with 41 GPU cases deferred during
 serving (`components_nvme_reservation_host_20260929.xml`). Strict physical NVMe
 reservation and shared byte quotas pass native CPU tests; serving GC/capacity
 feedback, GPU pressure/reservation and persistent sessions remain unqualified.
+
+The corrected `_03` transport has now delivered a real termenv response in
+978.242 seconds (HTTP 200, no disconnect/error), exceeding the old 900-second
+proxy timeout. It contains 11367 prompt tokens and 18135 output tokens, including
+17990 reasoning tokens. Native first-to-last decode is 950.649 seconds:
+19.075 tok/s, with 19.689% draft acceptance. The neighbouring agent was issuing
+fresh prefills, and host development/tests/builds overlapped the run. This is
+transport reliability evidence and a retained workload observation, not a clean
+matched performance comparison or a verifier score. The agent proceeded to its
+next call. At this checkpoint 25 calls across the two tasks completed without
+relay errors; both official tasks remain unscored and running.
+Evidence: `agent_tensorcore_c2_initial_03/transport_long_response.json`.
