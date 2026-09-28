@@ -5,7 +5,7 @@ events and monotonic arrival times, using returned token IDs rather than text
 lengths. Final API usage must agree with emitted IDs, and the stream must contain
 a finish reason and `[DONE]`. Failed/incomplete responses do not become successful
 throughput observations. Output caps are reported as censored rather than natural
-completion. The native streaming adapter still needs its first GPU qualification.
+completion. The native streaming adapter is qualified by `engine_deepswe_effect_bounded_03`: emitted IDs agree with final usage for the long C1 and all four short requests.
 
 For one fixed request group:
 

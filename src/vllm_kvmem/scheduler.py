@@ -13,7 +13,7 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager
 
 from .connector import KVMemConnector, RefreshCommand
-from .config import KVMemConfig
+from .options import RuntimeOptions
 from .window_manager import WorkingSetManager
 from .admission import QueryPolicy
 
@@ -37,7 +37,7 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Compressed runtime not yet enabled; scheduler currently exposes the explicit identity probe")
         if self._bounded_target and hashlib.sha256(Path(inspect.getfile(Scheduler)).read_bytes()).hexdigest() != SCHEDULER_SHA256:
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
-        config = KVMemConfig()
+        config = RuntimeOptions.from_vllm(self.vllm_config).memory
         self.query_policy = QueryPolicy(config.block_tokens, config.select_budget, config.gen_budget)
         if self._bounded_target and not config.block_tokens <= self.scheduler_config.max_num_batched_tokens <= config.gen_budget:
             raise ValueError("Bounded target batch budget must fit an aligned block and G headroom")
@@ -51,6 +51,9 @@ class KVMemScheduler(Scheduler):
         if not self.window_managers:
             raise ValueError("No full-attention cache group found")
         coordinator.single_type_managers = tuple(managers)
+        if self._bounded_target:
+            from .capacity import ReservedKVCacheManager
+            self.kv_cache_manager = ReservedKVCacheManager(self.kv_cache_manager, self.vllm_config)
         self.connector.scheduler_completion = self._complete_refresh
         self.transactions = {}
         self.table_updates = {}

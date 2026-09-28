@@ -82,12 +82,12 @@ def make_probe_runner(base):
             report = rebuild_native_batch(self, captured, self._kvmem_probe_output)
             if not report["all_byte_equal"]:
                 raise RuntimeError("Scheduled refresh changed native KV bytes")
-            from .config import KVMemConfig
+            from .options import RuntimeOptions
             from .window_batch import WindowBatchAdapter
             if os.getenv("KVMEM_WINDOW_METADATA") != "1":
                 raise RuntimeError("Scheduled refresh requires the explicit window metadata hook")
             if self._kvmem_window_adapter is None:
-                config = KVMemConfig()
+                config = RuntimeOptions.from_vllm(self.vllm_config).memory
                 self._kvmem_window_adapter = WindowBatchAdapter(
                     tuple(group for group, _ in command.groups), config.select_budget + config.gen_budget)
             extents = {(ticket.history_end, ticket.window_tokens) for _, ticket in command.groups}

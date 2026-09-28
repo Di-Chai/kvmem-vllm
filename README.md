@@ -9,7 +9,9 @@ with native DFlash rejection counts. Raw K and FP8 V use bounded pinned transfer
 mutable partial tails and immutable complete archive records. Actual native GDN
 identity restore/replay is qualified. A long compressed replay completed byte
 checks, but its recurrent metadata classification required a subsequent correction;
-corrected bounded target serving is under GPU qualification.
+corrected bounded target serving has now passed one real 197K-history C1 lifecycle
+check and subsequent short C4. Native long C4, DFlash refresh, capacity pressure
+and performance qualification are still pending.
 **Production bounded KVMem serving is not implemented yet. Installing the plugin
 does not enable historical reselection; the experimental paths require explicit
 diagnostic flags.** See [development milestones](docs/development.md) and

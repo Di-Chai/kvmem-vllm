@@ -23,7 +23,8 @@ def fetch(url, payload=None, timeout=180):
 
 
 def validate_archive(report, archived):
-    if archived["active_requests"] or archived["archive_used_slots"] or archived["pending_downloads"]:
+    if (archived["active_requests"] or archived["archive_used_slots"] or archived["pending_downloads"] or
+            archived.get("cpu_cache_used_bytes", 0)):
         raise RuntimeError("Finalized requests retained authority resources")
     block_tokens = archived.get("block_tokens", 128)
     if not all(r["sealed_records_verified"] == r["history_end"] // block_tokens
@@ -88,6 +89,10 @@ def main():
                         help="Single long-request K131072/G65536 selection/replay diagnostic")
     parser.add_argument("--bounded-target", action="store_true",
                         help="Scheduled semantic prefill and bounded target page ownership (no DFlash)")
+    parser.add_argument("--cpu-read-cache-mib", type=int, default=0,
+                        help="Experimental bounded CPU archive cache; requires bounded-target")
+    parser.add_argument("--packed-assembly", action="store_true",
+                        help="Use archive-layout GPU assembly; requires bounded-target")
     parser.add_argument("--frozen-input", type=Path,
                         help="Hash-checked native DeepSWE JSON; preserve its exact input IDs")
     parser.add_argument("--frozen-sha256")
@@ -101,6 +106,10 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.output_tokens <= 8192:
         parser.error("output-tokens must be in [1, 8192]")
+    if args.cpu_read_cache_mib < 0:
+        parser.error("cpu-read-cache-mib must be nonnegative")
+    if (args.cpu_read_cache_mib or args.packed_assembly) and not args.bounded_target:
+        parser.error("Assembly/cache candidates currently require bounded-target qualification")
     if args.bounded_target:
         if any((args.dflash, args.compression_probe, args.replay_probe, args.rebuild_probe,
                 args.scheduled_rebuild_probe, args.history_repeat)):
@@ -142,7 +151,9 @@ def main():
              if args.scheduled_rebuild_probe else
              "native identity-refresh diagnostic; no compressed KVMem serving"
              if args.rebuild_probe else "engine prerequisite, no KVMem enabled")
-    report = {"scope": scope, "dflash": args.dflash}
+    report = {"scope": scope, "dflash": args.dflash,
+              "sampling": {"temperature": 0, "seed": 104729, "max_tokens": args.output_tokens,
+                           "natural_eos": True}}
     if frozen_provenance is not None:
         report["frozen_input"] = frozen_provenance
     if frozen_concurrent:
@@ -208,7 +219,10 @@ def main():
             command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({
                             "kv_connector": "KVMemConnector", "kv_role": "kv_both",
-                            "kv_connector_module_path": "vllm_kvmem.connector"})]
+                            "kv_connector_module_path": "vllm_kvmem.connector",
+                            "kv_connector_extra_config": {"kvmem": {
+                                "cpu_read_cache_bytes": args.cpu_read_cache_mib * 1024**2,
+                                "packed_assembly": args.packed_assembly}}})]
         if args.dflash:
             command += ["--speculative-config", json.dumps({
                 "method": "dflash", "model": str(models / "Qwen3.8-27B-DFlash2-BF16"),
@@ -321,6 +335,9 @@ def main():
                     else:
                         raise RuntimeError("Continuous archive did not finalize all five requests")
                     validate_archive(report, archived)
+                    if args.bounded_target and (archived.get("cpu_cache_capacity_bytes", 0) != args.cpu_read_cache_mib * 1024**2
+                            or archived.get("packed_assembly", False) != args.packed_assembly):
+                        raise RuntimeError("Worker did not apply requested cache/assembly options")
                     report["archive"] = archived
                 if args.replay_probe:
                     replay = json.loads((args.output / "capture/replay.json").read_text())

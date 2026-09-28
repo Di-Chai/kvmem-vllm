@@ -104,7 +104,7 @@ semantic prefill after K. It snapshots and restores every request in a provision
 batch, including neighbours not being refreshed. Only the final native forward is
 sampled/captured. Target decode refresh is scheduled at an aligned boundary with
 one block of provisional headroom. This integration is synchronous, target-only,
-eager and APC-off; native long-request GPU qualification is in progress, so it is
+eager and APC-off; corrected real long C1 GPU qualification has passed, but it is
 not an advertised production mode or a DFlash/concurrency performance result.
 
 Live request preemption is temporarily disabled rather than discarding GDN state
@@ -141,8 +141,9 @@ uses real native attention/Mamba specs and verifies that recurrent metadata gets
 no dense-window overrides. Earlier compression diagnostic results made before
 this correction cannot establish recurrent-metadata correctness.
 
-A separate `ReservedKVCacheManager` adapter now passes native CPU allocation tests
-but is not yet attached to the running qualification server. It holds lifetime
+The `ReservedKVCacheManager` adapter passes native CPU allocation tests and is
+now attached to the bounded scheduler; full-model capacity-pressure qualification
+is pending. It holds lifetime
 credits for each request's bounded full-attention window plus fixed GDN state,
 and subtracts other requests' unallocated credits through native `reserved_blocks`.
 A refresh may return physical pages without surrendering its future growth credit.
@@ -150,3 +151,14 @@ Free/pop operations release credits only after native bookkeeping succeeds;
 deferred physical pages remain unavailable in the original pool. Source hashes
 pin the allocation/free contract. This is GPU-page admission only: CPU/NVMe quota
 and I/O scheduling still require separate lifecycle integration.
+
+Two opt-in candidates are now wired after completion of the bounded baseline.
+`packed_assembly.py` reads the immutable file layout directly and lets GPU assembly
+address record/layer strides; it avoids per-record CPU tensor clones and multiple
+concatenations. GPU byte equality and failure fencing tests pass. `CachedArchive` adds an optional
+bounded CPU read cache with independent global and per-namespace payload limits.
+It never substitutes cache presence for a published archive entry and live
+namespace/generation-qualified leases. Failed writes evict provisional cached
+copies, and reclaim/close remove entries. In-flight job buffers and pinned staging
+remain separately bounded and must be included in total CPU admission. These
+candidates require explicit connector options and have no full-model speedup claim yet.

@@ -7,6 +7,8 @@ CPU I/O between chunks; overlapping scheduler-visible preparation is pending.
 """
 from dataclasses import dataclass
 
+import time
+
 import torch
 
 from .assembly import assemble_fp8
@@ -31,13 +33,15 @@ class AssemblyResult:
     rebuilt_tokens: int
     skipped_tokens: int
     chunks: int
+    host_prepare_seconds: float = 0.0
+    uploaded_bytes: int = 0
 
     def query(self):
         return self.event.query()
 
 
 class NativeWindowAssembler:
-    def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32):
+    def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
@@ -59,13 +63,14 @@ class NativeWindowAssembler:
         self.layers = layers
         self.block_tokens = block_tokens
         self.chunk_blocks = chunk_blocks
+        self.packed = packed
         self.device = device
         self.heads, self.dim = heads, dim
         self.transfers = PackedTransfers(len(layers) * heads * dim * block_tokens * chunk_blocks * 3,
                                          2, device)
 
     @classmethod
-    def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32):
+    def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False):
         modules = dict(runner.model.named_modules())
         groups = {name: group_id for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups)
                   for name in group.layer_names}
@@ -84,7 +89,7 @@ class NativeWindowAssembler:
             key, value = native_vllm_fp8_views(attn.kv_cache, module.num_kv_heads, module.head_dim)
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
                                       attn._k_scale, tables[group_id]))
-        return cls(tuple(layers), block_tokens, chunk_blocks)
+        return cls(tuple(layers), block_tokens, chunk_blocks, packed=packed)
 
     def assemble(self, authority, plan):
         try:
@@ -122,13 +127,25 @@ class NativeWindowAssembler:
                     raise ValueError("Selected position exceeds the model RoPE table")
         pending = [remap for remap in remaps if not remap.skip]
         rebuilt, chunks, owners = 0, 0, [self, plan, authority]
+        host_prepare_seconds, uploaded_bytes = 0.0, 0
         for start in range(0, len(pending), self.chunk_blocks):
             chunk = pending[start:start+self.chunk_blocks]
             handles = [by_slot[remap.block_id].handle for remap in chunk]
-            payloads = authority.read_records(handles)
-            raw = torch.cat([raw for raw, _ in payloads], dim=1).contiguous()
-            values = torch.cat([value for _, value in payloads], dim=1).contiguous()
-            payload = torch.cat((raw.view(torch.uint8).flatten(), values.flatten()))
+            prepare_start = time.perf_counter()
+            if self.packed:
+                from .packed_assembly import read_packed_records
+                if any(remap.n_tokens != self.block_tokens for remap in chunk):
+                    raise ValueError("Packed window assembly requires complete selected records")
+                payload, _ = read_packed_records(authority, handles)
+                count = len(chunk) * self.block_tokens
+            else:
+                payloads = authority.read_records(handles)
+                raw = torch.cat([raw for raw, _ in payloads], dim=1).contiguous()
+                values = torch.cat([value for _, value in payloads], dim=1).contiguous()
+                payload = torch.cat((raw.view(torch.uint8).flatten(), values.flatten()))
+                count = raw.shape[1]
+            host_prepare_seconds += time.perf_counter() - prepare_start
+            uploaded_bytes += payload.numel()
             gpu = torch.empty(payload.numel(), dtype=torch.uint8, device=self.device)
             transfer = self.transfers.upload(payload, gpu)
             if transfer is None:
@@ -138,23 +155,30 @@ class NativeWindowAssembler:
             if transfer is None:
                 raise RuntimeError("Native assembly staging did not make progress")
             torch.cuda.current_stream(self.device).wait_event(transfer.event)
-            count = raw.shape[1]
-            elements = raw.numel()
-            raw_gpu = gpu[:elements*2].view(authority.raw_dtype).reshape(raw.shape)
-            values_gpu = gpu[elements*2:].view(torch.float8_e4m3fn).reshape(values.shape)
-            positions = torch.cat([torch.arange(remap.to_base, remap.to_base+remap.n_tokens,
-                                                device=self.device, dtype=torch.int64) for remap in chunk])
-            for i, layer in enumerate(self.layers):
-                page_tokens = layer.key.shape[1]
-                slots = layer.kernel_page_table[positions // page_tokens].to(torch.int64) * page_tokens + positions % page_tokens
-                assemble_fp8(raw_gpu[i], values_gpu[i], positions, slots, layer.cos_sin,
-                             layer.key, layer.value, layer.key_scale)
+            if self.packed:
+                from .packed_assembly import assemble_packed_layer
+                bases = torch.tensor([remap.to_base for remap in chunk], device=self.device, dtype=torch.int64)
+                for i, layer in enumerate(self.layers):
+                    assemble_packed_layer(gpu, bases, layer, layer_index=i, layers=len(self.layers),
+                                          block_tokens=self.block_tokens, raw_dtype=authority.raw_dtype)
+            else:
+                elements = raw.numel()
+                raw_gpu = gpu[:elements*2].view(authority.raw_dtype).reshape(raw.shape)
+                values_gpu = gpu[elements*2:].view(torch.float8_e4m3fn).reshape(values.shape)
+                positions = torch.cat([torch.arange(remap.to_base, remap.to_base+remap.n_tokens,
+                                                    device=self.device, dtype=torch.int64) for remap in chunk])
+                for i, layer in enumerate(self.layers):
+                    page_tokens = layer.key.shape[1]
+                    slots = layer.kernel_page_table[positions // page_tokens].to(torch.int64) * page_tokens + positions % page_tokens
+                    assemble_fp8(raw_gpu[i], values_gpu[i], positions, slots, layer.cos_sin,
+                                 layer.key, layer.value, layer.key_scale)
             rebuilt += count
             chunks += 1
         done = torch.cuda.Event()
         done.record(torch.cuda.current_stream(self.device))
         return AssemblyResult(done, tuple(owners), rebuilt,
-                              sum(remap.n_tokens for remap in remaps if remap.skip), chunks)
+                              sum(remap.n_tokens for remap in remaps if remap.skip), chunks,
+                              host_prepare_seconds, uploaded_bytes)
 
     def close(self):
         return self.transfers.close()

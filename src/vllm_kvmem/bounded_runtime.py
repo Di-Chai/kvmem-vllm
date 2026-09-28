@@ -7,6 +7,7 @@ change attention windows. DFlash and persistent-session rollback are not enabled
 from dataclasses import dataclass
 import json
 import os
+import time
 from types import MethodType
 
 import torch
@@ -115,7 +116,9 @@ def install_bounded_target(runner):
             selected = plan.total_window_tokens
             if not 0 < selected <= cfg.select_budget:
                 raise RuntimeError("Original selector exceeded its reserved prefix")
-            assembler = NativeWindowAssembler.from_runner(runner, request_id, runtime.names, cfg.block_tokens)
+            assembly_start = time.perf_counter()
+            assembler = NativeWindowAssembler.from_runner(runner, request_id, runtime.names, cfg.block_tokens,
+                                                          packed=runtime.options.packed_assembly)
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
@@ -126,7 +129,11 @@ def install_bounded_target(runner):
             reports.append({"request_id": request_id, "command_id": job.command.command_id,
                 "history_begin": history, "selected_tokens": selected, "query_tokens": query,
                 "rebuilt_tokens": assembly.rebuilt_tokens, "skipped_tokens": assembly.skipped_tokens,
-                "batch_requests": list(batch.req_ids), "probe_executed": needs_probe})
+                "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
+                "assembly_seconds": time.perf_counter() - assembly_start,
+                "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
+                "assembly_uploaded_bytes": assembly.uploaded_bytes,
+                "packed_assembly": runtime.options.packed_assembly})
 
         if needs_probe:
             state_adapter.validate(bundle)

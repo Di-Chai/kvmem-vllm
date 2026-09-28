@@ -8,8 +8,9 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1",
                                 reason="Explicit GPU qualification only")
 
 
+@pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("retain_sink,fail_second_read", [(True, False), (False, False), (False, True)])
-def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path, monkeypatch, retain_sink, fail_second_read):
+def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path, monkeypatch, retain_sink, fail_second_read, packed):
     from vllm import _custom_ops as ops
     from vllm_kvmem.authority import RequestAuthority
     from vllm_kvmem.config import KVMemConfig
@@ -51,10 +52,15 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
         rk, rv = native_vllm_fp8_views(reference, heads, dim)
         native_layers.append(LayerWindow(k, v, trig, scale, table))
         expected.append((rk, rv))
-    assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1)
+    assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1, packed=packed)
     if fail_second_read:
         from vllm_kvmem.memory import Phase
-        read = authority.read_records
+        if packed:
+            from vllm_kvmem import packed_assembly
+            original_read = packed_assembly.read_packed_records
+            read = lambda handles: original_read(authority, handles)
+        else:
+            read = authority.read_records
         calls = 0
 
         def fail_after_first_chunk(handles):
@@ -64,7 +70,11 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
                 raise OSError("Injected archive read failure after GPU work")
             return read(handles)
 
-        monkeypatch.setattr(authority, "read_records", fail_after_first_chunk)
+        if packed:
+            monkeypatch.setattr(packed_assembly, "read_packed_records",
+                                lambda current, handles: fail_after_first_chunk(handles))
+        else:
+            monkeypatch.setattr(authority, "read_records", fail_after_first_chunk)
         with pytest.raises(OSError, match="Injected"):
             assembler.assemble(authority, plan)
         assert calls == 2 and authority.memory.phase is Phase.FAILED

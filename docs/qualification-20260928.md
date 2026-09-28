@@ -300,9 +300,64 @@ Later harness runs also save a hash manifest of source files with the Git revisi
   --output artifacts/compression_repeat --compression-probe
 ```
 
+## Corrected bounded real-history target run (2026-09-29)
+
+`engine_deepswe_effect_bounded_03` passes the scheduled target-only path with the
+correct semantic cache-group classification. It uses the exact frozen Effect
+DeepSWE input (`request_24.json`, SHA256
+`55e734bd7cf8d462e3d44f5ceb6b6b3066b9792f64e495feea857c7b42cf39e2`),
+197110 input tokens, Q8_0 target weights, FP8 e4m3 KV, K131072/G65536, 128-token
+records, 1024-token batches, greedy sampling and natural EOS. It is not a DFlash
+or executed SWE-task qualification.
+
+The worker completed 65 scheduled refreshes: the all-history bootstrap at K and
+64 actual reselections, including the final 502-token partial input chunk. Every
+worker report matches a native scheduler acknowledgment and the exact retained
+page count. Full-attention allocation stays at 85 native 1568-token blocks for
+1024-token queries, and 84 for the final 502-token query, instead of following the
+197K logical history. All three recurrent groups remain outside the dense-window
+metadata override. This establishes the corrected bounded C1 lifecycle; the
+older synthetic compressed replay remains subject to its correction above.
+
+The continuation has 77 output tokens and natural EOS. It is contextually coherent
+and almost identical to the uncompressed same-input control: the tool command's
+separator is `====` instead of `===`. It is not token-identical, and no tools were
+executed. The uncompressed control (`engine_deepswe_effect_baseline_01`) completed
+in 693.691 s but had no streaming measurement; that elapsed time is not its decode
+throughput.
+
+| HTTP measurement | Corrected bounded target result |
+| --- | ---: |
+| Long C1 TTFT | 1877.601 s |
+| Long C1 first-to-last token interval | 3.70886 s |
+| Long C1 arrival decode rate, excluding first token | 20.491 tok/s |
+| Long C1 HTTP service time | 1881.310 s |
+| Subsequent **short** C4 output | 512 tokens total; all four hit the 128-token cap |
+| Short C4 aggregate arrival decode | 76.225 tok/s |
+| Short C4 request-group service time | 30.418 s |
+| Final device memory snapshot | 73616 MiB; not a sampled peak |
+
+The four short requests waited roughly 23.75 s for synchronous archive retirement
+before first output. Across all five requests, 197764 accepted KV rows and 1544
+sealed records were verified; active authorities, archive slots and pending
+transfers ended at zero. SSE final usage agrees with emitted token IDs. These are
+diagnostic service observations, not a warmed performance pass or long C4 result.
+The long request performs semantic refresh throughout prefill and still pays large
+host preparation and storage costs. A 25.00 s worker sample during refresh recorded
+6.99 GB of actual disk reads and 24.15 CPU seconds (15.09 system, 9.06 user); it
+identifies substantial host work without isolating each phase's elapsed cost.
+
+The next opt-in candidate keeps these workload/precision/K/G settings and combines
+archive-layout GPU assembly with a bounded CPU read cache. Native GPU component
+checks confirm byte equality for reordered records/pages and failure fencing after
+partial assembly. A lifetime GPU-page reservation adapter is now attached to the
+bounded scheduler, and public connector extra config carries the options. The
+combined component suite passes **102 tests** (78 CPU, 24 GPU). Full-model candidate
+qualification and long C4/cancellation/capacity tests remain pending.
+
 ## Remaining before any success/performance claim
 
-Automatic bounded scheduling and compacted per-request working-set commits;
-production archive admission/GC and asynchronous retirement; production query-conditioned refresh and target/draft
-rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
+Native long C4, cancellation and capacity-pressure qualification;
+production archive admission/GC and asynchronous retirement; target/draft
+refresh and rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
 throughput and latency comparison; actual agent-task quality and independent repeats.

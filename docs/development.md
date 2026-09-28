@@ -108,3 +108,13 @@ metadata was unmodified. The original result is retained with this correction in
 the qualification record. The combined CPU/GPU component suite now passes 80 tests.
 The same real 197110-token request is being rerun with SSE token-arrival recording;
 there is still no qualified bounded throughput or long-concurrency result.
+
+The corrected real bounded C1 run has now passed (`engine_deepswe_effect_bounded_03`):
+65 matched native refresh commits, 77 coherent output tokens, then short C4 and
+complete cleanup. HTTP arrival decode is 20.491 tok/s without DFlash, with a large
+1877.601 s TTFT. This is a correctness milestone and exposes substantial prefill
+host overhead; it is not the goal's performance pass. The next opt-in candidate
+uses a bounded CPU read cache and direct archive-layout GPU assembly, with native
+future-page admission attached. Public connector extra config now propagates
+runtime options. All 102 CPU/GPU component tests pass; native candidate, long C4,
+pressure/cancellation, DFlash refresh and persistent-session work remain.

@@ -5,14 +5,14 @@ sampling rejection counts travel in that same fenced packet. This stage provides
 the immutable authority for refresh, but does not yet trigger retrieval/replay.
 Qualification finalization drains I/O and verifies sealed records synchronously.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 
 import torch
 
 from .authority import RequestAuthority
-from .config import KVMemConfig
+from .options import RuntimeOptions
 from .storage import AsyncArchive
 from .transfer import PackedDownloads
 
@@ -29,7 +29,8 @@ class CaptureRuntime:
     def __init__(self, runner, output):
         self.runner = runner
         self.output = output
-        self.config = KVMemConfig()
+        self.options = RuntimeOptions.from_vllm(runner.vllm_config)
+        self.config = self.options.memory
         modules = dict(runner.model.named_modules())
         self.names = tuple(runner._kvmem_layers)
         self.layers = [modules[name] for name in self.names]
@@ -49,7 +50,13 @@ class CaptureRuntime:
         max_tokens = runner.vllm_config.scheduler_config.max_num_batched_tokens
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
         archive_records = self.config.repository_blocks * (max_reqs if getattr(runner, "_kvmem_bounded_target", False) else 1)
-        self.archive = AsyncArchive(str(output / "continuous_archive"), record_bytes, archive_records)
+        archive_type, archive_options = AsyncArchive, {}
+        if self.options.cpu_read_cache_bytes:
+            from .cached_storage import CachedArchive
+            archive_type = CachedArchive
+            archive_options = dict(cache_bytes=self.options.cpu_read_cache_bytes,
+                namespace_bytes=(self.config.select_budget + self.config.gen_budget) * self.row_elements * 3)
+        self.archive = archive_type(str(output / "continuous_archive"), record_bytes, archive_records, **archive_options)
         self.downloads = PackedDownloads(max_tokens * self.row_elements * 3 + (4 * max_reqs + 1) * 8,
                                          2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)
@@ -198,6 +205,11 @@ class CaptureRuntime:
             del self.authorities[request_id]
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": self.completed,
+                  "block_tokens": self.config.block_tokens,
+                  "memory_config": asdict(self.config),
+                  "cpu_cache_capacity_bytes": self.options.cpu_read_cache_bytes,
+                  "cpu_cache_used_bytes": getattr(getattr(self.archive, 'read_cache', None), 'used_bytes', 0),
+                  "packed_assembly": self.options.packed_assembly,
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,
                   "active_requests": len(self.authorities),
