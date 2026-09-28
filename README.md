@@ -4,7 +4,9 @@ Work in progress: bounded long-context KVMem for native vLLM batched execution.
 This repository currently contains the extracted host core, its Python bindings,
 request transactions, async NVMe storage, GPU transfer/FP8 codecs, recurrent
 checkpoints, MeanK scoring and fused raw-Q/K capture. Versioned vLLM hooks qualify
-the draft loader and native target capture.
+the draft loader, scheduler/worker identity refresh, and continuous target capture
+with native DFlash rejection counts. Raw K and FP8 V use bounded pinned transfers,
+mutable partial tails and immutable complete archive records.
 **End-to-end KVMem serving is not implemented yet. Installing the plugin does not
 enable historical reselection.** See [development milestones](docs/development.md).
 

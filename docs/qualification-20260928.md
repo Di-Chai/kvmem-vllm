@@ -9,8 +9,8 @@ Exact Python dependencies: `requirements-cu130.lock`.
 
 ## Completed checks
 
-- Current combined suite: 48/48 Python CPU/GPU tests pass with explicit GPU opt-in
-  (34 CPU/control tests and 14 GPU tests).
+- Current combined suite: 57/57 Python CPU/GPU tests pass with explicit GPU opt-in
+  (42 CPU/control tests and 15 GPU tests).
 - Original host-core CTest: 5/5 pass, Debug build (assertions enabled).
 - Python host tests cover bindings, speculative accepted-prefix publication,
   completion fences, request cancellation, immutable FP8 remap planning, stale
@@ -157,9 +157,67 @@ made after `engine_window_bridge_01`; core regression tests verify both defaults
 and explicit overrides. Earlier identity tests kept all tokens, so this does not
 change their selection, but they do not establish long-history retrieval quality.
 
+## Continuous accepted-prefix authority
+
+`RequestAuthority` now extends an unsealed CPU tail across decode steps, archives
+only full immutable records, and builds MeanK entries from native verifier-accepted
+rows. Native GPU history positions and query offsets travel with rejection counts
+in the same packed D2H packet; Python dictionary order is not used for slicing.
+Completed D2H slots cannot be reused until their CPU consumer explicitly releases
+them. The archive is shared and namespaced; per-request staging and global archive
+capacities are bounded. A MeanK bridge feeds accepted-key scores into the original
+core selector, but live compressed assembly/replay is still pending.
+
+| Run | Outcome | Native accepted KV rows | Rejected rows excluded | Sealed records verified |
+|---|---|---:|---:|---:|
+| engine_archive_01 | Passed, target only | 719 | 0 | 5 |
+| engine_archive_dflash_01 | Passed, DFlash | 747 | 713 | 5 |
+| engine_archive_dflash_chunked_02 | Passed, chunked prefill + DFlash | 18036 | 474 | 139 |
+
+Each run contains one single request followed by four concurrent requests. All
+sealed records were read back from NVMe and their complete raw-K/FP8-V SHA256
+matched the accepted capture. Every run ended with zero active authorities,
+archive slots and pending downloads. The two short runs' single-request output
+IDs exactly match their corresponding earlier native target/DFlash baselines.
+This does not resolve the separate baseline-versus-DFlash token divergence.
+
+The chunked run uses 3496–3506 prompt tokens and the native 1024-token batch budget.
+Four outputs reached 128 tokens; the fifth naturally stopped after one token.
+It processed 79 model batches. This synthetic repository-like history is a
+lifecycle diagnostic, not a real SWE quality task or K128K/G64K performance test.
+Cold end-to-end timings include diagnostic packing, synchronization, archive
+readback and checksums and must not be presented as warmed decode throughput.
+
+`engine_archive_dflash_chunked_01` finalized its archive successfully but failed
+the harness's initial output-extent check. That check incorrectly assumed at
+most one speculative block could run past termination. Native V2 asynchronous
+scheduling allows two in-flight batches. The corrected harness reads actual
+`max_concurrent_batches=2` and `decode_query_len=8`, matches each HTTP request to
+its authority, and verifies its final native packet. The repeat above passed.
+These extra native-accepted rows are retired when the request ends; persistent
+sessions still require a scheduler-provided terminal prefix and recurrent replay.
+
+Additional tests cover partial-tail sealing, exclusion of rejected rows from the
+MeanK index, namespace isolation, real I/O lease retirement, shared-queue pressure
+from another request, and score/selection/append continuity. They found a pybind
+lifetime issue: retaining a field view kept the whole Append/Store alive. Index
+records now own copied generation handles, allowing all repository leases to drain.
+
+The native DFlash baseline and archive runs both print the same one-semaphore
+resource-tracker warning at process shutdown. This was not introduced by the
+archive path; it remains noted for final deployment qualification.
+
+Reproduce the chunked lifecycle check:
+
+```sh
+.venv/bin/python scripts/qualify_engine.py --models /path/to/models \
+  --output artifacts/engine_archive_chunked_repeat --archive-probe --dflash \
+  --history-repeat 128
+```
+
 ## Remaining before any success/performance claim
 
 Automatic bounded scheduling and compacted per-request working-set commits;
-continuous immutable KV archive integration; query-conditioned refresh and DeltaNet replay; target and
+production archive admission/GC and asynchronous retirement; query-conditioned refresh and DeltaNet replay; target and
 draft rollback; long-history C1/C4 isolation/cancellation/capacity tests; warmed
 throughput and latency comparison; actual agent-task quality and independent repeats.

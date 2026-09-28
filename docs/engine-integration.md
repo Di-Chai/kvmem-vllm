@@ -43,11 +43,26 @@ must connect them through the following ownership boundaries:
    `AsyncArchive` jobs and `PackedTransfers`. Publish only after completion.
    Repository cancellation does not cancel already-admitted I/O. NVMe buffers
    have explicit record/capacity limits and no silent authoritative eviction.
+   `CaptureRuntime` now packs every target batch plus native rejection counts into
+   one D2H transfer, following native query offsets and GPU logical positions.
+   `RequestAuthority` excludes rejected rows, extends a CPU tail, seals complete
+   records, and maintains content-frame mean keys. `PackedDownloads` requires
+   explicit CPU-consumer release even after its CUDA event completes. This is
+   integrated in the opt-in archive diagnostic, including DFlash. Finalization
+   drains and verifies records synchronously; production asynchronous retirement,
+   policy GC, global capacity admission, and draft authority are still pending.
+   Native verifier acceptance can exceed HTTP output at termination when async
+   batches are in flight. These temporary records are currently retired in full.
+   Persistent sessions must receive the scheduler's final prefix boundary and
+   restore/replay recurrent state before publishing a reusable terminal checkpoint.
 5. **Refresh commit.** Core selection mutates its host working-set metadata.
    Retain its Plan (which owns previous-window leases), fence asynchronous
    assembly, and make a worker table/length update atomically. On failed assembly,
    fail or restore the request before it is scheduled; never decode with mixed
    old/new state. `assemble_fp8` supports staged V or resident-V preservation.
+   The authority's MeanK bridge can now feed accepted-key scores into the original
+   native selector. Its returned plan still needs scheduler commit, assembly and
+   query replay; the bridge alone does not enable compressed serving.
 6. **Query replay / speculation.** Restore pre-query convolution and recurrent
    state using a generation-qualified checkpoint, replay the required query,
    refresh target/draft context and commit only accepted tokens. Rejected pages

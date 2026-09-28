@@ -72,3 +72,67 @@ class PackedTransfers:
         self.closed = True
         self.buffers.clear()
         return True
+
+
+@dataclass
+class Download:
+    event: torch.cuda.Event
+    payload: torch.Tensor
+    owners: tuple
+    slot: int
+
+    def query(self):
+        return self.event.query()
+
+
+class PackedDownloads:
+    """D2H slots remain owned until CPU consumption explicitly releases them."""
+    def __init__(self, slot_bytes: int, slots: int, device: torch.device):
+        if min(slot_bytes, slots) <= 0 or device.type != "cuda":
+            raise ValueError("Require bounded pinned D2H storage on CUDA")
+        self.device = torch.device("cuda", torch.cuda.current_device()) if device.index is None else device
+        self.stream = torch.cuda.Stream(device=self.device)
+        self.buffers = [torch.empty(slot_bytes, dtype=torch.uint8, pin_memory=True) for _ in range(slots)]
+        self.pending = {}
+        self.closed = False
+
+    def download(self, payload, source_owners=(), ready=None):
+        if self.closed:
+            raise RuntimeError("Download pool is closed")
+        if (payload.device != self.device or payload.dtype != torch.uint8 or
+                not payload.is_contiguous() or payload.numel() > self.buffers[0].numel()):
+            raise ValueError("Download requires contiguous same-device bytes within slot capacity")
+        slot = next((i for i in range(len(self.buffers)) if i not in self.pending), None)
+        if slot is None:
+            return None
+        if ready is None:
+            ready = torch.cuda.Event()
+            ready.record(torch.cuda.current_stream(self.device))
+        retained = tuple(owner.clone() if isinstance(owner, _native.Lease) else owner
+                         for owner in source_owners)
+        staging = self.buffers[slot][:payload.numel()]
+        with torch.cuda.stream(self.stream):
+            self.stream.wait_event(ready)
+            staging.copy_(payload.flatten(), non_blocking=True)
+            payload.record_stream(self.stream)
+            event = torch.cuda.Event()
+            event.record(self.stream)
+        result = Download(event, staging, (payload, ready, *retained), slot)
+        self.pending[slot] = result
+        return result
+
+    def release(self, download):
+        if self.pending.get(download.slot) is not download:
+            raise ValueError("Stale download slot release")
+        if not download.query():
+            return False
+        del self.pending[download.slot]
+        download.owners = ()
+        return True
+
+    def close(self):
+        if self.pending:
+            return False
+        self.closed = True
+        self.buffers.clear()
+        return True

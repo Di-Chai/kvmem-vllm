@@ -47,15 +47,22 @@ The full-attention allocation adapter also passes native-manager tests for bound
 windows and deferred release. Scheduler suspension/acknowledgment wiring has now
 passed a real native request: command-only worker rebuild, all-layer byte equality,
 page-table replacement and baseline-equal continuation. The combined CPU/GPU suite
-passes 48 tests, plus 5 original CTests. Dense-window metadata and position mapping
+passes 57 tests, plus 5 original CTests. Dense-window metadata and position mapping
 are integrated with the native model state; nonzero-offset mapping is GPU-tested,
 and the full-model identity diagnostic with the hook enabled remains byte/token
 equal. Actual compressed selections, automatic
 bounded prefill/decode admission and recurrent/draft replay still remain.
 
-The next runtime integration must retain accepted raw K/V across every batch,
-seal immutable archive records only when the repository block is complete, and
-keep the partial tail authoritative in bounded memory. Per-request capture slices
-must follow native query_start_loc; rejected speculative rows must not enter the
-archive or MeanK index. Connect this authority to query-conditioned selection and
-native recurrent checkpoint/replay before claiming compressed serving.
+Continuous raw-K/FP8-V authority is now integrated in an opt-in native runner path.
+It follows native query offsets and rejection counts, seals complete blocks only,
+and retains an incomplete tail in bounded memory. Target-only and DFlash C1/C4
+checks passed; a 3.5K-token chunked-prefill check verified 139 complete archive
+records and excluded 474 rejected candidate rows. Request completion reclaimed
+all archive/download resources. The MeanK-to-native-selector bridge is tested.
+
+Next, connect this authority to scheduler-owned compressed assembly and native
+recurrent checkpoint/query replay, then draft refresh/rollback. Add native terminal
+prefix acknowledgment before persistent-session publication; verifier acceptance
+can extend beyond HTTP output when asynchronous batches are in flight. Automatic
+admission, background policy GC, nonblocking retirement and graph-compatible
+capture still need integration before performance qualification.

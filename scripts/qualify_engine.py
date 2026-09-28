@@ -20,6 +20,35 @@ def fetch(url, payload=None):
         return json.load(response)
 
 
+def validate_archive(report, archived):
+    if archived["active_requests"] or archived["archive_used_slots"] or archived["pending_downloads"]:
+        raise RuntimeError("Finalized requests retained authority resources")
+    if not all(r["sealed_records_verified"] and r["history_end"] == r["accepted_tokens"]
+               for r in archived["completed"]):
+        raise RuntimeError("Incomplete archive verification or accepted-history mismatch")
+    items = [report["single"], *report["concurrent"]]
+    if len(items) != len(archived["completed"]):
+        raise RuntimeError("Native and HTTP request sets differ")
+    bound = archived["max_concurrent_batches"] * archived["decode_query_len"]
+    for item in items:
+        response = item["result"]
+        matched = [record for record in archived["completed"]
+                   if record["request_id"].startswith(response["id"] + "-0-")]
+        if len(matched) != 1:
+            raise RuntimeError("Missing or ambiguous request archive")
+        record = matched[0]
+        expected = response["usage"]["prompt_tokens"] + response["usage"]["completion_tokens"] - 1
+        if not expected <= record["history_end"] <= expected + bound:
+            raise RuntimeError("Accepted archive extent differs from native request work")
+        # Retain native evidence of the last committed packet, rather than
+        # silently widening a total-count check to make it pass.
+        step = record["last_steps"][-1]
+        if step["history_begin"] + step["accepted"] != record["history_end"]:
+            raise RuntimeError("Final native capture packet disagrees with archive extent")
+    if report["dflash"] and not sum(item["rejected_tokens"] for item in archived["completed"]):
+        raise RuntimeError("DFlash qualification did not exercise any rejected candidates")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", type=Path, required=True)
@@ -28,9 +57,16 @@ def main():
     parser.add_argument("--capture-probe", action="store_true")
     parser.add_argument("--rebuild-probe", action="store_true")
     parser.add_argument("--scheduled-rebuild-probe", action="store_true")
+    parser.add_argument("--archive-probe", action="store_true")
+    parser.add_argument("--history-repeat", type=int, default=0,
+                        help="Prepend deterministic repository-like history to exercise chunked prefill")
     args = parser.parse_args()
-    if args.rebuild_probe or args.scheduled_rebuild_probe:
+    if not 0 <= args.history_repeat <= 128:
+        parser.error("history-repeat must be in [0, 128] for this 8192-context diagnostic")
+    if args.rebuild_probe or args.scheduled_rebuild_probe or args.archive_probe:
         args.capture_probe = True
+    if args.archive_probe and (args.rebuild_probe or args.scheduled_rebuild_probe):
+        parser.error("Continuous archive qualification uses its own lifecycle diagnostic")
     if args.scheduled_rebuild_probe and (args.dflash or args.rebuild_probe):
         parser.error("Scheduled identity probe currently requires target-only execution")
     args.output.mkdir(parents=True, exist_ok=False)
@@ -40,6 +76,8 @@ def main():
              "native identity-refresh diagnostic; no compressed KVMem serving"
              if args.rebuild_probe else "engine prerequisite, no KVMem enabled")
     report = {"scope": scope, "dflash": args.dflash}
+    if args.archive_probe:
+        report["scope"] = "continuous target KV authority; no compressed KVMem serving"
     with open("/tmp/kvmem-vllm-gpu.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         processes = subprocess.check_output([
@@ -57,6 +95,8 @@ def main():
             env["KVMEM_RUNNER_PROBE_DIR"] = str((args.output / "capture").resolve())
         if args.rebuild_probe:
             env["KVMEM_REBUILD_PROBE"] = "1"
+        if args.archive_probe:
+            env["KVMEM_ARCHIVE_PROBE"] = "1"
         if args.scheduled_rebuild_probe:
             env["KVMEM_SCHEDULED_REBUILD_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
@@ -114,6 +154,11 @@ def main():
                     "Explain why a file descriptor leak can make a web server stop accepting connections.\n",
                     "Write a pytest test for a function which removes duplicates while preserving order.\n",
                 ]
+                if args.history_repeat:
+                    history = "Repository history:\n" + "".join(
+                        f"Revision {i}: utilities.py defines add(a, b) returning a + b; its tests cover zero and negative values.\n"
+                        for i in range(args.history_repeat))
+                    prompts = [history + "\nCurrent task:\n" + prompt for prompt in prompts]
                 def complete(item):
                     index, prompt = item
                     begin = time.monotonic()
@@ -135,6 +180,21 @@ def main():
                     report["capture"] = capture_report
                     if args.scheduled_rebuild_probe and not capture_report.get("scheduled_rebuild", {}).get("all_byte_equal"):
                         raise RuntimeError("Scheduler-driven rebuild did not complete")
+                if args.archive_probe:
+                    path = args.output / "capture/archive.json"
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        try:
+                            archived = json.loads(path.read_text())
+                            if len(archived["completed"]) == 5:
+                                break
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            pass
+                        time.sleep(0.05)
+                    else:
+                        raise RuntimeError("Continuous archive did not finalize all five requests")
+                    validate_archive(report, archived)
+                    report["archive"] = archived
                 report["status"] = "passed"
         except Exception as error:
             report["status"] = "failed"

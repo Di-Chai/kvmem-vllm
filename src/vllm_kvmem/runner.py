@@ -28,6 +28,9 @@ def make_probe_runner(base):
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None
+            self._kvmem_continuous = os.getenv("KVMEM_ARCHIVE_PROBE") == "1"
+            self._kvmem_capture_runtime = None
+            self._kvmem_pending_capture = None
             if os.getenv("KVMEM_WINDOW_METADATA") == "1":
                 from .window_bridge import install_window_bridge
                 install_window_bridge(self.model_state, lambda batch:
@@ -85,6 +88,17 @@ def make_probe_runner(base):
                     return super().prepare_attn(replace(input_batch, positions=window.positions))
             return super().prepare_attn(input_batch)
 
+        def sample(self, hidden_states, input_batch, grammar_output):
+            result = super().sample(hidden_states, input_batch, grammar_output)
+            pending = getattr(self, "_kvmem_pending_capture", None)
+            if pending is not None:
+                captured, original_batch = pending
+                if input_batch is not original_batch:
+                    raise ValueError("Continuous authority requires the native unsharded target batch")
+                self._kvmem_capture_runtime.submit(captured, input_batch, result[2])
+                self._kvmem_pending_capture = None
+            return result
+
         def execute_model(self, scheduler_output, intermediate_tensors=None,
                           dummy_run=False, skip_attn_for_dummy_run=False,
                           is_profile=False, context_len=0, valid_dummy_state_slots=False):
@@ -92,6 +106,10 @@ def make_probe_runner(base):
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
+            runtime = getattr(self, "_kvmem_capture_runtime", None)
+            if not dummy_run and runtime is not None:
+                runtime.drain(wait=False)
+                runtime.finish(scheduler_output.finished_req_ids)
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)
@@ -101,7 +119,7 @@ def make_probe_runner(base):
                 get_kv_transfer_group().runtime = self._kvmem_refresh
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
-                    getattr(self, "_kvmem_probe_done", True) or
+                    (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or
                     not (self._kvmem_probe_output / "armed").is_file()):
                 return super().execute_model(scheduler_output, **kwargs)
             captured = []
@@ -109,6 +127,15 @@ def make_probe_runner(base):
                 result = super().execute_model(scheduler_output, **kwargs)
             if not captured:
                 raise RuntimeError("Real native batch executed without any KVMem captures")
+            if self._kvmem_continuous:
+                if self._kvmem_pending_capture is not None:
+                    raise RuntimeError("Previous target capture never reached native sampling")
+                if self._kvmem_capture_runtime is None:
+                    from .capture_runtime import CaptureRuntime
+                    self._kvmem_capture_runtime = CaptureRuntime(self, self._kvmem_probe_output)
+                self._kvmem_pending_capture = (captured, self._kvmem_last_batch)
+            if self._kvmem_probe_done:
+                return result
             self._kvmem_probe_done = True
             if self._kvmem_scheduled:
                 if self._kvmem_last_batch.num_reqs != 1:
