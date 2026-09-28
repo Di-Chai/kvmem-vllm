@@ -63,3 +63,30 @@ def test_startup_reservation_closes_even_without_a_first_request():
     runner._kvmem_prepared_archive = SimpleNamespace(close=lambda: closed.append('archive') or True)
     runner.shutdown()
     assert closed == ['archive', 'native']
+
+
+def test_prompt_session_controls_start_after_native_warmup(tmp_path):
+    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.session_control import SessionCommands
+
+    class Base:
+        def execute_model(self, *args, **kwargs):
+            return 'native'
+
+    received = []
+    runner = make_probe_runner(Base)()
+    runner._kvmem_probe_output = tmp_path
+    runner._kvmem_probe_done = True
+    runner._kvmem_continuous = False
+    runner._kvmem_sessions = SimpleNamespace(receive=received.append)
+    batch = SimpleNamespace(total_num_scheduled_tokens=1, finished_req_ids=set(),
+                            kv_connector_metadata=None)
+    assert runner.execute_model(batch) == 'native'
+    assert not received
+    (tmp_path / 'armed').touch()
+    with pytest.raises(RuntimeError, match='connector metadata'):
+        runner.execute_model(batch)
+    batch.kv_connector_metadata = ControlMetadata()
+    assert runner.execute_model(batch) == 'native'
+    assert len(received) == 1 and isinstance(received[0], SessionCommands)

@@ -177,7 +177,11 @@ def make_probe_runner(base):
                           valid_dummy_state_slots=valid_dummy_state_slots)
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             sessions = getattr(self, '_kvmem_sessions', None)
-            if not dummy_run and sessions is not None:
+            # V2 kernel warmup invokes ordinary execute_model with synthetic
+            # requests and no connector metadata. Session control starts at the
+            # same explicit post-warmup boundary as accepted authority capture.
+            if (not dummy_run and sessions is not None
+                    and (self._kvmem_probe_output / "armed").is_file()):
                 from .connector import ControlMetadata
                 control = scheduler_output.kv_connector_metadata
                 if not isinstance(control, ControlMetadata):
