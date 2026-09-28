@@ -98,6 +98,9 @@ def main():
                 while process.poll() is None and not stopped.is_set():
                     try:
                         with opener.open(f'http://127.0.0.1:{port}/health', timeout=2):
+                            # Match qualify_engine: native warmup runs unarmed;
+                            # every subsequent real request must capture KV.
+                            (out / 'capture' / 'armed').touch()
                             report['state'] = 'ready'
                         save()
                         print(json.dumps({'state': 'ready', 'api_base': report['api_base'], 'evidence': str(out / 'server_state.json')}), flush=True)

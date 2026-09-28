@@ -6,6 +6,7 @@ or a performance sample; it does not alter official task generation settings.
 import argparse
 import json
 from pathlib import Path
+import time
 import urllib.error
 import urllib.request
 
@@ -13,8 +14,15 @@ import urllib.request
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--api-base', required=True)
+    parser.add_argument('--engine-evidence', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    engine = json.loads(args.engine_evidence.read_text())
+    if engine.get('state') != 'ready' or engine.get('api_base') != args.api_base.rstrip('/'):
+        raise ValueError('Preflight must reference the same ready backend')
+    capture = args.engine_evidence.parent / 'capture'
+    if not (capture / 'armed').is_file():
+        raise ValueError('KVMem capture has not been enabled after native warmup')
     payload = {'model': 'qualification', 'messages': [
         {'role': 'user', 'content': 'Call the bash tool with command printf kvmem-tool-smoke. Do not explain.'}],
         'tools': [{'type': 'function', 'function': {'name': 'bash', 'description': 'Run a shell command',
@@ -43,6 +51,29 @@ def main():
         metrics = result.get('metrics') or {}
         if metrics.get('generation_time_ms') is None or metrics.get('speculative_decoding') is None:
             raise RuntimeError('Native generation or speculative metrics are missing')
+        # An HTTP response can precede fatal connector retirement errors. Prove
+        # this request's authority was captured and released, then query health.
+        deadline = time.monotonic() + 60
+        while True:
+            with opener.open(args.api_base.rstrip('/').removesuffix('/v1') + '/health', timeout=5):
+                pass
+            archived = json.loads((capture / 'archive.json').read_text()) if (capture / 'archive.json').exists() else {}
+            released = json.loads((capture / 'scheduler_resources.json').read_text()) if (capture / 'scheduler_resources.json').exists() else {}
+            completed = [item for item in archived.get('completed', [])
+                         if item['request_id'] == result['id'] or item['request_id'].startswith(result['id'] + '-')]
+            if (len(completed) == 1 and archived.get('active_requests') == 0
+                    and archived.get('retiring_requests') == 0 and archived.get('archive_used_slots') == 0
+                    and archived.get('pending_downloads') == 0 and released.get('requests') == 0
+                    and released.get('owned_blocks') == 0 and released.get('reservations') == []):
+                expected = result['usage']['prompt_tokens'] + result['usage']['completion_tokens'] - 1
+                if completed[0]['history_end'] != expected or not completed[0].get('terminal_prefix'):
+                    raise RuntimeError('Preflight terminal authority does not match native token usage')
+                report.update(archive_completion=completed[0], scheduler_resources=released)
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Preflight authority or native resources did not retire')
+            time.sleep(.1)
+        report['engine_source_commit'] = engine['source_commit']
         report['status'] = 'passed'
     except Exception as error:
         report['error'] = repr(error)
