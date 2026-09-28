@@ -23,7 +23,8 @@ def make_probe_runner(base):
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
                 raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
-            self._kvmem_probe_done = False
+            self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
+            self._kvmem_probe_done = self._kvmem_serving
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
@@ -177,6 +178,14 @@ def make_probe_runner(base):
                           valid_dummy_state_slots=valid_dummy_state_slots)
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             sessions = getattr(self, '_kvmem_sessions', None)
+            if not dummy_run and getattr(self, '_kvmem_serving', False):
+                from .connector import ControlMetadata
+                if isinstance(scheduler_output.kv_connector_metadata, ControlMetadata):
+                    # Native warmup disables the connector and has no metadata.
+                    # Arm at the first real scheduler message, before any client
+                    # forward; API readiness polling must not create a capture gap.
+                    if not (self._kvmem_probe_output / 'armed').is_file():
+                        (self._kvmem_probe_output / 'armed').touch()
             # V2 kernel warmup invokes ordinary execute_model with synthetic
             # requests and no connector metadata. Session control starts at the
             # same explicit post-warmup boundary as accepted authority capture.

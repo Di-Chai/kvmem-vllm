@@ -1,11 +1,14 @@
-"""Explicit compatibility launcher; KVMem serving is a separate integration."""
+"""Explicit profile serving and version-checked native vLLM compatibility entry."""
 import argparse
 import os
 import sys
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    if len(sys.argv) > 1 and sys.argv[1] == 'serve':
+        from .serve import main as serve_main
+        return serve_main(sys.argv[2:])
+    parser = argparse.ArgumentParser(epilog='Experimental profile serving: vllm-kvmem serve --help')
     parser.add_argument("--draft-load-compat", action="store_true")
     parser.add_argument("command", choices=["vllm"])
     args, remaining = parser.parse_known_args()

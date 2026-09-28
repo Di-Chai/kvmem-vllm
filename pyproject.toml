@@ -17,6 +17,9 @@ test = ["pytest>=8,<10"]
 [project.entry-points."vllm.general_plugins"]
 kvmem = "vllm_kvmem:register"
 
+[project.scripts]
+vllm-kvmem = "vllm_kvmem.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
