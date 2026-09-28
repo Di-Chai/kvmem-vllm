@@ -14,6 +14,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 
 from .window_manager import RefreshTicket
 from .terminal import TerminalPrefix
+from .archive_admission import ArchiveCapacity
 
 RETIREMENT_CONNECTOR_SHA256 = 'b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b46082439076f62c6a81'
 
@@ -36,6 +37,8 @@ class ControlMetadata(KVConnectorMetadata):
 class ControlCompletions(KVConnectorWorkerMetadata):
     completed: list[tuple[str, int]] = field(default_factory=list)
     selected_windows: dict[str, int] = field(default_factory=dict)
+    archive_sequence: int | None = None
+    archive_capacity: dict[str, ArchiveCapacity] = field(default_factory=dict)
 
     def aggregate(self, other):
         raise RuntimeError("Working-set control currently requires a single worker rank")
@@ -59,15 +62,19 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.scheduler_completion = None
         options = vllm_config.kv_transfer_config.kv_connector_extra_config.get('kvmem', {})
         self.async_retirement = options.get('async_archive_retirement', False)
-        if type(self.async_retirement) is not bool:
-            raise ValueError('Asynchronous retirement option must be boolean')
-        if self.async_retirement and os.getenv('KVMEM_BOUNDED_TARGET') != '1':
-            raise ValueError('Asynchronous retirement requires bounded authority admission')
-        if self.async_retirement:
+        repository_gc = options.get('repository_gc', False)
+        if type(self.async_retirement) is not bool or type(repository_gc) is not bool:
+            raise ValueError('Retirement and repository GC options must be boolean')
+        if (self.async_retirement or repository_gc) and os.getenv('KVMEM_BOUNDED_TARGET') != '1':
+            raise ValueError('Retirement/GC requires bounded authority admission')
+        if self.async_retirement or repository_gc:
             source = distribution('vllm').locate_file('vllm/v1/worker/gpu/kv_connector.py')
             if hashlib.sha256(source.read_bytes()).hexdigest() != RETIREMENT_CONNECTOR_SHA256:
                 raise ValueError('Unqualified native idle-worker retirement completion hook')
         self.retirement_done = None
+        self.archive_snapshot = None
+        self.scheduler_archive_update = None
+        self.archive_sequence = 0
 
     def queue(self, command):
         if command.request_id in self.pending:
@@ -114,9 +121,14 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         return done or None, None
 
     def build_connector_worker_meta(self):
-        if not self.worker_completions:
+        capacity = self.archive_snapshot() if self.archive_snapshot is not None else None
+        if not self.worker_completions and capacity is None:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
+        if capacity is not None:
+            self.archive_sequence += 1
+            result.archive_sequence = self.archive_sequence
+            result.archive_capacity = capacity
         self.worker_completions = []
         self.worker_selected_windows = {}
         return result
@@ -126,6 +138,10 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         if metadata is not None:
             if not isinstance(metadata, ControlCompletions):
                 raise TypeError("Unexpected worker completion metadata")
+            if metadata.archive_sequence is not None:
+                if self.scheduler_archive_update is None:
+                    raise RuntimeError('Unexpected archive capacity feedback')
+                self.scheduler_archive_update(metadata.archive_sequence, metadata.archive_capacity)
             for request_id, command_id in metadata.completed:
                 if self.pending.get(request_id) != command_id:
                     raise ValueError("Stale or foreign worker completion")

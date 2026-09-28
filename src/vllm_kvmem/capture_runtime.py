@@ -192,6 +192,23 @@ class CaptureRuntime:
         temporary.write_text(json.dumps(progress, indent=2))
         temporary.replace(self.output / "progress.json")
 
+    def archive_capacity(self):
+        """Nonblocking worker feedback, including DMA not yet incorporated.
+
+        The scheduler debits any accepted/computing suffix beyond history_end;
+        snapshotting an unfinished download cannot invent free archive space.
+        """
+        from .archive_admission import ArchiveCapacity
+        # Do not drain the latest sample here: native EOS clipping is decided
+        # by the scheduler after this output. execute_model applies that boundary
+        # before draining on the following iteration.
+        result = {}
+        for request_id, authority in self.authorities.items():
+            authority.poll()
+            result[request_id] = ArchiveCapacity(authority.history_end,
+                                                 authority.memory.repository.ready_slots)
+        return result
+
     def _wait_archive_progress(self):
         # Shared queue pressure may come from another request, even when this
         # authority has not admitted its first write yet.

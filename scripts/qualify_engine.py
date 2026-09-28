@@ -438,7 +438,7 @@ def main():
         if args.compression_probe:
             env["KVMEM_COMPRESSION_PROBE"] = "1"
             env["KVMEM_WINDOW_METADATA"] = "1"
-        if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle:
+        if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle or args.repository_gc:
             env["KVMEM_LIFECYCLE_TRACE"] = "1"
         if args.bounded_dflash:
             env["KVMEM_BOUNDED_DFLASH"] = "1"
@@ -695,7 +695,7 @@ def main():
                         finished = [json.loads(line) for line in (args.output / "capture/scheduler_finished.jsonl").read_text().splitlines()]
                         validate_cancellation(report["cancelled"], workers, finished)
                         report["scheduler_finished"] = finished
-                    if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle:
+                    if args.cancel_during_refresh or args.require_capacity_pressure or args.async_archive_retirement or args.bounded_short_lifecycle or args.repository_gc:
                         # The worker publishes retirement before its completion
                         # reaches the scheduler. Wait for native physical release.
                         deadline = time.monotonic() + 10

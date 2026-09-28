@@ -27,6 +27,8 @@ def make_probe_runner(base):
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
+            from .options import RuntimeOptions
+            self._kvmem_repository_gc = RuntimeOptions.from_vllm(self.vllm_config).repository_gc
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None
@@ -171,6 +173,10 @@ def make_probe_runner(base):
                 connector = get_kv_transfer_group()
                 connector.runtime = self._kvmem_query_refresh
                 connector.retirement_done = (runtime.retirement_done if runtime is not None else lambda _: True)
+                if getattr(self, '_kvmem_repository_gc', False):
+                    connector.archive_snapshot = lambda: (
+                        self._kvmem_capture_runtime.archive_capacity()
+                        if self._kvmem_capture_runtime is not None else {})
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
                     (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or

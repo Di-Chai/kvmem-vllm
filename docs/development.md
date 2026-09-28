@@ -498,8 +498,8 @@ No-write capacity exhaustion can now wait for this background progress instead
 of immediately raising BufferError. This is a measured synchronous fallback,
 not nonblocking scheduler admission: `gc_wait_count`/`gc_wait_seconds` are exported,
 and absence of append progress for 30 seconds fails explicitly. Scheduler-side
-ready-capacity feedback, CPU/NVMe global quotas and GPU pressure qualification
-remain necessary before production activation.
+ready-capacity feedback is now wired as described below; CPU/NVMe global quotas
+and GPU pressure qualification remain necessary before production activation.
 
 The native CPU integration test drives two namespaces sharing one archive through
 336 accepted tokens each, with only 24 repository slots per namespace. Both
@@ -517,3 +517,30 @@ two official tasks have completed 17 model calls without HTTP errors and remain
 live; accepted-history capture is progressing for both. Neither has a verifier
 score. These live counters are progress evidence, not a final quality or
 aggregate-throughput result.
+
+## Per-request archive capacity feedback
+
+With experimental repository GC enabled, the existing native connector metadata
+channel now reports each live authority's accepted history and ready repository
+records. Scheduler admission debits all accepted/computing rows beyond that
+snapshot, including worst-case speculative acceptance, while crediting unused
+space in a mutable tail. It defers the whole original query if it cannot fit;
+it does not shorten candidate blocks or change K/G. The native running queue
+continues to other requests. Idle no-forward steps still return updated credits,
+so background reclamation can resume a blocked request without a model forward.
+Monotonic metadata sequence/history checks reject stale feedback; completed
+requests lose their cached capacity state.
+
+The worker does **not** drain the most recent capture packet while constructing
+feedback: native EOS truncation arrives in the next scheduler message. This
+preserves exact terminal-prefix clipping. Pending DMA is instead conservatively
+charged against scheduler history until normal capture processing publishes it.
+`archive_capacity_deferrals` is recorded alongside GC fallback wait metrics.
+
+52 targeted host tests pass (`archive_admission_cpu_02.xml`), including the real
+connector types, every partial-block tail, delayed capture, rejected candidates,
+neighbour isolation, stale messages, terminal clipping and the scheduler hook.
+GPU behaviour and reduction of capture-thread waits are unverified. This covers
+repository-record credits; it does not yet implement global host/NVMe admission
+or asynchronous treatment of every I/O-queue/staging pressure condition. The
+live agent test remains on its frozen earlier worker package.

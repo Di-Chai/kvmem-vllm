@@ -49,11 +49,16 @@ class KVMemScheduler(Scheduler):
         if options.async_archive_retirement and not self._bounded_target:
             raise ValueError('Asynchronous archive retirement requires bounded execution')
         config = options.memory
+        self.archive_admission = None
         if options.repository_gc:
             if not self._bounded_target:
                 raise ValueError('Serving repository GC requires bounded execution')
             from .repository_gc import serving_gc_config
             serving_gc_config(config, self.scheduler_config.max_num_batched_tokens)
+            from .archive_admission import ArchiveAdmission
+            self.archive_admission = ArchiveAdmission(config.block_tokens, config.repository_blocks)
+            self.connector.scheduler_archive_update = lambda sequence, capacity: self.archive_admission.update(
+                sequence, capacity, {k for k, r in self.requests.items() if not r.is_finished()})
         self.prefill_cadence = options.prefill_cadence
         self._mixed_steps = 0
         self._scheduled_queries = {"prefill": {}, "decode": {}}
@@ -117,6 +122,7 @@ class KVMemScheduler(Scheduler):
             "reservations": list(gate.reservations), "reservation_rejections": gate.rejections,
             "authority_limit": gate.max_authorities, "authority_rejections": gate.authority_rejections,
             "owned_blocks": owned,
+            "archive_capacity_deferrals": self.archive_admission.deferred if getattr(self, 'archive_admission', None) else 0,
             "free_blocks": gate.block_pool.get_num_free_blocks(),
             "total_blocks": gate.block_pool.num_gpu_blocks}
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
@@ -133,6 +139,8 @@ class KVMemScheduler(Scheduler):
 
     def _free_request(self, request, delay_free_blocks=False):
         result = super()._free_request(request, delay_free_blocks=delay_free_blocks)
+        if getattr(self, 'archive_admission', None) is not None:
+            self.archive_admission.forget(request.request_id)
         if getattr(self, "_bounded_target", False) and os.getenv("KVMEM_LIFECYCLE_TRACE") == "1":
             report = {"request_id": request.request_id, "status": request.status.name,
                       "at": time.perf_counter(), "history_end": request.num_computed_tokens,
@@ -188,7 +196,11 @@ class KVMemScheduler(Scheduler):
         offsets = {m.offsets.get(request.request_id, 0) for m in self.window_managers.values()}
         if len(offsets) != 1:
             raise RuntimeError("Full-attention groups disagree on committed history mapping")
-        return self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offsets.pop())
+        tokens = self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offsets.pop())
+        gate = getattr(self, 'archive_admission', None)
+        if gate is not None and tokens and not gate.allows(request.request_id, num_computed_tokens, tokens):
+            return 0  # Native running-queue iteration continues with neighbours.
+        return tokens
 
     def _build_kv_connector_meta(self, connector, output):
         if getattr(self, "_bounded_target", False):
@@ -243,6 +255,7 @@ class KVMemScheduler(Scheduler):
             temporary = path / 'scheduled_queries.tmp'
             temporary.write_text(json.dumps({"queries": self._scheduled_queries,
                 "prefill_cadence": self.prefill_cadence,
+                "archive_capacity_deferrals": self.archive_admission.deferred if getattr(self, 'archive_admission', None) else 0,
                 "throttle_requests": self._cadence_requested}))
             temporary.replace(path / 'scheduled_queries.json')
         if self.table_updates:
