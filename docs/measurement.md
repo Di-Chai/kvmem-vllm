@@ -153,3 +153,44 @@ with frozen long inputs, cancellation-during-refresh or capacity-pressure gates.
 Default bounded qualification still requires genuine compression evidence. This
 short mode is appropriate for a limited decode profiler diagnostic before another
 long model run; it is not a substitute for long-history performance or quality.
+
+## Archive GC capacity diagnostic
+
+The native frozen histories currently available reach about 201K tokens. They do
+not force archive reuse with a 1792-record repository (229376 tokens). The helper
+`scripts/make_capacity_fixture.py` creates an explicitly synthetic 245760-token
+fixture by repeating source history before its final query. All original token IDs
+remain in order, and shifted query boundaries and source SHA256 are recorded.
+The helper never overwrites an existing output. These inputs are for capacity and
+GC correctness only: the qualification report sets `performance_eligible: false`
+when any C1 or concurrent input is synthetic, including mixed input groups.
+
+Prepared fixture: `artifacts/capacity_inputs_01/pressure_245760.json`, SHA256
+`ef6a3f93c23a1ce01a8c9ad69f20c3f5f1b495895791ca6c50d70ba2994ee2ac`.
+It derives from the unchanged 197110-token `request_24.json` (source SHA256
+`55e734bd7cf8d462e3d44f5ceb6b6b3066b9792f64e495feea857c7b42cf39e2`).
+Host checks pass in `artifacts/capacity_fixture_cpu_01.xml`; GPU execution remains
+pending while the official session agent pair owns the backend.
+
+Run only after that backend has stopped and enough physical disk space is free:
+
+```sh
+.venv/bin/python scripts/qualify_engine.py \
+  --models /home/chaidi/qw3/models --output artifacts/engine_gc_pressure_01 \
+  --bounded-dflash --q8-tensorcore \
+  --frozen-input artifacts/capacity_inputs_01/pressure_245760.json \
+  --frozen-sha256 ef6a3f93c23a1ce01a8c9ad69f20c3f5f1b495895791ca6c50d70ba2994ee2ac \
+  --repository-gc --repository-blocks 1792 --require-gc-reclamation \
+  --nvme-preallocate --nvme-max-mib 43008 --archive-io-max-mib 12288 \
+  --batch-token-budget 4224 --prefill-request-token-cap 1024 --prefill-cadence 8 \
+  --packed-assembly --direct-pinned-reads --async-archive-retirement \
+  --skip-archive-readback --stream-metrics
+```
+
+This preserves Q8_0/FP8, DFlash2 and K131072/G65536. The native model's archive
+record is 6 MiB; four authority slots reserve 42 GiB of disk before readiness.
+The I/O quota admits a complete frame but bounds in-flight archive payloads.
+The gate requires actual reclaimed generations, accepted-history accounting and
+resource cleanup; merely starting GC does not pass. It runs a synthetic long C1
+followed by four short recovery requests, not four long pressure requests. It does
+not qualify session GC, a whole-process RAM bound or fair concurrent I/O.

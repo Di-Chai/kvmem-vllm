@@ -215,6 +215,11 @@ def read_frozen(path, digest, output_tokens):
     if hashlib.sha256(data).hexdigest() != digest:
         raise ValueError("Frozen input SHA256 does not match its manifest")
     frozen = json.loads(data)
+    kind = frozen.get('fixture_kind', 'native_history')
+    if kind not in ('native_history', 'synthetic_capacity'):
+        raise ValueError('Unknown frozen input provenance kind')
+    if kind == 'synthetic_capacity' and not isinstance(frozen.get('derivation'), dict):
+        raise ValueError('Synthetic capacity input requires its explicit derivation')
     ids = frozen["input_ids"]
     if (not isinstance(ids, list) or not 1 <= len(ids) <= 262144 - output_tokens or
             any(type(token) is not int or not 0 <= token < 248320 for token in ids)):
@@ -224,8 +229,14 @@ def read_frozen(path, digest, output_tokens):
         raise ValueError("Frozen query boundaries are outside the original input")
     provenance = {"path": str(path.resolve()), "sha256": digest,
         "id": frozen["id"], "tokens": len(ids), "query_begin": frozen["query_begin"],
-        "query_end": frozen["query_end"], "tool_execution": False}
+        "query_end": frozen["query_end"], "tool_execution": False, "fixture_kind": kind}
+    if kind == 'synthetic_capacity':
+        provenance['derivation'] = frozen['derivation']
     return frozen, provenance
+
+
+def performance_eligible(profile_steps, inputs):
+    return not profile_steps and all(p.get('fixture_kind', 'native_history') == 'native_history' for p in inputs)
 
 
 def main():
@@ -267,7 +278,7 @@ def main():
     parser.add_argument("--direct-pinned-reads", action="store_true",
                         help="Experimental archive reads directly into bounded pinned H2D slots; requires packed-assembly")
     parser.add_argument("--frozen-input", type=Path,
-                        help="Hash-checked native DeepSWE JSON; preserve its exact input IDs")
+                        help="Hash-checked token IDs; synthetic capacity fixtures are explicitly non-performance diagnostics")
     parser.add_argument("--frozen-sha256")
     parser.add_argument("--concurrent-frozen-input", nargs=2, action="append", metavar=("PATH", "SHA256"),
                         help="Repeat exactly four times to replace the short C4 fixtures with exact native histories")
@@ -471,7 +482,8 @@ def main():
                    "--generation-config", "vllm", "--enforce-eager"]
         if args.kv_cache_memory_mib:
             command += ["--kv-cache-memory-bytes", str(args.kv_cache_memory_mib * 1024**2)]
-        report['performance_eligible'] = not bool(args.profile_concurrent_steps)
+        report['performance_eligible'] = performance_eligible(args.profile_concurrent_steps,
+            ([frozen_provenance] if frozen_provenance else []) + [p for _, p in frozen_concurrent])
         if args.profile_concurrent_steps:
             from vllm_kvmem.profiling import native_profiler_config
             profiler = native_profiler_config(args.output / 'profile',
