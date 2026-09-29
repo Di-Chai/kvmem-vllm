@@ -97,5 +97,13 @@ automatic-arming change currently have 20 passing host tests; actual-model launc
 qualification remains pending.** Existing short/134K/C4 session GPU evidence used
 the frozen qualification launcher and must not be relabeled as this entry's test.
 
+The public entry also passes an isolated source-package check recorded in
+`artifacts/source-build-serving_01`: rebuild the native wheel from an extracted
+sdist with no extension binary, install into a fresh environment without torch or
+vLLM, and run 73 host checks (2 skipped). Both console help and a real-path console
+dry run pass without creating a runtime directory. The source archive includes
+the example profile; the installed wheel contains the console entry and all three
+licenses. This verifies host installation, not GPU startup or performance.
+
 For measured support and test commands, see `prompt-sessions.md`, `support.md` and
 `qualification-20260928.md`. Current agent evaluation remains incomplete.
