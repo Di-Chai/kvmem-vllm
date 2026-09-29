@@ -155,3 +155,12 @@ agent histories: scheduler hits increase from the recorded baseline 18 to 25,
 with two session entries and no checkpoint byte-admission deferrals. Both tasks
 continue issuing tool calls; this is real reuse evidence, not a final score or
 long-task throughput result.
+
+Update for the GitHub development snapshot: this session-enabled pair was
+interrupted after the backend process manager sent SIGTERM at 08:21:01 CST.
+The initiating source is undetermined. The remaining harness was stopped after
+confirming the backend had exited; both Pier processes exited 130 and remain
+unscored. Completed-call decode observations are 36.360/27.282 tok/s over 33/28
+calls, followed by 24 HTTP errors per task after shutdown. These are partial
+observations, not successful task results. See `status-20260929.md` for the current
+implementation, test and unfinished-work summary.

@@ -89,6 +89,14 @@ Do not remove old messages or alter task input to manufacture reuse. The serving
 gateway must supply an appropriate `cache_salt`/session scope for its clients;
 these fields are namespace identifiers, not authentication.
 
+The profile installs `vllm_kvmem.http_sessions.validate_prompt_session` through
+vLLM's public `--middleware` option. Session IDs and salts used for reuse are
+limited to 1024 characters and rejected with HTTP 400 before scheduler dispatch.
+Body/header/`vllm_xargs` precedence matches the pinned engine. Native ASGI host
+tests cover rejection, concurrent valid requests and unchanged streaming bodies;
+actual-model qualification of this new guard remains pending. Direct custom
+launches must include the middleware explicitly to obtain the same validation.
+
 Serving mode distinguishes native warmup (no connector metadata) from the first
 real scheduler message and enables accepted capture before that first forward.
 It omits the one-off diagnostic tensor snapshot used by the original probe tools.

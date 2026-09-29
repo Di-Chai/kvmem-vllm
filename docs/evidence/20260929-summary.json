@@ -1,0 +1,81 @@
+{
+  "recorded_at": "2026-09-29T08:26:06.341912+08:00",
+  "scope": "Host pre-push regression and separately scoped historical component/package checks; GPU model tests were not rerun for this commit. Artifacts are retained locally, not bundled with model or agent data.",
+  "tests": [
+    {
+      "artifact": "artifacts/prepush_host_20260929.xml",
+      "sha256": "798e8f648bea722aeb0ac61e1632b26a58869ba0fab2dd59cce05a1a32c1ecec",
+      "passed": 281,
+      "skipped": 42,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "artifact": "artifacts/session_components_gpu_01.xml",
+      "sha256": "3a79142b84133e2df726c303ae05715a3175e0972e5d34c02ccf0d498ea0b907",
+      "passed": 13,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "artifact": "artifacts/source-build-serving_01/results.xml",
+      "sha256": "6300cc1f2bbbaccc1d64e9999017dcab4110adc301c9e68fa57a35d7abfddf99",
+      "passed": 73,
+      "skipped": 2,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "artifact": "artifacts/capacity_fixture_cpu_01.xml",
+      "sha256": "d14166a1eef814e5f5c56ae5d3d40076c1b4efdb9a516153cfd99e8d33a7cef5",
+      "passed": 21,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "artifact": "artifacts/http_session_validation_cpu_01.xml",
+      "sha256": "e8283acf3b5fef0a85c10331663fdccb5cd25a416741c2e8b41225b54a26d18a",
+      "passed": 22,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    }
+  ],
+  "ctest": {
+    "passed": 5,
+    "failed": 0,
+    "command": "ctest --test-dir build/core --output-on-failure"
+  },
+  "interrupted_session_agent": {
+    "backend": "session_backend_02",
+    "source_commit": "ac566ea2d12c1224f50ec755c98ebbd733a74511",
+    "backend_state": "failed",
+    "observed_shutdown": "2026-09-29 08:21:01 +08:00 process manager sends SIGTERM; initiating source undetermined",
+    "quality_score": null,
+    "performance_eligible": false,
+    "partial_completed_calls": [
+      {
+        "task": "termenv-preserve-ansi-resets",
+        "calls": 33,
+        "weighted_request_decode_tok_s": 36.35969221398614,
+        "max_prompt_tokens": 83997
+      },
+      {
+        "task": "tomlkit-toml-table-converters",
+        "calls": 28,
+        "weighted_request_decode_tok_s": 27.281662189961335,
+        "max_prompt_tokens": 109075
+      }
+    ],
+    "harness_status": "interrupted",
+    "all_scored": false,
+    "pier_exit_codes": [
+      130,
+      130
+    ],
+    "http_error_requests_per_task": 24,
+    "result_sha256": "a77b9fc0ee7ccb09ae16d4aaa49e135d6c741a223fd5b83bbfb8c5518c7efc30"
+  }
+}

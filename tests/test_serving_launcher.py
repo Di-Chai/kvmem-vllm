@@ -30,6 +30,7 @@ def test_launcher_preserves_mainline_precisions_and_native_execution(tmp_path):
     transfer = json.loads(argv[argv.index('--kv-transfer-config')+1])
     assert transfer['kv_connector_extra_config']['kvmem']['session_capacity'] == 4
     assert '--no-enable-prefix-caching' in argv and '--no-async-scheduling' in argv
+    assert argv[argv.index('--middleware')+1] == 'vllm_kvmem.http_sessions.validate_prompt_session'
     assert env['KVMEM_SERVING'] == '1' and 'KVMEM_Q8_TENSORCORE' not in env
     assert not (tmp_path/'run').exists()
 

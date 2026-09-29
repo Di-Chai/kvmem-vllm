@@ -79,6 +79,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         '--speculative-config', json.dumps({'method': 'dflash', 'model': cfg['draft_model'],
             'num_speculative_tokens': 7, 'draft_load_config': {'load_format': 'safetensors'}, 'kv_cache_dtype': 'bfloat16'}),
         '--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
+        '--middleware', 'vllm_kvmem.http_sessions.validate_prompt_session',
         '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml', '--reasoning-parser', 'qwen3']
     env = {'KVMEM_SERVING': '1', 'KVMEM_RUNNER_PROBE_DIR': str(run_dir / 'capture'),
         'KVMEM_ARCHIVE_PROBE': '1', 'KVMEM_LIFECYCLE_TRACE': '1', 'KVMEM_BOUNDED_DFLASH': '1',

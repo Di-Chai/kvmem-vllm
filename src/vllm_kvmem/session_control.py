@@ -9,6 +9,16 @@ from dataclasses import dataclass, field
 from .prompt_checkpoints import token_bytes
 
 
+def session_namespace(session, salt):
+    if not session:
+        return None
+    salt = salt or ''
+    if (not isinstance(session, str) or not isinstance(salt, str)
+            or len(session) > 1024 or len(salt) > 1024):
+        raise ValueError('Session ID and cache salt must be strings of at most 1024 characters')
+    return salt, session
+
+
 @dataclass(frozen=True)
 class SessionBinding:
     namespace: tuple[str, str]
@@ -86,10 +96,7 @@ class SessionLedger:
                 getattr(request, 'prompt_embeds', None) is not None or
                 getattr(request, 'mm_features', None) or getattr(request, 'lora_request', None)):
             raise ValueError('Prompt sessions require non-streaming, text-only native requests')
-        salt = getattr(request, 'cache_salt', None) or ''
-        if not isinstance(salt, str) or len(session) > 1024 or len(salt) > 1024:
-            raise ValueError('Invalid session namespace')
-        return salt, session
+        return session_namespace(session, getattr(request, 'cache_salt', None))
 
     def lookup(self, request, local_tokens):
         namespace = self.namespace(request)

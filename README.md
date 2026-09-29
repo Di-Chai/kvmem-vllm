@@ -1,5 +1,10 @@
 # vllm-kvmem
 
+**Current status / 当前进度：** [2026-09-29 implementation, tests, results and
+remaining work](docs/status-20260929.md). This is an experimental development
+snapshot, not a production release. The latest session agent run was interrupted
+after its backend terminated; it is not a completed quality/performance result.
+
 ## Correction: cold-block residency, 2026-09-29
 
 A repeated reselection defect was reproduced after the earlier model runs:
