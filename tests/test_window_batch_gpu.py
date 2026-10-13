@@ -71,3 +71,29 @@ def test_window_capacity_and_stale_logical_counters_fail_before_cache_access():
     batch.num_computed_tokens_np[0] = 60
     with pytest.raises(ValueError, match="precedes"):
         adapter.prepare(batch)
+
+
+def test_graph_positions_and_attention_lengths_share_stable_storage_across_refresh():
+    adapter = WindowBatchAdapter((0,), 128)
+    adapter.reserve_graph_buffers(8, 4, 'cuda')
+    batch = make_batch()
+    first = adapter.capture_window(batch)
+    assert first.positions.tolist() == batch.positions.tolist()
+    address = first.positions.data_ptr()
+    lens_address = first.groups[0].seq_lens.data_ptr()
+    adapter.commit('a', 100, 4); adapter.commit('b', 70, 6)
+    second = adapter.prepare(batch)
+    assert second.positions.data_ptr() == address
+    assert second.groups[0].seq_lens.data_ptr() == lens_address
+    assert first.positions.tolist() == [6, 7, 8, 4, 5, 0, 0, 0]
+    assert first.groups[0].seq_lens.tolist() == [9, 6, 0, 0]
+    assert batch.seq_lens.tolist() == [73, 102, 0, 0]
+    ready = adapter.offsets_ready
+    adapter.prepare(batch)
+    assert adapter.offsets_ready is ready  # unchanged decode mapping needs no DMA
+    adapter.commit('b', 70, 10)
+    changed = adapter.prepare(batch)
+    assert adapter.offsets_ready is not ready
+    assert changed.positions.data_ptr() == address
+    assert changed.positions.tolist() == [10, 11, 12, 4, 5, 0, 0, 0]
+    assert changed.groups[0].seq_lens.tolist() == [13, 6, 0, 0]

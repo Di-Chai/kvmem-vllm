@@ -141,7 +141,9 @@ class NativeWindowAssembler:
             handles = [by_slot[remap.block_id].handle for remap in chunk]
             prepare_start = time.perf_counter()
             transfer = None
-            if self.direct_pinned_reads:
+            use_packed = self.packed and all(r.n_tokens == self.block_tokens for r in chunk)
+            use_direct = self.direct_pinned_reads and use_packed
+            if use_direct:
                 from .packed_assembly import read_packed_records
                 if any(remap.n_tokens != self.block_tokens for remap in chunk):
                     raise ValueError("Packed window assembly requires complete selected records")
@@ -156,7 +158,7 @@ class NativeWindowAssembler:
                     next(iter(self.transfers.pending.values())).event.synchronize()
                     transfer = self.transfers.upload_from_reader(size, gpu, fill)
                 count = len(chunk) * self.block_tokens
-            elif self.packed:
+            elif use_packed:
                 from .packed_assembly import read_packed_records
                 if any(remap.n_tokens != self.block_tokens for remap in chunk):
                     raise ValueError("Packed window assembly requires complete selected records")
@@ -170,8 +172,8 @@ class NativeWindowAssembler:
                 values = torch.cat([value for _, value in payloads], dim=1).contiguous()
                 payload = torch.cat((raw.view(torch.uint8).flatten(), values.flatten()))
                 count = raw.shape[1]
-            uploaded_bytes += size if self.direct_pinned_reads else payload.numel()
-            if not self.direct_pinned_reads:
+            uploaded_bytes += size if use_direct else payload.numel()
+            if not use_direct:
                 gpu = torch.empty(payload.numel(), dtype=torch.uint8, device=self.device)
                 transfer = self.transfers.upload(payload, gpu)
                 if transfer is None:
@@ -183,7 +185,7 @@ class NativeWindowAssembler:
             # Includes CPU staging and waiting for a bounded slot, in both paths.
             host_prepare_seconds += time.perf_counter() - prepare_start
             torch.cuda.current_stream(self.device).wait_event(transfer.event)
-            if self.packed:
+            if use_packed:
                 from .packed_assembly import assemble_packed_layer
                 bases = torch.tensor([remap.to_base for remap in chunk], device=self.device, dtype=torch.int64)
                 for i, layer in enumerate(self.layers):

@@ -7,5 +7,8 @@ dist/
 __pycache__/
 .pytest_cache/
 artifacts/
+runs/
+local-profile.json
+users.json
 *.gguf
 *.safetensors

@@ -19,16 +19,24 @@ class RuntimeOptions:
     archive_io_max_bytes: int = 0
     session_capacity: int = 0
     session_checkpoint_bytes: int = 0
+    session_capture_decode: bool = False
+    cpu_history_cache_bytes_per_request: int = 0
+    session_capture_terminal: bool = False
 
     def __post_init__(self):
         if any(type(value) is not int or value < 0 for value in
                (self.cpu_read_cache_bytes, self.nvme_max_bytes, self.archive_io_max_bytes,
-                self.session_capacity, self.session_checkpoint_bytes)):
+                self.session_capacity, self.session_checkpoint_bytes, self.cpu_history_cache_bytes_per_request)):
             raise ValueError("Storage capacity must be a nonnegative byte count")
+        if self.cpu_history_cache_bytes_per_request > self.cpu_read_cache_bytes:
+            raise ValueError('Per-request historical cache must fit the global CPU cache budget')
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
-                self.async_archive_retirement, self.repository_gc, self.nvme_preallocate)):
+                self.async_archive_retirement, self.repository_gc, self.nvme_preallocate,
+                self.session_capture_decode)):
             raise ValueError("Assembly and archive verification settings must be boolean")
+        if type(self.session_capture_terminal) is not bool:
+            raise ValueError('Terminal checkpoint setting must be boolean')
         if self.direct_pinned_reads and not self.packed_assembly:
             raise ValueError("Direct pinned reads require packed assembly")
         if type(self.prefill_cadence) is not int or not 1 <= self.prefill_cadence <= 64:
@@ -37,6 +45,10 @@ class RuntimeOptions:
             raise ValueError('Prompt sessions require both entry and checkpoint-byte capacity')
         if self.session_capacity and not self.async_archive_retirement:
             raise ValueError('Prompt sessions require fenced asynchronous authority retirement')
+        if self.session_capture_decode and not self.session_capacity:
+            raise ValueError('Decode checkpoints require session capacity')
+        if self.session_capture_terminal and not self.session_capacity:
+            raise ValueError('Terminal checkpoints require session capacity')
         if self.session_capacity and self.memory.repository_blocks <= 2 * (
                 self.memory.select_budget + self.memory.gen_budget) // self.memory.block_tokens:
             raise ValueError('Prompt sessions require room for checkpoint and live working frames')
@@ -63,6 +75,9 @@ class RuntimeOptions:
         io_bytes = payload.pop('archive_io_max_bytes', 0)
         session_capacity = payload.pop('session_capacity', 0)
         session_bytes = payload.pop('session_checkpoint_bytes', 0)
+        capture_decode = payload.pop('session_capture_decode', False)
+        history_bytes = payload.pop('cpu_history_cache_bytes_per_request', 0)
+        capture_terminal = payload.pop('session_capture_terminal', False)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -70,4 +85,4 @@ class RuntimeOptions:
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
-                   io_bytes, session_capacity, session_bytes)
+                   io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal)

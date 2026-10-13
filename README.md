@@ -1,9 +1,75 @@
 # vllm-kvmem
 
-**Current status / 当前进度：** [2026-09-29 implementation, tests, results and
-remaining work](docs/status-20260929.md). This is an experimental development
-snapshot, not a production release. The latest session agent run was interrupted
-after its backend terminated; it is not a completed quality/performance result.
+**Original MeanK integration, 2026-10-13:** `context_mode: "meank"` now uses
+model-attention MeanK scoring, the unchanged original KVMem selector, immutable
+CPU raw KV and dense re-RoPE assembly with vLLM batched CUDA Graph decode.
+Accepted terminal history, partial tails, GDN and DFlash2 state survive GPU-page
+release and restore. A single-session 256K history restoration passed real GPU
+byte checks; eight independent users completed 32K input plus 16K output each.
+With 32K input and 4K output, C1/C4/C8 steady decode measured
+63.17 / 232.17 / 378.42 aggregate tok/s. The older ~592 tok/s result has not
+been reproduced by the MeanK path.
+This path currently uses DFlash2; the older full-context MTP results below apply
+to `context_mode: "full"`. See [implementation and limits](docs/meank-integration-20261013.md)
+and the [MeanK throughput and restoration evidence](docs/meank-throughput-20261013.md).
+
+**Elastic MTP preview, 2026-10-13:** `vllm-kvmem elastic-serve` adds authenticated,
+versioned full-history turns with native NVFP4/FP8/MTP CUDA Graph execution,
+CPU KV offload, byte admission, bounded restores, TTL and explicit selected contexts.
+At 32 clients, full-context CPU recovery measured 546.28 generated tok/s over
+the whole batch; an explicitly selected context measured 986.01 tok/s. Native
+32K/C32 steady decode with offload enabled measured 1171.41 tok/s. See
+[setup and API](docs/elastic-serving.md) and
+[measurements and qualification limits](docs/elastic-throughput-20261013.md).
+
+**Native MTP comparison, 2026-10-13:** with KVMem disabled, NVFP4 and FP8
+attention KV for both target and MTP reached 1163.00 / 1178.63 aggregate steady
+decode tok/s at 32K input and 32 clients for k=2 / k=3. Whole-batch throughput,
+including prefill, was 246.31 / 245.55 tok/s. This is a native vLLM baseline,
+not KVMem multi-user qualification. See the [configuration, exact-token evidence
+and output limits](docs/native-vllm-mtp-throughput-20261013.md).
+
+**NVFP4 preview, 2026-10-13:** the launcher also supports the NVIDIA
+Qwen3.8-27B ModelOpt NVFP4/FP8 mixed checkpoint with the same BF16 DFlash2 and
+multi-user isolation. All 84 baseline requests completed, including 32K input
+with 32 clients and a 134K refresh case. Native CUTLASS backend tuning then
+completed 102 requests: short C8 steady decode measured 386.54–392.75 tok/s,
+and short C32 whole-batch throughput reached 712.80 tok/s (18 active owners).
+Four independent users also passed natural-stop 32K document retrieval.
+See the [NVFP4 measurements, output
+quality limits and backend tuning](docs/nvfp4-throughput-20261013.md).
+
+**Long context and 32 clients, 2026-10-13:** 32K-input steady decode measured
+38.17–47.22 / 121.00 / 154.74 aggregate output tok/s at 1 / 4 / 8 clients.
+All 32 long-input clients completed, with capacity queueing: 19.63 tok/s over
+the whole batch, not 32 simultaneous decode streams. See the
+[long-context results and measurement limits](docs/long-context-throughput-20261013.md).
+
+**Decode scaling, 2026-10-13:** the existing multi-user Tensor Core server measures
+61.01 / 86.27 / 160.57 / 269.50 aggregate output tok/s at 1 / 2 / 4 / 8 concurrent
+requests in shared steady decode windows. See the [method, evidence and scope](docs/decode-throughput-20261013.md).
+
+**Multi-user preview, 2026-10-13 (`0.1.0.dev1`):** the public launcher now supports
+per-user API keys, server-owned session namespaces, bounded fair request admission,
+and streaming cancellation cleanup. Session overflow retains serialization, and
+serving diagnostics retain only the latest 256 completed requests. See
+[multi-user setup](docs/multi-user-serving.md),
+[concurrency qualification](docs/multi-user-testing.md), and the
+[2026-10-13 actual-model results](docs/status-20261013.md). Both native Q8 and the
+opt-in Tensor Core path completed the 32-user short-request sweep and overload,
+fairness, cancellation and recovery checks. At 32 users the measured whole-window
+output rates were 49.65 and 130.15 tok/s; only 8 requests are admitted at once.
+Tensor Core remains disabled by default, and production task-quality and sustained
+long-context acceptance remain incomplete. The model/runtime support boundaries
+below still apply.
+
+**Current status / 当前进度：** [2026-10-13 multi-user results and remaining
+work](docs/status-20261013.md), with [2026-09-29 implementation and historical
+results](docs/status-20260929.md) retained for context. The latest status page
+supersedes corresponding pending-test statements below. This is an experimental
+development snapshot, not a production release. The historical session agent run
+was interrupted after its backend terminated; it is not a completed
+quality/performance result.
 
 ## Correction: cold-block residency, 2026-09-29
 
@@ -108,7 +174,10 @@ require a prior benchmark artifact. Edit the external model paths in
   --config local-profile.json --run-dir runs/session-01 --dry-run
 ```
 
-Omit `--dry-run` to start native vLLM. The new profile/automatic-arming entry has
-20 passing host tests; its actual-model GPU launch check is pending. Existing
-benchmark-launcher evidence is not evidence for that new entry. The work is
-currently committed locally; no remote package release has been published.
+Omit `--dry-run` to start native vLLM. The public profile launcher and first-request
+automatic arming passed an actual-model GPU startup check on 2026-10-13. The
+multi-user entry also passed short-request load, isolation, overload and recovery
+checks; the final component/HTTP suite passed 386 tests. See the
+[current results and limits](docs/status-20261013.md), including exact 134K session
+continuation. Production task-quality and sustained long-context acceptance
+remain incomplete; no remote package release has been published.

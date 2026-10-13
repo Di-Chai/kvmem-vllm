@@ -28,6 +28,37 @@ def reuse_delta(before, after, count, positions):
         raise RuntimeError(f'Incorrect session imports: hits={hits}, tokens={tokens}')
 
 
+def completed_since(before, after):
+    """Locate new retained records by cumulative ordinal, including rollover."""
+    totals = []
+    for archive in (before, after):
+        retained = archive['completed']
+        total = archive.get('completed_requests', len(retained))
+        if type(total) is not int or total < len(retained):
+            raise RuntimeError('Invalid cumulative completion count')
+        totals.append(total)
+    count = totals[1] - totals[0]
+    if count < 0:
+        raise RuntimeError('Cumulative completion count moved backwards')
+    if count > len(after['completed']):
+        raise RuntimeError('New completion records are no longer retained')
+    return after['completed'][-count:] if count else []
+
+
+def populated_checkpoint(before, after, response_id):
+    records = completed_since(before, after)
+    if len(records) != 1:
+        raise RuntimeError('Serial population needs exactly one new completion')
+    record = records[0]
+    native_id = record.get('request_id')
+    if (not isinstance(response_id, str) or not response_id or not isinstance(native_id, str) or
+            not (native_id == response_id or native_id.startswith(response_id + '-'))):
+        raise RuntimeError('Serial population completion belongs to another HTTP request')
+    if record.get('retirement_strategy') != 'checkpoint_rewind':
+        raise RuntimeError('Serial population failed to retain its exact checkpoint')
+    return record['checkpoint_tokens']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--engine-evidence', type=Path, required=True)
@@ -133,10 +164,8 @@ def main():
             before = snapshot()
             response = complete(prompt, session)
             after = snapshot()
-            new = after['archive']['completed'][len(before['archive']['completed']):]
-            if len(new) != 1 or new[0].get('retirement_strategy') != 'checkpoint_rewind':
-                raise RuntimeError('Serial population failed to retain its exact checkpoint')
-            positions.append(new[0]['checkpoint_tokens'])
+            positions.append(populated_checkpoint(before['archive'], after['archive'],
+                                                  response['result'].get('id')))
             controls.append(response)
             report['calls'][f'populate_{i}'] = response
             save()

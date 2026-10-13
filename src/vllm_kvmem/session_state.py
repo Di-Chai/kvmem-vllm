@@ -39,13 +39,14 @@ class PromptStateAdapter:
                 RuntimeOptions.from_vllm(runner.vllm_config).memory)
             self.contract.validate_native_groups(runner)
         self._identity = object()  # Snapshots never cross workers/model loads.
+        self.capture_decode = RuntimeOptions.from_vllm(runner.vllm_config).session_capture_decode
 
-    def _prefill_index(self, request_id, position):
+    def _prefill_index(self, request_id, position, *, terminal=False):
         index = self.runner.req_states.req_id_to_index[request_id]
         states = self.runner.req_states
         if (type(position) is not int or position <= 0 or
-                int(states.num_computed_tokens_np[index]) != position or
-                int(states.prefill_len.np[index]) <= position):
+                (not terminal and (int(states.num_computed_tokens_np[index]) != position or
+                    (int(states.prefill_len.np[index]) <= position and not getattr(self, 'capture_decode', False))))):
             raise ValueError('Model checkpoint requires the exact non-final prefill boundary')
         return index
 
@@ -95,11 +96,24 @@ class PromptStateAdapter:
                 result[name] = (cache.transpose(1, 2), physical, offset)
         return result
 
-    def capture(self, request_id, position, *, max_bytes):
-        index = self._prefill_index(request_id, position)
+    def capture(self, request_id, position, *, max_bytes, terminal=False):
+        index = self._prefill_index(request_id, position, terminal=terminal)
         counter = self.runner.model_state.num_accepted_tokens_gpu
-        if int(counter[index].item()) != 1:
-            raise ValueError('Speculative terminal state requires canonicalization or replay')
+        if terminal or int(counter[index].item()) != 1:
+            if not terminal and not getattr(self, 'capture_decode', False):
+                raise ValueError('Speculative terminal state requires canonicalization or replay')
+            runtime = self.runner._kvmem_capture_runtime
+            steps = runtime.last_steps.get(request_id, [])
+            if not steps or steps[-1]['history_begin'] + steps[-1]['accepted'] != position:
+                raise ValueError('Decode snapshot is missing its exact accepted sampling extent')
+            step = steps[-1]
+            if terminal and runtime.authorities[request_id].history_end != position:
+                raise ValueError('Terminal state differs from the accepted KV authority')
+            event = self.recurrent.canonicalize_accepted(request_id,
+                retained_tokens=step['accepted'], query_tokens=step['scheduled'],
+                speculative=step['history_begin'] >= int(self.runner.req_states.prefill_len.np[index]))
+            if event is not None:
+                event.synchronize()
         recurrent = self._recurrent_views(request_id)
         begin = max(0, position - self.contract.sliding_window + 1) if self.contract else position
         draft = self._draft_views(request_id, begin, position)
@@ -110,9 +124,17 @@ class PromptStateAdapter:
             raise BufferError('Prompt model checkpoint exceeds its byte reservation')
         # Blocking copies establish a stable CPU-owned checkpoint before the
         # next target forward can overwrite the borrowed GDN/draft source views.
-        saved_recurrent = {name: tensor.to('cpu', copy=True) for name, tensor in recurrent.items()}
-        saved_draft = {name: cache[pages, offsets].to('cpu', copy=True)
-                       for name, (cache, pages, offsets) in draft.items()}
+        tensors = list(recurrent.values()) + [cache[pages, offsets] for cache, pages, offsets in draft.values()]
+        # One transfer/synchronization for all GDN layers and draft pages. Each
+        # typed view owns a disjoint range of this CPU checkpoint buffer.
+        payload = torch.cat([t.contiguous().view(torch.uint8).flatten() for t in tensors]).to('cpu', copy=True)
+        copies, offset = [], 0
+        for tensor in tensors:
+            nbytes = tensor.numel() * tensor.element_size()
+            copies.append(payload[offset:offset+nbytes].view(tensor.dtype).reshape(tensor.shape))
+            offset += nbytes
+        saved_recurrent = dict(zip(recurrent, copies[:len(recurrent)]))
+        saved_draft = dict(zip(draft, copies[len(recurrent):]))
         snapshot = PromptModelState(self._identity, position, begin, saved_recurrent, saved_draft)
         if snapshot.bytes != size:
             raise RuntimeError('Checkpoint byte reservation disagrees with materialized state')
@@ -140,10 +162,18 @@ class PromptStateAdapter:
             shape = (snapshot.position - snapshot.draft_begin, cache.shape[2], cache.shape[3])
             if source.device.type != 'cpu' or tuple(source.shape) != shape or source.dtype != cache.dtype:
                 raise ValueError('Draft checkpoint schema changed')
-        for name, destination in recurrent.items():
-            destination.copy_(snapshot.recurrent[name])
-        for name, (cache, pages, offsets) in draft.items():
-            cache[pages, offsets] = snapshot.draft[name].to(cache.device)
+        sources = [snapshot.recurrent[name] for name in recurrent] + [snapshot.draft[name] for name in draft]
+        payload = torch.cat([t.contiguous().view(torch.uint8).flatten() for t in sources]).to(
+            self.runner.model_state.num_accepted_tokens_gpu.device)
+        uploaded, offset = [], 0
+        for source in sources:
+            nbytes = source.numel() * source.element_size()
+            uploaded.append(payload[offset:offset+nbytes].view(source.dtype).reshape(source.shape))
+            offset += nbytes
+        for (name, destination), source in zip(recurrent.items(), uploaded[:len(recurrent)]):
+            destination.copy_(source)
+        for (name, (cache, pages, offsets)), source in zip(draft.items(), uploaded[len(recurrent):]):
+            cache[pages, offsets] = source
         counter = self.runner.model_state.num_accepted_tokens_gpu
         counter[index].fill_(1)
         if counter.device.type == 'cuda':

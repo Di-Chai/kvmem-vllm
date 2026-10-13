@@ -14,6 +14,7 @@ from threading import Event
 import torch
 
 from .authority import RequestAuthority
+from .diagnostics import CompletionHistory, completion_counts
 from .options import RuntimeOptions
 from .storage import make_shared_archive
 from .transfer import PackedDownloads
@@ -77,7 +78,7 @@ class CaptureRuntime:
         self.last_steps = {}
         self.terminal_prefixes = {}
         self.terminal_discarded = {}
-        self.completed = []
+        self.completed = CompletionHistory(serving=bool(getattr(runner, '_kvmem_serving', False)))
         self.batches = 0
         self._progress_batch = -1
         self.retiring = {}
@@ -181,11 +182,12 @@ class CaptureRuntime:
 
     def _write_progress(self):
         progress = {"batches_submitted": self.batches,
+            'full_graph_decode_calls': getattr(self.runner, '_kvmem_graph_decode_calls', 0),
             "accepted_history": {req: owner.history_end for req, owner in self.authorities.items()},
             "archive_used_slots": self.archive.tier.used_slots,
             "pending_downloads": len(self.downloads.pending),
-                    "completed_requests": len(self.completed),
-                    "retiring_requests": len(getattr(self, 'retiring', {}))}
+            **completion_counts(self.completed),
+            "retiring_requests": len(getattr(self, 'retiring', {}))}
         temporary = self.output / "progress.tmp"
         temporary.write_text(json.dumps(progress, indent=2))
         temporary.replace(self.output / "progress.json")
@@ -365,7 +367,8 @@ class CaptureRuntime:
     def _write_archive_report(self):
         sessions = getattr(self.runner, '_kvmem_sessions', None)
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
-                  "batches": self.batches, "completed": self.completed,
+                  "batches": self.batches, "completed": list(self.completed),
+                  **completion_counts(self.completed),
                   "block_tokens": self.config.block_tokens,
                   "memory_config": asdict(self.config),
                   "cpu_cache_capacity_bytes": self.options.cpu_read_cache_bytes,

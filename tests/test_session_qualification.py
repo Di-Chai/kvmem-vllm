@@ -40,3 +40,35 @@ def test_concurrent_gate_rejects_missing_or_cross_counted_imports(monkeypatch):
     for tokens, hits in ((10240, 3), (9216, 4), (13312, 5)):
         with pytest.raises(RuntimeError, match='Incorrect session imports'):
             concurrent.reuse_delta(state(1024, 1), state(tokens, hits), 3, [3072]*3)
+
+
+def test_population_uses_cumulative_count_and_http_identity_after_history_rollover(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / 'scripts'))
+    import qualify_session_concurrency as concurrent
+    old = [{'request_id': f'old-{index}'} for index in range(256)]
+    owned = {'request_id': 'cmpl-owned-0', 'retirement_strategy': 'checkpoint_rewind',
+             'checkpoint_tokens': 3072}
+    before = {'completed_requests': 300, 'completed': old}
+    after = {'completed_requests': 301, 'completed': old[1:] + [owned]}
+    assert concurrent.completed_since(before, before) == []
+    assert concurrent.completed_since(before, after) == [owned]
+    assert concurrent.populated_checkpoint(before, after, 'cmpl-owned') == 3072
+    with pytest.raises(RuntimeError, match='another HTTP request'):
+        concurrent.populated_checkpoint(before, after, 'cmpl-own')
+    # Legacy archives retained their whole list and have no cumulative field.
+    assert concurrent.populated_checkpoint({'completed': old}, {'completed': old + [owned]},
+                                           'cmpl-owned') == 3072
+
+
+def test_population_rejects_evicted_or_reset_completion_evidence(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / 'scripts'))
+    import qualify_session_concurrency as concurrent
+    before = {'completed_requests': 300, 'completed': [{'request_id': 'old'}]}
+    with pytest.raises(RuntimeError, match='no longer retained'):
+        concurrent.completed_since(before, {'completed_requests': 303, 'completed': [{}, {}]})
+    with pytest.raises(RuntimeError, match='backwards'):
+        concurrent.completed_since(before, {'completed_requests': 1, 'completed': []})
+    with pytest.raises(RuntimeError, match='exactly one'):
+        concurrent.populated_checkpoint(before, before, 'cmpl-owned')
+    with pytest.raises(RuntimeError, match='Invalid cumulative'):
+        concurrent.completed_since(before, {'completed_requests': True, 'completed': []})

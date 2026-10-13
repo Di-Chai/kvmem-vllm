@@ -3,7 +3,7 @@
 Importing this package never imports torch or initializes CUDA.
 """
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0.dev1"
 
 
 def register() -> None:

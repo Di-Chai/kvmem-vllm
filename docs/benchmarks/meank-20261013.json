@@ -1,0 +1,341 @@
+{
+  "date": "2026-10-13",
+  "hardware": "RTX PRO 6000 Blackwell Server 96GB",
+  "vllm_version": "0.30.0",
+  "scope": "Fixed-output synthetic throughput; no task-quality or hard-SLO qualification. Single runs, with changing speculative acceptance.",
+  "results": [
+    {
+      "name": "full_mtp3_32k_16k_c8",
+      "evidence": "artifacts/elastic-long-output-20261013/c8-32k-16k/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "full_context",
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 591.9234444196426,
+      "whole_batch_tokens_per_second": 505.2807270135956,
+      "whole_batch_seconds": 259.4043132709339,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9984891836956636,
+        "intervals": 668,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-16k-02",
+      "evidence": "artifacts/meank-20261013/c8-32k-16k-02/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 392.7070923203664,
+      "whole_batch_tokens_per_second": 279.4730259522884,
+      "whole_batch_seconds": 468.9969615256414,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9986400078104056,
+        "intervals": 962,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-16k-q4",
+      "evidence": "artifacts/meank-20261013/c8-32k-16k-q4/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 399.1359965287424,
+      "whole_batch_tokens_per_second": 315.6574676230861,
+      "whole_batch_seconds": 415.2349094953388,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9988498532053319,
+        "intervals": 980,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-16k-q4-cutlass",
+      "evidence": "artifacts/meank-20261013/c8-32k-16k-q4-cutlass/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 421.12482803545316,
+      "whole_batch_tokens_per_second": 324.99877660053636,
+      "whole_batch_seconds": 403.29997968301177,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9991760459082014,
+        "intervals": 1098,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-16k-async-offsets",
+      "evidence": "artifacts/meank-20261013/c8-32k-16k-async-offsets/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 345.07822315438364,
+      "whole_batch_tokens_per_second": 284.1127087360629,
+      "whole_batch_seconds": 461.33803934045136,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9989245932966958,
+        "intervals": 1200,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-16k-fp8draft",
+      "evidence": "artifacts/meank-20261013/c8-32k-16k-fp8draft/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "draft_quantization": "fp8",
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 339.1735180617799,
+      "whole_batch_tokens_per_second": 277.728458367651,
+      "whole_batch_seconds": 471.9429934201762,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.998576584934668,
+        "intervals": 1217,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c1-32k-4k-final",
+      "evidence": "artifacts/meank-20261013/c1-32k-4k-final/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 1,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 4096,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 63.17166299318905,
+      "whole_batch_tokens_per_second": 55.920638636245904,
+      "whole_batch_seconds": 73.24665990751237,
+      "successful_requests": 1,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9963344364964747,
+        "intervals": 229,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c4-32k-4k-final",
+      "evidence": "artifacts/meank-20261013/c4-32k-4k-final/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 4,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 4096,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 232.16633633363074,
+      "whole_batch_tokens_per_second": 168.6939945201449,
+      "whole_batch_seconds": 97.12260384019464,
+      "successful_requests": 4,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9944458451810082,
+        "intervals": 245,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-32k-4k-final",
+      "evidence": "artifacts/meank-20261013/c8-32k-4k-final/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 4096,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+      },
+      "steady_decode_tokens_per_second": 378.4219513875831,
+      "whole_batch_tokens_per_second": 191.0721264882653,
+      "whole_batch_seconds": 171.49544835370034,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9957535828141442,
+        "intervals": 256,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    },
+    {
+      "name": "c8-64k-4k-final",
+      "evidence": "artifacts/meank-20261013/c8-64k-4k-final/summary.json",
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_mode": "meank",
+        "draft_method": "dflash",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a"
+      },
+      "steady_decode_tokens_per_second": 386.88913936639693,
+      "whole_batch_tokens_per_second": 101.41157110777698,
+      "whole_batch_seconds": 323.11894631013274,
+      "successful_requests": 8,
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9992481035746167,
+        "intervals": 272,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      }
+    }
+  ],
+  "long_history_selection": {
+    "requests": 8,
+    "refreshes": 256,
+    "scored_refreshes": 248,
+    "selected_tokens_max": 32768,
+    "completed_histories": [
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631
+    ],
+    "checkpoint_tokens": [
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631,
+      69631
+    ],
+    "assembly_seconds_total": 58.470099930651486,
+    "assembly_host_prepare_seconds_total": 47.115022698417306,
+    "assembly_uploaded_bytes_total": 369553833984,
+    "per_request_refresh_counts": [
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32,
+      32
+    ],
+    "final_native_resources": {
+      "requests": 0,
+      "refresh_pending": 0,
+      "connector_pending": 0,
+      "owned_blocks": 0,
+      "free_blocks": 1735,
+      "total_blocks": 1736
+    }
+  },
+  "terminal_256k": {
+    "calls": {
+      "first": {
+        "status": 200,
+        "seconds": 4.793367861770093
+      },
+      "resume": {
+        "status": 200,
+        "seconds": 5.815681301988661
+      }
+    },
+    "status": "passed",
+    "prompt_tokens": 261632,
+    "restored_state": {
+      "history_tokens": 261889,
+      "working_tokens": 33537,
+      "target_kv_bytes": 1098940416,
+      "recurrent_tensors": 96,
+      "draft_layers": 5,
+      "byte_equal": true
+    },
+    "restore_integrity_status": "passed",
+    "expected_first_checkpoint_tokens": 261889,
+    "scope": "terminal_checkpoint_gpu_byte_integrity",
+    "cold_control": "not_run",
+    "final_history_tokens": 262144,
+    "first_turn_cache_scope": "Warm retry after a failed cold request retained a safe 261120-token checkpoint; first-call duration is not cold prefill time."
+  },
+  "tests": {
+    "cpu_passed": 482,
+    "cpu_skipped": 50,
+    "gpu_component_passed": 29,
+    "original_cpp_ctest_passed": 5
+  }
+}

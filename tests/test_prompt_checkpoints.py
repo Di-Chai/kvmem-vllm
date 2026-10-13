@@ -111,6 +111,51 @@ def test_checkpoint_admission_never_overallocates_or_closes_live_authority(tmp_p
     assert pool.payload_bytes == 0 and archive.close()
 
 
+def test_live_checkpoint_replacement_is_atomic_and_reuses_its_byte_credit(tmp_path):
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    pool.max_payload_bytes = pool.payload_bytes
+    replacement = pool.capture(old.namespace, 'a', authority, list(range(11)), adapter, replace=True)
+    assert replacement is not old and pool.payload_bytes == replacement.payload_bytes
+    assert old.authority is None
+    pool.max_payload_bytes = 1
+    with pytest.raises(BufferError):
+        pool.capture(replacement.namespace, 'a', authority, list(range(11)), adapter, replace=True)
+    assert pool.entries[replacement.namespace] is replacement and replacement.authority is authority
+    pool.drop_live(replacement)
+    assert authority.close() and archive.close()
+
+
+def test_terminal_checkpoint_keeps_partial_accepted_raw_kv_tail_and_fences_import(tmp_path):
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    raw, values = payload(8, 2)
+    assert authority.append(raw, values, history_begin=8, local_rope_begin=8)
+    adapter.runner._kvmem_capture_runtime = type('Runtime', (), {
+        'last_steps': {'a': [{'history_begin': 8, 'accepted': 2, 'scheduled': 2}]},
+        'authorities': {'a': authority}})()
+    adapter.recurrent.conv_dim_first = False; adapter.recurrent.conv_widths = {'gdn': 4}
+    terminal = pool.capture(old.namespace, 'a', authority, list(range(12)), adapter, replace=True, terminal=True)
+    assert terminal.position == 10 and terminal.window.window_tokens == 10
+    fence = Event()
+    pool.retire(terminal, fence)
+    assert not pool.idle(terminal)
+    fence.done = True
+    assert pool.idle(terminal) and authority.history_end == 10
+    tail = max(authority.records.values(), key=lambda r: r.history_begin)
+    assert tail.count == 2 and not tail.archived
+    assert torch.equal(tail.raw[:, :2], raw) and torch.equal(tail.values[:, :2], values)
+    assert pool.claim(terminal.namespace, 'new', list(range(14))) is terminal
+    plan = pool.prepare_claim_window(terminal)
+    assert plan.remaps[-1].n_tokens == 2
+    authority.memory.attach_completion(Event(True)); assert authority.memory.commit_selection()
+    assert pool.finish_claim(terminal, Event(True)) is authority
+    del plan
+    assert authority.append(*payload(10, 2), history_begin=10, local_rope_begin=10)
+    drain(authority)
+    sealed_raw, sealed_values = authority.read_record(tail.handle)
+    assert torch.equal(sealed_raw[:, :2], raw) and torch.equal(sealed_values[:, :2], values)
+    assert authority.close() and archive.close()
+
+
 def test_import_cancellation_waits_for_restore_cleanup_and_rejects_stale_leases(tmp_path):
     pool, checkpoint, authority, archive, _, _ = saved(tmp_path)
     pool.retire(checkpoint, Event(True)); ready(pool, checkpoint)

@@ -275,8 +275,9 @@ PYBIND11_MODULE(_native, m) {
         .def("handle", &KvMemStore::repository_handle)
         .def_property_readonly("history_end", &KvMemStore::history_end)
         .def("scores", &KvMemStore::set_repository_retrieval_scores)
-        .def("pick", py::overload_cast<const std::vector<uint32_t>&>(
-                         &KvMemStore::pick_topk_blocks, py::const_))
+        .def("pick", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory) {
+            return s.pick_topk_blocks(mandatory);
+        })
         .def("select", &KvMemStore::set_repository_selection,
              py::arg("handles"), py::arg("force_raw_refresh") = false)
         .def("set_baked", &KvMemStore::set_block_baked_pos,

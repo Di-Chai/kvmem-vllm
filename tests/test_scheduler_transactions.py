@@ -12,6 +12,7 @@ from test_window_manager import make_manager
 
 def setup_scheduler():
     scheduler = KVMemScheduler.__new__(KVMemScheduler)
+    scheduler.session_capture_decode = False
     scheduler.connector, _ = pair()
     scheduler.connector.scheduler_completion = scheduler._complete_refresh
     manager, pool = make_manager()

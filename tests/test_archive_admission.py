@@ -85,6 +85,7 @@ def test_scheduler_preserves_native_query_and_only_defers_request_without_credit
     monkeypatch.setattr(Scheduler, '_reserve_prefill_lookahead', lambda self, request, history, tokens: tokens)
     scheduler = KVMemScheduler.__new__(KVMemScheduler)
     scheduler._bounded_target = True
+    scheduler.session_capture_decode = False
     scheduler.window_managers = {0: SimpleNamespace(offsets={})}
     scheduler.query_policy = QueryPolicy(16, 64, 64)
     scheduler.archive_admission = ArchiveAdmission(16, 24)

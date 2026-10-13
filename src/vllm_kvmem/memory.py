@@ -162,10 +162,10 @@ class RequestMemory:
     def checkpoint_valid(self, checkpoint):
         return self._store is not None and self._store.checkpoint_valid(checkpoint)
 
-    def checkpoint_window(self):
+    def checkpoint_window(self, *, allow_partial=False):
         """Capture a sealed prompt boundary including its exact selected frame."""
         self._require(Phase.READY)
-        if self.history_end == 0 or self.history_end % self.config.block_tokens:
+        if self.history_end == 0 or (self.history_end % self.config.block_tokens and not allow_partial):
             raise ValueError('Window checkpoint requires a nonempty sealed prefix')
         prefix = self.checkpoint()
         checkpoint = WindowCheckpoint(self.request_id, prefix,
@@ -179,7 +179,8 @@ class RequestMemory:
             raise ValueError('Stale or foreign window checkpoint')
         dense, logical_end, seen = 0, 0, set()
         for slot, generation, begin, count, position in checkpoint.records:
-            if (position != dense or begin < logical_end or count != self.config.block_tokens
+            if (position != dense or begin < logical_end or not 0 < count <= self.config.block_tokens
+                    or (count != self.config.block_tokens and begin + count != checkpoint.position)
                     or begin + count > checkpoint.position or (slot, generation) in seen):
                 raise ValueError('Checkpoint window is not a complete ordered dense frame')
             handle = self._store.handle(slot)

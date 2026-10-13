@@ -171,3 +171,33 @@ class NativeRecurrentState:
             event.record(torch.cuda.current_stream(counter.device))
             return event
         return None
+
+
+def canonicalize_before_non_speculative_batch(runner, batch):
+    """Preserve accepted SD rows before a clipped batch uses native base rows."""
+    runtime = getattr(runner, '_kvmem_capture_runtime', None)
+    if runtime is None or runner.speculative_config is None:
+        return
+    drafts = batch.num_draft_tokens_per_req
+    candidates = [i for i in range(batch.num_reqs)
+                  if (drafts is None or drafts[i] == 0) and not batch.is_prefilling_np[i]
+                  and batch.num_computed_tokens_np[i] > 0]
+    if not candidates:
+        return
+    runtime.drain(wait=True)
+    adapter = None
+    for i in candidates:
+        request_id = batch.req_ids[i]
+        steps = runtime.last_steps.get(request_id, ())
+        if not steps or steps[-1]['accepted'] <= 1:
+            continue
+        index = runner.req_states.req_id_to_index[request_id]
+        if int(runner.model_state.num_accepted_tokens_gpu[index].item()) == 1:
+            continue
+        step = steps[-1]
+        if step['history_begin'] + step['accepted'] != int(batch.num_computed_tokens_np[i]):
+            raise ValueError('Non-speculative continuation differs from its last accepted prefix')
+        if adapter is None:
+            adapter = NativeRecurrentState(runner)
+        adapter.canonicalize_accepted(request_id, retained_tokens=step['accepted'],
+                                     query_tokens=step['scheduled'], speculative=True)

@@ -63,30 +63,40 @@ class PromptCheckpointPool:
         if self.entries.get(checkpoint.namespace) is not checkpoint:
             raise ValueError('Stale or foreign prompt checkpoint lease')
 
-    def capture(self, namespace, request_id, authority, tokens, model_adapter):
-        if namespace in self.entries:
+    def capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False, terminal=False):
+        previous = self.entries.get(namespace)
+        if previous is not None and not replace:
             raise ValueError('Session already owns a checkpoint; serialize its turns')
-        if len(self.entries) >= self.capacity:
+        if previous is not None and (previous.phase is not CheckpointPhase.LIVE or
+                previous.request_id != request_id or previous.authority is not authority):
+            raise ValueError('Replacement requires the same live session authority')
+        if previous is None and len(self.entries) >= self.capacity:
             raise BufferError('Prompt checkpoint entry capacity is exhausted')
         position = authority.history_end
         # Validate token IDs before acquiring native prefix leases or GPU copies.
         if (type(position) is not int or position <= 0 or
-                position % authority.memory.config.block_tokens):
+                (position % authority.memory.config.block_tokens and not terminal)):
             raise ValueError('Prompt checkpoint requires a sealed authority boundary')
         token_size = position * 4
-        if token_size >= self.max_payload_bytes - self.payload_bytes:
+        retained_bytes = self.payload_bytes - (previous.payload_bytes if previous else 0)
+        if token_size >= self.max_payload_bytes - retained_bytes:
             raise BufferError('Prompt checkpoint payload capacity is exhausted')
         identity = token_bytes(tokens, position)
-        window = authority.memory.checkpoint_window()
+        window = authority.memory.checkpoint_window(allow_partial=terminal)
         # Account for the serialized frame geometry as well as token/model data.
         # Python object overhead and authority/archive storage are separate quotas.
         fixed = len(identity) + len(window.records) * 5 * 8
-        available = self.max_payload_bytes - self.payload_bytes - fixed
+        available = self.max_payload_bytes - retained_bytes - fixed
         if available <= 0:
             raise BufferError('Prompt checkpoint payload capacity is exhausted')
-        model = model_adapter.capture(request_id, position, max_bytes=available)
+        model = model_adapter.capture(request_id, position, max_bytes=available,
+                                      **({'terminal': True} if terminal else {}))
         checkpoint = PromptCheckpoint(namespace, request_id, authority, window,
                                       model, identity, fixed + model.bytes)
+        # Keep the previous snapshot available if any validation/copy/admission
+        # above fails. Only a complete CPU-owned replacement releases its leases.
+        if previous is not None:
+            self._remove(previous)
         self.entries[namespace] = checkpoint
         self.payload_bytes += checkpoint.payload_bytes
         return checkpoint
@@ -112,7 +122,16 @@ class PromptCheckpointPool:
             return True
         if checkpoint.phase is not CheckpointPhase.RETIRING:
             return False
+        if checkpoint.fence is not None and not checkpoint.fence.query():
+            return False
         authority = checkpoint.authority
+        if authority.history_end == checkpoint.position and not checkpoint.rewind_started:
+            # At a terminal checkpoint every accepted raw K/V row is retained,
+            # including the mutable partial tail. No branching or rewrite of an
+            # immutable archive generation is necessary before transfer.
+            checkpoint.phase = CheckpointPhase.IDLE
+            checkpoint.fence = None
+            return True
         if not checkpoint.rewind_started:
             spans = authority.begin_rewind(checkpoint.window.prefix)
             if spans is None:

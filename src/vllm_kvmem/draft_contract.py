@@ -50,7 +50,7 @@ class DraftContract:
         window = getattr(hf, 'sliding_window', 0)
         layers = hf.num_hidden_layers
         if (hf.architectures != ['DFlash2DraftModel'] or
-                type(block) is not int or query != block or not 1 < query <= memory.block_tokens // 2 or
+                type(block) is not int or not 1 < query <= block or query > memory.block_tokens // 2 or
                 type(window) is not int or window <= 0 or
                 hf.layer_types != ['sliding_attention'] * layers or layers <= 0 or
                 not hf.use_sliding_window or draft.dtype != torch.bfloat16):

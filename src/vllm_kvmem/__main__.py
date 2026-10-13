@@ -5,6 +5,9 @@ import sys
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'elastic-serve':
+        from .elastic_serve import main as elastic_main
+        return elastic_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == 'serve':
         from .serve import main as serve_main
         return serve_main(sys.argv[2:])

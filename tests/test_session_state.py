@@ -74,6 +74,7 @@ def test_invalid_checkpoint_or_layout_fails_before_any_destination_write():
     broken['draft.attn'] = broken['draft.attn'].float()
     with pytest.raises(ValueError, match='Draft checkpoint schema'):
         adapter.restore(replace(snapshot, draft=broken), 'b')
+
     with pytest.raises(ValueError, match='another worker'):
         adapter.restore(replace(snapshot, owner=object()), 'b')
     with pytest.raises(ValueError, match='Incomplete'):
@@ -82,6 +83,47 @@ def test_invalid_checkpoint_or_layout_fails_before_any_destination_write():
     with pytest.raises(ValueError, match='null or aliased'):
         adapter.restore(snapshot, 'b')
     assert torch.equal(conv, before[0]) and torch.equal(ssm, before[1]) and torch.equal(cache, before[2])
+
+
+def test_decode_snapshot_uses_accepted_gdn_row_and_keeps_neighbour_state():
+    adapter, conv, ssm, cache, _ = fixture()
+    adapter.capture_decode = True
+    adapter.runner.req_states.prefill_len.np[0] = 5
+    adapter.runner.model_state.num_accepted_tokens_gpu[0] = 2
+    adapter.runner._kvmem_capture_runtime = SimpleNamespace(last_steps={
+        'a': [{'history_begin': 6, 'accepted': 2, 'scheduled': 2}]})
+    adapter.recurrent.conv_dim_first = False
+    adapter.recurrent.conv_widths = {'gdn': 4}
+    before_conv, before_ssm, before_cache = conv.clone(), ssm.clone(), cache.clone()
+    snapshot = adapter.capture('a', 8, max_bytes=4096)
+    assert torch.equal(snapshot.recurrent['gdn', 'ssm'], before_ssm[2])
+    assert torch.equal(snapshot.recurrent['gdn', 'conv'][:3], before_conv[1, 1:4])
+    assert torch.equal(conv[3:], before_conv[3:]) and torch.equal(ssm[3:], before_ssm[3:])
+    assert torch.equal(cache, before_cache)
+    assert adapter.runner.model_state.num_accepted_tokens_gpu.tolist() == [1, 1, 7]
+
+
+def test_clipped_continuation_keeps_accepted_state_and_repeated_metadata_is_idempotent(monkeypatch):
+    from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
+    adapter, conv, ssm, _, _ = fixture()
+    runner = adapter.runner
+    runner.speculative_config = object()
+    runner.model_state.num_accepted_tokens_gpu[0] = 2
+    runner._kvmem_capture_runtime = SimpleNamespace(drain=lambda **_: None,
+        last_steps={'a': [{'history_begin': 6, 'accepted': 2, 'scheduled': 2}]})
+    adapter.recurrent.conv_dim_first = False
+    adapter.recurrent.conv_widths = {'gdn': 4}
+    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState', lambda _: adapter.recurrent)
+    batch = SimpleNamespace(num_reqs=2, req_ids=['a', 'b'], num_draft_tokens_per_req=[0, 7],
+        is_prefilling_np=[False, False], num_computed_tokens_np=[8, 8])
+    old_conv, old_ssm = conv.clone(), ssm.clone()
+    canonicalize_before_non_speculative_batch(runner, batch)
+    assert torch.equal(conv[1, :3], old_conv[1, 1:4])
+    assert torch.equal(ssm[1], old_ssm[2])
+    assert torch.equal(conv[3:], old_conv[3:]) and torch.equal(ssm[3:], old_ssm[3:])
+    accepted_conv, accepted_ssm = conv.clone(), ssm.clone()
+    canonicalize_before_non_speculative_batch(runner, batch)
+    assert torch.equal(conv, accepted_conv) and torch.equal(ssm, accepted_ssm)
 
 
 def test_snapshot_uses_exact_visible_logical_tail_without_guessing_physical_page_order():

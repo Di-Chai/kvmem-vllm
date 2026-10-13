@@ -1,5 +1,17 @@
 # Qualification boundaries
 
+The new [original MeanK integration](meank-integration-20261013.md) adds NVFP4,
+native FULL decode graphs and terminal accepted-history checkpoints. It has
+separate component, real restoration and throughput evidence; the older eager
+measurements below remain historical. MeanK currently uses DFlash2, whereas the
+native MTP offload entry keeps complete KV. Cold-prefill token equality, executed
+agent-task quality and sustained mixed-tool SLO acceptance remain incomplete.
+
+The native NVFP4/FP8/MTP elastic-turn entry has separate
+[2026-10-13 CPU-restore and selected-context evidence](elastic-throughput-20261013.md).
+It uses upstream graph execution and KV offloading; it does not qualify the
+older eager/MeanK compressed-runtime boundaries documented below.
+
 ## Correction: cold-block residency, 2026-09-29
 
 A repeated reselection defect was reproduced after the earlier model runs:

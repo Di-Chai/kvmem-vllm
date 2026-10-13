@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-kvmem"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Bounded, query-selected long-context memory for vLLM"
 requires-python = ">=3.12"
 license = "Apache-2.0"

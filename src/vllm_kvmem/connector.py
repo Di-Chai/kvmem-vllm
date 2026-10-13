@@ -10,6 +10,7 @@ import os
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorWorkerMetadata, SupportsHMA,
+    KVConnectorRole,
 )
 
 from .window_manager import RefreshTicket
@@ -80,6 +81,10 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.archive_sequence = 0
         self.sessions = None  # Scheduler ledger; worker lifecycle is separate.
         self.session_worker = None
+        if (self.bounded_target and role == KVConnectorRole.SCHEDULER
+                and kv_cache_config is not None and os.getenv('KVMEM_RUNNER_PROBE_DIR')):
+            from .cache_manifest import write_mean_k_geometry
+            write_mean_k_geometry(vllm_config, kv_cache_config, os.environ['KVMEM_RUNNER_PROBE_DIR'])
 
     def queue(self, command):
         if command.request_id in self.pending:

@@ -57,7 +57,8 @@ def install_qwen_capture(model) -> list[str]:
 
 def _project_with_capture(self, qkv, positions):
     sink = _sink.get()
-    if sink is None:
+    buffers = getattr(self, '_kvmem_capture_buffers', None)
+    if sink is None and buffers is None:
         return self._kvmem_original_projection(qkv, positions)
     q_gate, key, value = qkv.split([self.q_size * 2, self.kv_size, self.kv_size], dim=-1)
     if positions.ndim == 2 and not getattr(self.rotary_emb, "mrope_section", None):
@@ -69,9 +70,39 @@ def _project_with_capture(self, qkv, positions):
         norm_beta=1.0,
         mrope_section=(getattr(self.rotary_emb, "mrope_section", None)
                        if positions.ndim == 2 else None),
+        raw_q_output=(buffers.query[:qkv.shape[0]].view(qkv.shape[0], -1)
+                      if buffers is not None else None),
+        raw_k_output=(buffers.key[:qkv.shape[0]].view(qkv.shape[0], -1)
+                      if buffers is not None else None),
     )
-    sink(CapturedLayer(self._kvmem_capture_name, positions,
-                      raw_q.view(-1, self.num_heads, self.head_dim),
-                      raw_k.view(-1, self.num_kv_heads, self.head_dim),
-                      value.view(-1, self.num_kv_heads, self.head_dim)))
+    raw_value = value.view(-1, self.num_kv_heads, self.head_dim)
+    if buffers is not None:
+        buffers.value[:qkv.shape[0]].copy_(raw_value)
+        raw_value = buffers.value[:qkv.shape[0]]
+    if sink is not None:
+        sink(CapturedLayer(self._kvmem_capture_name, positions,
+                          raw_q.view(-1, self.num_heads, self.head_dim),
+                          raw_k.view(-1, self.num_kv_heads, self.head_dim), raw_value))
     return q, k, value, gate
+
+
+def install_persistent_capture(model, names, max_tokens, positions):
+    """Stable outputs written by every graph replay, before sampling's D2H copy.
+
+    ContextVar callbacks cannot execute during CUDA graph replay. These buffers
+    are owned by the runner for its lifetime; the native single-batch contract
+    ensures sampling packs their contents before the next forward overwrites them.
+    """
+    modules = dict(model.named_modules())
+    captured = []
+    for name in names:
+        layer = modules[name]
+        weight = layer.q_norm.weight
+        def allocate(heads):
+            return torch.empty((max_tokens, heads, layer.head_dim),
+                               device=weight.device, dtype=torch.bfloat16)
+        record = CapturedLayer(name, positions, allocate(layer.num_heads),
+                               allocate(layer.num_kv_heads), allocate(layer.num_kv_heads))
+        layer._kvmem_capture_buffers = record
+        captured.append(record)
+    return captured

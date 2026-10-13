@@ -61,8 +61,9 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         from .cached_storage import CachedArchive
         cls = CachedArchive
         kwargs.update(cache_bytes=options.cpu_read_cache_bytes,
-                      namespace_bytes=(options.memory.select_budget + options.memory.gen_budget)
-                      // options.memory.block_tokens * record_bytes)
+                      namespace_bytes=(options.cpu_history_cache_bytes_per_request or
+                          (options.memory.select_budget + options.memory.gen_budget)
+                          // options.memory.block_tokens * record_bytes))
     return cls(str(directory), record_bytes, capacity, preallocate=options.nvme_preallocate,
                max_bytes=options.nvme_max_bytes, io_max_bytes=options.archive_io_max_bytes, **kwargs)
 

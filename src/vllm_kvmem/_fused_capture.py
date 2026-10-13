@@ -158,6 +158,8 @@ def fused_qk_rmsnorm_rope_gate(
     rotary_dim: int,
     mrope_section: list[int] | tuple[int, int, int] | None = None,
     norm_beta: float = 0.0,
+    raw_q_output: torch.Tensor | None = None,
+    raw_k_output: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused split + QK-RMSNorm + (partial) RoPE + gate copy for Qwen attn.
 
@@ -240,8 +242,12 @@ def fused_qk_rmsnorm_rope_gate(
         (n_tokens, num_kv_heads * head_dim), dtype=k.dtype, device=k.device
     )
     gate_out = torch.empty_like(q_out)
-    raw_q = torch.empty_like(q_out)
-    raw_k = torch.empty_like(k_out)
+    raw_q = torch.empty_like(q_out) if raw_q_output is None else raw_q_output
+    raw_k = torch.empty_like(k_out) if raw_k_output is None else raw_k_output
+    for raw, output in ((raw_q, q_out), (raw_k, k_out)):
+        if (raw.shape != output.shape or raw.dtype != output.dtype or
+                raw.device != output.device or not raw.is_contiguous()):
+            raise ValueError('Content capture output must match native projection geometry')
     if n_tokens == 0:
         return q_out, k_out, gate_out, raw_q, raw_k
 

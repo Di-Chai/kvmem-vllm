@@ -1,11 +1,27 @@
 # Installation and experimental serving
 
+For the current original-MeanK integration, start with
+[MeanK setup and implementation](meank-integration-20261013.md) and
+`examples/qwen-nvfp4-meank-elastic.json`. It uses DFlash2 and native decode
+CUDA Graphs, with automatic historical KV selection and terminal restoration.
+The [elastic API](elastic-serving.md) also supports full-context native MTP
+offloading as a separate mode. See [measured results](meank-throughput-20261013.md)
+for their different performance and qualification boundaries.
+
+The installed development wheel for this update is retained locally at
+`artifacts/meank-20261013/dist/`. Reinstall when replacing another build of the
+same `0.1.0.dev1` version. The eager/DFlash2 profiles described below are the
+earlier direct-serving entry.
+
 This is a pinned development integration, not a production release. The actual
-model gates currently cover Qwen3.8-27B GGUF Q8_0, target FP8 e4m3, DFlash2 BF16
+model gates for the direct eager entry cover Qwen3.8-27B GGUF Q8_0 and NVIDIA ModelOpt NVFP4/FP8
+mixed safetensors, target FP8 e4m3, DFlash2 BF16
 draft/native sliding KV, TP=1, eager synchronous execution and text-only requests.
 The kernel/source adapters require vLLM 0.30.0. They do not rewrite installed vLLM
 files. Broader model, quantization, KV codec and engine versions need separate
 adapters and qualification; installing the package does not establish support.
+The [NVFP4 report](nvfp4-throughput-20261013.md) records the exact checkpoint,
+tested workloads, kernel choices and remaining output-quality limits.
 
 ## Install from the independent repository
 
@@ -36,6 +52,15 @@ paths. Relative paths resolve against the profile directory; `~` is expanded.
 The `tokenizer` and `hf_config_path` folders supply tokenizer/model configuration,
 not BF16 target weights. `mm_proj` is required by the pinned GGUF loader even though
 this profile enables language-only execution. The draft uses its BF16 safetensors.
+
+For NVFP4, use `examples/qwen-nvfp4-fp8-dflash-multi-user.json` and the
+[NVFP4 setup instructions](nvfp4-throughput-20261013.md). Set
+`model_format: "safetensors"`, point both `model` and `hf_config_path` at the
+same ModelOpt NVFP4 checkpoint, omit `mm_proj`, and disable `q8_tensorcore`.
+The optional `linear_backend_per_quant` mapping selects compatible native
+vLLM kernels; availability depends on the installed GPU libraries. The launcher
+preserves checkpoint quantization metadata and does not force a uniform FP4
+scheme onto mixed-precision weights.
 
 ```sh
 cp examples/qwen-q8-fp8-dflash.json local-profile.json
@@ -94,16 +119,22 @@ vLLM's public `--middleware` option. Session IDs and salts used for reuse are
 limited to 1024 characters and rejected with HTTP 400 before scheduler dispatch.
 Body/header/`vllm_xargs` precedence matches the pinned engine. Native ASGI host
 tests cover rejection, concurrent valid requests and unchanged streaming bodies;
-actual-model qualification of this new guard remains pending. Direct custom
-launches must include the middleware explicitly to obtain the same validation.
+the current real-model entry checks are recorded in the
+[2026-10-13 report](status-20261013.md). Direct custom launches must include the
+middleware explicitly to obtain the same validation.
+
+For per-user authentication, bounded admission and server-owned session namespaces,
+use [multi-user serving](multi-user-serving.md). That entry installs its own
+validation middleware in place of this single-user guard.
 
 Serving mode distinguishes native warmup (no connector metadata) from the first
 real scheduler message and enables accepted capture before that first forward.
 It omits the one-off diagnostic tensor snapshot used by the original probe tools.
-There is no API-ready/externally-created-marker race. **This new profile entry and
-automatic-arming change currently have 20 passing host tests; actual-model launch
-qualification remains pending.** Existing short/134K/C4 session GPU evidence used
-the frozen qualification launcher and must not be relabeled as this entry's test.
+There is no API-ready/externally-created-marker race. The public profile entry now
+has actual-model single-user startup and authenticated multi-user validation from
+2026-10-13, including short and 134K exact session continuation. See the
+[current qualification report](status-20261013.md) for the tested configurations,
+concurrent load results, and remaining quality and capacity limits.
 
 The public entry also passes an isolated source-package check recorded in
 `artifacts/source-build-serving_01`: rebuild the native wheel from an extracted

@@ -65,6 +65,31 @@ class WindowBatchAdapter:
         self.capacity = capacity
         self.offsets: dict[str, int] = {}
         self.history_ends: dict[str, int] = {}
+        self.buffers = None
+
+    def reserve_graph_buffers(self, max_tokens, max_requests, device):
+        """Capture-time attention lengths and RoPE positions keep stable addresses."""
+        self.buffers = (
+            torch.empty(max_tokens, device=device, dtype=torch.int64),
+            torch.zeros(max_requests, device=device, dtype=torch.int32),
+            torch.zeros(max_requests, device=device, dtype=torch.int32),
+        )
+        self.offsets_cpu = torch.empty(max_requests, dtype=torch.int32, pin_memory=True)
+        self.offsets_ready = None
+        self.uploaded_offsets = None
+
+    def capture_window(self, batch):
+        if self.buffers is None:
+            raise RuntimeError('Graph window buffers were not reserved')
+        positions, seq_lens, _ = self.buffers
+        n, t = batch.num_reqs_after_padding, batch.num_tokens_after_padding
+        positions[:t].copy_(batch.positions[:t])
+        seq_lens[:n].copy_(batch.seq_lens[:n])
+        bounds = batch.seq_lens_cpu_upper_bound[:n]
+        # Native FULL capture uses a worst-case extent. Do not bake a short
+        # bootstrap window into the attention kernel's graph configuration.
+        lens = WindowLengths(seq_lens[:n], bounds, max(self.capacity, int(bounds.max())), positions[:t])
+        return WindowBatch(positions[:t], {g: lens for g in self.attention_groups})
 
     def commit(self, request_id: str, history_end: int, window_tokens: int):
         if not 0 < window_tokens <= min(history_end, self.capacity):
@@ -81,7 +106,7 @@ class WindowBatchAdapter:
 
     def prepare(self, batch) -> WindowBatch | None:
         offsets = [self.offsets.get(req, 0) for req in batch.req_ids]
-        if not any(offsets):
+        if not any(offsets) and self.buffers is None:
             return None
         if batch.positions.device.type != "cuda" or batch.positions.ndim != 1:
             raise ValueError("Working positions require native CUDA 1D input positions")
@@ -95,9 +120,29 @@ class WindowBatchAdapter:
         bounds = batch.seq_lens_cpu_upper_bound - cpu_offsets
         if torch.any(bounds < 0).item() or torch.any(bounds > self.capacity).item():
             raise ValueError("Native batch exceeds the admitted working-set extent")
-        gpu_offsets = cpu_offsets.to(batch.positions.device)
-        positions = torch.empty_like(batch.positions)
-        seq_lens = torch.zeros_like(batch.seq_lens)
+        if self.buffers is None:
+            gpu_offsets = cpu_offsets.to(batch.positions.device)
+            positions = torch.empty_like(batch.positions)
+            seq_lens = torch.zeros_like(batch.seq_lens)
+        else:
+            positions, seq_lens, gpu_offsets = self.buffers
+            positions = positions[:batch.num_tokens_after_padding]
+            seq_lens = seq_lens[:batch.num_reqs_after_padding]
+            gpu_offsets = gpu_offsets[:batch.num_reqs_after_padding]
+            offset_key = tuple(cpu_offsets.tolist())
+            if self.uploaded_offsets != offset_key:
+                # A synchronous CPU copy stalls behind the preceding native
+                # draft kernels. Offsets usually stay fixed throughout decode.
+                # Retain pinned source storage until its DMA has completed.
+                if self.offsets_ready is not None and not self.offsets_ready.query():
+                    self.offsets_ready.synchronize()
+                source = self.offsets_cpu[:batch.num_reqs_after_padding]
+                source.copy_(cpu_offsets)
+                gpu_offsets.copy_(source, non_blocking=True)
+                self.offsets_ready = torch.cuda.Event()
+                self.offsets_ready.record(torch.cuda.current_stream(batch.positions.device))
+                self.uploaded_offsets = offset_key
+            seq_lens.zero_()
         _translate[(batch.num_reqs,)](
             batch.positions, batch.query_start_loc, gpu_offsets, batch.seq_lens,
             positions, seq_lens, batch.num_reqs, batch.num_tokens,

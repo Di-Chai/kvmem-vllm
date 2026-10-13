@@ -1,15 +1,15 @@
 {
   "repository": "git@github.com:Di-Chai/qw3.git",
-  "head": "7ffa50c9c5911a13447cba6abb053dc1c4ed3561",
-  "note": "Imported from working tree; per-file hashes identify uncommitted source changes. Files preserved without modification.",
+  "head": "1410cfe284726edb4161381546fe3915110331c9",
+  "note": "Imported from the qw3 working tree on 2026-10-13; per-file hashes identify source including uncommitted changes. Files preserved without modification.",
   "files": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "include/qw3/kvmem_store.hpp": "006d0f335f801b508093c1328f7523070ef3cc841a5d489286f25ace7911ba27",
+    "include/qw3/kvmem_store.hpp": "4690a044f201b639edf3e10a8e58ea89eb517dd916e8cc63eeba07914a6cb90c",
     "include/qw3/kvmem_repository.hpp": "ce44bd6b86960d0b86e5ef017d067584a012566e666c0d5cc0075250b05e4549",
     "include/qw3/kvmem_repository_gc.hpp": "b10e9f031880169848f0b01b5dfd778adc64a26cc139fe9e1197ab8800252a83",
     "include/qw3/kvmem_gc.hpp": "d7a071e825cacbb4ca5587618ae87b55e57a17a3d6f3e2340b3d1a4f7a1338c6",
     "include/qw3/nvme_kv_tier.hpp": "892eab55d7694db85393ca2d2c5a12c4826ba73e7063cb18e06be65c256b2399",
-    "src/kvmem_store.cpp": "326bc33f43944b1edec085455e5e35a21360256ed57a7a95da52e7a8856b3312",
+    "src/kvmem_store.cpp": "950c04b45c28afe73d3e50c9267fde5b241826b5f57c4be8e3eb9385f6c2b348",
     "src/kvmem_repository.cpp": "4aa098e338d175c292bb1e5677857d772a4bbfe30ddb660c647ee53229dcbb52",
     "src/kvmem_repository_gc.cpp": "6dca57b60563364d503ec1f7e5f7d0fbde7ca71a2492af62e36b144b3fb06452",
     "src/kvmem_gc.cpp": "69179c581e1927f8aa7ea52965071af26a02e39147344c422231dc4227c227db",
@@ -17,6 +17,14 @@
     "tests/kvmem_repository_test.cpp": "3c8b106e5f6369f197c79b49d70a3fe642dd5513b278d2826992c41e1310d71a",
     "tests/kvmem_repository_gc_test.cpp": "abc57321b0b65d43dede732137ae98ca7c0dbb303ee31ecd507557e2e60abbdf",
     "tests/kvmem_gc_test.cpp": "9205a182a124fb8b3bb190d7b5330cb792a76b99868dba526911d3ed8d9c9720",
-    "tests/nvme_kv_tier_test.cpp": "143983b41ca49e2ad288f80528f813de182dca03e10f99184beac612254e4bb3"
+    "tests/nvme_kv_tier_test.cpp": "143983b41ca49e2ad288f80528f813de182dca03e10f99184beac612254e4bb3",
+    "include/qw3/kvmem_attention.hpp": "ff02184d3f300bea8a7c9794188bd71bb6fac6e49bac25a8e03e33d5fc754594"
+  },
+  "cuda_reference": {
+    "source": "src/kernels_cuda.cu",
+    "source_sha256": "017898aaea1261624f017d92dae9392c0150de1476db6610d6c30b4c6116a821",
+    "symbol": "block_attn_score_softmax_pages_kernel",
+    "file": "cuda/mean_k_reference.cuh",
+    "sha256": "ef1dd4c1bc6ebddc3995bcf1b87655b81a652665fe0df1954e396e753d580b7b"
   }
 }

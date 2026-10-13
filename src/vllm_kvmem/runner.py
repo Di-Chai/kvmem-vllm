@@ -18,8 +18,17 @@ def make_probe_runner(base):
     class KVMemProbeRunner(base):
         def load_model(self, *args, **kwargs):
             super().load_model(*args, **kwargs)
-            if not self.model_config.enforce_eager:
+            from .draft_quantization import install_quantized_context
+            install_quantized_context(self)
+            self._kvmem_graph = os.getenv('KVMEM_FULL_GRAPH') == '1'
+            if not self.model_config.enforce_eager and not self._kvmem_graph:
                 raise ValueError("Runner capture probe currently requires enforce_eager")
+            if self._kvmem_graph:
+                from vllm.config import CUDAGraphMode
+                if (self.vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.FULL or
+                        int(self.vllm_config.compilation_config.mode) != 0 or
+                        self.vllm_config.max_concurrent_batches != 1):
+                    raise ValueError('KVMem graph capture requires FULL, compilation NONE, synchronous batches')
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
                 raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
@@ -75,8 +84,13 @@ def make_probe_runner(base):
                 install_compression_probe(self)
             if os.getenv("KVMEM_WINDOW_METADATA") == "1":
                 from .window_bridge import install_window_bridge
-                install_window_bridge(self.model_state, lambda batch:
-                    self._kvmem_window_batch if batch is getattr(self, "_kvmem_last_batch", None) else None)
+                def current_window(batch):
+                    if batch is getattr(self, '_kvmem_last_batch', None):
+                        return self._kvmem_window_batch
+                    if self._kvmem_graph and self._kvmem_window_adapter is not None:
+                        return self._kvmem_window_adapter.capture_window(batch)
+                    return None
+                install_window_bridge(self.model_state, current_window)
             if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
 
@@ -85,6 +99,13 @@ def make_probe_runner(base):
             for request in scheduler_output.scheduled_new_reqs:
                 self._kvmem_next_generation += 1
                 self._kvmem_request_generations[request.req_id] = self._kvmem_next_generation
+            return result
+
+        def initialize_kv_cache(self, *args, **kwargs):
+            result = super().initialize_kv_cache(*args, **kwargs)
+            if getattr(self, '_kvmem_graph', False):
+                from .graph_runtime import initialize_graph_window
+                initialize_graph_window(self)
             return result
 
         def finish_requests(self, scheduler_output):
@@ -146,6 +167,9 @@ def make_probe_runner(base):
             sessions = getattr(self, '_kvmem_sessions', None)
             if sessions is not None:
                 sessions.before_attention(input_batch)
+            if getattr(self, '_kvmem_bounded_target', False):
+                from .native_state import canonicalize_before_non_speculative_batch
+                canonicalize_before_non_speculative_batch(self, input_batch)
             self._kvmem_last_batch = input_batch
             self._kvmem_window_batch = None
             if self._kvmem_window_adapter is not None:
@@ -232,8 +256,16 @@ def make_probe_runner(base):
                     not (self._kvmem_probe_output / "armed").is_file()):
                 return super().execute_model(scheduler_output, **kwargs)
             captured = []
+            if getattr(self, '_kvmem_graph', False):
+                from .graph_runtime import needs_refresh_batch
+                if needs_refresh_batch(scheduler_output):
+                    # Native dispatch uses need_eager for this flag. The real
+                    # batch still executes all GDN groups and normal sampling.
+                    kwargs['is_profile'] = True
             with capture_to(captured.append):
                 result = super().execute_model(scheduler_output, **kwargs)
+            if getattr(self, '_kvmem_graph', False):
+                captured = self._kvmem_graph_captures
             if not captured:
                 raise RuntimeError("Real native batch executed without any KVMem captures")
             if self._kvmem_continuous:

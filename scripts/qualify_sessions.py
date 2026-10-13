@@ -7,6 +7,7 @@ timings, not a substitute for concurrent agent quality or matched throughput run
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 import urllib.request
@@ -62,7 +63,14 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--input', type=Path, help='Frozen JSON input_ids, preserved in full')
     parser.add_argument('--output-tokens', type=int, default=64)
+    parser.add_argument('--model', default='qualification', help='Native served model name')
+    parser.add_argument('--api-key-env', help='Environment variable containing a tenant API key')
+    parser.add_argument('--reuse-only', action='store_true',
+                        help='Compare one cold populate against restore; omit separate cold and changed-prefix controls')
     args = parser.parse_args()
+    api_key = os.environ.get(args.api_key_env) if args.api_key_env else None
+    if args.api_key_env and not api_key:
+        raise ValueError('The requested API key environment variable is empty')
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     evidence = json.loads(args.engine_evidence.read_text())
@@ -95,18 +103,23 @@ def main():
         raise ValueError('Session gate needs a multi-chunk token-ID prompt')
     (out / 'input.json').write_text(json.dumps({'input_ids': prompt}))
     report = {'status': 'running', 'scope': 'HTTP exact prompt-state continuation; not agent/performance acceptance',
-              'input': input_info, 'prompt_tokens': len(prompt), 'calls': {}}
+              'input': input_info, 'prompt_tokens': len(prompt), 'calls': {},
+              'independent_cold_control': not args.reuse_only,
+              'changed_prefix_check': not args.reuse_only}
     def save():
         (out / 'results.json').write_text(json.dumps(report, indent=2))
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     def complete(name, tokens, session=None, output=None):
-        payload = {'model': 'qualification', 'prompt': tokens, 'temperature': 0, 'seed': 104729,
+        payload = {'model': args.model, 'prompt': tokens, 'temperature': 0, 'seed': 104729,
                    'max_tokens': args.output_tokens if output is None else output, 'return_token_ids': True}
         if session:
             payload['session_id'] = session
         started = time.monotonic()
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = 'Bearer ' + api_key
         request = urllib.request.Request(evidence['api_base']+'/completions', data=json.dumps(payload).encode(),
-                                         headers={'Content-Type': 'application/json'})
+                                         headers=headers)
         with opener.open(request, timeout=3600) as response:
             result = json.load(response)
         elapsed = time.monotonic() - started
@@ -118,14 +131,20 @@ def main():
     session = 'checkpoint-gate-' + uuid.uuid4().hex
     try:
         save()
-        control, _ = complete('cold_control', prompt)
+        control = None
+        if not args.reuse_only:
+            control, _ = complete('cold_control', prompt)
         cold, populated = complete('session_populate', prompt, session)
         if not populated['archive']['session_checkpoints']:
             raise RuntimeError('Worker did not retain a prompt checkpoint')
         # Give native allocator/model scratch a different request before import.
         complete('page_reuse_neighbour', prompt[-2048:], output=16)
         warm, restored = complete('session_reuse', prompt, session)
-        report['imported_tokens'] = validate_reuse(control, cold, warm, populated, restored)
+        report['imported_tokens'] = validate_reuse(
+            cold if control is None else control, cold, warm, populated, restored)
+        if args.reuse_only:
+            report['status'] = 'passed'
+            return
         changed = list(prompt)
         changed[0] = prompt[1] if prompt[1] != prompt[0] else prompt[-1]
         if changed == prompt:

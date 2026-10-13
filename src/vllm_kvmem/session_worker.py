@@ -6,6 +6,7 @@ their normal per-request lifecycle. CPU checkpoint ownership is bounded separate
 from the shared authority arena; the runner must reserve room for idle authorities.
 """
 import hashlib
+import os
 import time
 
 import torch
@@ -83,6 +84,8 @@ class SessionWorker:
         self.evictions = {}
         self.completed = []
         self.model_adapter = None
+        self.terminal_captures = {}
+        self.restore_oracles = {}
         self.checkpoint_deferrals = 0
         self.restored_tokens = 0
 
@@ -108,6 +111,11 @@ class SessionWorker:
             if binding is None or binding.generation != capture.generation or capture.request_id in self.captures:
                 raise ValueError('Stale or duplicate worker checkpoint command')
             self.captures[capture.request_id] = capture
+        for capture in getattr(commands, 'terminals', ()):
+            binding = self.bindings.get(capture.request_id)
+            if binding is None or binding.generation != capture.generation or capture.request_id in self.terminal_captures:
+                raise ValueError('Stale or duplicate terminal checkpoint command')
+            self.terminal_captures[capture.request_id] = capture
 
     def before_attention(self, batch):
         selected = self.imports.intersection(batch.req_ids) | (self.captures.keys() & set(batch.req_ids))
@@ -130,10 +138,37 @@ class SessionWorker:
             if authority.history_end != command.position:
                 raise ValueError('Prompt capture differs from accepted archive history')
             try:
-                self.pool.capture(binding.namespace, request_id, authority, binding.tokens, self.model_adapter)
+                self.pool.capture(binding.namespace, request_id, authority,
+                    command.tokens or binding.tokens, self.model_adapter,
+                    replace=getattr(self.options, 'session_capture_decode', False))
             except BufferError:
                 # Cache admission failure preserves ordinary native execution.
                 self.checkpoint_deferrals += 1
+                if getattr(self.options, 'session_capture_decode', False):
+                    self.completed.append(SessionNotice('capture_deferred', binding.namespace,
+                        binding.generation, request_id, command.position))
+            else:
+                if getattr(self.options, 'session_capture_decode', False):
+                    self.completed.append(SessionNotice('captured', binding.namespace,
+                        binding.generation, request_id, command.position))
+
+    def _target_bytes(self, request_id, tokens):
+        """Opt-in real-model restoration oracle; unused in ordinary serving."""
+        from .window_assembly import NativeWindowAssembler
+        assembler = NativeWindowAssembler.from_runner(self.runner, request_id, self.runtime.names,
+                                                       self.options.memory.block_tokens)
+        try:
+            positions = torch.arange(tokens, device=self.runner.device)
+            rows = []
+            for layer in assembler.layers:
+                block = layer.key.shape[1]
+                pages = layer.kernel_page_table[positions // block].long()
+                offsets = positions % block
+                rows.extend((layer.key[pages, offsets].view(torch.uint8).flatten(),
+                             layer.value[pages, offsets].view(torch.uint8).flatten()))
+            return torch.cat(rows).cpu()
+        finally:
+            assembler.close()
 
     def _restore(self, request_id):
         from .cache_groups import full_attention_groups
@@ -160,6 +195,23 @@ class SessionWorker:
             event = self.model_adapter.restore(checkpoint.model, request_id)
             if event is not None:
                 event.synchronize()
+            oracle = getattr(self, 'restore_oracles', {}).pop(binding.namespace, None)
+            if oracle is not None:
+                actual = self._target_bytes(request_id, checkpoint.window.window_tokens)
+                if not torch.equal(actual, oracle):
+                    raise RuntimeError('Restored target KV differs from the native terminal window')
+                recurrent = self.model_adapter._recurrent_views(request_id)
+                draft = self.model_adapter._draft_views(request_id, checkpoint.model.draft_begin,
+                                                       checkpoint.position)
+                if (any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name, t in recurrent.items())
+                        or any(not torch.equal(cache[pages, offsets].cpu(), checkpoint.model.draft[name])
+                               for name, (cache, pages, offsets) in draft.items())):
+                    raise RuntimeError('Restored GDN or draft state differs from its terminal checkpoint')
+                import json
+                with (self.runner._kvmem_probe_output / 'verified_restores.jsonl').open('a') as stream:
+                    stream.write(json.dumps({'request_id': request_id, 'history_tokens': binding.history,
+                        'working_tokens': checkpoint.window.window_tokens, 'target_kv_bytes': oracle.numel(),
+                        'recurrent_tensors': len(recurrent), 'draft_layers': len(draft), 'byte_equal': True}) + '\n')
             restored = self.pool.finish_claim(checkpoint, event or _Ready())
             assert restored is authority
         except BaseException:
@@ -189,16 +241,34 @@ class SessionWorker:
         binding = self.bindings.get(request_id)
         if binding is None:
             return False
+        command = getattr(self, 'terminal_captures', {}).pop(request_id, None)
+        if command is not None:
+            if command.position != authority.history_end:
+                raise ValueError('Terminal checkpoint differs from the accepted history')
+            if self.model_adapter is None:
+                self.model_adapter = PromptStateAdapter(self.runner)
+            try:
+                self.pool.capture(binding.namespace, request_id, authority, command.tokens,
+                                  self.model_adapter, replace=True, terminal=True)
+            except BufferError:
+                self.checkpoint_deferrals += 1
+                kind = 'capture_deferred'
+            else:
+                kind = 'captured'
+            self.completed.append(SessionNotice(kind, binding.namespace, binding.generation,
+                                                request_id, command.position))
         checkpoint = self.pool.entries.get(binding.namespace)
         if checkpoint is None:
             return False  # Ordinary retirement will emit an empty checkpoint acknowledgment.
         if checkpoint.request_id != request_id or checkpoint.authority is not authority:
             raise ValueError('Terminal request does not own the retained prompt snapshot')
+        if command is not None and kind == 'captured' and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+            self.restore_oracles[binding.namespace] = self._target_bytes(request_id, checkpoint.window.window_tokens)
         verified = verify_preserved_authority(authority) if self.options.verify_archive_on_finish else 0
         self.pool.retire(checkpoint, _Ready())  # Capture downloads and CPU state copies have drained.
         self.retiring[request_id] = (checkpoint, {**report, 'history_end': authority.history_end,
             'checkpoint_tokens': checkpoint.position, 'sealed_records_verified': verified,
-            'retirement_strategy': 'checkpoint_rewind',
+            'retirement_strategy': 'terminal_checkpoint' if command is not None else 'checkpoint_rewind',
             'authority_namespace': authority.memory.request_id})
         return True
 
@@ -242,6 +312,7 @@ class SessionWorker:
             self.completed.append(SessionNotice('evicted', namespace, command.generation, ''))
             del self.evictions[namespace]
             del self.identities[namespace]
+            getattr(self, 'restore_oracles', {}).pop(namespace, None)
             changed = True
         if changed and self.runtime is not None:
             self.runtime._write_archive_report()
@@ -266,6 +337,8 @@ class SessionWorker:
         self.identities.clear()
         self.imports.clear()
         self.captures.clear()
+        getattr(self, 'terminal_captures', {}).clear()
+        getattr(self, 'restore_oracles', {}).clear()
         self.retiring.clear()
         self.evictions.clear()
         return True

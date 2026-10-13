@@ -34,6 +34,7 @@ class SessionCapture:
     request_id: str
     generation: int
     position: int
+    tokens: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class SessionCommands:
     bindings: list[SessionBinding] = field(default_factory=list)
     captures: list[SessionCapture] = field(default_factory=list)
     evictions: list[SessionEviction] = field(default_factory=list)
+    terminals: list[SessionCapture] = field(default_factory=list)
 
 
 @dataclass
@@ -73,18 +75,26 @@ class _Entry:
     candidate_position: int = 0
     candidate_tokens: bytes = b''
     ready_records: int = 0
+    retained_position: int = 0
+    retained_tokens: bytes = b''
 
 
 class SessionLedger:
-    def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import):
+    def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
         self.prepare_import, self.abort_import, self.commit_import = prepare_import, abort_import, commit_import
         self.entries = {}  # Insertion order is the idle LRU order.
         self.requests = {}
+        # Checkpoint capacity does not limit independent cold requests. Keep a
+        # lightweight lease for those overflow sessions nevertheless: otherwise
+        # concurrent turns can bypass per-session serialization when slots fill.
+        self.uncached_sessions = {}
+        self.uncached_requests = {}
         self.generation = 0
         self.commands = SessionCommands()
+        self.terminal_capture = terminal_capture
         self.hits = self.misses = self.waits = 0
 
     @staticmethod
@@ -104,6 +114,12 @@ class SessionLedger:
             return 0
         if local_tokens:
             raise ValueError('Prompt session import requires native prefix caching disabled')
+        owner = self.uncached_sessions.get(namespace)
+        if owner is not None:
+            if owner == request.request_id:
+                return 0
+            self.waits += 1
+            return None
         entry = self.entries.get(namespace)
         if entry is not None and entry.request_id == request.request_id:
             if entry.phase != 'lookup':
@@ -134,7 +150,10 @@ class SessionLedger:
                 self.waits += 1
                 return None
             # All cache slots are in use. A new session may still run normally;
-            # it cannot create a checkpoint or touch any existing namespace.
+            # it cannot create a checkpoint or touch any existing namespace,
+            # but must exclude another turn until this request finishes.
+            self.uncached_sessions[namespace] = request.request_id
+            self.uncached_requests[request.request_id] = namespace
             return 0
         self.generation += 1
         entry = _Entry(namespace, self.generation, request.request_id)
@@ -166,7 +185,24 @@ class SessionLedger:
         entry.candidate_tokens = token_bytes(request.prompt_token_ids, position)
         self.commands.captures.append(SessionCapture(request.request_id, entry.generation, position))
 
+    def capture_decode_boundary(self, request):
+        """Advance the persistent accepted prefix, never a speculative suffix."""
+        entry = self.requests.get(request.request_id)
+        position = request.num_computed_tokens
+        if (entry is None or entry.phase != 'active' or entry.candidate_position or
+                position < request.num_prompt_tokens or position <= entry.retained_position or
+                not position or position % self.block_tokens):
+            return
+        tokens = tuple(request.all_token_ids)
+        entry.candidate_position = position
+        entry.candidate_tokens = token_bytes(tokens, position)
+        self.commands.captures.append(SessionCapture(request.request_id, entry.generation, position, tokens))
+
     def finished(self, request):
+        namespace = self.uncached_requests.pop(request.request_id, None)
+        if namespace is not None:
+            del self.uncached_sessions[namespace]
+            return
         entry = self.requests.get(request.request_id)
         if entry is None:
             return
@@ -181,6 +217,16 @@ class SessionLedger:
         if entry.phase != 'active':
             raise ValueError('Duplicate session terminal transition')
         entry.phase = 'retiring'
+        if self.terminal_capture and request.status.name in ('FINISHED_STOPPED', 'FINISHED_LENGTH_CAPPED'):
+            from .terminal import TerminalPrefix
+            position = TerminalPrefix.from_request(request).history_end
+            if position:
+                entry.retained_position = entry.retained_position or entry.candidate_position
+                entry.retained_tokens = entry.retained_tokens or entry.candidate_tokens
+                entry.candidate_position = position
+                tokens = tuple(request.all_token_ids)
+                entry.candidate_tokens = token_bytes(tokens, position)
+                self.commands.terminals.append(SessionCapture(request.request_id, entry.generation, position, tokens))
 
     def _evict(self, entry):
         if entry.phase != 'idle':
@@ -199,6 +245,15 @@ class SessionLedger:
             return
         if entry.request_id != notice.request_id:
             raise ValueError('Session completion belongs to another native request')
+        if notice.kind in ('captured', 'capture_deferred'):
+            if (entry.phase not in ('active', 'retiring') or
+                    notice.history != entry.candidate_position or not notice.history):
+                raise ValueError('Checkpoint acknowledgment differs from the requested accepted prefix')
+            if notice.kind == 'captured':
+                entry.retained_position = notice.history
+                entry.retained_tokens = entry.candidate_tokens
+            entry.candidate_position, entry.candidate_tokens = 0, b''
+            return
         if notice.kind == 'restored':
             if (entry.phase not in ('active', 'retiring') or not entry.history or
                     (notice.history, notice.window) != (entry.history, entry.window)):
@@ -212,13 +267,16 @@ class SessionLedger:
         if entry.history:
             raise ValueError('Retirement arrived before prompt import restoration')
         if notice.history:
-            if (notice.history != entry.candidate_position or not 0 < notice.window <= notice.history or
+            expected = entry.retained_position or entry.candidate_position
+            identity = entry.retained_tokens or entry.candidate_tokens
+            if (notice.history != expected or not 0 < notice.window <= notice.history or
                     type(notice.ready_records) is not int or notice.ready_records < 0):
                 raise ValueError('Worker retained a different prompt checkpoint')
             entry.history, entry.window = notice.history, notice.window
             entry.ready_records = notice.ready_records
-            entry.tokens = entry.candidate_tokens
+            entry.tokens = identity
             entry.candidate_position, entry.candidate_tokens = 0, b''
+            entry.retained_position, entry.retained_tokens = 0, b''
             entry.request_id, entry.phase, entry.allocated = None, 'idle', False
             # Most recently retired session is the last idle eviction candidate.
             del self.entries[entry.namespace]

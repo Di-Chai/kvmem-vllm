@@ -53,3 +53,15 @@ def test_draft_contract_checks_actual_native_cache_specs_not_slot_mapping_flags(
     group.kv_cache_spec = FullAttentionSpec(block_size=128, num_kv_heads=8, head_size=128, dtype=torch.bfloat16)
     with pytest.raises(ValueError, match='sliding-window'):
         contract.validate_native_groups(runner)
+
+
+@pytest.mark.parametrize('draft_tokens', [1, 3])
+def test_shorter_draft_verifies_a_bounded_prefix_of_the_trained_block(draft_tokens):
+    cfg = config()
+    cfg.speculative_config.num_speculative_tokens = draft_tokens
+    cfg.num_lookahead_tokens = draft_tokens + 1
+    assert DraftContract.from_vllm(cfg, KVMemConfig()).query_tokens == draft_tokens + 1
+    cfg.speculative_config.num_speculative_tokens = 8
+    cfg.num_lookahead_tokens = 9
+    with pytest.raises(ValueError, match='geometry'):
+        DraftContract.from_vllm(cfg, KVMemConfig())

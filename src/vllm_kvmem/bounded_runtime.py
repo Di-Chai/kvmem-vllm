@@ -1,9 +1,10 @@
 """Scheduler-owned target semantic refresh using native batched model execution.
 
-Initial integration is eager, synchronous, text-only, TP=1, APC off. All batch
-neighbours are restored after a provisional query, while only selected requests
-change attention windows. Experimental synchronous DFlash2 preserves independent
-native draft sliding pages; persistent-session rollback remains unsupported.
+Refresh transactions are eager, synchronous, text-only, TP=1, APC off; regular
+decode may use FULL native graphs. All batch neighbours are restored after a
+provisional query, while only selected requests change attention windows.
+DFlash2 preserves independent native draft sliding pages. Exact terminal
+checkpoints are handled separately; arbitrary session rollback is unsupported.
 """
 from dataclasses import dataclass
 import json
@@ -99,7 +100,7 @@ def install_bounded_target(runner):
             history, selected_cap, query = values.pop()
             authority = runtime.authorities[request_id]
             if (history != authority.history_end or history != int(batch.num_computed_tokens_np[i]) or
-                    history % cfg.block_tokens or selected_cap != cfg.select_budget or
+                    selected_cap != cfg.select_budget or
                     query != int(batch.num_scheduled_tokens[i])):
                 raise ValueError("Scheduler query does not match accepted authority or native input batch")
             for archive_job, _ in authority.writes:

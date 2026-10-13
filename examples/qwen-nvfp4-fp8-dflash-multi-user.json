@@ -1,0 +1,42 @@
+{
+  "model_format": "safetensors",
+  "model": "~/models/Qwen3.8-27B-NVFP4",
+  "tokenizer": "~/models/Qwen3.8-27B-BF16",
+  "hf_config_path": "~/models/Qwen3.8-27B-NVFP4",
+  "draft_model": "~/models/Qwen3.8-27B-DFlash2-BF16",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "served_model_name": "kvmem",
+  "max_num_seqs": 8,
+  "max_num_batched_tokens": 4224,
+  "long_prefill_token_threshold": 1024,
+  "gpu_memory_utilization": 0.72,
+  "max_model_len": 262144,
+  "q8_tensorcore": false,
+  "linear_backend_per_quant": {
+    "nvfp4_w4a4": "cutlass",
+    "fp8_w8a8": "cutlass"
+  },
+  "kvmem": {
+    "select_budget": 131072,
+    "gen_budget": 65536,
+    "block_tokens": 128,
+    "cpu_read_cache_bytes": 17179869184,
+    "packed_assembly": true,
+    "direct_pinned_reads": true,
+    "prefill_cadence": 8,
+    "async_archive_retirement": true,
+    "verify_archive_on_finish": false,
+    "session_capacity": 4,
+    "session_checkpoint_bytes": 1073741824
+  },
+  "multi_user": {
+    "users_file": "users.json",
+    "max_inflight": 8,
+    "max_inflight_per_user": 2,
+    "max_queue": 64,
+    "queue_timeout_seconds": 120,
+    "body_timeout_seconds": 30,
+    "max_body_bytes": 8388608
+  }
+}

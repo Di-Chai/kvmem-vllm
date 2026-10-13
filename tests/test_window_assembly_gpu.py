@@ -158,3 +158,53 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
         del plan, result, checkpoint
     assert authority.close()
     assert archive.close()
+
+
+@pytest.mark.parametrize('packed,direct', [(False, False), (True, False), (True, True)])
+def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed, direct):
+    from vllm import _custom_ops as ops
+    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=8,
+                      sink_blocks=1, recent_blocks=1)
+    layers, heads, dim, count = 2, 2, 64, 35
+    archive = AsyncArchive(str(tmp_path), layers * 16 * heads * dim * 3, 8)
+    authority = RequestAuthority('partial', cfg, archive, layers, heads, dim)
+    torch.manual_seed(881)
+    raw = torch.randn(layers, count, heads, dim, dtype=torch.bfloat16)
+    values = torch.randn_like(raw)
+    scale = torch.tensor(.03, device='cuda')
+    encoded = (values.float() / .03).clamp(-448, 448).to(torch.float8_e4m3fn).view(torch.uint8)
+    assert authority.append(raw, encoded, history_begin=0, local_rope_begin=0)
+    for job, _ in authority.writes:
+        job.result(timeout=5)
+    authority.poll()
+    checkpoint = authority.memory.checkpoint_window(allow_partial=True)
+    plan = authority.memory.restore_window(checkpoint)
+    table = torch.tensor([3, 5, 1, 7, 2, 6, 4, 8], dtype=torch.int32, device='cuda')
+    angles = torch.randn(128, 16, device='cuda')
+    trig = torch.cat((angles.cos(), angles.sin()), dim=-1).bfloat16()
+    positions = torch.arange(count, device='cuda')
+    slots = table[positions // 8].long() * 8 + positions % 8
+    native, expected = [], []
+    for i in range(layers):
+        backing = torch.zeros(10, heads, 8, dim * 2, dtype=torch.uint8, device='cuda')
+        k, v = native_vllm_fp8_views(backing, heads, dim)
+        ref = backing.clone(); rk, rv = native_vllm_fp8_views(ref, heads, dim)
+        rotated = neox_rope(raw[i].cuda(), trig[positions, :16], trig[positions, 16:])
+        ops.reshape_and_cache_flash(rotated, values[i].cuda(), rk, rv, slots, 'fp8_e4m3', scale, scale)
+        native.append(LayerWindow(k, v, trig, scale, table)); expected.append((rk, rv))
+    assembler = NativeWindowAssembler(tuple(native), 16, chunk_blocks=2, packed=packed,
+                                      direct_pinned_reads=direct)
+    result = assembler.assemble(authority, plan); result.event.synchronize()
+    assert result.rebuilt_tokens == 35 and result.skipped_tokens == 0
+    for actual, (key, value) in zip(native, expected):
+        assert torch.equal(actual.key.view(torch.uint8), key.view(torch.uint8))
+        assert torch.equal(actual.value.view(torch.uint8), value.view(torch.uint8))
+    authority.memory.attach_completion(result); assert authority.memory.commit_selection()
+    assert assembler.close()
+    del plan, checkpoint, result
+    assert authority.close() and archive.close()

@@ -61,6 +61,7 @@ class KVMemScheduler(Scheduler):
             self.connector.scheduler_archive_update = lambda sequence, capacity: self.archive_admission.update(
                 sequence, capacity, {k for k, r in self.requests.items() if not r.is_finished()})
         self.prefill_cadence = options.prefill_cadence
+        self.session_capture_decode = options.session_capture_decode
         self._mixed_steps = 0
         self._scheduled_queries = {"prefill": {}, "decode": {}}
         self._cadence_requested = 0
@@ -120,7 +121,8 @@ class KVMemScheduler(Scheduler):
                     if not manager.commit_import(request_id, history, _Complete()):
                         raise RuntimeError('Acknowledged prompt import did not commit')
             self.connector.sessions = SessionLedger(options.session_capacity, config.block_tokens,
-                                                    prepare_import, abort_import, commit_import)
+                                                    prepare_import, abort_import, commit_import,
+                                                    terminal_capture=options.session_capture_terminal)
 
     def begin_refresh(self, request, window_tokens, *, replay_tokens=0):
         if getattr(request, "num_in_flight_tokens", 0):
@@ -234,6 +236,13 @@ class KVMemScheduler(Scheduler):
         if len(offsets) != 1:
             raise RuntimeError("Full-attention groups disagree on committed history mapping")
         tokens = self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offsets.pop())
+        if (self.session_capture_decode and self.connector.sessions is not None and
+                request.request_id in self.connector.sessions.requests and
+                num_computed_tokens >= request.num_prompt_tokens):
+            # Any speculative prefix can be accepted. Leave a guaranteed sealed
+            # boundary for the next CPU snapshot rather than jumping over it.
+            tokens = min(tokens, self.query_policy.block_tokens -
+                         num_computed_tokens % self.query_policy.block_tokens)
         gate = getattr(self, 'archive_admission', None)
         if gate is not None and tokens and not gate.allows(request.request_id, num_computed_tokens, tokens):
             return 0  # Native running-queue iteration continues with neighbours.
@@ -245,12 +254,16 @@ class KVMemScheduler(Scheduler):
                 request = self.requests[request_id]
                 if connector.sessions is not None:
                     connector.sessions.capture_before_final_prefill(request, query_tokens)
+                    if self.session_capture_decode:
+                        connector.sessions.capture_decode_boundary(request)
                 if hasattr(self, '_scheduled_queries'):
                     stage = 'prefill' if request.num_computed_tokens < request.num_prompt_tokens else 'decode'
                     histogram = self._scheduled_queries[stage]
                     histogram[str(query_tokens)] = histogram.get(str(query_tokens), 0) + 1
                 offset = next(iter(self.window_managers.values())).offsets.get(request_id, 0)
-                if self.query_policy.refresh(request.num_computed_tokens, request.num_prompt_tokens, offset):
+                imported_query = (connector.sessions is not None and connector.sessions.import_scheduled(request_id)
+                                  and request.num_computed_tokens > self.query_policy.select_budget)
+                if imported_query or self.query_policy.refresh(request.num_computed_tokens, request.num_prompt_tokens, offset):
                     self.begin_refresh(request, self.query_policy.select_budget, replay_tokens=query_tokens)
                     # Native V2 otherwise defers start_load_kv until after model
                     # forward. The query command must exist before this forward.
