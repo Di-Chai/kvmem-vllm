@@ -1,0 +1,2345 @@
+{
+  "scope": "Original MeanK, native MTP k=3; fixed-length capacity and state integrity; retain failed and slower trials; no task-quality or mixed-tool SLO claim",
+  "baseline_commit": "7cb52bbddd89669d3dfe4cef107fe5bfe093b5da",
+  "tests": {
+    "cpu_passed": 587,
+    "cpu_skipped": 66,
+    "gpu_passed": 38,
+    "gpu_skipped": 6
+  },
+  "measurements": {
+    "before-c8-64k-4k": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_end_tokens_per_user": 69632,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 221.5640706969425,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 147.89401502204927,
+        "successful_requests_per_second": 0.0361069372612425,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 109.79142467584461,
+          "p95": 154.2468817123212,
+          "max": 154.51345636788756
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 218.64659280190244,
+          "p95": 221.54698480558582,
+          "max": 221.5473886243999
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.02552990875421808,
+          "p95": 0.03486446750469697,
+          "max": 0.034895907242137654
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 157.14514614082873,
+        "end": 208.43226020876318,
+        "seconds": 51.28711406793445,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 285,
+            "end_tokens": 3458,
+            "tokens": 3173,
+            "token_events": 1323
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 268,
+            "end_tokens": 3966,
+            "tokens": 3698,
+            "token_events": 1323
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 279,
+            "end_tokens": 3520,
+            "tokens": 3241,
+            "token_events": 1322
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 285,
+            "end_tokens": 3457,
+            "tokens": 3172,
+            "token_events": 1322
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 151,
+            "end_tokens": 3520,
+            "tokens": 3369,
+            "token_events": 1323
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 135,
+            "end_tokens": 3248,
+            "tokens": 3113,
+            "token_events": 1322
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 137,
+            "end_tokens": 3250,
+            "tokens": 3113,
+            "token_events": 1322
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 129,
+            "end_tokens": 3508,
+            "tokens": 3379,
+            "token_events": 1322
+          }
+        ],
+        "output_tokens": 26258,
+        "output_tokens_per_second": 511.9804550753019
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9969426522375333,
+        "intervals": 192,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 154.79689493216574,
+          "end": 210.30983270984143,
+          "seconds": 55.51293777767569,
+          "active_streams": 8,
+          "output_tokens": 28203,
+          "output_tokens_per_second": 508.04373050748046,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3410,
+              "context_start_tokens": 65688,
+              "context_end_tokens": 69098
+            },
+            {
+              "client_index": 1,
+              "tokens": 3947,
+              "context_start_tokens": 65685,
+              "context_end_tokens": 69632
+            },
+            {
+              "client_index": 2,
+              "tokens": 3462,
+              "context_start_tokens": 65688,
+              "context_end_tokens": 69150
+            },
+            {
+              "client_index": 3,
+              "tokens": 3409,
+              "context_start_tokens": 65688,
+              "context_end_tokens": 69097
+            },
+            {
+              "client_index": 4,
+              "tokens": 3615,
+              "context_start_tokens": 65566,
+              "context_end_tokens": 69181
+            },
+            {
+              "client_index": 5,
+              "tokens": 3364,
+              "context_start_tokens": 65543,
+              "context_end_tokens": 68907
+            },
+            {
+              "client_index": 6,
+              "tokens": 3365,
+              "context_start_tokens": 65543,
+              "context_end_tokens": 68908
+            },
+            {
+              "client_index": 7,
+              "tokens": 3631,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69168
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9977322794663971,
+            "intervals": 208,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.26691380908248374,
+      "assembly": {
+        "scope": "Assembly path host preparation and waits, not pure GPU kernel time; payload H2D excludes small metadata",
+        "begin_row": 0,
+        "end_row": 256,
+        "refreshes": 256,
+        "distinct_requests": 8,
+        "uploaded_bytes": 389609422848,
+        "assembly_seconds": 17.323774751275778,
+        "host_prepare_seconds": 13.766742412000895,
+        "rebuilt_tokens": 7460352,
+        "skipped_tokens": 928256,
+        "raw_cache_hit_tokens": 0,
+        "resident_v_reused_tokens": 0,
+        "raw_cache_capacity_bytes": 0,
+        "resident_value_max_request_bytes": 0,
+        "cumulative_cpu_scatter": {}
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 13360.0,
+        "vllm:spec_decode_num_draft_tokens_total": 40080.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 19404.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 19404.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "9e886a63e6819071f2c5ce5a96d2daa22eee50b759bc47e778289b03130b3484",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 1,
+          "sha256": "9aea67ff2c22f14f52ca8beb600b8cadeb1311fd35a297216b4c7c82aa24cf3b",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 2,
+          "sha256": "1e7f4be15e6ea4a24f57c477d112db2602ab577b071eab2c4ea66a686d121268",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 3,
+          "sha256": "d46c3ab4fa8acaf6376cd9b0081663fa983663a7c68cef8af50ce460aa4f97b8",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 4,
+          "sha256": "d0187059db1d4f6cb0c8b88c9da52d8c4e4ef624418223990ead268120886c02",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 5,
+          "sha256": "65903331b64d2eb92545b0d477ce968a616465da1c23682c2c6f377e5625a7fc",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 6,
+          "sha256": "65903331b64d2eb92545b0d477ce968a616465da1c23682c2c6f377e5625a7fc",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 7,
+          "sha256": "7a1d5e6e1c969ef6b429069a9a1193f687b798f1aa55de1eb565f5ec8d7d1799",
+          "observed_tokens": 4096
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 38.795093848664486,
+        "tokens_per_user_per_event": 2.4827912254160363
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 0,
+        "reuse_resident_v": false,
+        "async_cpu_scatter": false,
+        "cpu_scatter_policy": "off"
+      }
+    },
+    "before-c8-32k-16k": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_end_tokens_per_user": 49152,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 318.4557467866689,
+        "successful_output_tokens": 131072,
+        "successful_output_tokens_per_second": 411.5862292408375,
+        "successful_requests_per_second": 0.025121229812062836,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 26.66731010656804,
+          "p95": 36.646910751238465,
+          "max": 36.64949171897024
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 293.72854862734675,
+          "p95": 315.75656556524336,
+          "max": 318.45488217752427
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.016299252406469622,
+          "p95": 0.018152574063537104,
+          "max": 0.01833844627110173
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 39.23014024924487,
+        "end": 273.09992350358516,
+        "seconds": 233.8697832543403,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 199,
+            "end_tokens": 13657,
+            "tokens": 13458,
+            "token_events": 5800
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 260,
+            "end_tokens": 14104,
+            "tokens": 13844,
+            "token_events": 5800
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 256,
+            "end_tokens": 14114,
+            "tokens": 13858,
+            "token_events": 5801
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 260,
+            "end_tokens": 14114,
+            "tokens": 13854,
+            "token_events": 5800
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 143,
+            "end_tokens": 16130,
+            "tokens": 15987,
+            "token_events": 5800
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 128,
+            "end_tokens": 16253,
+            "tokens": 16125,
+            "token_events": 5801
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 128,
+            "end_tokens": 16249,
+            "tokens": 16121,
+            "token_events": 5800
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 128,
+            "end_tokens": 16249,
+            "tokens": 16121,
+            "token_events": 5800
+          }
+        ],
+        "output_tokens": 119368,
+        "output_tokens_per_second": 510.40368849268475
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9990275264301987,
+        "intervals": 879,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 36.914416782557964,
+          "end": 98.88393011689186,
+          "seconds": 61.9695133343339,
+          "active_streams": 8,
+          "output_tokens": 31373,
+          "output_tokens_per_second": 506.2650699020085,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3673,
+              "context_start_tokens": 32850,
+              "context_end_tokens": 36523
+            },
+            {
+              "client_index": 1,
+              "tokens": 3820,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36700
+            },
+            {
+              "client_index": 2,
+              "tokens": 3825,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36705
+            },
+            {
+              "client_index": 3,
+              "tokens": 3825,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36705
+            },
+            {
+              "client_index": 4,
+              "tokens": 3953,
+              "context_start_tokens": 32785,
+              "context_end_tokens": 36738
+            },
+            {
+              "client_index": 5,
+              "tokens": 4095,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36864
+            },
+            {
+              "client_index": 6,
+              "tokens": 4091,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36860
+            },
+            {
+              "client_index": 7,
+              "tokens": 4091,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36860
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.996624169012303,
+            "intervals": 232,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            4096,
+            8192
+          ],
+          "start": 104.3834664914757,
+          "end": 157.77654630690813,
+          "seconds": 53.39307981543243,
+          "active_streams": 8,
+          "output_tokens": 27616,
+          "output_tokens_per_second": 517.2205854290884,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3187,
+              "context_start_tokens": 36864,
+              "context_end_tokens": 40051
+            },
+            {
+              "client_index": 1,
+              "tokens": 3203,
+              "context_start_tokens": 37021,
+              "context_end_tokens": 40224
+            },
+            {
+              "client_index": 2,
+              "tokens": 3204,
+              "context_start_tokens": 37023,
+              "context_end_tokens": 40227
+            },
+            {
+              "client_index": 3,
+              "tokens": 3200,
+              "context_start_tokens": 37027,
+              "context_end_tokens": 40227
+            },
+            {
+              "client_index": 4,
+              "tokens": 3686,
+              "context_start_tokens": 37098,
+              "context_end_tokens": 40784
+            },
+            {
+              "client_index": 5,
+              "tokens": 3712,
+              "context_start_tokens": 37246,
+              "context_end_tokens": 40958
+            },
+            {
+              "client_index": 6,
+              "tokens": 3714,
+              "context_start_tokens": 37242,
+              "context_end_tokens": 40956
+            },
+            {
+              "client_index": 7,
+              "tokens": 3710,
+              "context_start_tokens": 37246,
+              "context_end_tokens": 40956
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9968749280415368,
+            "intervals": 200,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            8192,
+            12288
+          ],
+          "start": 174.6678014183417,
+          "end": 216.82130821421742,
+          "seconds": 42.15350679587573,
+          "active_streams": 8,
+          "output_tokens": 21347,
+          "output_tokens_per_second": 506.4110111495772,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 2314,
+              "context_start_tokens": 40963,
+              "context_end_tokens": 43277
+            },
+            {
+              "client_index": 1,
+              "tokens": 2429,
+              "context_start_tokens": 41235,
+              "context_end_tokens": 43664
+            },
+            {
+              "client_index": 2,
+              "tokens": 2430,
+              "context_start_tokens": 41239,
+              "context_end_tokens": 43669
+            },
+            {
+              "client_index": 3,
+              "tokens": 2429,
+              "context_start_tokens": 41240,
+              "context_end_tokens": 43669
+            },
+            {
+              "client_index": 4,
+              "tokens": 2977,
+              "context_start_tokens": 41943,
+              "context_end_tokens": 44920
+            },
+            {
+              "client_index": 5,
+              "tokens": 2924,
+              "context_start_tokens": 42132,
+              "context_end_tokens": 45056
+            },
+            {
+              "client_index": 6,
+              "tokens": 2924,
+              "context_start_tokens": 42128,
+              "context_end_tokens": 45052
+            },
+            {
+              "client_index": 7,
+              "tokens": 2920,
+              "context_start_tokens": 42132,
+              "context_end_tokens": 45052
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9953682052833113,
+            "intervals": 158,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            12288,
+            16384
+          ],
+          "start": 248.12447558157146,
+          "end": 276.0428357459605,
+          "seconds": 27.918360164389014,
+          "active_streams": 8,
+          "output_tokens": 13660,
+          "output_tokens_per_second": 489.2837516088741,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 1471,
+              "context_start_tokens": 45056,
+              "context_end_tokens": 46527
+            },
+            {
+              "client_index": 1,
+              "tokens": 1529,
+              "context_start_tokens": 45445,
+              "context_end_tokens": 46974
+            },
+            {
+              "client_index": 2,
+              "tokens": 1521,
+              "context_start_tokens": 45456,
+              "context_end_tokens": 46977
+            },
+            {
+              "client_index": 3,
+              "tokens": 1517,
+              "context_start_tokens": 45460,
+              "context_end_tokens": 46977
+            },
+            {
+              "client_index": 4,
+              "tokens": 1905,
+              "context_start_tokens": 47131,
+              "context_end_tokens": 49036
+            },
+            {
+              "client_index": 5,
+              "tokens": 1905,
+              "context_start_tokens": 47247,
+              "context_end_tokens": 49152
+            },
+            {
+              "client_index": 6,
+              "tokens": 1908,
+              "context_start_tokens": 47243,
+              "context_end_tokens": 49151
+            },
+            {
+              "client_index": 7,
+              "tokens": 1904,
+              "context_start_tokens": 47247,
+              "context_end_tokens": 49151
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9874305243614916,
+            "intervals": 104,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.31510658016682114,
+      "assembly": {
+        "scope": "Assembly path host preparation and waits, not pure GPU kernel time; payload H2D excludes small metadata",
+        "begin_row": 256,
+        "end_row": 264,
+        "refreshes": 8,
+        "distinct_requests": 8,
+        "uploaded_bytes": 12740984832,
+        "assembly_seconds": 1.4051119918003678,
+        "host_prepare_seconds": 1.266369117423892,
+        "rebuilt_tokens": 243968,
+        "skipped_tokens": 18176,
+        "raw_cache_hit_tokens": 0,
+        "resident_v_reused_tokens": 0,
+        "raw_cache_capacity_bytes": 0,
+        "resident_value_max_request_bytes": 0,
+        "cumulative_cpu_scatter": {}
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 51341.0,
+        "vllm:spec_decode_num_draft_tokens_total": 154016.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 79735.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 79735.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "92eeb75f25dcab526693003ce074541580ed8b61a574a6881b3515fab1f2f213",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 1,
+          "sha256": "2e49cb29c256812dc398d31685455f20684b3178f648a0741eba99a7598be504",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 2,
+          "sha256": "faba001019fa162e34dab19d778b487161aab6a0af9c1377eedb689d7b83cc74",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 3,
+          "sha256": "faba001019fa162e34dab19d778b487161aab6a0af9c1377eedb689d7b83cc74",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 4,
+          "sha256": "2a6b930bb3dc6788d2b4e718078d4d25249c7f56cc24c70f982305d57e21675b",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 5,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 6,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 7,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 40.32237642316212,
+        "tokens_per_user_per_event": 2.5725862068965517
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 0,
+        "reuse_resident_v": false,
+        "async_cpu_scatter": false,
+        "cpu_scatter_policy": "off"
+      }
+    },
+    "after4g-c8-64k-4k-01": {
+      "status": "failed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_end_tokens_per_user": 69632,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "failed",
+        "attempted": 8,
+        "success": 0,
+        "rejected": 0,
+        "failure": 8,
+        "wall_seconds": 73.59547511395067,
+        "successful_output_tokens": 0,
+        "successful_output_tokens_per_second": 0.0,
+        "successful_requests_per_second": 0.0,
+        "ttft_seconds": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "request_latency_seconds": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "tpot_seconds": {
+          "count": 0,
+          "p50": null,
+          "p95": null,
+          "max": null
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "failed",
+        "error": "incomplete_requests"
+      },
+      "native_confirmation": {
+        "status": "not_applicable"
+      },
+      "context_growth_windows": [],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.14179796107506948,
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 0.0,
+        "vllm:spec_decode_num_draft_tokens_total": 0.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 0.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 0.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 1,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 2,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 3,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 4,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 5,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 6,
+          "sha256": null,
+          "observed_tokens": 0
+        },
+        {
+          "client_index": 7,
+          "sha256": null,
+          "observed_tokens": 0
+        }
+      ],
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 4294967296,
+        "reuse_resident_v": true,
+        "async_cpu_scatter": true,
+        "cpu_scatter_policy": "all packets"
+      }
+    },
+    "after4g-c8-64k-4k-02": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_end_tokens_per_user": 69632,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 223.66829004511237,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 146.50266246230487,
+        "successful_requests_per_second": 0.03576725157771115,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 109.27942633675411,
+          "p95": 152.34931521378456,
+          "max": 152.35361665673554
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 222.50550865195692,
+          "p95": 223.5032566514332,
+          "max": 223.656056875363
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.027205637111004453,
+          "p95": 0.0353697840753779,
+          "max": 0.03543510854639959
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 154.94274848792702,
+        "end": 215.82107874844223,
+        "seconds": 60.87833026051521,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 250,
+            "end_tokens": 3758,
+            "tokens": 3508,
+            "token_events": 1487
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 279,
+            "end_tokens": 3888,
+            "tokens": 3609,
+            "token_events": 1487
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 244,
+            "end_tokens": 3965,
+            "tokens": 3721,
+            "token_events": 1487
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 243,
+            "end_tokens": 3964,
+            "tokens": 3721,
+            "token_events": 1487
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 145,
+            "end_tokens": 3639,
+            "tokens": 3494,
+            "token_events": 1486
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 129,
+            "end_tokens": 3667,
+            "tokens": 3538,
+            "token_events": 1487
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 129,
+            "end_tokens": 3665,
+            "tokens": 3536,
+            "token_events": 1486
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 129,
+            "end_tokens": 3667,
+            "tokens": 3538,
+            "token_events": 1487
+          }
+        ],
+        "output_tokens": 28665,
+        "output_tokens_per_second": 470.8571979115481
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9958501600014212,
+        "intervals": 228,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 152.62961511593312,
+          "end": 217.9731292212382,
+          "seconds": 65.34351410530508,
+          "active_streams": 8,
+          "output_tokens": 30604,
+          "output_tokens_per_second": 468.3555884472295,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3746,
+              "context_start_tokens": 65665,
+              "context_end_tokens": 69411
+            },
+            {
+              "client_index": 1,
+              "tokens": 3859,
+              "context_start_tokens": 65696,
+              "context_end_tokens": 69555
+            },
+            {
+              "client_index": 2,
+              "tokens": 3964,
+              "context_start_tokens": 65668,
+              "context_end_tokens": 69632
+            },
+            {
+              "client_index": 3,
+              "tokens": 3963,
+              "context_start_tokens": 65668,
+              "context_end_tokens": 69631
+            },
+            {
+              "client_index": 4,
+              "tokens": 3752,
+              "context_start_tokens": 65561,
+              "context_end_tokens": 69313
+            },
+            {
+              "client_index": 5,
+              "tokens": 3773,
+              "context_start_tokens": 65540,
+              "context_end_tokens": 69313
+            },
+            {
+              "client_index": 6,
+              "tokens": 3771,
+              "context_start_tokens": 65540,
+              "context_end_tokens": 69311
+            },
+            {
+              "client_index": 7,
+              "tokens": 3776,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69313
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9926261295443393,
+            "intervals": 244,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.26691380908248374,
+      "assembly": {
+        "uploaded_bytes": 163177299968,
+        "assembly_seconds": 15.065000569447875,
+        "host_prepare_seconds": 13.28054437134415,
+        "rebuilt_tokens": 7489024,
+        "raw_cache_hit_tokens": 3075072,
+        "resident_v_reused_tokens": 6943232,
+        "refreshes": 256,
+        "raw_cache_capacity_bytes": 4291559424,
+        "resident_value_max_request_bytes": 521404416,
+        "cpu_scatter": {
+          "cpu_scatter_batches": 1854,
+          "cpu_scatter_seconds": 31.446395196020603,
+          "cpu_scatter_join_seconds": 7.795426270924509
+        }
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 13686.0,
+        "vllm:spec_decode_num_draft_tokens_total": 41058.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 19087.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 19087.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "6bae4732404d6ee0c0eee8e2add818b5b0b953db9953e67d3a3a513670c453bb",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 1,
+          "sha256": "edf8b164e7081d8fd7bb03fb548ad49f04cdcec979ca5e1c1e4d106806490170",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 2,
+          "sha256": "961fa377b9dda337714240f758cd647a486cfbc61204570a181cf13800109728",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 3,
+          "sha256": "961fa377b9dda337714240f758cd647a486cfbc61204570a181cf13800109728",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 4,
+          "sha256": "eb068122c45bde6e33a904b15a6e9488632b4383caacd31c9f8194f6a3c39685",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 5,
+          "sha256": "32b967f13dcd6bcd3306906f27c18e3923fa512b549c829371e757ad7b637284",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 6,
+          "sha256": "32b967f13dcd6bcd3306906f27c18e3923fa512b549c829371e757ad7b637284",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 7,
+          "sha256": "4bec1bc8763aa69ebcbf5872c9c18736eb60864c4f361a26b9100cd720a4e5eb",
+          "observed_tokens": 4096
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 40.940370047421126,
+        "tokens_per_user_per_event": 2.4096334902488232
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 4294967296,
+        "reuse_resident_v": true,
+        "async_cpu_scatter": true,
+        "cpu_scatter_policy": "all packets"
+      }
+    },
+    "adaptive4g-c8-64k-4k-01": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_end_tokens_per_user": 69632,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 219.19684949237853,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 149.49119969509115,
+        "successful_requests_per_second": 0.036496874925559364,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 106.73913346603513,
+          "p95": 150.22963696769438,
+          "max": 150.24170776084065
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 218.04496516659856,
+          "p95": 219.03128669811412,
+          "max": 219.18185571022332
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.026757590962239564,
+          "p95": 0.0348729101125201,
+          "max": 0.03492902435626157
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 152.81468341033906,
+        "end": 211.6781797055155,
+        "seconds": 58.863496295176446,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 129,
+            "end_tokens": 3665,
+            "tokens": 3536,
+            "token_events": 1486
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 279,
+            "end_tokens": 3886,
+            "tokens": 3607,
+            "token_events": 1486
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 250,
+            "end_tokens": 3758,
+            "tokens": 3508,
+            "token_events": 1487
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 244,
+            "end_tokens": 3964,
+            "tokens": 3720,
+            "token_events": 1486
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 244,
+            "end_tokens": 3965,
+            "tokens": 3721,
+            "token_events": 1487
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 145,
+            "end_tokens": 3639,
+            "tokens": 3494,
+            "token_events": 1486
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 129,
+            "end_tokens": 3667,
+            "tokens": 3538,
+            "token_events": 1487
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 129,
+            "end_tokens": 3667,
+            "tokens": 3538,
+            "token_events": 1487
+          }
+        ],
+        "output_tokens": 28662,
+        "output_tokens_per_second": 486.9231663758427
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9950878422886662,
+        "intervals": 220,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 150.49948219861835,
+          "end": 213.72696670517325,
+          "seconds": 63.2274845065549,
+          "active_streams": 8,
+          "output_tokens": 30621,
+          "output_tokens_per_second": 484.2988810795639,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3774,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69311
+            },
+            {
+              "client_index": 1,
+              "tokens": 3859,
+              "context_start_tokens": 65695,
+              "context_end_tokens": 69554
+            },
+            {
+              "client_index": 2,
+              "tokens": 3747,
+              "context_start_tokens": 65664,
+              "context_end_tokens": 69411
+            },
+            {
+              "client_index": 3,
+              "tokens": 3966,
+              "context_start_tokens": 65665,
+              "context_end_tokens": 69631
+            },
+            {
+              "client_index": 4,
+              "tokens": 3967,
+              "context_start_tokens": 65665,
+              "context_end_tokens": 69632
+            },
+            {
+              "client_index": 5,
+              "tokens": 3756,
+              "context_start_tokens": 65557,
+              "context_end_tokens": 69313
+            },
+            {
+              "client_index": 6,
+              "tokens": 3776,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69313
+            },
+            {
+              "client_index": 7,
+              "tokens": 3776,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69313
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9935586195586464,
+            "intervals": 236,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.26691380908248374,
+      "assembly": {
+        "scope": "Assembly path host preparation and waits, not pure GPU kernel time; payload H2D excludes small metadata",
+        "begin_row": 0,
+        "end_row": 256,
+        "refreshes": 256,
+        "distinct_requests": 8,
+        "uploaded_bytes": 163177299968,
+        "assembly_seconds": 13.723704166710377,
+        "host_prepare_seconds": 11.950384090654552,
+        "rebuilt_tokens": 7489024,
+        "skipped_tokens": 899584,
+        "raw_cache_hit_tokens": 3075072,
+        "resident_v_reused_tokens": 6943232,
+        "raw_cache_capacity_bytes": 4291559424,
+        "resident_value_max_request_bytes": 521404416,
+        "cumulative_cpu_scatter": {
+          "cpu_scatter_batches": 129,
+          "cpu_scatter_seconds": 19.959471011534333,
+          "cpu_scatter_join_seconds": 7.452617692761123
+        }
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 13686.0,
+        "vllm:spec_decode_num_draft_tokens_total": 41058.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 19087.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 19087.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "4bec1bc8763aa69ebcbf5872c9c18736eb60864c4f361a26b9100cd720a4e5eb",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 1,
+          "sha256": "edf8b164e7081d8fd7bb03fb548ad49f04cdcec979ca5e1c1e4d106806490170",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 2,
+          "sha256": "6bae4732404d6ee0c0eee8e2add818b5b0b953db9953e67d3a3a513670c453bb",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 3,
+          "sha256": "961fa377b9dda337714240f758cd647a486cfbc61204570a181cf13800109728",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 4,
+          "sha256": "961fa377b9dda337714240f758cd647a486cfbc61204570a181cf13800109728",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 5,
+          "sha256": "eb068122c45bde6e33a904b15a6e9488632b4383caacd31c9f8194f6a3c39685",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 6,
+          "sha256": "32b967f13dcd6bcd3306906f27c18e3923fa512b549c829371e757ad7b637284",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 7,
+          "sha256": "32b967f13dcd6bcd3306906f27c18e3923fa512b549c829371e757ad7b637284",
+          "observed_tokens": 4096
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 39.59871933748836,
+        "tokens_per_user_per_event": 2.410191725529768
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 4294967296,
+        "reuse_resident_v": true,
+        "async_cpu_scatter": true,
+        "cpu_scatter_policy": "128 token threshold"
+      }
+    },
+    "adaptive4g-c8-64k-4k-02": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 65536,
+        "output_tokens_per_user": 4096,
+        "context_end_tokens_per_user": 69632,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 218.10525631345809,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 150.23938695409637,
+        "successful_requests_per_second": 0.036679537830589935,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 106.6625356702134,
+          "p95": 150.0580932764802,
+          "max": 150.05872629024088
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 214.53573312982917,
+          "p95": 218.02825518785977,
+          "max": 218.09596516750753
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.02651494583035381,
+          "p95": 0.035217074715965614,
+          "max": 0.03523191957210301
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 152.5208656936884,
+        "end": 209.09298248961568,
+        "seconds": 56.572116795927286,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 132,
+            "end_tokens": 3967,
+            "tokens": 3835,
+            "token_events": 1432
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 286,
+            "end_tokens": 3839,
+            "tokens": 3553,
+            "token_events": 1432
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 286,
+            "end_tokens": 3838,
+            "tokens": 3552,
+            "token_events": 1431
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 241,
+            "end_tokens": 3572,
+            "tokens": 3331,
+            "token_events": 1431
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 238,
+            "end_tokens": 3570,
+            "tokens": 3332,
+            "token_events": 1431
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 134,
+            "end_tokens": 3628,
+            "tokens": 3494,
+            "token_events": 1432
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 128,
+            "end_tokens": 3553,
+            "tokens": 3425,
+            "token_events": 1431
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 132,
+            "end_tokens": 3966,
+            "tokens": 3834,
+            "token_events": 1431
+          }
+        ],
+        "output_tokens": 28356,
+        "output_tokens_per_second": 501.2363264095041
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9908984709673219,
+        "intervals": 211,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 150.3348502907902,
+          "end": 210.64370682649314,
+          "seconds": 60.308856535702944,
+          "active_streams": 8,
+          "output_tokens": 30124,
+          "output_tokens_per_second": 499.4954593802743,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 4093,
+              "context_start_tokens": 65539,
+              "context_end_tokens": 69632
+            },
+            {
+              "client_index": 1,
+              "tokens": 3786,
+              "context_start_tokens": 65682,
+              "context_end_tokens": 69468
+            },
+            {
+              "client_index": 2,
+              "tokens": 3787,
+              "context_start_tokens": 65682,
+              "context_end_tokens": 69469
+            },
+            {
+              "client_index": 3,
+              "tokens": 3518,
+              "context_start_tokens": 65668,
+              "context_end_tokens": 69186
+            },
+            {
+              "client_index": 4,
+              "tokens": 3515,
+              "context_start_tokens": 65668,
+              "context_end_tokens": 69183
+            },
+            {
+              "client_index": 5,
+              "tokens": 3699,
+              "context_start_tokens": 65561,
+              "context_end_tokens": 69260
+            },
+            {
+              "client_index": 6,
+              "tokens": 3633,
+              "context_start_tokens": 65545,
+              "context_end_tokens": 69178
+            },
+            {
+              "client_index": 7,
+              "tokens": 4093,
+              "context_start_tokens": 65537,
+              "context_end_tokens": 69630
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9953873322510038,
+            "intervals": 226,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.26691380908248374,
+      "assembly": {
+        "scope": "Assembly path host preparation and waits, not pure GPU kernel time; payload H2D excludes small metadata",
+        "begin_row": 256,
+        "end_row": 512,
+        "refreshes": 256,
+        "distinct_requests": 8,
+        "uploaded_bytes": 162796273664,
+        "assembly_seconds": 14.67193697579205,
+        "host_prepare_seconds": 12.807235075160861,
+        "rebuilt_tokens": 7463808,
+        "skipped_tokens": 924800,
+        "raw_cache_hit_tokens": 3062272,
+        "resident_v_reused_tokens": 6915072,
+        "raw_cache_capacity_bytes": 4291559424,
+        "resident_value_max_request_bytes": 521404416,
+        "cumulative_cpu_scatter": {
+          "cpu_scatter_batches": 258,
+          "cpu_scatter_seconds": 39.22673314344138,
+          "cpu_scatter_join_seconds": 14.224070063792169
+        }
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 13342.0,
+        "vllm:spec_decode_num_draft_tokens_total": 40026.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 19426.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 19426.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "34070fc321d52366f5781cf41999cb12b24f6f900b88fb421d192897a86c4c73",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 1,
+          "sha256": "b0ce772a49842f05e7e0b9005c207c6c15a86219ad5d34bd53a577aba8e21704",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 2,
+          "sha256": "c2f8e147b6fd388b1cb76a1ef6b92e0d8ebb1252671066a3368f219a962eda83",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 3,
+          "sha256": "6371564ad92d2e2b903c336a934392a0ac6a0bf0ece8abbedd4a3c5ad9884deb",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 4,
+          "sha256": "5f18fc1bcfd7146fc1fc0348793ecb34522a9869925ba2337589b552d1e0c9d4",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 5,
+          "sha256": "3d443b52b08ba89f840016b715c11eaf316a8386ab08a7257cedcb41b413bd4c",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 6,
+          "sha256": "4addf793fb7a2cc19e4113f1161685bd518377a6063f7237be546fffa5492fae",
+          "observed_tokens": 4096
+        },
+        {
+          "client_index": 7,
+          "sha256": "34070fc321d52366f5781cf41999cb12b24f6f900b88fb421d192897a86c4c73",
+          "observed_tokens": 4096
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 39.53327518932724,
+        "tokens_per_user_per_event": 2.4769392033542976
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 4294967296,
+        "reuse_resident_v": true,
+        "async_cpu_scatter": true,
+        "cpu_scatter_policy": "128 token threshold"
+      }
+    },
+    "adaptive4g-c8-32k-16k": {
+      "status": "passed",
+      "configuration": {
+        "concurrency": 8,
+        "distinct_authenticated_users": 8,
+        "input_tokens_per_user": 32768,
+        "output_tokens_per_user": 16384,
+        "context_end_tokens_per_user": 49152,
+        "mtp_k": 3,
+        "kv_cache_dtype": "fp8_e4m3",
+        "cpu_kv_bytes": 107374182400,
+        "active_bytes": 51539607552,
+        "temporary_gateway_port": 18384,
+        "context_mode": "meank",
+        "draft_method": "mtp",
+        "draft_tokens": 3,
+        "draft_quantization": null,
+        "unique_session_salts": true,
+        "ignore_eos": true,
+        "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 314.87455223314464,
+        "successful_output_tokens": 131072,
+        "successful_output_tokens_per_second": 416.26736448028197,
+        "successful_requests_per_second": 0.02540694363282971,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 24.95774872554466,
+          "p95": 34.175919918110594,
+          "max": 34.17823098041117
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 289.7165273674764,
+          "p95": 312.12656493345276,
+          "max": 314.8735563373193
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.016158938085433974,
+          "p95": 0.017991358355191465,
+          "max": 0.018177773337384878
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "steady_decode_window": {
+        "status": "passed",
+        "start": 36.66968646645546,
+        "end": 269.0109957763925,
+        "seconds": 232.34130930993706,
+        "trim_tokens_each_end": 128,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "per_request": [
+          {
+            "client_index": 0,
+            "start_tokens": 199,
+            "end_tokens": 13658,
+            "tokens": 13459,
+            "token_events": 5801
+          },
+          {
+            "client_index": 1,
+            "start_tokens": 260,
+            "end_tokens": 14104,
+            "tokens": 13844,
+            "token_events": 5800
+          },
+          {
+            "client_index": 2,
+            "start_tokens": 256,
+            "end_tokens": 14114,
+            "tokens": 13858,
+            "token_events": 5801
+          },
+          {
+            "client_index": 3,
+            "start_tokens": 260,
+            "end_tokens": 14116,
+            "tokens": 13856,
+            "token_events": 5801
+          },
+          {
+            "client_index": 4,
+            "start_tokens": 139,
+            "end_tokens": 16130,
+            "tokens": 15991,
+            "token_events": 5801
+          },
+          {
+            "client_index": 5,
+            "start_tokens": 128,
+            "end_tokens": 16253,
+            "tokens": 16125,
+            "token_events": 5801
+          },
+          {
+            "client_index": 6,
+            "start_tokens": 128,
+            "end_tokens": 16249,
+            "tokens": 16121,
+            "token_events": 5800
+          },
+          {
+            "client_index": 7,
+            "start_tokens": 128,
+            "end_tokens": 16249,
+            "tokens": 16121,
+            "token_events": 5800
+          }
+        ],
+        "output_tokens": 119375,
+        "output_tokens_per_second": 513.7915438048813
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "coverage_fraction": 0.9990590485418404,
+        "intervals": 875,
+        "violations": [],
+        "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+      },
+      "context_growth_windows": [
+        {
+          "status": "passed",
+          "generated_token_band": [
+            0,
+            4096
+          ],
+          "start": 34.44589300453663,
+          "end": 95.0914844321087,
+          "seconds": 60.64559142757207,
+          "active_streams": 8,
+          "output_tokens": 31376,
+          "output_tokens_per_second": 517.3665432461283,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3675,
+              "context_start_tokens": 32850,
+              "context_end_tokens": 36525
+            },
+            {
+              "client_index": 1,
+              "tokens": 3820,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36700
+            },
+            {
+              "client_index": 2,
+              "tokens": 3825,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36705
+            },
+            {
+              "client_index": 3,
+              "tokens": 3826,
+              "context_start_tokens": 32880,
+              "context_end_tokens": 36706
+            },
+            {
+              "client_index": 4,
+              "tokens": 3953,
+              "context_start_tokens": 32785,
+              "context_end_tokens": 36738
+            },
+            {
+              "client_index": 5,
+              "tokens": 4095,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36864
+            },
+            {
+              "client_index": 6,
+              "tokens": 4091,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36860
+            },
+            {
+              "client_index": 7,
+              "tokens": 4091,
+              "context_start_tokens": 32769,
+              "context_end_tokens": 36860
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9977028227698251,
+            "intervals": 228,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            4096,
+            8192
+          ],
+          "start": 100.55931883398443,
+          "end": 153.56582195032388,
+          "seconds": 53.006503116339445,
+          "active_streams": 8,
+          "output_tokens": 27636,
+          "output_tokens_per_second": 521.3699900056433,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 3190,
+              "context_start_tokens": 36864,
+              "context_end_tokens": 40054
+            },
+            {
+              "client_index": 1,
+              "tokens": 3203,
+              "context_start_tokens": 37021,
+              "context_end_tokens": 40224
+            },
+            {
+              "client_index": 2,
+              "tokens": 3204,
+              "context_start_tokens": 37023,
+              "context_end_tokens": 40227
+            },
+            {
+              "client_index": 3,
+              "tokens": 3205,
+              "context_start_tokens": 37023,
+              "context_end_tokens": 40228
+            },
+            {
+              "client_index": 4,
+              "tokens": 3690,
+              "context_start_tokens": 37094,
+              "context_end_tokens": 40784
+            },
+            {
+              "client_index": 5,
+              "tokens": 3716,
+              "context_start_tokens": 37242,
+              "context_end_tokens": 40958
+            },
+            {
+              "client_index": 6,
+              "tokens": 3714,
+              "context_start_tokens": 37242,
+              "context_end_tokens": 40956
+            },
+            {
+              "client_index": 7,
+              "tokens": 3714,
+              "context_start_tokens": 37242,
+              "context_end_tokens": 40956
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9970942631257713,
+            "intervals": 199,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            8192,
+            12288
+          ],
+          "start": 170.42778141330928,
+          "end": 211.75371635705233,
+          "seconds": 41.32593494374305,
+          "active_streams": 8,
+          "output_tokens": 21367,
+          "output_tokens_per_second": 517.0360943820599,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 2318,
+              "context_start_tokens": 40963,
+              "context_end_tokens": 43281
+            },
+            {
+              "client_index": 1,
+              "tokens": 2429,
+              "context_start_tokens": 41235,
+              "context_end_tokens": 43664
+            },
+            {
+              "client_index": 2,
+              "tokens": 2430,
+              "context_start_tokens": 41239,
+              "context_end_tokens": 43669
+            },
+            {
+              "client_index": 3,
+              "tokens": 2433,
+              "context_start_tokens": 41239,
+              "context_end_tokens": 43672
+            },
+            {
+              "client_index": 4,
+              "tokens": 2981,
+              "context_start_tokens": 41939,
+              "context_end_tokens": 44920
+            },
+            {
+              "client_index": 5,
+              "tokens": 2928,
+              "context_start_tokens": 42128,
+              "context_end_tokens": 45056
+            },
+            {
+              "client_index": 6,
+              "tokens": 2924,
+              "context_start_tokens": 42128,
+              "context_end_tokens": 45052
+            },
+            {
+              "client_index": 7,
+              "tokens": 2924,
+              "context_start_tokens": 42128,
+              "context_end_tokens": 45052
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9943392883520095,
+            "intervals": 155,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        },
+        {
+          "status": "passed",
+          "generated_token_band": [
+            12288,
+            16384
+          ],
+          "start": 243.62627184856683,
+          "end": 271.8944478845224,
+          "seconds": 28.26817603595555,
+          "active_streams": 8,
+          "output_tokens": 13681,
+          "output_tokens_per_second": 483.9717986260779,
+          "per_request": [
+            {
+              "client_index": 0,
+              "tokens": 1472,
+              "context_start_tokens": 45056,
+              "context_end_tokens": 46528
+            },
+            {
+              "client_index": 1,
+              "tokens": 1529,
+              "context_start_tokens": 45445,
+              "context_end_tokens": 46974
+            },
+            {
+              "client_index": 2,
+              "tokens": 1521,
+              "context_start_tokens": 45456,
+              "context_end_tokens": 46977
+            },
+            {
+              "client_index": 3,
+              "tokens": 1525,
+              "context_start_tokens": 45456,
+              "context_end_tokens": 46981
+            },
+            {
+              "client_index": 4,
+              "tokens": 1909,
+              "context_start_tokens": 47127,
+              "context_end_tokens": 49036
+            },
+            {
+              "client_index": 5,
+              "tokens": 1909,
+              "context_start_tokens": 47243,
+              "context_end_tokens": 49152
+            },
+            {
+              "client_index": 6,
+              "tokens": 1908,
+              "context_start_tokens": 47243,
+              "context_end_tokens": 49151
+            },
+            {
+              "client_index": 7,
+              "tokens": 1908,
+              "context_start_tokens": 47243,
+              "context_end_tokens": 49151
+            }
+          ],
+          "native_confirmation": {
+            "status": "passed",
+            "coverage_fraction": 0.9858740216342089,
+            "intervals": 105,
+            "violations": [],
+            "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+          }
+        }
+      ],
+      "peak_gateway_active_requests": 8,
+      "peak_gateway_active_bytes": 20499660800,
+      "peak_native_kv_usage": 0.31510658016682114,
+      "assembly": {
+        "scope": "Assembly path host preparation and waits, not pure GPU kernel time; payload H2D excludes small metadata",
+        "begin_row": 512,
+        "end_row": 520,
+        "refreshes": 8,
+        "distinct_requests": 8,
+        "uploaded_bytes": 8493989888,
+        "assembly_seconds": 1.2756024533882737,
+        "host_prepare_seconds": 1.2160034654662013,
+        "rebuilt_tokens": 243968,
+        "skipped_tokens": 18176,
+        "raw_cache_hit_tokens": 0,
+        "resident_v_reused_tokens": 243968,
+        "raw_cache_capacity_bytes": 4291559424,
+        "resident_value_max_request_bytes": 539230208,
+        "cumulative_cpu_scatter": {
+          "cpu_scatter_batches": 323,
+          "cpu_scatter_seconds": 47.24110214691609,
+          "cpu_scatter_join_seconds": 14.639834126457572
+        }
+      },
+      "native_speculation_counters": {
+        "vllm:spec_decode_num_drafts_total": 51341.0,
+        "vllm:spec_decode_num_draft_tokens_total": 154016.0,
+        "vllm:spec_decode_num_accepted_tokens_total": 79735.0,
+        "vllm:spec_decode_num_accepted_tokens_per_pos_total": 79735.0
+      },
+      "preemptions": 0.0,
+      "accepted_output_hashes": [
+        {
+          "client_index": 0,
+          "sha256": "92eeb75f25dcab526693003ce074541580ed8b61a574a6881b3515fab1f2f213",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 1,
+          "sha256": "2e49cb29c256812dc398d31685455f20684b3178f648a0741eba99a7598be504",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 2,
+          "sha256": "faba001019fa162e34dab19d778b487161aab6a0af9c1377eedb689d7b83cc74",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 3,
+          "sha256": "faba001019fa162e34dab19d778b487161aab6a0af9c1377eedb689d7b83cc74",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 4,
+          "sha256": "2a6b930bb3dc6788d2b4e718078d4d25249c7f56cc24c70f982305d57e21675b",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 5,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 6,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        },
+        {
+          "client_index": 7,
+          "sha256": "7936fc48ffcba435edcfc674465bac65d4379158e53bb07043fc944f0c03e040",
+          "observed_tokens": 16384
+        }
+      ],
+      "sse_event_scope": {
+        "scope": "SSE events, not CUDA kernel timing",
+        "mean_event_interval_ms": 40.05194092569162,
+        "tokens_per_user_per_event": 2.572293570074125
+      },
+      "optimizations": {
+        "gpu_raw_k_cache_bytes": 4294967296,
+        "reuse_resident_v": true,
+        "async_cpu_scatter": true,
+        "cpu_scatter_policy": "128 token threshold"
+      }
+    }
+  },
+  "correctness": {
+    "terminal-64k": {
+      "calls": {
+        "first": {
+          "status": 200,
+          "seconds": 24.62200737092644
+        },
+        "resume": {
+          "status": 400,
+          "seconds": 0.12611487414687872
+        }
+      },
+      "status": "failed",
+      "prompt_tokens": 65536,
+      "error_type": "HTTPStatusError"
+    },
+    "terminal-64k-02": {
+      "calls": {
+        "first": {
+          "status": 200,
+          "seconds": 24.940758356824517
+        },
+        "resume": {
+          "status": 200,
+          "seconds": 4.21292216796428
+        }
+      },
+      "status": "passed",
+      "prompt_tokens": 65536,
+      "restored_state": {
+        "history_tokens": 65792,
+        "working_tokens": 34048,
+        "target_kv_bytes": 1185415168,
+        "working_attention_layers": 17,
+        "mtp_attention_layers": 1,
+        "recurrent_tensors": 96,
+        "draft_layers": 0,
+        "byte_equal": true
+      },
+      "restore_integrity_status": "passed",
+      "expected_first_checkpoint_tokens": 65792,
+      "scope": "terminal_checkpoint_gpu_byte_integrity",
+      "cold_control": "not_run",
+      "final_history_tokens": 65953
+    },
+    "release_smoke": {
+      "scope": "Ordinary authenticated service; profiler and restoration oracle disabled",
+      "turns": [
+        {
+          "http_status": 200,
+          "history_tokens": 272,
+          "version": 1,
+          "output_tokens": 16,
+          "waiting_for_tool": true,
+          "seconds": 0.603760982863605
+        },
+        {
+          "http_status": 200,
+          "history_tokens": 292,
+          "version": 2,
+          "output_tokens": 16,
+          "waiting_for_tool": false,
+          "seconds": 0.6939105913043022
+        }
+      ],
+      "idle_state": {
+        "active_requests": 0,
+        "active_reserved_bytes": 0,
+        "queued_requests": 0,
+        "restoring_requests": 0,
+        "restore_reserved_bytes": 0
+      },
+      "status": "passed"
+    }
+  },
+  "runtime_builds": {
+    "wheel-verification": {
+      "wheel_sha256": "41f34b94c9dc1cfc03d85a7d2905574b0fc596f6be5e6aa178b876da5dec89c3",
+      "matched_runtime_files": 72,
+      "mismatches": 0
+    },
+    "wheel-verification-final": {
+      "wheel_sha256": "6b6e0e20ee39d5e79b8c195529ef6f93440d02a27423985d155995f20a4765c0",
+      "matched_runtime_files": 72,
+      "mismatches": 0
+    },
+    "wheel-verification-adaptive": {
+      "wheel_sha256": "a3e2ed2f9f1b668929247f6e9ff175b2a62e5b36d44b65e41e315bffee8d86c6",
+      "matched_runtime_files": 72,
+      "mismatches": 0
+    },
+    "wheel-verification-release": {
+      "wheel_sha256": "c5cb622f0c68dd145022001e75c9909793eeb62ff02a9c34e43a7d41b8b28261",
+      "matched_runtime_files": 72,
+      "mismatches": 0
+    }
+  }
+}

@@ -9,7 +9,8 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import time
-from threading import Event
+from threading import Event, get_ident
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
@@ -58,6 +59,12 @@ class CaptureRuntime:
         self.gc_wait_seconds = 0.0
         self.gc_wait_count = 0
         self._archive_wait_deadline = None
+        self._cpu_scatter_executor = None
+        self._cpu_scatter_future = None
+        self.cpu_scatter_batches = 0
+        self.cpu_scatter_seconds = self.cpu_scatter_join_seconds = 0.0
+        if self.options.async_cpu_scatter and not getattr(runner,'_kvmem_bounded_target',False):
+            raise ValueError('Background CPU scatter requires native bounded terminal-prefix control')
         if self.options.repository_gc:
             if not getattr(runner, '_kvmem_bounded_target', False):
                 raise ValueError('Serving repository GC requires bounded execution')
@@ -91,6 +98,9 @@ class CaptureRuntime:
             self.retirement = RetirementQueue(max_reqs, self.options.verify_archive_on_finish)
 
     def submit(self, captured, batch, rejected):
+        # Never append a new, not-yet-authorized sample packet while the CPU
+        # worker drains the preceding scheduler-confirmed prefix.
+        self.join_cpu_scatter()
         if tuple(c.name for c in captured) != self.names:
             raise ValueError("Continuous capture missed or reordered target layers")
         if any(c.key.dtype != torch.bfloat16 for c in captured):
@@ -117,7 +127,52 @@ class CaptureRuntime:
         self.queue.append(CapturedPacket(tuple(batch.req_ids), t, download))
         self.batches += 1
 
+    def start_cpu_scatter(self):
+        """Called only after applying the next scheduler's EOS/cancel decision.
+
+        The worker owns at most the already queued D2H slots. submit, refresh,
+        session operations and capacity snapshots join it before reading or
+        mutating authority. It cannot consume the newly sampled current batch.
+        """
+        self.join_cpu_scatter()
+        if not self.options.async_cpu_scatter or not self.queue:
+            return False
+        if sum(packet.tokens for packet in self.queue)<self.options.cpu_scatter_min_tokens:
+            # Tiny decode packets cost less than a worker handoff/GIL contention.
+            # submit drains them after current GPU work has been enqueued; keep
+            # the same bounded DMA slots and next-scheduler terminal barrier.
+            return False
+        if getattr(self,'_cpu_scatter_executor',None) is None:
+            self._cpu_scatter_executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='kvmem-scatter')
+        self.cpu_scatter_batches=getattr(self,'cpu_scatter_batches',0)+len(self.queue)
+        def work():
+            started=time.perf_counter()
+            self._cpu_scatter_thread=get_ident()
+            try:
+                return self.drain(wait=True)
+            finally:
+                self._cpu_scatter_thread=None
+                self.cpu_scatter_seconds=getattr(self,'cpu_scatter_seconds',0.0)+time.perf_counter()-started
+        self._cpu_scatter_future=self._cpu_scatter_executor.submit(work)
+        return True
+
+    def join_cpu_scatter(self):
+        future=getattr(self,'_cpu_scatter_future',None)
+        if future is None:
+            return
+        started=time.perf_counter()
+        try:
+            future.result()
+            self._cpu_scatter_future=None
+        finally:
+            self.cpu_scatter_join_seconds=getattr(self,'cpu_scatter_join_seconds',0.0)+time.perf_counter()-started
+
     def drain(self, wait=False):
+        # Existing native adapters (including clipped non-speculative GDN
+        # continuations) call drain directly. Make every foreground drain a
+        # publication barrier; the sole scatter worker must not join itself.
+        if getattr(self,'_cpu_scatter_thread',None)!=get_ident():
+            self.join_cpu_scatter()
         while self.queue:
             packet = self.queue[0]
             if not packet.download.query():
@@ -188,6 +243,9 @@ class CaptureRuntime:
             "accepted_history": {req: owner.history_end for req, owner in self.authorities.items()},
             "archive_used_slots": self.archive.tier.used_slots,
             "pending_downloads": len(self.downloads.pending),
+            'cpu_scatter_batches':getattr(self,'cpu_scatter_batches',0),
+            'cpu_scatter_seconds':getattr(self,'cpu_scatter_seconds',0.0),
+            'cpu_scatter_join_seconds':getattr(self,'cpu_scatter_join_seconds',0.0),
             **completion_counts(self.completed),
             "retiring_requests": len(getattr(self, 'retiring', {}))}
         temporary = self.output / "progress.tmp"
@@ -201,6 +259,7 @@ class CaptureRuntime:
         snapshotting an unfinished download cannot invent free archive space.
         """
         from .archive_admission import ArchiveCapacity
+        self.join_cpu_scatter()
         # Do not drain the latest sample here: native EOS clipping is decided
         # by the scheduler after this output. execute_model applies that boundary
         # before draining on the following iteration.
@@ -250,6 +309,7 @@ class CaptureRuntime:
 
     def finish(self, request_ids, terminal_prefixes=None):
         """Drain publication, optionally checksum records, then reclaim the request."""
+        self.join_cpu_scatter()
         if not request_ids:
             return
         if terminal_prefixes is not None:
@@ -269,6 +329,11 @@ class CaptureRuntime:
             authority = self.authorities.get(request_id)
             if authority is None:
                 continue
+            raw_cache = getattr(self.runner, '_kvmem_gpu_raw_cache', None)
+            if raw_cache is not None:
+                # Waiting/tool sessions release their raw-cache occupancy too.
+                # The shared slab remains a bounded reusable process resource.
+                raw_cache.drop_namespace(authority.memory.request_id)
             terminal = getattr(self, 'terminal_prefixes', {}).pop(request_id, None)
             if terminal is not None and authority.history_end != terminal.history_end:
                 raise RuntimeError('Final capture does not match scheduler terminal prefix')
@@ -329,6 +394,7 @@ class CaptureRuntime:
 
     def retirement_done(self, request_id):
         """Called on the engine thread before the native connector releases pages."""
+        self.join_cpu_scatter()
         sessions = getattr(self.runner, '_kvmem_sessions', None)
         if sessions is not None:
             retained = sessions.retirement_done(request_id)
@@ -349,6 +415,11 @@ class CaptureRuntime:
 
     def shutdown_retirement(self):
         """Graceful engine shutdown drains detached work before releasing storage."""
+        self.join_cpu_scatter()
+        executor=getattr(self,'_cpu_scatter_executor',None)
+        if executor is not None:
+            executor.shutdown(wait=True)
+            self._cpu_scatter_executor=None
         if not self.options.async_archive_retirement:
             return
         self.drain(wait=True)

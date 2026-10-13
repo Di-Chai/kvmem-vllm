@@ -213,6 +213,8 @@ def make_probe_runner(base):
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
             runtime = getattr(self, "_kvmem_capture_runtime", None)
+            if not dummy_run and runtime is not None:
+                runtime.join_cpu_scatter()
             sessions = getattr(self, '_kvmem_sessions', None)
             if not dummy_run and getattr(self, '_kvmem_serving', False):
                 from .connector import ControlMetadata
@@ -243,7 +245,10 @@ def make_probe_runner(base):
                 # Apply EOS/cancellation truncation before draining the latest
                 # accepted sample packet into the immutable authority.
                 runtime.finish(scheduler_output.finished_req_ids, terminal)
-                runtime.drain(wait=False)
+                if runtime.options.async_cpu_scatter:
+                    runtime.start_cpu_scatter()
+                else:
+                    runtime.drain(wait=False)
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)

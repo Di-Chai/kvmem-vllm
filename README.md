@@ -1,5 +1,12 @@
 # vllm-kvmem
 
+**Raw-K / resident V caching, 2026-10-14:** opt-in bounded GPU raw-key caching,
+shared V staging and adaptive CPU history maintenance now reduce C8/64K payload
+H2D by about 58% and assembly path time by 15–21%. Steady decode did not show a
+clear gain in this round; complete C8/32K+16K measured 513.79 versus 510.40 tok/s.
+See the [measurement and correctness report](docs/raw-k-v-reuse-20261014.md)
+and [cached profile](examples/qwen-nvfp4-meank-mtp-cached-elastic.json).
+
 **MeanK with native Qwen MTP, 2026-10-14:** `draft_method: "mtp"` loads the
 checkpoint's MTP head. Target MeanK scores select both target and MTP immutable
 KV; both are re-RoPEd into the same bounded working window. At C8 with 64K input

@@ -24,25 +24,34 @@ class RuntimeOptions:
     session_capture_terminal: bool = False
     cpu_gather_workers: int = 8
     async_seal: bool = False
+    gpu_raw_k_cache_bytes: int = 0
+    reuse_resident_v: bool = False
+    async_cpu_scatter: bool = False
+    cpu_scatter_min_tokens: int = 128
 
     def __post_init__(self):
+        if type(self.cpu_scatter_min_tokens) is not int or not 1<=self.cpu_scatter_min_tokens<=65536:
+            raise ValueError('CPU scatter minimum must be an integer in [1, 65536]')
         if type(self.cpu_gather_workers) is not int or not 1 <= self.cpu_gather_workers <= 16:
             raise ValueError('CPU gather workers must be an integer in [1, 16]')
         if any(type(value) is not int or value < 0 for value in
                (self.cpu_read_cache_bytes, self.nvme_max_bytes, self.archive_io_max_bytes,
-                self.session_capacity, self.session_checkpoint_bytes, self.cpu_history_cache_bytes_per_request)):
+                self.session_capacity, self.session_checkpoint_bytes, self.cpu_history_cache_bytes_per_request,
+                self.gpu_raw_k_cache_bytes)):
             raise ValueError("Storage capacity must be a nonnegative byte count")
         if self.cpu_history_cache_bytes_per_request > self.cpu_read_cache_bytes:
             raise ValueError('Per-request historical cache must fit the global CPU cache budget')
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
                 self.async_archive_retirement, self.repository_gc, self.nvme_preallocate,
-                self.session_capture_decode, self.async_seal)):
+                self.session_capture_decode, self.async_seal, self.reuse_resident_v,self.async_cpu_scatter)):
             raise ValueError("Assembly and archive verification settings must be boolean")
         if type(self.session_capture_terminal) is not bool:
             raise ValueError('Terminal checkpoint setting must be boolean')
         if self.direct_pinned_reads and not self.packed_assembly:
             raise ValueError("Direct pinned reads require packed assembly")
+        if (self.gpu_raw_k_cache_bytes or self.reuse_resident_v) and not self.direct_pinned_reads:
+            raise ValueError('GPU raw cache and V reuse require direct packed assembly')
         if type(self.prefill_cadence) is not int or not 1 <= self.prefill_cadence <= 64:
             raise ValueError("Prefill cadence must be an integer in [1, 64]")
         if bool(self.session_capacity) != bool(self.session_checkpoint_bytes):
@@ -84,6 +93,10 @@ class RuntimeOptions:
         capture_terminal = payload.pop('session_capture_terminal', False)
         gather_workers = payload.pop('cpu_gather_workers', 8)
         async_seal = payload.pop('async_seal', False)
+        raw_cache = payload.pop('gpu_raw_k_cache_bytes', 0)
+        reuse_v = payload.pop('reuse_resident_v', False)
+        cpu_scatter = payload.pop('async_cpu_scatter', False)
+        scatter_min = payload.pop('cpu_scatter_min_tokens',128)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -92,4 +105,4 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers, async_seal)
+                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min)

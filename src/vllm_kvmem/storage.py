@@ -326,6 +326,81 @@ class AsyncArchive:
         del self._entries[key]
         return True
 
+    def _region_sources(self, keys):
+        return [None] * len(keys)
+
+    def _gather_region(self, destination, sources, offset, length):
+        _native.gather_record_region(destination, sources, self.record_bytes,
+                                     offset, length, 0, len(sources))
+        return 1
+
+    def read_region(self, namespace, leases, offset, length, *, destination=None):
+        """Read only raw K or V from immutable CPU records.
+
+        The unchanged NVMe tier reads whole records on a cache miss. Its bounded
+        fallback slab is charged separately; only the requested field is copied
+        to the caller. Namespace, generation, readiness and leases stay mandatory.
+        """
+        if (not leases or type(offset) is not int or type(length) is not int or
+                offset < 0 or length <= 0 or offset + length > self.record_bytes):
+            raise ValueError('Invalid archive record region')
+        size = len(leases) * length
+        destination = read_destination(destination, size)
+        keys = [self.key(namespace, lease) for lease in leases]
+        with self._lock:
+            entries = [self._entries.get(key) for key in keys]
+            if any(entry is None or not entry.ready for entry in entries):
+                raise KeyError('Archive record missing, stale, or not yet published')
+            sources = self._region_sources(keys)
+            misses = [i for i, source in enumerate(sources) if source is None]
+            # A fallback record slab and immutable cache copies can coexist.
+            admitted_bytes = size + 2 * len(misses) * self.record_bytes
+            if not self._admit(admitted_bytes):
+                return None
+            try:
+                owned = [lease.clone() for lease in leases]
+            except BaseException:
+                self._complete(admitted_bytes)
+                raise
+        spans = [_native.IoSpan(entries[i].allocation.slot, j*self.record_bytes, self.record_bytes)
+                 for j, i in enumerate(misses)]
+        submitted_at = time.perf_counter()
+
+        def work():
+            try:
+                started = time.perf_counter()
+                data = bytearray(size) if destination is None else destination
+                fallback = bytearray(len(misses)*self.record_bytes)
+                stats = self.tier.io(spans, fallback, False)
+                read_at = time.perf_counter()
+                view = memoryview(fallback)
+                for j, i in enumerate(misses):
+                    sources[i] = view[j*self.record_bytes:(j+1)*self.record_bytes]
+                tasks = self._gather_region(memoryview(data), sources, offset, length)
+                copied_at = time.perf_counter()
+                if misses:
+                    with self._lock:
+                        for i in misses:
+                            self._cache_write([keys[i]], bytes(sources[i]))
+                stats.update(logical_bytes=size, cache_hit_bytes=(len(keys)-len(misses))*length,
+                    region_offset=offset, region_bytes=length, cache_gather_tasks=tasks,
+                    read_queue_wait_seconds=started-submitted_at,
+                    native_read_call_seconds=read_at-started, cache_copy_seconds=copied_at-read_at,
+                    cache_fill_seconds=time.perf_counter()-copied_at)
+                return data, stats
+            finally:
+                owned.clear()
+                with self._lock:
+                    self._complete(admitted_bytes)
+
+        with self._lock:
+            try:
+                return ArchiveJob(self.executor.submit(work))
+            except BaseException:
+                owned.clear()
+                self._complete(admitted_bytes)
+                raise
+
     def reclaim(self, namespace: str, record) -> bool:
         """Only call from Repository.reclaim's release callback (leases == 0)."""
         key = namespace, record.handle.slot, record.handle.generation

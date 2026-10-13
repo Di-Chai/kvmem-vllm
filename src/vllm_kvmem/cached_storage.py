@@ -62,6 +62,31 @@ class CachedArchive(AsyncArchive):
             begin = index * self.record_bytes
             self.read_cache.put(key, payload[begin:begin+self.record_bytes])
 
+    def _region_sources(self, keys):
+        return [self.read_cache.get(key) for key in keys]
+
+    def _gather_region(self, destination, sources, offset, length):
+        workers = min(self.gather_workers, len(sources))
+        if workers == 1 or len(sources)*length < 8*1024**2:
+            return super()._gather_region(destination, sources, offset, length)
+        jobs, error = [], None
+        try:
+            for worker in range(workers):
+                jobs.append(self._gather_executor.submit(_native.gather_record_region,
+                    destination, sources, self.record_bytes, offset, length,
+                    len(sources)*worker//workers, len(sources)*(worker+1)//workers))
+        except BaseException as failure:
+            error = failure
+        for job in jobs:
+            try:
+                job.result()
+            except BaseException as failure:
+                if error is None:
+                    error = failure
+        if error is not None:
+            raise error
+        return len(jobs)
+
     def read(self, namespace, leases, *, destination=None):
         if not leases:
             raise ValueError("Empty read")

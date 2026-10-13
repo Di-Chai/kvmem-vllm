@@ -76,6 +76,7 @@ def install_bounded_target(runner):
         if runtime is None or not set(jobs).issubset(batch.req_ids):
             raise ValueError("Scheduled refresh is missing its archived history or query batch")
         draft_groups = draft_contract.validate_native_groups(runner) if draft_contract is not None else ()
+        runtime.join_cpu_scatter()
         runtime.drain(wait=True)
         cfg = runtime.config
         extents = {}
@@ -167,6 +168,10 @@ def install_bounded_target(runner):
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
                 "assembly_uploaded_bytes": assembly.uploaded_bytes,
                 "assembly_read_stats": assembly.read_stats,
+                "raw_cache_hit_tokens": assembly.raw_cache_hit_tokens,
+                "resident_v_reused_tokens": assembly.resident_v_reused_tokens,
+                "raw_cache_capacity_bytes": assembly.raw_cache_capacity_bytes,
+                "assembly_device_temp_bytes": assembly.device_temp_bytes,
                 "packed_assembly": runtime.options.packed_assembly,
                 "direct_pinned_reads": runtime.options.direct_pinned_reads})
 

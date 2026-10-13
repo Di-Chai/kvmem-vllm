@@ -29,7 +29,9 @@ def build_launch(profile, base, run_dir):
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
-        'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash'}
+        'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash',
+        'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
+        'cpu_scatter_min_tokens':128}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
@@ -42,6 +44,12 @@ def build_launch(profile, base, run_dir):
         raise ValueError('verify_session_restore must be boolean')
     if type(cfg['async_seal']) is not bool:
         raise ValueError('async_seal must be boolean')
+    if type(cfg['reuse_resident_v']) is not bool:
+        raise ValueError('reuse_resident_v must be boolean')
+    if type(cfg['async_cpu_scatter']) is not bool:
+        raise ValueError('async_cpu_scatter must be boolean')
+    if type(cfg['gpu_raw_k_cache_bytes']) is not int or cfg['gpu_raw_k_cache_bytes'] < 0:
+        raise ValueError('gpu_raw_k_cache_bytes must be a nonnegative byte count')
     for name in ('host', 'served_model_name'):
         if not isinstance(cfg[name], str) or not cfg[name] or '\x00' in cfg[name]:
             raise ValueError(f'{name} must be a nonempty string')
@@ -54,7 +62,8 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization', 'profiler_config', 'async_seal', 'draft_method'}:
+                               'draft_quantization', 'profiler_config', 'async_seal', 'draft_method',
+                               'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -100,6 +109,10 @@ def build_launch(profile, base, run_dir):
                 'cpu_read_cache_bytes': cfg['cpu_kv_bytes'],
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'async_seal': cfg['async_seal'],
+                'gpu_raw_k_cache_bytes': cfg['gpu_raw_k_cache_bytes'],
+                'reuse_resident_v': cfg['reuse_resident_v'],
+                'async_cpu_scatter':cfg['async_cpu_scatter'],
+                'cpu_scatter_min_tokens':cfg['cpu_scatter_min_tokens'],
                 # The archive clips this to its actual historical record
                 # geometry. MTP adds a layer; do not retain the target-only
                 # 12 GiB constant and leave global CPU capacity unused.

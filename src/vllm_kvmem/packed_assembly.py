@@ -7,7 +7,7 @@ import torch
 from vllm.triton_utils import tl, triton
 
 
-def read_packed_records(authority, handles, *, destination=None):
+def read_packed_records(authority, handles, *, destination=None, region=None):
     """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
     from .authority import record_key
     if not handles:
@@ -26,11 +26,13 @@ def read_packed_records(authority, handles, *, destination=None):
                     destination.ndim != 1 or not destination.is_contiguous()):
                 raise ValueError("Packed read destination must be contiguous CPU bytes")
             kwargs['destination'] = destination.numpy()
-        job = authority.archive.read(authority.memory.request_id, leases, **kwargs)
+        job = (authority.archive.read(authority.memory.request_id, leases, **kwargs) if region is None else
+               authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
         if job is None:
             raise BlockingIOError("Archive read queue is full")
         data, stats = job.result()
-        if len(data) != len(handles) * authority.record_bytes:
+        size = authority.record_bytes if region is None else region[1]
+        if len(data) != len(handles) * size:
             raise ValueError("Archive returned an incomplete packed record batch")
         result = torch.frombuffer(data, dtype=torch.uint8)
         if destination is not None and result.data_ptr() != destination.data_ptr():

@@ -153,6 +153,41 @@ PYBIND11_MODULE(_native, m) {
         return copied;
     }, py::arg("destination"), py::arg("sources"), py::arg("record_bytes"),
        py::arg("begin"), py::arg("end"));
+    m.def("gather_record_region", [](py::buffer destination,
+            const std::vector<py::object> &sources, size_t record_bytes,
+            size_t offset, size_t length, size_t begin, size_t end) {
+        auto target = destination.request(true);
+        if (!length || offset > record_bytes || length > record_bytes - offset ||
+                begin > end || end > sources.size() ||
+                sources.size() > static_cast<size_t>(PY_SSIZE_T_MAX) / length ||
+                target.ndim != 1 || target.itemsize != 1 || target.strides[0] != 1 ||
+                static_cast<size_t>(target.size) != sources.size() * length)
+            throw std::invalid_argument("Invalid record region or destination extent");
+        std::vector<py::buffer_info> exports;
+        std::vector<const char *> pointers;
+        for (size_t i = begin; i < end; ++i) {
+            if (sources[i].is_none()) pointers.push_back(nullptr);
+            else {
+                auto view = py::reinterpret_borrow<py::buffer>(sources[i]).request();
+                if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1 ||
+                        static_cast<size_t>(view.size) != record_bytes)
+                    throw std::invalid_argument("Region source must cover one complete record");
+                pointers.push_back(static_cast<const char *>(view.ptr) + offset);
+                exports.push_back(std::move(view));
+            }
+        }
+        size_t copied = 0;
+        {
+            py::gil_scoped_release release;
+            for (size_t i = begin; i < end; ++i) {
+                if (const char *source = pointers[i - begin]) {
+                    std::memcpy(static_cast<char *>(target.ptr) + i * length, source, length);
+                    copied += length;
+                }
+            }
+        }
+        return copied;
+    });
     py::class_<KvMemGcConfig>(m, "GcPolicy")
         .def(py::init<>())
 #define GCP(x) .def_readwrite(#x, &KvMemGcConfig::x)

@@ -10,7 +10,10 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1",
 
 @pytest.mark.parametrize("packed,direct", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("retain_sink,fail_second_read", [(True, False), (False, False), (False, True)])
-def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path, monkeypatch, retain_sink, fail_second_read, packed, direct):
+@pytest.mark.parametrize('optimized',[False,True])
+def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path, monkeypatch, retain_sink, fail_second_read, packed, direct,optimized):
+    if optimized and not direct:
+        pytest.skip('Split assembly requires direct packed reads')
     from vllm import _custom_ops as ops
     from vllm_kvmem.authority import RequestAuthority
     from vllm_kvmem.config import KVMemConfig
@@ -52,8 +55,11 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
         rk, rv = native_vllm_fp8_views(reference, heads, dim)
         native_layers.append(LayerWindow(k, v, trig, scale, table))
         expected.append((rk, rv))
+    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    raw_cache=GpuRawCache(2*layers*16*heads*dim*2,(layers,16,heads,dim),torch.device('cuda:0'),1,2) if optimized else None
+    extra=dict(raw_cache=raw_cache,reuse_resident_v=optimized)
     assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1, packed=packed,
-                                      direct_pinned_reads=direct)
+                                      direct_pinned_reads=direct,**extra)
     if fail_second_read:
         from vllm_kvmem.memory import Phase
         if packed:
@@ -115,7 +121,7 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
             plan = authority.memory.select({i: float(i == cold) for i in range(4)})
             assert not next(r for r in plan.remaps if r.block_id == cold).skip
             assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1,
-                packed=packed, direct_pinned_reads=direct)
+                packed=packed, direct_pinned_reads=direct,**extra)
             result = assembler.assemble(authority, plan)
             result.event.synchronize()
             assert result.rebuilt_tokens == 16 and result.skipped_tokens == 16
@@ -141,7 +147,7 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
             rv.view(torch.uint8).fill_(19)
         plan = authority.memory.restore_window(checkpoint)
         assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1,
-            packed=packed, direct_pinned_reads=direct)
+            packed=packed, direct_pinned_reads=direct,**extra)
         result = assembler.assemble(authority, plan)
         result.event.synchronize()
         assert result.rebuilt_tokens == 32 and result.skipped_tokens == 0
@@ -211,6 +217,65 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
     assert authority.close() and archive.close()
 
 
+def test_resident_value_moves_crossing_chunks_and_raw_hits_are_byte_exact(tmp_path):
+    from vllm import _custom_ops as ops
+    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    cfg=KVMemConfig(block_tokens=16,select_budget=48,gen_budget=48,
+                    repository_blocks=12,sink_blocks=0,recent_blocks=0)
+    layers,heads,dim=2,2,64
+    archive=AsyncArchive(str(tmp_path),layers*16*heads*dim*3,12)
+    authority=RequestAuthority('cycle',cfg,archive,layers,heads,dim)
+    torch.manual_seed(9983)
+    raw=torch.randn(layers,96,heads,dim,dtype=torch.bfloat16)
+    values=torch.randn_like(raw)
+    scale=torch.tensor(.03,device='cuda')
+    encoded=(values.float()/.03).clamp(-448,448).to(torch.float8_e4m3fn).view(torch.uint8)
+    assert authority.append(raw,encoded,history_begin=0,local_rope_begin=0)
+    authority.publish_sealed(lambda:None)
+    table=torch.tensor([7,4,1,8,2,6,3,5],dtype=torch.int32,device='cuda')
+    angles=torch.randn(128,16,device='cuda')
+    trig=torch.cat((angles.cos(),angles.sin()),dim=-1).bfloat16()
+    old_positions=torch.arange(96,device='cuda')
+    old_slots=table[old_positions//16].long()*16+old_positions%16
+    native,expected=[],[]
+    for i in range(layers):
+        backing=torch.zeros((10,heads,16,dim*2),dtype=torch.uint8,device='cuda')
+        k,v=native_vllm_fp8_views(backing,heads,dim)
+        rotated=neox_rope(raw[i].cuda(),trig[old_positions,:16],trig[old_positions,16:])
+        ops.reshape_and_cache_flash(rotated,values[i].cuda(),k,v,old_slots,'fp8_e4m3',scale,scale)
+        reference=backing.clone()
+        native.append(LayerWindow(k,v,trig,scale,table))
+        expected.append(native_vllm_fp8_views(reference,heads,dim))
+    raw_cache=GpuRawCache(3*layers*16*heads*dim*2,(layers,16,heads,dim),torch.device('cuda:0'),1,3)
+    positions=torch.arange(48,device='cuda')
+    slots=table[positions//16].long()*16+positions%16
+    for chosen in ((1,3,5),(0,1,3)):
+        plan=authority.memory.select({i:float(i in chosen) for i in range(6)})
+        assert [r.block_id for r in plan.remaps]==list(chosen)
+        assembler=NativeWindowAssembler(tuple(native),16,chunk_blocks=1,packed=True,
+            direct_pinned_reads=True,raw_cache=raw_cache,reuse_resident_v=True)
+        result=assembler.assemble(authority,plan)
+        result.event.synchronize()
+        selected=torch.tensor([t for i in chosen for t in range(i*16,(i+1)*16)])
+        for i,(rk,rv) in enumerate(expected):
+            rotated=neox_rope(raw[i,selected].cuda(),trig[positions,:16],trig[positions,16:])
+            ops.reshape_and_cache_flash(rotated,values[i,selected].cuda(),rk,rv,slots,'fp8_e4m3',scale,scale)
+            assert torch.equal(native[i].key.view(torch.uint8),rk.view(torch.uint8))
+            assert torch.equal(native[i].value.view(torch.uint8),rv.view(torch.uint8))
+        if chosen==(0,1,3):
+            assert result.resident_v_reused_tokens==32 and result.raw_cache_hit_tokens==32
+            assert result.uploaded_bytes==authority.record_bytes
+        authority.memory.attach_completion(result)
+        assert authority.memory.commit_selection() and assembler.close()
+        del plan,result
+    assert authority.close() and archive.close()
+
+
 def test_two_staging_slots_preserve_delayed_gpu_consumers_across_refreshes():
     from vllm_kvmem.window_assembly import _AssemblyStaging
 
@@ -246,3 +311,56 @@ def test_two_staging_slots_preserve_delayed_gpu_consumers_across_refreshes():
     for actual, expected in observed:
         assert torch.equal(actual.cpu(), torch.full((4096,), expected, dtype=torch.uint8))
     assert staging.close()
+
+
+@pytest.mark.parametrize('trig_dtype',[torch.float32,torch.bfloat16])
+def test_real_qwen_geometry_cached_assembly_matches_legacy_across_1600_token_pages(tmp_path,trig_dtype):
+    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.codec import native_vllm_fp8_views
+    from vllm_kvmem.assembly import assemble_fp8
+    from vllm_kvmem.window_assembly import LayerWindow,NativeWindowAssembler
+    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    layers,heads,dim,block,page,count=17,4,256,128,1600,4096
+    cfg=KVMemConfig(block_tokens=block,select_budget=2048,gen_budget=2048,
+                    repository_blocks=64,sink_blocks=0,recent_blocks=0)
+    archive=AsyncArchive(str(tmp_path),layers*block*heads*dim*3,64)
+    owner=RequestAuthority('real-geometry',cfg,archive,layers,heads,dim,resident_records=64,scoring_layers=16)
+    torch.manual_seed(7093)
+    raw=torch.randn(layers,count,heads,dim,dtype=torch.bfloat16)
+    encoded=torch.randint(0,127,raw.shape,dtype=torch.uint8)
+    assert owner.append(raw,encoded,history_begin=0,local_rope_begin=0)
+    owner.publish_sealed(lambda:None)
+    table=torch.tensor([4,2,6,1],dtype=torch.int32,device='cuda')
+    angles=torch.randn(6400,32,device='cuda')
+    trig=torch.cat((angles.cos(),angles.sin()),dim=-1).to(trig_dtype)
+    positions=torch.arange(count,device='cuda')
+    slots=table[positions//page].long()*page+positions%page
+    legacy,cached=[],[]
+    for i in range(layers):
+        backing=torch.zeros((8,heads,page,dim*2),dtype=torch.uint8,device='cuda')
+        key,value=native_vllm_fp8_views(backing,heads,dim)
+        scale=torch.tensor(.025+i*.001,device='cuda')
+        assemble_fp8(raw[i].cuda(),encoded[i].view(torch.float8_e4m3fn).cuda(),positions,slots,
+                     trig,key,value,scale)
+        other=backing.clone()
+        k2,v2=native_vllm_fp8_views(other,heads,dim)
+        legacy.append(LayerWindow(key,value,trig,scale,table))
+        cached.append(LayerWindow(k2,v2,trig,scale,table))
+    cache=GpuRawCache(layers*2048*heads*dim*2,(layers,block,heads,dim),torch.device('cuda:0'),1,16)
+    for chosen in (range(8,24),range(0,16),range(8,24)):
+        plan=owner.memory.select({i:float(i in chosen) for i in range(32)})
+        before=NativeWindowAssembler(tuple(legacy),block,chunk_blocks=3,packed=True,direct_pinned_reads=True)
+        after=NativeWindowAssembler(tuple(cached),block,chunk_blocks=3,packed=True,direct_pinned_reads=True,
+                                     raw_cache=cache,reuse_resident_v=True)
+        baseline=before.assemble(owner,plan)
+        optimized=after.assemble(owner,plan)
+        baseline.event.synchronize();optimized.event.synchronize()
+        for left,right in zip(legacy,cached):
+            assert torch.equal(left.key.view(torch.uint8),right.key.view(torch.uint8))
+            assert torch.equal(left.value.view(torch.uint8),right.value.view(torch.uint8))
+        owner.memory.attach_completion(optimized)
+        assert owner.memory.commit_selection() and before.close() and after.close()
+        del plan,baseline,optimized
+    assert owner.close() and archive.close()

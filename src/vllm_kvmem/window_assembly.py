@@ -37,6 +37,10 @@ class AssemblyResult:
     host_prepare_seconds: float = 0.0
     uploaded_bytes: int = 0
     read_stats: dict = field(default_factory=dict)
+    raw_cache_hit_tokens: int = 0
+    resident_v_reused_tokens: int = 0
+    raw_cache_capacity_bytes: int = 0
+    device_temp_bytes: int = 0
 
     def query(self):
         return self.event.query()
@@ -52,13 +56,16 @@ class _AssemblyStaging:
     """
     slots = 2
 
-    def __init__(self, slot_bytes, device):
+    def __init__(self, slot_bytes, device, value_capacity_bytes=0):
         self.slot_bytes, self.device = slot_bytes, device
         self.transfers = None
         self.buffers = []
         self.ready = []
         self.cursor = 0
         self.owner = None
+        self.value_capacity_bytes=value_capacity_bytes
+        self.value_buffer=None
+        self.value_ready=None
         self._lock = RLock()
 
     def claim(self, owner):
@@ -87,6 +94,15 @@ class _AssemblyStaging:
         event.record(torch.cuda.current_stream(self.device))
         self.ready[slot] = event
 
+    def value_destination(self,size):
+        if self.owner is None or not 0<size<=self.value_capacity_bytes:
+            raise ValueError('Resident V snapshot exceeds its shared byte budget')
+        if self.value_buffer is None:
+            self.value_buffer=torch.empty(self.value_capacity_bytes,dtype=torch.uint8,device=self.device)
+        if self.value_ready is not None:
+            torch.cuda.current_stream(self.device).wait_event(self.value_ready)
+        return self.value_buffer[:size]
+
     def release(self, owner, failed_fence=None):
         with self._lock:
             if self.owner is not owner:
@@ -95,23 +111,29 @@ class _AssemblyStaging:
                 # The failure fence follows every submitted DMA and partial
                 # kernel, including a chunk that failed before consumed().
                 self.ready = [failed_fence] * len(self.buffers)
+                if self.value_buffer is not None:
+                    self.value_ready=failed_fence
             self.owner = None
 
     def close(self):
         with self._lock:
-            if self.owner is not None or any(not event.query() for event in self.ready):
+            if (self.owner is not None or any(not event.query() for event in self.ready) or
+                    (self.value_ready is not None and not self.value_ready.query())):
                 return False
             if self.transfers is not None and not self.transfers.close():
                 return False
             self.buffers.clear()
             self.ready.clear()
             self.transfers = None
+            self.value_buffer=None
+            self.value_ready=None
             return True
 
 
 class NativeWindowAssembler:
     def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
-                 direct_pinned_reads=False, *, staging=None):
+                 direct_pinned_reads=False, *, staging=None, raw_cache=None, reuse_resident_v=False,
+                 value_capacity_bytes=None):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
@@ -137,13 +159,21 @@ class NativeWindowAssembler:
         if direct_pinned_reads and not packed:
             raise ValueError("Direct pinned reads require packed assembly")
         self.direct_pinned_reads = direct_pinned_reads
+        if (raw_cache is not None or reuse_resident_v) and not direct_pinned_reads:
+            raise ValueError('Split raw/V assembly requires direct packed reads')
+        self.raw_cache, self.reuse_resident_v = raw_cache, reuse_resident_v
         self.device = device
         self.heads, self.dim = heads, dim
         slot_bytes = len(layers) * heads * dim * block_tokens * chunk_blocks * 3
         if staging is not None and (staging.slot_bytes != slot_bytes or staging.device != device):
             raise ValueError("Shared assembly staging geometry changed")
         self._shared_staging = staging is not None
-        self.staging = staging if staging is not None else _AssemblyStaging(slot_bytes, device)
+        if value_capacity_bytes is None:
+            value_capacity_bytes=(len(layers)*heads*dim*min(l.kernel_page_table.numel()*l.value.shape[1]
+                for l in layers)) if reuse_resident_v else 0
+        if staging is not None and staging.value_capacity_bytes!=value_capacity_bytes:
+            raise ValueError('Shared resident V staging geometry changed')
+        self.staging = staging if staging is not None else _AssemblyStaging(slot_bytes, device,value_capacity_bytes)
         self._metadata_owners = []
         self._completion = None
         self.closed = False
@@ -171,8 +201,20 @@ class NativeWindowAssembler:
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
                                       attn._k_scale, tables[group_id]))
         staging = getattr(runner, "_kvmem_assembly_staging", None)
+        options = getattr(getattr(runner, '_kvmem_capture_runtime', None), 'options', None)
+        raw_cache = getattr(runner, '_kvmem_gpu_raw_cache', None)
+        if direct_pinned_reads and options is not None and options.gpu_raw_k_cache_bytes and raw_cache is None:
+            from .gpu_raw_cache import GpuRawCache
+            raw_cache = GpuRawCache(options.gpu_raw_k_cache_bytes,
+                (len(layers),block_tokens,module.num_kv_heads,module.head_dim), key.device,
+                runner.max_num_reqs, options.memory.select_budget//block_tokens)
+            runner._kvmem_gpu_raw_cache = raw_cache
         assembler = cls(tuple(layers), block_tokens, chunk_blocks, packed=packed,
-                        direct_pinned_reads=direct_pinned_reads, staging=staging)
+                        direct_pinned_reads=direct_pinned_reads, staging=staging,
+                        raw_cache=raw_cache if direct_pinned_reads else None,
+                        reuse_resident_v=bool(direct_pinned_reads and options is not None and options.reuse_resident_v),
+                        value_capacity_bytes=(len(layers)*module.num_kv_heads*module.head_dim*options.memory.select_budget
+                            if options is not None and options.reuse_resident_v else 0))
         if staging is None:
             # Publish shared scratch only after all geometry/ownership checks
             # pass; an invalid first request must not poison the runner pool.
@@ -210,6 +252,9 @@ class NativeWindowAssembler:
             raise
         finally:
             self.staging.release(self, failed)
+            if failed is not None and self.raw_cache is not None:
+                self.raw_cache.drop_namespace(authority.memory.request_id)
+                self.raw_cache.finish(failed)
 
     def _upload_metadata(self, values):
         # A pageable torch.tensor(..., device="cuda") after wait_event can
@@ -239,6 +284,9 @@ class NativeWindowAssembler:
                 if remap.to_base + remap.n_tokens > layer.cos_sin.shape[0]:
                     raise ValueError("Selected position exceeds the model RoPE table")
         pending = [remap for remap in remaps if not remap.skip]
+        if (pending and (self.raw_cache is not None or self.reuse_resident_v) and
+                authority.raw_dtype == torch.bfloat16 and all(r.n_tokens == self.block_tokens for r in pending)):
+            return self._assemble_split(authority,plan,remaps,pending,by_slot)
         rebuilt, chunks, owners = 0, 0, [self, plan, authority]
         host_prepare_seconds, uploaded_bytes = 0.0, 0
         read_stats = {}
@@ -324,6 +372,109 @@ class NativeWindowAssembler:
         return AssemblyResult(done, tuple(owners), rebuilt,
                               sum(remap.n_tokens for remap in remaps if remap.skip), chunks,
                               host_prepare_seconds, uploaded_bytes, read_stats)
+
+    def _assemble_split(self,authority,plan,remaps,pending,by_slot):
+        from .packed_assembly import read_packed_records
+        from .split_assembly import gather_resident_values, assemble_split_layer, store_raw_records
+        layers=len(self.layers)
+        raw_bytes=authority.record_bytes*2//3
+        value_bytes=authority.record_bytes//3
+        owners=[self,plan,authority]
+        started=time.perf_counter()
+        namespace=authority.memory.request_id
+        keys=[(namespace,int(by_slot[r.block_id].handle.slot),int(by_slot[r.block_id].handle.generation))
+              for r in pending]
+        hits=[None]*len(pending)
+        if self.raw_cache is not None:
+            self.raw_cache.begin()
+            hits=[self.raw_cache.index.get(key) for key in keys]
+        resident=[i for i,r in enumerate(pending) if self.reuse_resident_v and r.working_k_resident]
+        for i in resident:
+            r=pending[i]
+            if r.from_base<0 or any(r.from_base+r.n_tokens>l.kernel_page_table.numel()*l.value.shape[1]
+                                    for l in self.layers):
+                raise ValueError('Resident V source exceeds retained native pages')
+        resident_index={i:j for j,i in enumerate(resident)}
+        resident_values=None
+        if resident:
+            from_bases=self._upload_metadata([pending[i].from_base for i in resident])
+            # Stage the whole read set before any writes; per-chunk staging
+            # would corrupt cycles crossing a chunk boundary.
+            size=len(resident)*value_bytes
+            destination=self.staging.value_destination(size)
+            resident_values=gather_resident_values(self.layers,from_bases,self.block_tokens,destination)
+            owners.append(resident_values)
+        host_seconds=time.perf_counter()-started
+        uploaded,rebuilt,chunks=0,0,0
+        stats={}
+        groups={(h,v):[] for h,v in ((True,True),(True,False),(False,True),(False,False))}
+        for i in range(len(pending)):
+            groups[hits[i] is not None,i in resident_index].append(i)
+        # Every cache hit consumes its old slot before any miss may evict it.
+        for (hit,reuse),indices in groups.items():
+            for begin in range(0,len(indices),self.chunk_blocks):
+                chunk=indices[begin:begin+self.chunk_blocks]
+                clock=time.perf_counter()
+                bases=self._upload_metadata([pending[i].to_base for i in chunk])
+                raw_indices=self._upload_metadata([hits[i] if hit else j for j,i in enumerate(chunk)])
+                value_indices=self._upload_metadata([resident_index[i] if reuse else j for j,i in enumerate(chunk)])
+                gpu=None
+                slot=None
+                stride=raw_bytes
+                if not hit or not reuse:
+                    region=((raw_bytes,value_bytes) if hit else (0,raw_bytes) if reuse else None)
+                    stride=authority.record_bytes if region is None else region[1]
+                    size=len(chunk)*stride
+                    gpu,ready,slot=self.staging.destination(size)
+                    handles=[by_slot[pending[i].block_id].handle for i in chunk]
+                    def fill(buffer):
+                        _,read=read_packed_records(authority,handles,destination=buffer,region=region)
+                        for name,value in read.items():
+                            stats[name]=stats.get(name,0)+value
+                    transfer=self.transfers.upload_from_reader(size,gpu,fill,ready=ready)
+                    if transfer is None:
+                        next(iter(self.transfers.pending.values())).event.synchronize()
+                        transfer=self.transfers.upload_from_reader(size,gpu,fill,ready=ready)
+                    if transfer is None:
+                        raise RuntimeError('Split assembly staging did not make progress')
+                    torch.cuda.current_stream(self.device).wait_event(transfer.event)
+                    uploaded+=size
+                raw_source=self.raw_cache.tensor if hit else gpu
+                values_source=resident_values if reuse else gpu
+                raw_stride=raw_bytes if hit else stride
+                value_stride=value_bytes if reuse or hit else stride
+                value_offset=0 if reuse or hit else raw_bytes
+                if not hit and self.raw_cache is not None:
+                    protected=set()
+                    cache_slots=[]
+                    for i in chunk:
+                        cached_slot=self.raw_cache.index.reserve(keys[i],protected)
+                        cache_slots.append(-1 if cached_slot is None else cached_slot)
+                        if cached_slot is not None:
+                            protected.add(keys[i])
+                    slots=self._upload_metadata(cache_slots)
+                    store_raw_records(gpu,slots,self.raw_cache.tensor,stride)
+                for i,layer in enumerate(self.layers):
+                    assemble_split_layer(raw_source,raw_indices,values_source,value_indices,bases,layer,
+                        layer_index=i,layers=layers,block_tokens=self.block_tokens,
+                        raw_record_bytes=raw_stride,value_record_bytes=value_stride,value_offset=value_offset)
+                if slot is not None:
+                    self.staging.consumed(slot)
+                host_seconds+=time.perf_counter()-clock
+                rebuilt+=len(chunk)*self.block_tokens
+                chunks+=1
+        done=torch.cuda.Event()
+        done.record(torch.cuda.current_stream(self.device))
+        if resident_values is not None:
+            self.staging.value_ready=done
+        if self.raw_cache is not None:
+            self.raw_cache.finish(done)
+            owners.append(self.raw_cache)
+        return AssemblyResult(done,tuple(owners),rebuilt,
+            sum(r.n_tokens for r in remaps if r.skip),chunks,host_seconds,uploaded,stats,
+            sum(hit is not None for hit in hits)*self.block_tokens,len(resident)*self.block_tokens,
+            self.raw_cache.capacity_bytes if self.raw_cache is not None else 0,
+            resident_values.numel() if resident_values is not None else 0)
 
     def close(self):
         if self.staging.owner is self:

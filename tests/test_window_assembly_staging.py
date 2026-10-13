@@ -127,6 +127,30 @@ def test_failed_partial_consumer_fences_both_slots_before_the_next_request(cuda_
     assert pool.close()
 
 
+def test_resident_value_scratch_is_shared_bounded_and_failure_fenced(cuda_oracle):
+    cuda_oracle.monkeypatch.setattr(window.torch,'empty',cuda_oracle.allocate)
+    pool=window._AssemblyStaging(64,torch.device('cuda:0'),value_capacity_bytes=96)
+    first=object()
+    pool.claim(first)
+    value=pool.value_destination(64)
+    done=Event()
+    pool.value_ready=done
+    pool.release(first)
+    assert not pool.close()
+    second=object()
+    pool.claim(second)
+    next_value=pool.value_destination(32)
+    assert value.parent is next_value.parent and len(cuda_oracle.allocations)==1
+    assert cuda_oracle.allocations[0][0].size==96
+    assert cuda_oracle.stream.operations[-1]==('wait',done)
+    with pytest.raises(ValueError,match='byte budget'):pool.value_destination(97)
+    failed=Event()
+    pool.release(second,failed)
+    assert pool.value_ready is failed and not pool.close()
+    failed.complete=True
+    assert pool.close() and pool.value_buffer is None
+
+
 def cpu_layer():
     key = torch.zeros((4, 4, 1, 4), dtype=torch.float8_e4m3fn)
     return window.LayerWindow(key, key.clone(), torch.zeros(16, 4), torch.tensor(1.0),
@@ -207,6 +231,31 @@ def test_runner_reuses_fixed_staging_across_request_views(cuda_oracle, monkeypat
     assert not second.close()
     second.staging.release(second)
     assert second.close() and not cuda_oracle.pools
+
+
+def test_read_only_oracle_views_do_not_activate_split_assembly(cuda_oracle,monkeypatch):
+    import numpy as np
+    layer=cpu_layer()
+    module=SimpleNamespace(num_kv_heads=1,head_dim=4,
+        rotary_emb=SimpleNamespace(cos_sin_cache=layer.cos_sin),
+        attn=SimpleNamespace(kv_cache_dtype='fp8_e4m3',layer_name='attention',
+                            kv_cache=object(),_k_scale=layer.key_scale))
+    options=SimpleNamespace(gpu_raw_k_cache_bytes=4096,reuse_resident_v=True,
+                             memory=SimpleNamespace(select_budget=8))
+    raw_cache=object()
+    staging=window._AssemblyStaging(1*1*4*4*32*3,torch.device('cpu'),value_capacity_bytes=32)
+    runner=SimpleNamespace(model=SimpleNamespace(named_modules=lambda:[('module',module)]),
+        _kvmem_capture_runtime=SimpleNamespace(options=options),_kvmem_gpu_raw_cache=raw_cache,
+        _kvmem_assembly_staging=staging,
+        kv_cache_config=SimpleNamespace(kv_cache_groups=[SimpleNamespace(layer_names=['attention'])]),
+        req_states=SimpleNamespace(req_id_to_index={'a':0}),
+        block_tables=SimpleNamespace(num_blocks=SimpleNamespace(np=np.array([[2]])),
+            block_tables=[SimpleNamespace(gpu=torch.tensor([[1,2]],dtype=torch.int32))]))
+    monkeypatch.setattr(window,'native_vllm_fp8_views',lambda *_:(layer.key,layer.value))
+    observer=window.NativeWindowAssembler.from_runner(runner,'a',['module'],4)
+    assert observer.raw_cache is None and not observer.reuse_resident_v
+    assert runner._kvmem_gpu_raw_cache is raw_cache and observer.staging is staging
+    assert observer.close() and not staging.buffers and staging.value_buffer is None
 
 
 @pytest.mark.parametrize("direct", [False, True])
