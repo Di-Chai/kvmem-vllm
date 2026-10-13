@@ -4,6 +4,7 @@ Resident entries are not authority and never bypass namespace/generation/lease
 validation. I/O admission remains bounded by the underlying archive queue.
 """
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from . import _native
 from .storage import AsyncArchive, ArchiveJob, read_destination
@@ -11,9 +12,48 @@ from .read_cache import RecordReadCache
 
 
 class CachedArchive(AsyncArchive):
-    def __init__(self, *args, cache_bytes, namespace_bytes, **kwargs):
+    def __init__(self, *args, cache_bytes, namespace_bytes, gather_workers=8, **kwargs):
+        if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
+            raise ValueError('Cache gather workers must be between 1 and 16')
         self.read_cache = RecordReadCache(cache_bytes, namespace_bytes)
         super().__init__(*args, **kwargs)
+        # Separate from the archive executor: an I/O task may wait for gather,
+        # so sharing its own bounded executor would deadlock under concurrency.
+        self.gather_workers = gather_workers
+        self._gather_executor = ThreadPoolExecutor(max_workers=gather_workers,
+                                                   thread_name_prefix='kvmem-gather')
+
+    def _gather(self, destination, cached):
+        """Gather immutable hits without holding the GIL during bulk copies.
+
+        This mirrors qw3's bounded CPU slab gather. The archive admission bounds
+        in-flight reads; each adds at most gather_workers tasks and no payload
+        copies. Every task drains before leases or the destination may be freed.
+        """
+        hits = sum(hit is not None for hit in cached)
+        if not hits:
+            return 0
+        workers = min(self.gather_workers, hits)
+        if workers == 1 or hits * self.record_bytes < 8 * 1024**2:
+            _native.gather_cached_records(destination, cached, self.record_bytes, 0, len(cached))
+            return 1
+        jobs, error = [], None
+        try:
+            for worker in range(workers):
+                jobs.append(self._gather_executor.submit(_native.gather_cached_records,
+                    destination, cached, self.record_bytes,
+                    len(cached) * worker // workers, len(cached) * (worker + 1) // workers))
+        except BaseException as failure:
+            error = failure
+        for job in jobs:
+            try:
+                job.result()
+            except BaseException as failure:
+                if error is None:
+                    error = failure
+        if error is not None:
+            raise error
+        return len(jobs)
 
     def _cache_write(self, keys, payload):
         for index, key in enumerate(keys):
@@ -52,9 +92,7 @@ class CachedArchive(AsyncArchive):
                 data = bytearray(len(keys) * self.record_bytes) if destination is None else destination
                 allocated_at = time.perf_counter()
                 view = memoryview(data)
-                for i, hit in enumerate(cached):
-                    if hit is not None:
-                        view[i*self.record_bytes:(i+1)*self.record_bytes] = hit
+                gather_tasks = self._gather(view, cached)
                 copied_at = time.perf_counter()
                 stats = self.tier.io(spans, data, False)
                 read_at = time.perf_counter()
@@ -66,6 +104,7 @@ class CachedArchive(AsyncArchive):
                             self.read_cache.put(key, bytes(view[i*self.record_bytes:(i+1)*self.record_bytes]))
                 stats.update(read_queue_wait_seconds=started_at-submitted_at,
                     read_allocation_seconds=allocated_at-started_at,
+                    cache_gather_tasks=gather_tasks,
                     cache_copy_seconds=copied_at-allocated_at,
                     native_read_call_seconds=read_at-copied_at,
                     cache_fill_seconds=time.perf_counter()-read_at)
@@ -92,5 +131,6 @@ class CachedArchive(AsyncArchive):
     def close(self):
         if not super().close():
             return False
+        self._gather_executor.shutdown(wait=True)
         self.read_cache.clear()
         return True

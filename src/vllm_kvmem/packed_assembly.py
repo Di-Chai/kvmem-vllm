@@ -1,7 +1,7 @@
-"""Experimental archive-layout assembly without per-record CPU tensor repacking.
+"""Archive-layout assembly without per-record CPU tensor repacking.
 
-Not enabled by the serving bridge until native GPU qualification. Immutable
-records remain in their file layout: [record][all raw-K layers][all FP8-V layers].
+Immutable records remain in their file layout:
+[record][all raw-K layers][all FP8-V layers].
 """
 import torch
 from vllm.triton_utils import tl, triton

@@ -61,6 +61,7 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         from .cached_storage import CachedArchive
         cls = CachedArchive
         kwargs.update(cache_bytes=options.cpu_read_cache_bytes,
+                      gather_workers=options.cpu_gather_workers,
                       namespace_bytes=(options.cpu_history_cache_bytes_per_request or
                           (options.memory.select_budget + options.memory.gen_budget)
                           // options.memory.block_tokens * record_bytes))

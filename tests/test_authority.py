@@ -161,3 +161,101 @@ def test_shared_queue_progress_can_come_from_another_request(tmp_path):
     assert b.append(*payload(24, 1), history_begin=4, local_rope_begin=4)
     assert a.close() and b.close()
     assert archive.close()
+
+
+def test_submitted_snapshot_consumes_resident_budget_until_completion_is_observed(tmp_path, monkeypatch):
+    authority, archive = setup(tmp_path, resident=1)
+    original_write = archive.write
+    admitted = []
+    observed = False
+
+    class DeferredObservation:
+        def __init__(self, job):
+            self.job = job
+
+        def done(self):
+            return observed and self.job.done()
+
+        def result(self, timeout=None):
+            return self.job.result(timeout)
+
+    def write(*args):
+        job = original_write(*args)
+        assert job is not None
+        admitted.append(job)
+        return DeferredObservation(job)
+
+    monkeypatch.setattr(archive, "write", write)
+    assert authority.append(*payload(0, 4), history_begin=0, local_rope_begin=0)
+    record = next(iter(authority.records.values()))
+    assert record.submitted and record.raw is None and not record.archived
+    admitted[0].result(timeout=5)
+    # I/O-owned snapshots still count even after staging tensors were released;
+    # durable publication, rather than submission, makes the budget reusable.
+    assert not authority.append(*payload(4, 1), history_begin=4, local_rope_begin=4)
+    assert authority.history_end == 4 and not record.archived
+    observed = True
+    assert authority.append(*payload(4, 1), history_begin=4, local_rope_begin=4)
+    assert record.archived and authority.history_end == 5
+    assert authority.close() and archive.close()
+
+
+def test_sealed_batch_retry_preserves_record_order_bytes_checksums_and_accepted_prefix(tmp_path, monkeypatch):
+    import hashlib
+
+    authority, archive = setup(tmp_path)
+    original_write = archive.write
+    packets = []
+    admit = False
+
+    def write(namespace, leases, data):
+        assert type(data) is bytes
+        packets.append(([(lease.handle.slot, lease.handle.generation) for lease in leases], data))
+        return original_write(namespace, leases, data) if admit else None
+
+    monkeypatch.setattr(archive, "write", write)
+    raw, values = payload(0, 12)
+    expected_raw, expected_values = raw.clone(), values.clone()
+    assert authority.append(raw, values, history_begin=0, local_rope_begin=0, accepted=9)
+    raw.zero_()
+    values.zero_()
+    assert not authority.flush()
+    records = list(authority.records.values())
+    expected_packets = [expected_raw[:, begin:begin+4].contiguous().view(torch.uint8).numpy().tobytes()
+                        + expected_values[:, begin:begin+4].contiguous().numpy().tobytes()
+                        for begin in (0, 4)]
+    keys = [(r.handle.slot, r.handle.generation) for r in records[:2]]
+    assert packets == [(keys, b"".join(expected_packets))] * 2
+    assert [r.digest for r in records[:2]] == [hashlib.sha256(data).hexdigest() for data in expected_packets]
+    assert records[2].count == 1 and records[2].digest is None
+    for i, record in enumerate(records):
+        begin = i * 4
+        assert torch.equal(record.key_sum, expected_raw[:, begin:begin+record.count].float().sum(dim=1))
+    admit = True
+    drain(authority)
+    assert packets[-1] == packets[0]
+    for i, record in enumerate(records):
+        actual_raw, actual_values = authority.read_record(record.handle)
+        begin = i * 4
+        assert torch.equal(actual_raw, expected_raw[:, begin:begin+record.count])
+        assert torch.equal(actual_values, expected_values[:, begin:begin+record.count])
+    assert authority.history_end == 9
+    assert authority.close() and archive.close()
+
+
+def test_cancelled_unsubmitted_record_drops_staging_only_after_lease_release(tmp_path, monkeypatch):
+    import weakref
+
+    authority, archive = setup(tmp_path, resident=1)
+    monkeypatch.setattr(archive, "write", lambda *args: None)
+    assert authority.append(*payload(0, 4), history_begin=0, local_rope_begin=0)
+    record = next(iter(authority.records.values()))
+    raw = weakref.ref(record.raw)
+    lease = authority.memory.repository.pin(record.handle)
+    del record
+    assert not authority.close()
+    assert raw() is not None and archive.tier.used_slots == 0
+    lease.reset()
+    assert authority.close()
+    assert raw() is None and not authority.records
+    assert authority.close() and archive.close()

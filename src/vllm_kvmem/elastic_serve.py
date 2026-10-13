@@ -28,11 +28,14 @@ def build_launch(profile, base, run_dir):
         'token_history_bytes_per_user': 4 * 1024**2, 'max_sessions_per_user': 32,
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
-        'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None}
+        'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
+        'cpu_gather_workers': 8}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
     cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
+    if type(cfg['cpu_gather_workers']) is not int or not 1 <= cfg['cpu_gather_workers'] <= 16:
+        raise ValueError('cpu_gather_workers must be an integer in [1, 16]')
     if cfg['context_mode'] not in ('full', 'meank'):
         raise ValueError('context_mode must be full or meank')
     if type(cfg['verify_session_restore']) is not bool:
@@ -88,6 +91,7 @@ def build_launch(profile, base, run_dir):
             'kvmem': {'select_budget': cfg['active_context_tokens'], 'gen_budget': cfg['gen_budget_tokens'],
                 'repository_blocks': (cfg['max_model_len'] + 127) // 128,
                 'cpu_read_cache_bytes': cfg['cpu_kv_bytes'],
+                'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'cpu_history_cache_bytes_per_request': min(cfg['cpu_kv_bytes'], 12 * 1024**3),
                 'packed_assembly': True, 'direct_pinned_reads': True, 'prefill_cadence': 1,
                 'async_archive_retirement': True, 'verify_archive_on_finish': False,

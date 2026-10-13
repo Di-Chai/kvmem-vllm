@@ -11,12 +11,13 @@ def config(payload):
 def test_public_connector_config_propagates_granularity_and_resource_options_without_mutation():
     values = {'kvmem': {'block_tokens': 32, 'repository_blocks': 16384,
                        'cpu_read_cache_bytes': 9 * 1024**3, 'packed_assembly': True,
-                       'archive_io_max_bytes': 2 * 1024**3}}
+                       'archive_io_max_bytes': 2 * 1024**3, 'cpu_gather_workers': 4}}
     options = RuntimeOptions.from_vllm(config(values))
     assert options.memory.block_tokens == 32
     assert (options.memory.select_budget, options.memory.gen_budget) == (131072, 65536)
     assert options.cpu_read_cache_bytes == 9 * 1024**3 and options.packed_assembly
     assert options.archive_io_max_bytes == 2 * 1024**3
+    assert options.cpu_gather_workers == 4
     assert values['kvmem']['cpu_read_cache_bytes'] == 9 * 1024**3
     assert RuntimeOptions.from_vllm(config({})).memory.block_tokens == 128
 
@@ -24,6 +25,9 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
 @pytest.mark.parametrize('payload,match', [
     ({'kvmem': {'block_toknes': 32}}, 'Unknown'),
     ({'kvmem': {'cpu_read_cache_bytes': True}}, 'capacity'),
+    ({'kvmem': {'cpu_gather_workers': True}}, 'gather'),
+    ({'kvmem': {'cpu_gather_workers': 0}}, 'gather'),
+    ({'kvmem': {'cpu_gather_workers': 17}}, 'gather'),
     ({'kvmem': {'packed_assembly': 'true'}}, 'boolean'),
     ({'kvmem': {'verify_archive_on_finish': 0}}, 'boolean'),
     ({'kvmem': {'direct_pinned_reads': True}}, 'require packed'),

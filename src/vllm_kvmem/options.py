@@ -22,8 +22,11 @@ class RuntimeOptions:
     session_capture_decode: bool = False
     cpu_history_cache_bytes_per_request: int = 0
     session_capture_terminal: bool = False
+    cpu_gather_workers: int = 8
 
     def __post_init__(self):
+        if type(self.cpu_gather_workers) is not int or not 1 <= self.cpu_gather_workers <= 16:
+            raise ValueError('CPU gather workers must be an integer in [1, 16]')
         if any(type(value) is not int or value < 0 for value in
                (self.cpu_read_cache_bytes, self.nvme_max_bytes, self.archive_io_max_bytes,
                 self.session_capacity, self.session_checkpoint_bytes, self.cpu_history_cache_bytes_per_request)):
@@ -78,6 +81,7 @@ class RuntimeOptions:
         capture_decode = payload.pop('session_capture_decode', False)
         history_bytes = payload.pop('cpu_history_cache_bytes_per_request', 0)
         capture_terminal = payload.pop('session_capture_terminal', False)
+        gather_workers = payload.pop('cpu_gather_workers', 8)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -85,4 +89,5 @@ class RuntimeOptions:
         if memory.kv_dtype != config.cache_config.cache_dtype:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
-                   io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal)
+                   io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
+                   gather_workers)

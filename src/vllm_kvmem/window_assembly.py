@@ -2,10 +2,11 @@
 
 The scheduler must hold the request's physical pages through the returned CUDA
 fence. Only after it completes may it trim the old allocation or resume execution.
-This first bridge batches native archive reads and H2D copies, with synchronous
-CPU I/O between chunks; overlapping scheduler-visible preparation is pending.
+Immutable CPU reads, H2D copies and native assembly use two bounded staging
+slots. Each GPU slot remains fenced until its assembly consumers finish.
 """
 from dataclasses import dataclass, field
+from threading import RLock
 
 import time
 
@@ -41,9 +42,76 @@ class AssemblyResult:
         return self.event.query()
 
 
+class _AssemblyStaging:
+    """Runner-owned scratch; neither selected pages nor archived records live here.
+
+    Host slots are protected by PackedTransfers' DMA events. Device slots have
+    separate consumer events: completing H2D alone does not permit overwriting
+    bytes that a re-RoPE kernel still reads. Allocate lazily so an all-skip plan
+    needs no staging, and keep only two chunks across requests and refreshes.
+    """
+    slots = 2
+
+    def __init__(self, slot_bytes, device):
+        self.slot_bytes, self.device = slot_bytes, device
+        self.transfers = None
+        self.buffers = []
+        self.ready = []
+        self.cursor = 0
+        self.owner = None
+        self._lock = RLock()
+
+    def claim(self, owner):
+        with self._lock:
+            if self.owner is not None:
+                raise RuntimeError("Assembly staging already has a CPU producer")
+            self.owner = owner
+
+    def destination(self, size):
+        if self.owner is None or not 0 < size <= self.slot_bytes:
+            raise ValueError("Assembly destination requires an owned bounded slot")
+        if self.transfers is None:
+            self.transfers = PackedTransfers(self.slot_bytes, self.slots, self.device)
+        if not self.buffers:
+            self.buffers = [torch.empty(self.slot_bytes, dtype=torch.uint8, device=self.device)
+                            for _ in range(self.slots)]
+            allocated = torch.cuda.Event()
+            allocated.record(torch.cuda.current_stream(self.device))
+            self.ready = [allocated] * self.slots
+        slot = self.cursor % self.slots
+        self.cursor += 1
+        return self.buffers[slot][:size], self.ready[slot], slot
+
+    def consumed(self, slot):
+        event = torch.cuda.Event()
+        event.record(torch.cuda.current_stream(self.device))
+        self.ready[slot] = event
+
+    def release(self, owner, failed_fence=None):
+        with self._lock:
+            if self.owner is not owner:
+                raise RuntimeError("Stale assembly staging owner")
+            if failed_fence is not None:
+                # The failure fence follows every submitted DMA and partial
+                # kernel, including a chunk that failed before consumed().
+                self.ready = [failed_fence] * len(self.buffers)
+            self.owner = None
+
+    def close(self):
+        with self._lock:
+            if self.owner is not None or any(not event.query() for event in self.ready):
+                return False
+            if self.transfers is not None and not self.transfers.close():
+                return False
+            self.buffers.clear()
+            self.ready.clear()
+            self.transfers = None
+            return True
+
+
 class NativeWindowAssembler:
     def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
-                 direct_pinned_reads=False):
+                 direct_pinned_reads=False, *, staging=None):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
@@ -71,8 +139,14 @@ class NativeWindowAssembler:
         self.direct_pinned_reads = direct_pinned_reads
         self.device = device
         self.heads, self.dim = heads, dim
-        self.transfers = PackedTransfers(len(layers) * heads * dim * block_tokens * chunk_blocks * 3,
-                                         2, device)
+        slot_bytes = len(layers) * heads * dim * block_tokens * chunk_blocks * 3
+        if staging is not None and (staging.slot_bytes != slot_bytes or staging.device != device):
+            raise ValueError("Shared assembly staging geometry changed")
+        self._shared_staging = staging is not None
+        self.staging = staging if staging is not None else _AssemblyStaging(slot_bytes, device)
+        self._metadata_owners = []
+        self._completion = None
+        self.closed = False
 
     @classmethod
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False,
@@ -95,25 +169,56 @@ class NativeWindowAssembler:
             key, value = native_vllm_fp8_views(attn.kv_cache, module.num_kv_heads, module.head_dim)
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
                                       attn._k_scale, tables[group_id]))
-        return cls(tuple(layers), block_tokens, chunk_blocks, packed=packed,
-                   direct_pinned_reads=direct_pinned_reads)
+        staging = getattr(runner, "_kvmem_assembly_staging", None)
+        assembler = cls(tuple(layers), block_tokens, chunk_blocks, packed=packed,
+                        direct_pinned_reads=direct_pinned_reads, staging=staging)
+        if staging is None:
+            # Publish shared scratch only after all geometry/ownership checks
+            # pass; an invalid first request must not poison the runner pool.
+            runner._kvmem_assembly_staging = assembler.staging
+            assembler._shared_staging = True
+        return assembler
+
+    @property
+    def transfers(self):
+        return self.staging.transfers
 
     def assemble(self, authority, plan):
+        if self.closed:
+            raise RuntimeError("Native assembler is closed")
+        self.staging.claim(self)
+        failed = None
         try:
-            return self._assemble(authority, plan)
+            result = self._assemble(authority, plan)
+            self._completion = result.event
+            return result
         except BaseException:
             if authority.memory.phase is Phase.ASSEMBLING and authority.memory._plan is plan:
                 # Even an I/O error after an earlier chunk must not permit the
                 # half-rebuilt cache to commit, or staging/leases to be recycled
                 # while submitted copies and kernels still use them.
                 stream = torch.cuda.current_stream(self.device)
-                for transfer in self.transfers.pending.values():
-                    stream.wait_event(transfer.event)
+                if self.transfers is not None:
+                    for transfer in self.transfers.pending.values():
+                        stream.wait_event(transfer.event)
                 failed = torch.cuda.Event()
                 failed.record(stream)
+                self._completion = failed
                 authority.memory.fail_transaction(AssemblyResult(
                     failed, (self, plan, authority), 0, 0, 0))
             raise
+        finally:
+            self.staging.release(self, failed)
+
+    def _upload_metadata(self, values):
+        # A pageable torch.tensor(..., device="cuda") after wait_event can
+        # block the CPU behind the preceding large KV copy. Submit small pinned
+        # metadata once before the chunk pipeline, and keep both ends fenced.
+        host = torch.tensor(values, device="cpu", dtype=torch.int64, pin_memory=True)
+        self._metadata_owners.append(host)
+        device = host.to(self.device, non_blocking=True)
+        self._metadata_owners.append(device)
+        return device
 
     def _assemble(self, authority, plan):
         if authority.memory.phase is not Phase.ASSEMBLING or authority.memory._plan is not plan:
@@ -136,6 +241,14 @@ class NativeWindowAssembler:
         rebuilt, chunks, owners = 0, 0, [self, plan, authority]
         host_prepare_seconds, uploaded_bytes = 0.0, 0
         read_stats = {}
+        metadata_start = time.perf_counter()
+        bases = self._upload_metadata([remap.to_base for remap in pending]) if pending and self.packed else None
+        positions = None
+        if pending and (not self.packed or any(r.n_tokens != self.block_tokens for r in pending)):
+            positions = self._upload_metadata([position for remap in pending
+                for position in range(remap.to_base, remap.to_base + remap.n_tokens)])
+        host_prepare_seconds += time.perf_counter() - metadata_start
+        position_begin = 0
         for start in range(0, len(pending), self.chunk_blocks):
             chunk = pending[start:start+self.chunk_blocks]
             handles = [by_slot[remap.block_id].handle for remap in chunk]
@@ -148,15 +261,15 @@ class NativeWindowAssembler:
                 if any(remap.n_tokens != self.block_tokens for remap in chunk):
                     raise ValueError("Packed window assembly requires complete selected records")
                 size = len(handles) * authority.record_bytes
-                gpu = torch.empty(size, dtype=torch.uint8, device=self.device)
+                gpu, ready, slot = self.staging.destination(size)
                 def fill(staging):
                     _, stats = read_packed_records(authority, handles, destination=staging)
                     for key, value in stats.items():
                         read_stats[key] = read_stats.get(key, 0) + value
-                transfer = self.transfers.upload_from_reader(size, gpu, fill)
+                transfer = self.transfers.upload_from_reader(size, gpu, fill, ready=ready)
                 if transfer is None:
                     next(iter(self.transfers.pending.values())).event.synchronize()
-                    transfer = self.transfers.upload_from_reader(size, gpu, fill)
+                    transfer = self.transfers.upload_from_reader(size, gpu, fill, ready=ready)
                 count = len(chunk) * self.block_tokens
             elif use_packed:
                 from .packed_assembly import read_packed_records
@@ -174,12 +287,12 @@ class NativeWindowAssembler:
                 count = raw.shape[1]
             uploaded_bytes += size if use_direct else payload.numel()
             if not use_direct:
-                gpu = torch.empty(payload.numel(), dtype=torch.uint8, device=self.device)
-                transfer = self.transfers.upload(payload, gpu)
+                gpu, ready, slot = self.staging.destination(payload.numel())
+                transfer = self.transfers.upload(payload, gpu, ready=ready)
                 if transfer is None:
                     # Only bounded staging is reused, after its own DMA completes.
                     next(iter(self.transfers.pending.values())).event.synchronize()
-                    transfer = self.transfers.upload(payload, gpu)
+                    transfer = self.transfers.upload(payload, gpu, ready=ready)
             if transfer is None:
                 raise RuntimeError("Native assembly staging did not make progress")
             # Includes CPU staging and waiting for a bounded slot, in both paths.
@@ -187,21 +300,22 @@ class NativeWindowAssembler:
             torch.cuda.current_stream(self.device).wait_event(transfer.event)
             if use_packed:
                 from .packed_assembly import assemble_packed_layer
-                bases = torch.tensor([remap.to_base for remap in chunk], device=self.device, dtype=torch.int64)
+                chunk_bases = bases[start:start+len(chunk)]
                 for i, layer in enumerate(self.layers):
-                    assemble_packed_layer(gpu, bases, layer, layer_index=i, layers=len(self.layers),
+                    assemble_packed_layer(gpu, chunk_bases, layer, layer_index=i, layers=len(self.layers),
                                           block_tokens=self.block_tokens, raw_dtype=authority.raw_dtype)
             else:
                 elements = raw.numel()
                 raw_gpu = gpu[:elements*2].view(authority.raw_dtype).reshape(raw.shape)
                 values_gpu = gpu[elements*2:].view(torch.float8_e4m3fn).reshape(values.shape)
-                positions = torch.cat([torch.arange(remap.to_base, remap.to_base+remap.n_tokens,
-                                                    device=self.device, dtype=torch.int64) for remap in chunk])
+                chunk_positions = positions[position_begin:position_begin+count]
                 for i, layer in enumerate(self.layers):
                     page_tokens = layer.key.shape[1]
-                    slots = layer.kernel_page_table[positions // page_tokens].to(torch.int64) * page_tokens + positions % page_tokens
-                    assemble_fp8(raw_gpu[i], values_gpu[i], positions, slots, layer.cos_sin,
+                    slots = layer.kernel_page_table[chunk_positions // page_tokens].to(torch.int64) * page_tokens + chunk_positions % page_tokens
+                    assemble_fp8(raw_gpu[i], values_gpu[i], chunk_positions, slots, layer.cos_sin,
                                  layer.key, layer.value, layer.key_scale)
+            self.staging.consumed(slot)
+            position_begin += count
             rebuilt += count
             chunks += 1
         done = torch.cuda.Event()
@@ -211,4 +325,12 @@ class NativeWindowAssembler:
                               host_prepare_seconds, uploaded_bytes, read_stats)
 
     def close(self):
-        return self.transfers.close()
+        if self.staging.owner is self:
+            return False
+        if self._completion is not None and not self._completion.query():
+            return False
+        if not self._shared_staging and not self.staging.close():
+            return False
+        self._metadata_owners.clear()
+        self.closed = True
+        return True

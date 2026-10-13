@@ -15,6 +15,12 @@ and the [MeanK throughput and restoration evidence](docs/meank-throughput-202610
 The [C8 profiling report](docs/meank-profiling-20261013.md) attributes about 85%
 of sampled decode GPU activity to target verification and 11% to the DFlash graph;
 KV packing/D2H is small in this workload. Instrumented timing is not a new benchmark.
+The [KVMem overhead report](docs/kvmem-overhead-20261013.md) compares the same
+DFlash configuration against native vLLM and measures CPU history/staging changes
+adapted from qw3. At C8 with 64K input and 4K output, cumulative assembly fell
+from 55.21 to 21.05 seconds, TTFT p95 from 241.45 to 187.36 seconds, and whole-batch
+output throughput rose from 99.68 to 120.71 tok/s. Decode results vary with draft
+acceptance; these measurements do not establish a consistent decode speedup.
 
 **Elastic MTP preview, 2026-10-13:** `vllm-kvmem elastic-serve` adds authenticated,
 versioned full-history turns with native NVFP4/FP8/MTP CUDA Graph execution,

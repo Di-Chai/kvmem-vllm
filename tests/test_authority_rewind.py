@@ -185,3 +185,30 @@ def test_close_during_rewind_preserves_fence_and_checkpoint_ownership(tmp_path):
     del checkpoint
     assert authority.close() and archive.tier.used_slots == 0
     assert archive.close()
+
+
+def test_partial_suffix_rewind_restores_single_record_staging_budget(tmp_path):
+    authority, archive = setup(tmp_path, resident=1)
+    assert authority.append(*payload(0, 4), history_begin=0, local_rope_begin=0)
+    drain(authority)
+    checkpoint = authority.memory.checkpoint()
+    generations = set()
+    for branch in range(12):
+        assert authority.append(*payload(10 + branch, 3), history_begin=4, local_rope_begin=4)
+        tail = next(r for r in authority.records.values() if r.history_begin == 4)
+        key = (tail.handle.slot, tail.handle.generation)
+        assert key not in generations
+        generations.add(key)
+        lease = authority.memory.repository.pin(tail.handle)
+        assert authority.begin_rewind(checkpoint)
+        authority.attach_rewind_completion(_Ready())
+        assert not authority.poll_rewind()
+        assert authority.history_end == 4 and len(authority.discarded_records) == 1
+        lease.reset()
+        complete_rewind(authority)
+        assert not authority.discarded_records
+    del checkpoint
+    # The same single staging reservation can now seal and publish a new page.
+    assert authority.append(*payload(100, 4), history_begin=4, local_rope_begin=4)
+    drain(authority)
+    assert authority.close() and archive.close()

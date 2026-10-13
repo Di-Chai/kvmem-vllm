@@ -5,6 +5,8 @@
 #include "qw3/nvme_kv_tier.hpp"
 #include "qw3/kvmem_repository_gc.hpp"
 #include <filesystem>
+#include <cstring>
+#include <limits>
 #include <sys/stat.h>
 
 namespace py = pybind11;
@@ -86,6 +88,44 @@ struct RepositoryGcBridge {
 };
 
 PYBIND11_MODULE(_native, m) {
+    // Each source owns one immutable record. A caller may dispatch disjoint
+    // ranges through a bounded persistent worker pool; retain Python owners and
+    // the destination buffer export until all memcpy operations have completed.
+    // Cache misses are left untouched for the authoritative tier read.
+    m.def("gather_cached_records", [](py::buffer destination,
+            const std::vector<py::object> &sources, size_t record_bytes,
+            size_t begin, size_t end) {
+        auto target = destination.request(true);
+        if (!record_bytes || begin > end || end > sources.size() ||
+                sources.size() > std::numeric_limits<size_t>::max() / record_bytes ||
+                target.ndim != 1 || target.itemsize != 1 || target.strides[0] != 1 ||
+                static_cast<size_t>(target.size) != sources.size() * record_bytes)
+            throw std::invalid_argument("Invalid cached gather byte extent or range");
+        std::vector<const char *> pointers;
+        pointers.reserve(end - begin);
+        for (size_t i = begin; i < end; ++i) {
+            if (sources[i].is_none()) pointers.push_back(nullptr);
+            else {
+                if (!PyBytes_CheckExact(sources[i].ptr()) ||
+                        static_cast<size_t>(PyBytes_GET_SIZE(sources[i].ptr())) != record_bytes)
+                    throw std::invalid_argument("Cached gather sources must own exact immutable record bytes");
+                pointers.push_back(PyBytes_AS_STRING(sources[i].ptr()));
+            }
+        }
+        size_t copied = 0;
+        {
+            py::gil_scoped_release release;
+            auto *out = static_cast<char *>(target.ptr);
+            for (size_t i = begin; i < end; ++i) {
+                if (const char *source = pointers[i - begin]) {
+                    std::memcpy(out + i * record_bytes, source, record_bytes);
+                    copied += record_bytes;
+                }
+            }
+        }
+        return copied;
+    }, py::arg("destination"), py::arg("sources"), py::arg("record_bytes"),
+       py::arg("begin"), py::arg("end"));
     py::class_<KvMemGcConfig>(m, "GcPolicy")
         .def(py::init<>())
 #define GCP(x) .def_readwrite(#x, &KvMemGcConfig::x)

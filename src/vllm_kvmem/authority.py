@@ -50,6 +50,11 @@ class RequestAuthority:
             raise ValueError("Archive record format does not match model geometry")
         self.resident_records = resident_records
         self.records: dict[tuple[int, int], Record] = {}
+        # These contain only live, not-yet-published generations, so ordinary
+        # decode bookkeeping does not grow with archived history. GC can only
+        # remove archived records; rewind explicitly removes its live suffix.
+        self._unsubmitted: dict[tuple[int, int], Record] = {}
+        self._resident_count = 0
         self.writes = []
         self.closing = False
         self.discarded_records: dict[tuple[int, int], Record] = {}
@@ -76,6 +81,8 @@ class RequestAuthority:
             job.result()  # Failed I/O is fatal, never a successfully archived record.
             for key in keys:
                 record = self.records[key]
+                if not record.archived:
+                    self._resident_count -= 1
                 record.archived = True
                 # Publish only after durable write completion, never on CPU
                 # cache admission or asynchronous I/O submission.
@@ -105,19 +112,25 @@ class RequestAuthority:
         """Submit complete blocks only; false means archive queue/capacity pressure."""
         self._require_open()
         self.poll()
-        records = [r for r in self.records.values()
-                   if r.count == self.shape[1] and not r.submitted]
+        records = list(self._unsubmitted.values())
         if not records:
             return True
         leases = [self.memory.repository.pin(r.handle) for r in records]
-        if not all(leases):
-            raise RuntimeError("Authority record lost its repository generation")
         try:
-            encoded = [r.raw.view(torch.uint8).numpy().tobytes()
-                       + r.values.numpy().tobytes() for r in records]
-            for record, data in zip(records, encoded):
-                record.digest = hashlib.sha256(data).hexdigest()
-            payload = b"".join(encoded)
+            if not all(leases):
+                raise RuntimeError("Authority record lost its repository generation")
+            # Join tensor buffer views directly into the immutable I/O snapshot.
+            # Avoid raw/V tobytes, per-record concatenations and their copies;
+            # row layout and per-record checksums remain byte-for-byte identical.
+            views = []
+            for record in records:
+                views.extend((memoryview(record.raw.view(torch.uint8).numpy()).cast('B'),
+                              memoryview(record.values.numpy()).cast('B')))
+            payload = b"".join(views)
+            view = memoryview(payload)
+            for i, record in enumerate(records):
+                begin = i * self.record_bytes
+                record.digest = hashlib.sha256(view[begin:begin+self.record_bytes]).hexdigest()
             job = self.archive.write(self.memory.request_id, leases, payload)
         finally:
             for lease in leases:
@@ -128,7 +141,9 @@ class RequestAuthority:
         for record in records:
             record.submitted = True
             record.raw = record.values = None
-            keys.append(record_key(record.handle))
+            key = record_key(record.handle)
+            del self._unsubmitted[key]
+            keys.append(key)
         self.writes.append((job, keys))
         return True
 
@@ -154,10 +169,9 @@ class RequestAuthority:
         self.flush()
         block = self.shape[1]
         # Includes I/O-owned byte snapshots after torch staging was released.
-        resident = sum(not r.archived for r in self.records.values())
         tail = self.history_end % block
         new_records = (tail + count + block - 1) // block - bool(tail)
-        if resident + new_records > self.resident_records:
+        if self._resident_count + new_records > self.resident_records:
             return False
         spans = self.memory.begin_append(count, local_rope_begin)
         if spans is None:
@@ -190,10 +204,13 @@ class RequestAuthority:
                     torch.empty(self.shape, dtype=torch.uint8),
                     torch.zeros((self.shape[0], self.shape[2], self.shape[3]), dtype=torch.float32))
                 self.records[key] = record
+                self._resident_count += 1
             record.raw[:, offset:offset+n].copy_(raw[:, start:start+n])
             record.values[:, offset:offset+n].copy_(values[:, start:start+n])
             record.key_sum.add_(raw[:, start:start+n].float().sum(dim=1))
             record.count += n
+            if record.count == block:
+                self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
         self.flush()
@@ -322,6 +339,9 @@ class RequestAuthority:
             for key, record in list(self.records.items()):
                 if record.history_begin >= self._rewind_position:
                     self.discarded_records[key] = self.records.pop(key)
+                    self._unsubmitted.pop(key, None)
+                    if not record.archived:
+                        self._resident_count -= 1
             if self.gc is not None:
                 # GC accounting is branch-relative. Previously collected suffix
                 # records are not holes in the now-shorter accepted prefix.
@@ -348,6 +368,10 @@ class RequestAuthority:
                     lambda entry: self.archive.reclaim(self.memory.request_id, entry))
                 if result == _native.ReclaimResult.RECLAIMED:
                     del records[key]
+                    if records is self.records:
+                        self._unsubmitted.pop(key, None)
+                        if not record.archived:
+                            self._resident_count -= 1
                 else:
                     all_reclaimed = False
         return all_reclaimed

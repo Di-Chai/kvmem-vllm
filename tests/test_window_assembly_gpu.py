@@ -161,7 +161,8 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
 
 
 @pytest.mark.parametrize('packed,direct', [(False, False), (True, False), (True, True)])
-def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed, direct):
+@pytest.mark.parametrize('chunk_blocks', [1, 2])
+def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed, direct, chunk_blocks):
     from vllm import _custom_ops as ops
     from vllm_kvmem.authority import RequestAuthority
     from vllm_kvmem.config import KVMemConfig
@@ -197,7 +198,7 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
         rotated = neox_rope(raw[i].cuda(), trig[positions, :16], trig[positions, 16:])
         ops.reshape_and_cache_flash(rotated, values[i].cuda(), rk, rv, slots, 'fp8_e4m3', scale, scale)
         native.append(LayerWindow(k, v, trig, scale, table)); expected.append((rk, rv))
-    assembler = NativeWindowAssembler(tuple(native), 16, chunk_blocks=2, packed=packed,
+    assembler = NativeWindowAssembler(tuple(native), 16, chunk_blocks=chunk_blocks, packed=packed,
                                       direct_pinned_reads=direct)
     result = assembler.assemble(authority, plan); result.event.synchronize()
     assert result.rebuilt_tokens == 35 and result.skipped_tokens == 0
@@ -208,3 +209,40 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
     assert assembler.close()
     del plan, checkpoint, result
     assert authority.close() and archive.close()
+
+
+def test_two_staging_slots_preserve_delayed_gpu_consumers_across_refreshes():
+    from vllm_kvmem.window_assembly import _AssemblyStaging
+
+    device = torch.device('cuda', torch.cuda.current_device())
+    staging = _AssemblyStaging(4096, device)
+    initial_buffers = None
+    observed = []
+    for refresh in range(2):
+        owner = object()
+        staging.claim(owner)
+        for chunk in range(5):
+            expected = refresh * 5 + chunk + 1
+            source = torch.full((4096,), expected, dtype=torch.uint8)
+            destination, ready, slot = staging.destination(source.numel())
+            transfer = staging.transfers.upload(source, destination, ready=ready)
+            if transfer is None:
+                next(iter(staging.transfers.pending.values())).event.synchronize()
+                transfer = staging.transfers.upload(source, destination, ready=ready)
+            assert transfer is not None
+            torch.cuda.current_stream(device).wait_event(transfer.event)
+            # H2D can finish long before the consumer reads the slot. A pool
+            # protected only by DMA completion corrupts earlier chunks here.
+            torch.cuda._sleep(20_000_000)
+            observed.append((destination.clone(), expected))
+            staging.consumed(slot)
+        buffers = tuple(tensor.data_ptr() for tensor in staging.buffers)
+        if initial_buffers is None:
+            initial_buffers = buffers
+        else:
+            assert buffers == initial_buffers
+        staging.release(owner)
+    torch.cuda.current_stream(device).synchronize()
+    for actual, expected in observed:
+        assert torch.equal(actual.cpu(), torch.full((4096,), expected, dtype=torch.uint8))
+    assert staging.close()
