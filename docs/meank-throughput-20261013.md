@@ -39,8 +39,9 @@ FP8 线性层显式选择 CUTLASS。
 普通 decode 已保留 CUDA Graph。相比旧原生 MTP 路径，这里采用不同的
 DFlash2 草稿方法，并增加 accepted raw KV 的捕获、CPU 历史写入及必要的
 MeanK 刷新事务。主动 stage-out 使终态可以释放 GPU 页，其带宽与后台处理
-成本仍需计入服务吞吐。当前测量没有完成各项成本的独立归因；草稿长度、
-CUTLASS 和 FP8 实验的完整结果如上，不能据此承诺消除全部差距。
+成本仍需计入服务吞吐。后续 [独立 profiling](meank-profiling-20261013.md) 已将
+八路 decode 的主要 GPU 成本定位到目标验证，区分了历史维护和 prefill 装配。
+草稿长度、CUTLASS 和 FP8 实验的完整结果如上，不能据此承诺消除全部差距。
 
 旧 MTP 成绩是已完成的历史测量。此次 admission 修正还将共享 native pool
 的物理 padding 计入页预算；旧入口预算不能直接当作当前版本的可准入人数，

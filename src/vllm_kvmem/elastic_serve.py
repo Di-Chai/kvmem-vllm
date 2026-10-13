@@ -11,7 +11,7 @@ import secrets
 import signal
 
 from .multi_user import _load_users
-from .serve import _validate_nvfp4_config
+from .serve import _validate_nvfp4_config, _validate_profiler_config
 
 
 def build_launch(profile, base, run_dir):
@@ -28,10 +28,11 @@ def build_launch(profile, base, run_dir):
         'token_history_bytes_per_user': 4 * 1024**2, 'max_sessions_per_user': 32,
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
-        'linear_backend_per_quant': None, 'draft_quantization': None}
+        'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
+    cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
     if cfg['context_mode'] not in ('full', 'meank'):
         raise ValueError('context_mode must be full or meank')
     if type(cfg['verify_session_restore']) is not bool:
@@ -48,7 +49,7 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization'}:
+                               'draft_quantization', 'profiler_config'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -79,6 +80,7 @@ def build_launch(profile, base, run_dir):
             'verify_session_restore': cfg['verify_session_restore'],
             'draft_tokens': cfg['draft_tokens'],
             'draft_quantization': cfg['draft_quantization'],
+            'profiler_config': cfg['profiler_config'],
             'host': '127.0.0.1', 'port': cfg['backend_port'], 'served_model_name': cfg['served_model_name'],
             'max_model_len': cfg['max_model_len'], 'max_num_seqs': cfg['max_num_seqs'],
             'max_num_batched_tokens': cfg['max_num_batched_tokens'], 'long_prefill_token_threshold': 1024,
@@ -121,6 +123,8 @@ def build_launch(profile, base, run_dir):
         '--kv-transfer-config', json.dumps(transfer), '--enable-per-request-metrics',
         '--per-request-spec-decode-metrics', 'summary',
         '--middleware', 'vllm_kvmem.elastic_control.ElasticControlMiddleware']
+    if cfg['profiler_config'] is not None:
+        argv += ['--profiler-config', json.dumps(cfg['profiler_config'])]
     return cfg, argv
 
 

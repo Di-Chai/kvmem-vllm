@@ -1,0 +1,765 @@
+{
+  "date": "2026-10-13",
+  "performance_eligible": false,
+  "configuration": {
+    "gpu": "RTX PRO 6000 Blackwell Server 96 GB",
+    "vllm": "0.30.0",
+    "torch": "2.13.0+cu130",
+    "target": "Qwen3.8-27B ModelOpt mixed NVFP4/FP8",
+    "target_kv_dtype": "fp8_e4m3",
+    "speculative_method": "dflash",
+    "draft_tokens": 3,
+    "draft_weights": "BF16",
+    "target_linear_backends": {
+      "nvfp4_w4a4": "cutlass",
+      "fp8_w8a8": "cutlass"
+    },
+    "cuda_graph": "FULL_DECODE_ONLY",
+    "context_mode": "meank",
+    "active_context_tokens": 32768,
+    "gen_budget_tokens": 16384,
+    "concurrency": 8,
+    "input_tokens": 65536,
+    "output_tokens": 4096,
+    "verify_session_restore": false,
+    "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a",
+    "async_scheduling": false
+  },
+  "uninstrumented_baseline": {
+    "evidence": "artifacts/meank-20261013/c8-64k-4k-final",
+    "steady_decode_tokens_per_second": 386.8891,
+    "end_to_end_tokens_per_second": 101.4116,
+    "ttft_p95_seconds": 231.7387,
+    "mean_accepted_tokens_per_user_per_iteration": 2.425,
+    "refreshes": 256,
+    "refreshes_during_steady_decode": 0,
+    "refresh_upload_gib": 344.1738,
+    "assembly_cumulative_seconds": 58.4701,
+    "assembly_host_prepare_cumulative_seconds": 47.115
+  },
+  "instrumented_workload": {
+    "status": "passed",
+    "attempted": 8,
+    "success": 8,
+    "preemptions": 0,
+    "throughput_omitted_reason": "Profiler collection and trace export pauses are included, so throughput is not a new benchmark."
+  },
+  "prefill": {
+    "phase": "prefill",
+    "performance_eligible": false,
+    "window": {
+      "duration_us": 5275751.738037109,
+      "policy": "all_scoped_samples_and_GPU_activity; limited_sample",
+      "complete_cycles": null,
+      "limited_sample": true,
+      "observed_iteration_scopes": 2,
+      "observed_C8_decode_scopes": 0
+    },
+    "gpu_timelines": [
+      {
+        "device": 0,
+        "interval_union_us": 2699426.3240966797,
+        "summed_activity_us": 2707491.408935547,
+        "uncovered_interval_us": 2576325.4139404297
+      }
+    ],
+    "gpu_categories": [
+      {
+        "device": 0,
+        "category": "kernel",
+        "events": 21654,
+        "summed_us": 2467006.192626953,
+        "interval_union_us": 2466681.1118164062
+      },
+      {
+        "device": 0,
+        "category": "gpu_memcpy",
+        "events": 7066,
+        "summed_us": 240330.78100585938,
+        "interval_union_us": 240280.44396972656
+      },
+      {
+        "device": 0,
+        "category": "gpu_memset",
+        "events": 514,
+        "summed_us": 154.435302734375,
+        "interval_union_us": 154.435302734375
+      }
+    ],
+    "gpu_attribution": {
+      "mapped_launch_events": 29234,
+      "unmapped_launch_events": 0,
+      "mapped_but_unscoped_events": 0,
+      "boundary_clipped_events": 0
+    },
+    "gpu_stages": [
+      {
+        "device": 0,
+        "stage": "kvmem::runner.execute",
+        "events": 13952,
+        "summed_us": 2378684.4998779297,
+        "interval_union_us": 2378363.260864258
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::transfer.upload",
+        "events": 61,
+        "summed_us": 196482.6710205078,
+        "interval_union_us": 196482.6710205078
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::authority.select",
+        "events": 7200,
+        "summed_us": 67740.23107910156,
+        "interval_union_us": 67740.23107910156
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::window.assemble",
+        "events": 1037,
+        "summed_us": 14460.14453125,
+        "interval_union_us": 14460.14453125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::recurrent.rollback",
+        "events": 3080,
+        "summed_us": 10307.582153320312,
+        "interval_union_us": 10307.582153320312
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::recurrent.checkpoint",
+        "events": 3080,
+        "summed_us": 10292.890625,
+        "interval_union_us": 10292.890625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::transfer.download",
+        "events": 2,
+        "summed_us": 7779.906005859375,
+        "interval_union_us": 7779.906005859375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.graph",
+        "events": 636,
+        "summed_us": 7504.04736328125,
+        "interval_union_us": 7500.20556640625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.propose",
+        "events": 10,
+        "summed_us": 5813.3450927734375,
+        "interval_union_us": 5813.3450927734375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::capture.submit",
+        "events": 24,
+        "summed_us": 3897.633056640625,
+        "interval_union_us": 3897.633056640625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.context_kv",
+        "events": 22,
+        "summed_us": 2826.209716796875,
+        "interval_union_us": 2826.209716796875
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample",
+        "events": 20,
+        "summed_us": 1610.271728515625,
+        "interval_union_us": 1610.271728515625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::recurrent.borrow",
+        "events": 80,
+        "summed_us": 30.66162109375,
+        "interval_union_us": 30.66162109375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.prepare_attn",
+        "events": 8,
+        "summed_us": 24.4801025390625,
+        "interval_union_us": 24.4801025390625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample_tokens",
+        "events": 12,
+        "summed_us": 18.498046875,
+        "interval_union_us": 16.801025390625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::window.prepare",
+        "events": 10,
+        "summed_us": 18.3369140625,
+        "interval_union_us": 18.3369140625
+      }
+    ],
+    "cpu_stages": [
+      {
+        "stage": "kvmem::runner.execute",
+        "calls": 2,
+        "inclusive_us": 5257500.649902344,
+        "exclusive_us": 2274698.228881836
+      },
+      {
+        "stage": "kvmem::transfer.upload",
+        "calls": 61,
+        "inclusive_us": 1062997.9079589844,
+        "exclusive_us": 1052990.8664550781
+      },
+      {
+        "stage": "kvmem::authority.select",
+        "calls": 8,
+        "inclusive_us": 657766.337890625,
+        "exclusive_us": 657766.337890625
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "calls": 16,
+        "inclusive_us": 754861.8278808594,
+        "exclusive_us": 552455.7578125
+      },
+      {
+        "stage": "kvmem::window.assemble",
+        "calls": 8,
+        "inclusive_us": 1358230.140991211,
+        "exclusive_us": 295232.23303222656
+      },
+      {
+        "stage": "kvmem::archive.cache_write",
+        "calls": 8,
+        "inclusive_us": 200275.98010253906,
+        "exclusive_us": 200275.98010253906
+      },
+      {
+        "stage": "kvmem::authority.append",
+        "calls": 8,
+        "inclusive_us": 851485.3929443359,
+        "exclusive_us": 96623.56506347656
+      },
+      {
+        "stage": "kvmem::recurrent.rollback",
+        "calls": 2,
+        "inclusive_us": 55178.32800292969,
+        "exclusive_us": 55178.32800292969
+      },
+      {
+        "stage": "kvmem::recurrent.checkpoint",
+        "calls": 2,
+        "inclusive_us": 33901.68103027344,
+        "exclusive_us": 33901.68103027344
+      },
+      {
+        "stage": "kvmem::recurrent.borrow",
+        "calls": 2,
+        "inclusive_us": 13588.943969726562,
+        "exclusive_us": 13588.943969726562
+      },
+      {
+        "stage": "kvmem::archive.read",
+        "calls": 61,
+        "inclusive_us": 10007.04150390625,
+        "exclusive_us": 10007.04150390625
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "calls": 6,
+        "inclusive_us": 861245.2790527344,
+        "exclusive_us": 9759.886108398438
+      },
+      {
+        "stage": "kvmem::archive.write",
+        "calls": 8,
+        "inclusive_us": 202406.07006835938,
+        "exclusive_us": 2130.0899658203125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "calls": 2,
+        "inclusive_us": 3465.8800048828125,
+        "exclusive_us": 2078.2119140625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "calls": 4,
+        "inclusive_us": 1663.2440185546875,
+        "exclusive_us": 1663.2440185546875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "calls": 2,
+        "inclusive_us": 3624.138916015625,
+        "exclusive_us": 1588.9019775390625
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "calls": 2,
+        "inclusive_us": 8567.27197265625,
+        "exclusive_us": 1477.2530517578125
+      },
+      {
+        "stage": "kvmem::runner.prepare_attn",
+        "calls": 4,
+        "inclusive_us": 2875.03515625,
+        "exclusive_us": 1211.7911376953125
+      },
+      {
+        "stage": "kvmem::draft.context_kv",
+        "calls": 2,
+        "inclusive_us": 1021.7349853515625,
+        "exclusive_us": 1021.7349853515625
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "calls": 2,
+        "inclusive_us": 1387.6680908203125,
+        "exclusive_us": 1020.02294921875
+      },
+      {
+        "stage": "kvmem::draft.graph",
+        "calls": 2,
+        "inclusive_us": 1013.501953125,
+        "exclusive_us": 1013.501953125
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "calls": 2,
+        "inclusive_us": 346.2930908203125,
+        "exclusive_us": 346.2930908203125
+      },
+      {
+        "stage": "kvmem::capture.finish",
+        "calls": 2,
+        "inclusive_us": 38.0269775390625,
+        "exclusive_us": 38.0269775390625
+      }
+    ],
+    "memcpy_events": [
+      {
+        "name": "Memcpy HtoD (Pinned -> Device)",
+        "calls": 343,
+        "summed_us": 196592.59155273438
+      },
+      {
+        "name": "Memcpy DtoD (Device -> Device)",
+        "calls": 6392,
+        "summed_us": 26018.743041992188
+      },
+      {
+        "name": "Memcpy HtoD (Pageable -> Device)",
+        "calls": 77,
+        "summed_us": 9825.54052734375
+      },
+      {
+        "name": "Memcpy DtoH (Device -> Pinned)",
+        "calls": 38,
+        "summed_us": 7794.7921142578125
+      },
+      {
+        "name": "Memcpy DtoH (Device -> Pageable)",
+        "calls": 216,
+        "summed_us": 99.11376953125
+      }
+    ],
+    "cuda_api_waits": [
+      {
+        "name": "cudaStreamSynchronize",
+        "calls": 325,
+        "summed_us": 534056.4020996094
+      },
+      {
+        "name": "cudaEventSynchronize",
+        "calls": 12,
+        "summed_us": 371810.0692138672
+      },
+      {
+        "name": "cudaDeviceSynchronize",
+        "calls": 1,
+        "summed_us": 6012.0450439453125
+      },
+      {
+        "name": "cudaEventQuery",
+        "calls": 410,
+        "summed_us": 1408.233642578125
+      },
+      {
+        "name": "cudaStreamWaitEvent",
+        "calls": 128,
+        "summed_us": 314.3848876953125
+      }
+    ],
+    "profiler_overhead": [
+      {
+        "name": "Command Buffer Full",
+        "calls": 2673,
+        "summed_us": 1185280.3330078125
+      },
+      {
+        "name": "Activity Buffer Request",
+        "calls": 5,
+        "summed_us": 3149.2900390625
+      },
+      {
+        "name": "Buffer Flush",
+        "calls": 3,
+        "summed_us": 329.9180908203125
+      }
+    ],
+    "limitations": [
+      "Instrumented sample is not a throughput benchmark; profiler overhead changes timing.",
+      "GPU union includes traced kernel/memcpy/memset only; uncovered intervals do not prove hardware idle.",
+      "GPU stages use the innermost CPU kvmem launch scope, including shared CUDA graph launch correlations.",
+      "CPU exclusive time excludes nested kvmem scopes only; it includes CUDA API waits and unlabelled work.",
+      "Stage GPU unions can overlap each other across streams and must not be summed as wall time.",
+      "CUDA wait API duration is host waiting; event queries and stream wait insertion are not all blocking."
+    ],
+    "trace": "artifacts/meank-profile-20261013/run-01/prefill/rank0.1791897624497169779.pt.trace.json.gz",
+    "trace_sha256": "892084aa60d7a03bc1f536be1be7934da3d66d57e9a73763a00464938b288d87"
+  },
+  "decode": {
+    "phase": "decode",
+    "performance_eligible": false,
+    "window": {
+      "duration_us": 3678989.9279785156,
+      "policy": "second_C8_decode_iteration_start_to_last_start",
+      "complete_cycles": 78,
+      "limited_sample": false,
+      "observed_iteration_scopes": 80,
+      "observed_C8_decode_scopes": 80
+    },
+    "gpu_timelines": [
+      {
+        "device": 0,
+        "interval_union_us": 2782840.720336914,
+        "summed_activity_us": 2785399.0385742188,
+        "uncovered_interval_us": 896149.2076416016
+      }
+    ],
+    "gpu_categories": [
+      {
+        "device": 0,
+        "category": "kernel",
+        "events": 234848,
+        "summed_us": 2778012.5092773438,
+        "interval_union_us": 2777636.1684570312
+      },
+      {
+        "device": 0,
+        "category": "gpu_memcpy",
+        "events": 6948,
+        "summed_us": 7386.529296875,
+        "interval_union_us": 7386.529296875
+      }
+    ],
+    "gpu_attribution": {
+      "mapped_launch_events": 241796,
+      "unmapped_launch_events": 0,
+      "mapped_but_unscoped_events": 0,
+      "boundary_clipped_events": 2
+    },
+    "gpu_stages": [
+      {
+        "device": 0,
+        "stage": "kvmem::target.graph",
+        "events": 202566,
+        "summed_us": 2375667.416870117,
+        "interval_union_us": 2375421.893432617
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.graph",
+        "events": 24788,
+        "summed_us": 313364.1700439453,
+        "interval_union_us": 313233.3526611328
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample",
+        "events": 858,
+        "summed_us": 53379.74230957031,
+        "interval_union_us": 53379.74230957031
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.propose",
+        "events": 390,
+        "summed_us": 16547.8583984375,
+        "interval_union_us": 16547.8583984375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.execute",
+        "events": 10464,
+        "summed_us": 12983.55419921875,
+        "interval_union_us": 12983.55419921875
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.context_kv",
+        "events": 936,
+        "summed_us": 7802.35595703125,
+        "interval_union_us": 7802.35595703125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::transfer.download",
+        "events": 78,
+        "summed_us": 2394.2080078125,
+        "interval_union_us": 2394.2080078125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::capture.submit",
+        "events": 936,
+        "summed_us": 1695.1741943359375,
+        "interval_union_us": 1695.1741943359375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample_tokens",
+        "events": 468,
+        "summed_us": 798.2286376953125,
+        "interval_union_us": 744.6646728515625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.prepare_attn",
+        "events": 156,
+        "summed_us": 592.73193359375,
+        "interval_union_us": 592.73193359375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::window.prepare",
+        "events": 156,
+        "summed_us": 173.5980224609375,
+        "interval_union_us": 173.5980224609375
+      }
+    ],
+    "cpu_stages": [
+      {
+        "stage": "kvmem::runner.execute",
+        "calls": 78,
+        "inclusive_us": 1106041.4191894531,
+        "exclusive_us": 551448.2458496094
+      },
+      {
+        "stage": "kvmem::target.graph",
+        "calls": 78,
+        "inclusive_us": 217315.95153808594,
+        "exclusive_us": 217315.95153808594
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "calls": 1248,
+        "inclusive_us": 167508.2713623047,
+        "exclusive_us": 166318.87939453125
+      },
+      {
+        "stage": "kvmem::authority.append",
+        "calls": 624,
+        "inclusive_us": 276490.03173828125,
+        "exclusive_us": 108981.76037597656
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "calls": 78,
+        "inclusive_us": 159626.775390625,
+        "exclusive_us": 71360.67236328125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "calls": 78,
+        "inclusive_us": 116162.85266113281,
+        "exclusive_us": 64142.41564941406
+      },
+      {
+        "stage": "kvmem::draft.context_kv",
+        "calls": 78,
+        "inclusive_us": 46734.73547363281,
+        "exclusive_us": 46734.73547363281
+      },
+      {
+        "stage": "kvmem::draft.graph",
+        "calls": 78,
+        "inclusive_us": 41531.36755371094,
+        "exclusive_us": 41531.36755371094
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "calls": 78,
+        "inclusive_us": 52020.43701171875,
+        "exclusive_us": 40297.099365234375
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "calls": 78,
+        "inclusive_us": 312090.5584716797,
+        "exclusive_us": 36300.930419921875
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "calls": 156,
+        "inclusive_us": 298745.2041015625,
+        "exclusive_us": 20026.292358398438
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "calls": 78,
+        "inclusive_us": 19379.334838867188,
+        "exclusive_us": 19379.334838867188
+      },
+      {
+        "stage": "kvmem::runner.prepare_attn",
+        "calls": 78,
+        "inclusive_us": 38191.099365234375,
+        "exclusive_us": 18811.764526367188
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "calls": 78,
+        "inclusive_us": 10941.147094726562,
+        "exclusive_us": 10941.147094726562
+      },
+      {
+        "stage": "kvmem::capture.progress",
+        "calls": 10,
+        "inclusive_us": 2228.8800048828125,
+        "exclusive_us": 2228.8800048828125
+      },
+      {
+        "stage": "kvmem::capture.finish",
+        "calls": 78,
+        "inclusive_us": 1123.10888671875,
+        "exclusive_us": 1123.10888671875
+      },
+      {
+        "stage": "kvmem::archive.write",
+        "calls": 9,
+        "inclusive_us": 1189.3919677734375,
+        "exclusive_us": 962.72900390625
+      },
+      {
+        "stage": "kvmem::archive.cache_write",
+        "calls": 9,
+        "inclusive_us": 226.6629638671875,
+        "exclusive_us": 226.6629638671875
+      }
+    ],
+    "memcpy_events": [
+      {
+        "name": "Memcpy DtoD (Device -> Device)",
+        "calls": 4134,
+        "summed_us": 4139.60400390625
+      },
+      {
+        "name": "Memcpy DtoH (Device -> Pinned)",
+        "calls": 234,
+        "summed_us": 2483.80517578125
+      },
+      {
+        "name": "Memcpy HtoD (Pinned -> Device)",
+        "calls": 2580,
+        "summed_us": 763.1201171875
+      }
+    ],
+    "cuda_api_waits": [
+      {
+        "name": "cudaEventSynchronize",
+        "calls": 78,
+        "summed_us": 2095175.873413086
+      },
+      {
+        "name": "cudaEventQuery",
+        "calls": 2983,
+        "summed_us": 9761.310668945312
+      },
+      {
+        "name": "cudaStreamWaitEvent",
+        "calls": 156,
+        "summed_us": 310.6763916015625
+      }
+    ],
+    "profiler_overhead": [
+      {
+        "name": "Buffer Flush",
+        "calls": 15,
+        "summed_us": 19034.7099609375
+      },
+      {
+        "name": "Activity Buffer Request",
+        "calls": 13,
+        "summed_us": 11517.453125
+      }
+    ],
+    "limitations": [
+      "Instrumented sample is not a throughput benchmark; profiler overhead changes timing.",
+      "GPU union includes traced kernel/memcpy/memset only; uncovered intervals do not prove hardware idle.",
+      "GPU stages use the innermost CPU kvmem launch scope, including shared CUDA graph launch correlations.",
+      "CPU exclusive time excludes nested kvmem scopes only; it includes CUDA API waits and unlabelled work.",
+      "Stage GPU unions can overlap each other across streams and must not be summed as wall time.",
+      "CUDA wait API duration is host waiting; event queries and stream wait insertion are not all blocking.",
+      "Fused raw Q/K capture and persistent V capture are inside target.graph; capture.submit measures post-forward stage-out packing, not all KVMem capture overhead."
+    ],
+    "trace": "artifacts/meank-profile-20261013/run-01/decode/rank0.1791897874644816372.pt.trace.json.gz",
+    "trace_sha256": "a3194a97c07e5e22675f8e762f28be48d04994eb7dc364d04b5cc4aef2f2e081",
+    "top_kernel_families": [
+      {
+        "label": "target_nvfp4_cutlass_gemm",
+        "calls": 10140,
+        "summed_us": 931915.0899658203
+      },
+      {
+        "label": "target_attention_kernel_mha",
+        "calls": 1248,
+        "summed_us": 501415.93884277344
+      },
+      {
+        "label": "target_fp8_cutlass_gemm",
+        "calls": 9984,
+        "summed_us": 464736.0264892578
+      },
+      {
+        "label": "gdn_multitoken_verification",
+        "calls": 3744,
+        "summed_us": 196509.60778808594
+      }
+    ]
+  },
+  "validation": {
+    "cpu_regression": {
+      "passed": 504,
+      "skipped": 50
+    },
+    "subsequent_collector_boundary_tests": {
+      "passed": 15
+    },
+    "real_trace_validation": {
+      "prefill_native_iterations": 2,
+      "decode_native_iterations": 80,
+      "all_decode_concurrency": 8
+    },
+    "wheel_source_files_compared": 68,
+    "wheel_source_mismatches": 0,
+    "ordinary_serving_smoke": {
+      "passed": true,
+      "profiler_enabled": false,
+      "authenticated_turns": 2,
+      "history_tokens": 292,
+      "active_requests": 0,
+      "active_reserved_bytes": 0
+    }
+  }
+}

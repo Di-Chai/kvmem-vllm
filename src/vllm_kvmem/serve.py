@@ -23,6 +23,7 @@ DEFAULTS = {
     'verify_session_restore': False,
     'draft_tokens': 7,
     'draft_quantization': None,
+    'profiler_config': None,
     'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
     'long_prefill_token_threshold': 1024, 'gpu_memory_utilization': .72,
     'max_model_len': 262144, 'q8_tensorcore': False,
@@ -34,6 +35,30 @@ LINEAR_BACKENDS = {
     'nvfp4_w4a4': frozenset(('auto', 'cutlass', 'flashinfer_cutlass', 'flashinfer_b12x', 'b12x')),
     'fp8_w8a8': frozenset(('auto', 'cutlass', 'flashinfer_cutlass', 'b12x', 'torch')),
 }
+
+
+def _validate_profiler_config(value, base):
+    """Resolve opt-in local tracing without importing the engine in dry runs.
+
+    Native ProfilerConfig remains responsible for validating its detailed
+    options; the launcher only constrains the profiler kind and output path.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get('profiler') != 'torch':
+        raise ValueError('profiler_config must be a torch profiler object or null')
+    directory = value.get('torch_profiler_dir')
+    if (not isinstance(directory, str) or not directory.strip()
+            or '\x00' in directory or '://' in directory):
+        raise ValueError('profiler_config requires a local torch_profiler_dir')
+    try:
+        # Copy the JSON payload so callers cannot alter the launch plan later.
+        config = json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError('profiler_config must contain JSON values') from exc
+    path = Path(directory).expanduser()
+    config['torch_profiler_dir'] = str((base / path if not path.is_absolute() else path).resolve())
+    return config
 
 
 def _validate_nvfp4_config(model):
@@ -65,6 +90,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'kvmem', 'multi_user', 'linear_backend_per_quant'}:
         raise ValueError('Serving profile contains unknown fields or is not an object')
     cfg = {**DEFAULTS, **profile}
+    cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
     if cfg['execution_mode'] not in ('eager', 'full_graph'):
         raise ValueError('execution_mode must be eager or full_graph')
     if type(cfg['verify_session_restore']) is not bool:
@@ -178,6 +204,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'linear_backend_per_quant': cfg['linear_backend_per_quant']})]
     if cfg['q8_tensorcore']:
         env['KVMEM_Q8_TENSORCORE'] = '1'
+    if cfg['profiler_config'] is not None:
+        argv += ['--profiler-config', json.dumps(cfg['profiler_config'])]
     if 'multi_user' in profile:
         from .multi_user import validate_config
         settings = profile['multi_user']

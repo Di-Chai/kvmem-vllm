@@ -37,6 +37,7 @@ def test_launcher_preserves_mainline_precisions_and_native_execution(tmp_path):
         'mm_proj': str(tmp_path/'mm.gguf')}
     assert '--load-format' not in argv and plan['profile']['model_format'] == 'gguf'
     assert '--kernel-config' not in argv
+    assert '--profiler-config' not in argv and plan['profile']['profiler_config'] is None
     assert not (tmp_path/'run').exists()
 
 
@@ -277,3 +278,71 @@ def test_gguf_rejects_safetensors_backend_override_even_if_empty(tmp_path, mappi
     cfg['linear_backend_per_quant'] = mapping
     with pytest.raises(ValueError, match='requires a safetensors target'):
         build_launch(cfg, tmp_path, tmp_path/'run')
+
+
+def test_profiler_config_is_opt_in_native_passthrough_and_cpu_only(tmp_path):
+    cfg = nvfp4_profile(tmp_path)
+    profiler = {'profiler': 'torch', 'torch_profiler_dir': 'traces',
+                'ignore_frontend': True, 'torch_profiler_with_stack': False,
+                'max_iterations': 100, 'delay_iterations': 2}
+    cfg['profiler_config'] = profiler
+    source = tmp_path / 'profile.json'
+    source.write_text(json.dumps(cfg))
+    code = '''import os,sys
+from vllm_kvmem.serve import main
+before=dict(os.environ)
+main(sys.argv[1:])
+assert dict(os.environ)==before
+assert 'vllm' not in sys.modules and 'torch' not in sys.modules
+'''
+    result = subprocess.run([sys.executable, '-c', code, '--config', str(source),
+        '--run-dir', str(tmp_path / 'run'), '--dry-run'],
+        check=True, capture_output=True, text=True)
+    plan = json.loads(result.stdout)
+    argv = plan['vllm_argv']
+    expected = {**profiler, 'torch_profiler_dir': str(tmp_path / 'traces')}
+    assert json.loads(argv[argv.index('--profiler-config') + 1]) == expected
+    assert plan['profile']['profiler_config'] == expected
+    assert profiler['torch_profiler_dir'] == 'traces'
+    assert not (tmp_path / 'traces').exists() and not (tmp_path / 'run').exists()
+
+
+@pytest.mark.parametrize('profiler', [
+    [], {}, 'torch', {'profiler': 'cuda'}, {'profiler': 'torch'},
+    {'profiler': 'torch', 'torch_profiler_dir': ''},
+    {'profiler': 'torch', 'torch_profiler_dir': 's3://bucket/traces'},
+    {'profiler': 'torch', 'torch_profiler_dir': 'bad\x00path'},
+    {'profiler': 'torch', 'torch_profiler_dir': 'traces', 'max_iterations': float('nan')},
+])
+def test_invalid_profiler_structure_rejected_without_engine(tmp_path, profiler):
+    cfg = profile(tmp_path)
+    cfg['profiler_config'] = profiler
+    with pytest.raises(ValueError, match='profiler_config'):
+        build_launch(cfg, tmp_path, tmp_path / 'run')
+
+
+@pytest.mark.parametrize('mode', ['full', 'meank'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_elastic_profiler_passthrough_preserves_execution_mode(tmp_path, mode, enabled):
+    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    model = nvfp4_profile(tmp_path)
+    users = tmp_path / 'users.json'
+    users.write_text(json.dumps({'users': [{'id': 'alice', 'api_key': 'test-profile-key'}]}))
+    cfg = {key: model[key] for key in ('model', 'tokenizer')}
+    cfg.update(users_file=users.name, context_mode=mode)
+    if mode == 'meank':
+        cfg.update(draft_model=model['draft_model'], active_context_tokens=32768)
+    if enabled:
+        cfg['profiler_config'] = {'profiler': 'torch', 'torch_profiler_dir': 'trace',
+            'ignore_frontend': True, 'max_iterations': 100}
+    resolved, argv = build_elastic_launch(cfg, tmp_path, tmp_path / 'run')
+    if mode == 'meank':
+        backend = resolved['mean_k_backend_profile']
+        assert backend['profiler_config'] == resolved['profiler_config']
+        argv = build_launch(backend, tmp_path, tmp_path / 'backend')['vllm_argv']
+    assert ('--profiler-config' in argv) is enabled
+    if enabled:
+        expected = {**cfg['profiler_config'], 'torch_profiler_dir': str(tmp_path / 'trace')}
+        assert json.loads(argv[argv.index('--profiler-config') + 1]) == expected
+    assert json.loads(argv[argv.index('--speculative-config') + 1])['method'] == (
+        'dflash' if mode == 'meank' else 'mtp')

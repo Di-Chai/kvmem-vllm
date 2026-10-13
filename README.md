@@ -12,6 +12,9 @@ been reproduced by the MeanK path.
 This path currently uses DFlash2; the older full-context MTP results below apply
 to `context_mode: "full"`. See [implementation and limits](docs/meank-integration-20261013.md)
 and the [MeanK throughput and restoration evidence](docs/meank-throughput-20261013.md).
+The [C8 profiling report](docs/meank-profiling-20261013.md) attributes about 85%
+of sampled decode GPU activity to target verification and 11% to the DFlash graph;
+KV packing/D2H is small in this workload. Instrumented timing is not a new benchmark.
 
 **Elastic MTP preview, 2026-10-13:** `vllm-kvmem elastic-serve` adds authenticated,
 versioned full-history turns with native NVFP4/FP8/MTP CUDA Graph execution,

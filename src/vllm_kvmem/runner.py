@@ -93,6 +93,8 @@ def make_probe_runner(base):
                 install_window_bridge(self.model_state, current_window)
             if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
+            from .profile_scopes import install_profile_scopes
+            install_profile_scopes(self)
 
         def add_requests(self, scheduler_output):
             result = super().add_requests(scheduler_output)
@@ -106,6 +108,8 @@ def make_probe_runner(base):
             if getattr(self, '_kvmem_graph', False):
                 from .graph_runtime import initialize_graph_window
                 initialize_graph_window(self)
+            from .profile_scopes import install_profile_scopes
+            install_profile_scopes(self)
             return result
 
         def finish_requests(self, scheduler_output):
