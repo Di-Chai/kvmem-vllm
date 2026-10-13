@@ -23,9 +23,11 @@ def complete_rewind(authority):
 
 
 @pytest.mark.parametrize('cached', [False, True])
-def test_rewind_recycles_only_discarded_generations_and_preserves_shared_namespace(tmp_path, cached):
+@pytest.mark.parametrize('async_seal', [False, True])
+def test_rewind_recycles_only_discarded_generations_and_preserves_shared_namespace(tmp_path, cached, async_seal):
     archive = (CachedArchive(str(tmp_path), 48, 16, cache_bytes=768, namespace_bytes=384)
                if cached else AsyncArchive(str(tmp_path), 48, 16))
+    archive.async_seal = async_seal
     a, _ = setup(tmp_path, 'a', archive)
     b, _ = setup(tmp_path, 'b', archive)
     assert a.append(*payload(0, 4), history_begin=0, local_rope_begin=0)

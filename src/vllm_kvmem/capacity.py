@@ -60,6 +60,8 @@ class ReservedKVCacheManager:
                 raise ValueError("Unqualified recurrent-state reservation geometry")
             self.static_blocks[index] = spec.max_num_blocks_per_req(vllm_config, native.max_model_len)
         self.reservations = {}
+        self._step_remaining = None
+        self._step_total = 0
         self.rejections = 0
         if self._demand(native.max_model_len) > native.block_pool.get_num_free_blocks():
             raise ValueError("GPU page pool cannot fit one worst-case KVMem request")
@@ -83,6 +85,33 @@ class ReservedKVCacheManager:
             raise RuntimeError("Native request allocation exceeds its admitted lifetime bound")
         return remaining
 
+    def begin_step(self):
+        """Reconcile trims/imports once, before native synchronous scheduling.
+
+        During this step native allocation changes only its current request;
+        free and deferred-free operations below update the same credit ledger.
+        Acknowledged window trims happen between scheduling steps. Standalone
+        callers retain the conservative scan path outside this explicit scope.
+        """
+        if self._step_remaining is not None:
+            raise RuntimeError('Capacity credit step already open')
+        remaining = {key:self._remaining(key, quota)
+                     for key, (_, quota) in self.reservations.items()}
+        self._step_remaining, self._step_total = remaining, sum(remaining.values())
+
+    def end_step(self):
+        self._step_remaining, self._step_total = None, 0
+
+    def _update_credit(self, request_id, demand):
+        if self._step_remaining is not None:
+            remaining = self._remaining(request_id, demand)
+            self._step_total += remaining - self._step_remaining.get(request_id, 0)
+            self._step_remaining[request_id] = remaining
+
+    def _forget_credit(self, request_id):
+        if self._step_remaining is not None:
+            self._step_total -= self._step_remaining.pop(request_id, 0)
+
     def allocate_slots(self, request, num_new_tokens, *args, **kwargs):
         request_id = request.request_id
         existing = self.reservations.get(request_id)
@@ -99,8 +128,10 @@ class ReservedKVCacheManager:
         demand = self._demand(tokens)
         if existing is not None and existing[1] != demand:
             raise ValueError("Request lifetime bound changed after admission")
-        others = sum(self._remaining(key, quota) for key, (_, quota) in self.reservations.items()
-                     if key != request_id)
+        others = (self._step_total - self._step_remaining.get(request_id, 0)
+                  if self._step_remaining is not None else
+                  sum(self._remaining(key, quota) for key, (_, quota) in self.reservations.items()
+                      if key != request_id))
         extra = kwargs.get("reserved_blocks", 0)
         # Preserve any additional native connector constraint conservatively.
         # This connector normally contributes zero extra credits.
@@ -112,15 +143,21 @@ class ReservedKVCacheManager:
                                              **{**kwargs, "reserved_blocks": reserved})
         if result is not None:
             self.reservations[request_id] = (request, demand)
-            self._remaining(request_id, demand)
+        if result is not None or existing is not None:
+            if self._step_remaining is not None:
+                self._update_credit(request_id, demand)
+            elif result is not None:
+                self._remaining(request_id, demand)
         return result
 
     def free(self, request):
         self.native.free(request)
+        self._forget_credit(request.request_id)
         self.reservations.pop(request.request_id, None)
 
     def pop_blocks_for_free(self, request):
         blocks = self.native.pop_blocks_for_free(request)
+        self._forget_credit(request.request_id)
         # Deferred physical blocks remain unavailable in the native pool. The
         # completed request no longer needs credits for future growth.
         self.reservations.pop(request.request_id, None)

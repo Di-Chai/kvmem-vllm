@@ -13,7 +13,7 @@ pre-RoPE Q 与历史 MeanK 评分，选择历史 KV 并重新装配 GPU working 
 | 选页和保留带 | 直接使用未经修改的 qw3 `KvMemStore`；自动 sink/recent、mandatory 生成页、top-k 及历史顺序均由原 C++ 核心决定。32K K 对应 1024 sink／4096 recent token。 |
 | 历史权威 | 每用户独立的 immutable BF16 raw K＋FP8 V；仅写已接受 token；完整块异步 stage-out，尾部暂存到封块。CPU 缓存可淘汰，底层归档仍为权威。 |
 | GPU working set | 选中历史按原顺序紧密排列，raw K 在新 dense 位置重新施加 RoPE，V 原字节加载；用完成 fence 后提交 residency。普通、packed、direct 路径均有 FP8 字节对照。 |
-| 混合模型状态 | GDN 保留完整逻辑历史状态；临时查询后恢复所有 batch 邻居，再重放正式 forward。DFlash 使用独立的逻辑位置和原生 sliding KV。 |
+| 混合模型状态 | GDN 保留完整逻辑历史状态；临时查询后恢复所有 batch 邻居，再重放正式 forward。DFlash 使用独立的逻辑位置和原生 sliding KV；原生 MTP 的 raw KV 与 target 按同一个 MeanK 计划装配。 |
 | decode | 原生 vLLM scheduler、batching、attention、sampling；普通 decode 使用 FULL_DECODE_ONLY graph，MeanK 查询／装配事务使用显式 eager batch。 |
 | 暂停／恢复 | 回合结束保留完整已接受历史、精确部分尾页、GDN accepted row、DFlash 尾部和待计算的最后一个输出 token；回收请求 GPU 页。恢复只装配 checkpoint working KV，并处理追加输入。 |
 | 用户隔离 | 服务端生成用户／会话 namespace 和 cache salt；客户端只提交准确 token ID 增量与版本；会话锁、字节 admission 和截止时间队列控制并发。 |
@@ -68,6 +68,9 @@ KV、GDN 和 draft 状态并核对字节。普通运行应关闭，以免回合�
 措辞不同（`text`／`instruction`），尽管恢复状态字节一致。该结果不是冷启动逐
 token 等价验收，也不是执行真实工具任务的质量验收。
 
-当前 MeanK 模式使用 DFlash2；原生 MTP 对选中历史 KV 的 capture／重装配尚未
-接入，因此不能将旧 MTP 成绩归到新 MeanK 路径。持续工具负载下的带宽公平性、
+2026-10-14 起，MeanK 模式也支持 `draft_method: "mtp"`，从目标 checkpoint
+加载 Qwen 自带的一层 MTP，继承 target FP8 KV 配置。主模型 MeanK 索引选页，
+target／MTP raw KV 一同归档和 re-RoPE；新测量见
+[qw3 优化与 MTP 报告](decode-optimization-20261014.md)。旧完整上下文 MTP
+成绩仍不能当作新路径验收。持续工具负载下的带宽公平性、
 硬 SLO、跨进程重启恢复、多卡以及完整 agent 任务质量仍需进一步验收。

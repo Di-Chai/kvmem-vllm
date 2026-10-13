@@ -38,12 +38,16 @@ def record_key(handle):
 
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
-                 raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None):
+                 raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
+                 scoring_layers=None):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (torch.bfloat16, torch.float16):
             raise ValueError("Invalid authority geometry or staging budget")
         self.memory = RequestMemory(request_id, config)
         self.archive = archive
         self.shape = (layers, config.block_tokens, heads, head_dim)
+        self.scoring_layers = layers if scoring_layers is None else scoring_layers
+        if type(self.scoring_layers) is not int or not 0 < self.scoring_layers <= layers:
+            raise ValueError('MeanK scoring must cover a positive target layer prefix')
         self.raw_dtype = raw_dtype
         self.record_bytes = layers * config.block_tokens * heads * head_dim * 3
         if archive.record_bytes != self.record_bytes:
@@ -78,9 +82,14 @@ class RequestAuthority:
             if not job.done():
                 remaining.append((job, keys))
                 continue
-            job.result()  # Failed I/O is fatal, never a successfully archived record.
-            for key in keys:
+            result = job.result()  # Failed I/O is fatal, never a successfully archived record.
+            digests = result.get('record_digests') if isinstance(result, dict) else None
+            if digests is not None and len(digests) != len(keys):
+                raise RuntimeError('Archived checksum count differs from sealed records')
+            for index, key in enumerate(keys):
                 record = self.records[key]
+                if digests is not None:
+                    record.digest = digests[index]
                 if not record.archived:
                     self._resident_count -= 1
                 record.archived = True
@@ -126,12 +135,15 @@ class RequestAuthority:
             for record in records:
                 views.extend((memoryview(record.raw.view(torch.uint8).numpy()).cast('B'),
                               memoryview(record.values.numpy()).cast('B')))
-            payload = b"".join(views)
-            view = memoryview(payload)
-            for i, record in enumerate(records):
-                begin = i * self.record_bytes
-                record.digest = hashlib.sha256(view[begin:begin+self.record_bytes]).hexdigest()
-            job = self.archive.write(self.memory.request_id, leases, payload)
+            if getattr(self.archive, 'async_seal', False):
+                job = self.archive.write_from_views(self.memory.request_id, leases, views)
+            else:
+                payload = b"".join(views)
+                view = memoryview(payload)
+                for i, record in enumerate(records):
+                    begin = i * self.record_bytes
+                    record.digest = hashlib.sha256(view[begin:begin+self.record_bytes]).hexdigest()
+                job = self.archive.write(self.memory.request_id, leases, payload)
         finally:
             for lease in leases:
                 lease.reset()
@@ -202,12 +214,12 @@ class RequestAuthority:
                 record = Record(handle, span.history_begin, 0,
                     torch.empty(self.shape, dtype=self.raw_dtype),
                     torch.empty(self.shape, dtype=torch.uint8),
-                    torch.zeros((self.shape[0], self.shape[2], self.shape[3]), dtype=torch.float32))
+                    torch.zeros((self.scoring_layers, self.shape[2], self.shape[3]), dtype=torch.float32))
                 self.records[key] = record
                 self._resident_count += 1
             record.raw[:, offset:offset+n].copy_(raw[:, start:start+n])
             record.values[:, offset:offset+n].copy_(values[:, start:start+n])
-            record.key_sum.add_(raw[:, start:start+n].float().sum(dim=1))
+            record.key_sum.add_(raw[:record.key_sum.shape[0], start:start+n].float().sum(dim=1))
             record.count += n
             if record.count == block:
                 self._unsubmitted[key] = record
@@ -215,6 +227,19 @@ class RequestAuthority:
         assert self.memory.commit_append(count)
         self.flush()
         return True
+
+    def publish_sealed(self, wait_for_progress):
+        """Complete the read barrier, including writes refused by admission.
+
+        Append may keep sealed CPU records when another namespace fills the
+        shared queue. Waiting only for this authority's admitted jobs misses
+        those records; retry admission before any published-only packed read.
+        """
+        while not self.flush():
+            wait_for_progress()
+        for job, _ in tuple(self.writes):
+            job.result()
+        self.poll()
 
     @contextmanager
     def index_snapshot(self):
@@ -289,6 +314,8 @@ class RequestAuthority:
         self._require_open()
         from .retrieval import mean_key_scores
         with self.index_snapshot() as (records, means):
+            # MTP records travel with target KV but never alter MeanK scoring.
+            means = means[:getattr(self, 'scoring_layers', self.shape[0])]
             handles = [r.handle for r in records]
             keys = [record_key(h) for h in handles]
             mandatory = {record_key(h) for h in mandatory_handles}

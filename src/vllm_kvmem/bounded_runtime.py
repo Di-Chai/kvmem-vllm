@@ -35,7 +35,7 @@ class QueryJob:
 def install_bounded_target(runner):
     draft_contract = None
     if runner.speculative_config is not None:
-        if os.getenv("KVMEM_BOUNDED_DFLASH") != "1":
+        if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1":
             raise ValueError("Bounded speculation requires explicit DFlash2 opt-in")
         from .draft_contract import DraftContract
         from .options import RuntimeOptions
@@ -103,9 +103,6 @@ def install_bounded_target(runner):
                     selected_cap != cfg.select_budget or
                     query != int(batch.num_scheduled_tokens[i])):
                 raise ValueError("Scheduler query does not match accepted authority or native input batch")
-            for archive_job, _ in authority.writes:
-                archive_job.result()
-            authority.poll()
             extents[request_id] = (i, history, query)
 
         needs_probe = any(history > cfg.select_budget for _, history, _ in extents.values())
@@ -118,8 +115,15 @@ def install_bounded_target(runner):
             before = checkpoints.capture(0, bundle.tensors)
             with capture_to(captured.append):
                 original(*args, **kwargs)
-            if tuple(c.name for c in captured) != runtime.names:
+            if tuple(c.name for c in captured) != tuple(runner._kvmem_layers):
                 raise RuntimeError("Native provisional batch missed attention layers")
+
+        # The provisional query reads leased native GPU pages, not archived
+        # bytes. Let its GPU execution overlap sealed-page packing/SHA/I/O;
+        # publication still finishes before selection and any archive read.
+        for request_id in jobs:
+            authority = runtime.authorities[request_id]
+            authority.publish_sealed(runtime._wait_archive_progress)
 
         if runner._kvmem_window_adapter is None:
             groups = full_attention_groups(runner.kv_cache_config)

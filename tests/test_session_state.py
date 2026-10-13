@@ -33,7 +33,7 @@ def fixture(device='cpu', draft=True):
     recurrent.runner, recurrent.groups = runner, {0: {'gdn': (conv, ssm)}}
     adapter = PromptStateAdapter.__new__(PromptStateAdapter)
     adapter.runner, adapter.recurrent, adapter._identity = runner, recurrent, object()
-    adapter.contract = SimpleNamespace(sliding_window=5, validate_native_groups=lambda _: (1,)) if draft else None
+    adapter.contract = SimpleNamespace(sliding_window=5, method='dflash', validate_native_groups=lambda _: (1,)) if draft else None
     return adapter, conv, ssm, cache, draft_table
 
 

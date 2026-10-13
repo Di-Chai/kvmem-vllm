@@ -88,6 +88,33 @@ struct RepositoryGcBridge {
 };
 
 PYBIND11_MODULE(_native, m) {
+    m.def("pack_record_views", [](const std::vector<py::buffer> &sources) {
+        // Sealed authority tensors stay owned by these exports. Copying their
+        // immutable contents on an archive worker must not hold the engine GIL.
+        std::vector<py::buffer_info> views;
+        size_t total = 0;
+        for (const auto &source : sources) {
+            auto view = source.request();
+            if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1 ||
+                    static_cast<size_t>(view.size) > static_cast<size_t>(PY_SSIZE_T_MAX) - total)
+                throw std::invalid_argument("Record pack requires bounded contiguous byte views");
+            total += static_cast<size_t>(view.size);
+            views.push_back(std::move(view));
+        }
+        if (!total) throw std::invalid_argument("Record pack requires nonempty bytes");
+        PyObject *allocated = PyBytes_FromStringAndSize(nullptr, static_cast<Py_ssize_t>(total));
+        if (!allocated) throw py::error_already_set();
+        auto result = py::reinterpret_steal<py::bytes>(allocated);
+        char *destination = PyBytes_AS_STRING(result.ptr());
+        {
+            py::gil_scoped_release release;
+            for (const auto &view : views) {
+                std::memcpy(destination, view.ptr, static_cast<size_t>(view.size));
+                destination += view.size;
+            }
+        }
+        return result;
+    });
     // Each source owns one immutable record. A caller may dispatch disjoint
     // ranges through a bounded persistent worker pool; retain Python owners and
     // the destination buffer export until all memcpy operations have completed.

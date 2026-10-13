@@ -35,7 +35,7 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Scheduler refresh transactions require synchronous execution")
         self.draft_contract = None
         if self.vllm_config.speculative_config is not None:
-            if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" or os.getenv("KVMEM_BOUNDED_TARGET") != "1":
+            if (os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1") or os.getenv("KVMEM_BOUNDED_TARGET") != "1":
                 raise ValueError("Bounded speculation requires its explicit experimental opt-in")
             from .draft_contract import DraftContract
             self.draft_contract = DraftContract.from_vllm(
@@ -299,7 +299,13 @@ class KVMemScheduler(Scheduler):
                     self.begin_refresh(request, request.num_computed_tokens)
                     self._probe_submitted = True
                     break
-        output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
+        if getattr(self, '_bounded_target', False):
+            self.kv_cache_manager.begin_step()
+        try:
+            output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
+        finally:
+            if getattr(self, '_bounded_target', False):
+                self.kv_cache_manager.end_step()
         if hasattr(self, '_scheduled_queries') and output.total_num_scheduled_tokens:
             # Actual admitted sizes, including native draft reservations and
             # alignment, are the evidence for a matched query-policy comparison.

@@ -22,6 +22,7 @@ DEFAULTS = {
     'execution_mode': 'eager',
     'verify_session_restore': False,
     'draft_tokens': 7,
+    'draft_method': 'dflash',
     'draft_quantization': None,
     'profiler_config': None,
     'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
@@ -95,13 +96,18 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('execution_mode must be eager or full_graph')
     if type(cfg['verify_session_restore']) is not bool:
         raise ValueError('verify_session_restore must be boolean')
-    if type(cfg['draft_tokens']) is not int or cfg['draft_tokens'] not in (1, 3, 7):
-        raise ValueError('draft_tokens must be 1, 3 or 7 for the DFlash2 prefix verifier')
+    if cfg['draft_method'] not in ('dflash', 'mtp'):
+        raise ValueError('draft_method must be dflash or mtp')
+    allowed_depths = (1, 3, 7) if cfg['draft_method'] == 'dflash' else (1, 2, 3, 7)
+    if type(cfg['draft_tokens']) is not int or cfg['draft_tokens'] not in allowed_depths:
+        raise ValueError(f'draft_tokens must be one of {allowed_depths} for {cfg["draft_method"]}')
     if cfg['draft_quantization'] not in (None, 'fp8'):
         raise ValueError('draft_quantization must be null or fp8')
     if cfg['model_format'] not in ('gguf', 'safetensors'):
         raise ValueError('model_format must be gguf or safetensors')
     is_gguf = cfg['model_format'] == 'gguf'
+    if cfg['draft_method'] == 'mtp' and (is_gguf or cfg['draft_quantization'] is not None):
+        raise ValueError('Bounded MTP requires native safetensors quantization metadata')
     if not is_gguf and 'mm_proj' in cfg:
         raise ValueError('mm_proj is only supported for a GGUF target')
     if 'linear_backend_per_quant' in cfg:
@@ -117,6 +123,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
                 raise ValueError(f'Unsupported linear backend for {scheme}: {backend!r}')
         cfg['linear_backend_per_quant'] = dict(backends)
     for name in PATHS:
+        if name == 'draft_model' and cfg['draft_method'] == 'mtp':
+            continue
         if name == 'mm_proj' and not is_gguf:
             continue
         value = cfg.get(name)
@@ -166,6 +174,15 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('Model context must cover K+G and prefill chunks must align to authority records')
     loader_args = (['--model-loader-extra-config', json.dumps({'mm_proj': cfg['mm_proj']})]
                    if is_gguf else [])
+    # MTP inherits the target FP8 CacheConfig, including its engine-resolved
+    # layout. An explicit same-dtype override makes a pre-resolution copy in
+    # this pinned vLLM and loses the subsequent layout resolution.
+    speculation = ({'method': 'mtp', 'num_speculative_tokens': cfg['draft_tokens']}
+                   if cfg['draft_method'] == 'mtp' else
+                   {'method': 'dflash', 'model': cfg['draft_model'],
+                    'num_speculative_tokens': cfg['draft_tokens'], 'draft_load_config': {'load_format': 'safetensors'},
+                    'kv_cache_dtype': 'bfloat16', **({'quantization': cfg['draft_quantization']}
+                        if cfg['draft_quantization'] else {})})
     argv = ['serve', cfg['model'], '--served-model-name', cfg['served_model_name'],
         '--host', cfg['host'], '--port', str(cfg['port']), '--tokenizer', cfg['tokenizer'],
         '--hf-config-path', cfg['hf_config_path'], '--config-format', 'hf', '--dtype', 'bfloat16',
@@ -176,18 +193,16 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         '--generation-config', 'vllm',
         '--long-prefill-token-threshold', str(cfg['long_prefill_token_threshold']), '--no-async-scheduling',
         '--scheduler-cls', 'vllm_kvmem.scheduler.KVMemScheduler', '--kv-transfer-config', json.dumps(transfer),
-        '--speculative-config', json.dumps({'method': 'dflash', 'model': cfg['draft_model'],
-            'num_speculative_tokens': cfg['draft_tokens'], 'draft_load_config': {'load_format': 'safetensors'},
-            'kv_cache_dtype': 'bfloat16', **({'quantization': cfg['draft_quantization']}
-                if cfg['draft_quantization'] else {})}),
+        '--speculative-config', json.dumps(speculation),
         '--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
         '--middleware', 'vllm_kvmem.http_sessions.validate_prompt_session',
         '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml', '--reasoning-parser', 'qwen3']
     env = {'KVMEM_SERVING': '1', 'KVMEM_RUNNER_PROBE_DIR': str(run_dir / 'capture'),
-        'KVMEM_ARCHIVE_PROBE': '1', 'KVMEM_LIFECYCLE_TRACE': '1', 'KVMEM_BOUNDED_DFLASH': '1',
+        'KVMEM_ARCHIVE_PROBE': '1', 'KVMEM_LIFECYCLE_TRACE': '1',
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    env['KVMEM_BOUNDED_MTP' if cfg['draft_method'] == 'mtp' else 'KVMEM_BOUNDED_DFLASH'] = '1'
     if cfg['execution_mode'] == 'full_graph':
         argv += ['--compilation-config', json.dumps({'mode': 0, 'cudagraph_mode': 'FULL'})]
         env['KVMEM_FULL_GRAPH'] = '1'

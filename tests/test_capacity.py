@@ -43,6 +43,60 @@ def request(name):
     return SimpleNamespace(request_id=name, num_prompt_tokens=256, max_tokens=128, history=0)
 
 
+def test_step_credits_match_owned_pages_through_growth_free_and_external_trim():
+    gate, manager, pool = make_gate(13)
+    a, b, c = [request(name) for name in ('a','b','c')]
+    gate.begin_step()
+    try:
+        with pytest.raises(RuntimeError, match='already open'):
+            gate.begin_step()
+        for req in (a,b):
+            assert gate.allocate_slots(req, 16) is not None
+        assert gate._step_total == sum(gate._remaining(k,q) for k,(_,q) in gate.reservations.items())
+        a.history = 16
+        assert gate.allocate_slots(a, 48) is not None
+        gate.free(b)
+        assert gate.allocate_slots(c, 16) is not None
+        assert gate._step_remaining == {k:gate._remaining(k,q) for k,(_,q) in gate.reservations.items()}
+    finally:
+        gate.end_step()
+    # Simulate an acknowledged trim between schedules. The next snapshot must
+    # restore those future-growth credits, even though the pool freed a page.
+    page = manager.req_to_blocks['a'].pop()
+    pool.free_blocks([page])
+    gate.begin_step()
+    try:
+        assert gate._step_remaining == {k:gate._remaining(k,q) for k,(_,q) in gate.reservations.items()}
+        gate.free(a); gate.free(c)
+        assert gate._step_remaining == {} and gate._step_total == 0
+    finally:
+        gate.end_step()
+    assert pool.get_num_free_blocks() == 12
+
+
+def test_credit_step_rechecks_current_request_after_failed_native_allocation():
+    gate, manager, pool = make_gate(9)
+    a, b = request('a'), request('b')
+    assert gate.allocate_slots(a, 32) is not None
+    assert gate.allocate_slots(b, 16) is not None
+    gate.begin_step()
+    original = gate.native.allocate_slots
+    def recycled_then_refused(req, *args, **kwargs):
+        page = manager.req_to_blocks[req.request_id].pop()
+        pool.free_blocks([page])
+        return None
+    gate.native.allocate_slots = recycled_then_refused
+    try:
+        assert gate.allocate_slots(a, 16) is None
+        assert gate._step_remaining['a'] == gate._remaining('a', gate.reservations['a'][1])
+        assert gate._step_total == sum(gate._remaining(k,q) for k,(_,q) in gate.reservations.items())
+    finally:
+        gate.native.allocate_slots = original
+        gate.end_step()
+    gate.free(a); gate.free(b)
+    assert pool.get_num_free_blocks() == 8
+
+
 def test_future_growth_is_reserved_and_refresh_does_not_overadmit():
     gate, manager, pool = make_gate()
     a, b, c = map(request, ('a', 'b', 'c'))

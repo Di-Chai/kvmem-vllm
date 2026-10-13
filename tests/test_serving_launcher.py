@@ -66,6 +66,20 @@ def test_fp8_draft_weights_preserve_target_and_draft_kv_precisions(tmp_path):
     assert '--quantization' not in argv  # keep target checkpoint metadata authoritative
 
 
+@pytest.mark.parametrize('depth', [2, 3])
+def test_meank_mtp_launch_uses_checkpoint_head_and_fp8_without_external_draft(tmp_path, depth):
+    cfg = nvfp4_profile(tmp_path)
+    cfg.pop('draft_model')
+    cfg.update(draft_method='mtp', draft_tokens=depth, execution_mode='full_graph')
+    plan = build_launch(cfg, tmp_path, tmp_path/'mtp')
+    argv, env = plan['vllm_argv'], plan['environment']
+    spec = json.loads(argv[argv.index('--speculative-config')+1])
+    assert spec == {'method': 'mtp', 'num_speculative_tokens': depth}
+    assert argv[argv.index('--kv-cache-dtype')+1] == 'fp8_e4m3'
+    assert env['KVMEM_BOUNDED_MTP'] == '1' and 'KVMEM_BOUNDED_DFLASH' not in env
+    assert '--kv-transfer-config' in argv and '--no-enable-prefix-caching' in argv
+
+
 @pytest.mark.parametrize('changes', [
     {'unknown': True}, {'port': True}, {'max_model_len': 262145},
     {'max_model_len': 131072}, {'gpu_memory_utilization': float('nan')},

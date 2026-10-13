@@ -23,6 +23,7 @@ class RuntimeOptions:
     cpu_history_cache_bytes_per_request: int = 0
     session_capture_terminal: bool = False
     cpu_gather_workers: int = 8
+    async_seal: bool = False
 
     def __post_init__(self):
         if type(self.cpu_gather_workers) is not int or not 1 <= self.cpu_gather_workers <= 16:
@@ -36,7 +37,7 @@ class RuntimeOptions:
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
                 self.async_archive_retirement, self.repository_gc, self.nvme_preallocate,
-                self.session_capture_decode)):
+                self.session_capture_decode, self.async_seal)):
             raise ValueError("Assembly and archive verification settings must be boolean")
         if type(self.session_capture_terminal) is not bool:
             raise ValueError('Terminal checkpoint setting must be boolean')
@@ -82,6 +83,7 @@ class RuntimeOptions:
         history_bytes = payload.pop('cpu_history_cache_bytes_per_request', 0)
         capture_terminal = payload.pop('session_capture_terminal', False)
         gather_workers = payload.pop('cpu_gather_workers', 8)
+        async_seal = payload.pop('async_seal', False)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -90,4 +92,4 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers)
+                   gather_workers, async_seal)

@@ -35,7 +35,8 @@ class CaptureRuntime:
         self.options = RuntimeOptions.from_vllm(runner.vllm_config)
         self.config = self.options.memory
         modules = dict(runner.model.named_modules())
-        self.names = tuple(runner._kvmem_layers)
+        modules.update(getattr(runner, '_kvmem_mtp_modules', {}))
+        self.names = tuple(getattr(runner, '_kvmem_archive_layers', runner._kvmem_layers))
         self.layers = [modules[name] for name in self.names]
         heads = {module.num_kv_heads for module in self.layers}
         dims = {module.head_dim for module in self.layers}
@@ -142,7 +143,8 @@ class CaptureRuntime:
                 if authority is None:
                     authority = RequestAuthority(request_id, self.config, self.archive,
                         len(self.layers), self.heads, self.dim, resident_records=self.resident_records,
-                        gc_config=self.gc_config, gc_progress=self.gc_progress)
+                        gc_config=self.gc_config, gc_progress=self.gc_progress,
+                        scoring_layers=len(self.runner._kvmem_layers))
                     self.authorities[request_id] = authority
                     self.accepted[request_id] = self.rejected[request_id] = 0
                     self.last_steps[request_id] = []

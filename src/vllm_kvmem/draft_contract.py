@@ -35,12 +35,26 @@ class DraftContract:
     sliding_window: int
     max_position: int
     layers: int
+    method: str = 'dflash'
 
     @classmethod
     def from_vllm(cls, config, memory):
         import torch
-        verify_draft_sources()
         spec = config.speculative_config
+        if spec is not None and spec.method == 'mtp':
+            verify_mtp_sources()
+            text = spec.draft_model_config.hf_text_config
+            layers = getattr(text, 'mtp_num_hidden_layers', 1)
+            query = spec.num_speculative_tokens + 1
+            if (getattr(text, 'model_type', None) != 'qwen3_5_text' or layers != 1 or
+                    not 1 < query <= 8 or spec.kv_cache_dtype is not None or
+                    config.cache_config.cache_dtype != 'fp8_e4m3' or
+                    config.max_concurrent_batches != 1 or config.scheduler_config.async_scheduling or
+                    config.cache_config.enable_prefix_caching or config.cache_config.mamba_cache_mode != 'none' or
+                    config.num_lookahead_tokens != query - 1):
+                raise ValueError('Unqualified Qwen MTP bounded transaction or FP8 cache')
+            return cls(query, 0, config.model_config.max_model_len, layers, 'mtp')
+        verify_draft_sources()
         if spec is None or spec.method != 'dflash':
             raise ValueError('Bounded speculation initially requires DFlash2')
         draft = spec.draft_model_config
@@ -71,8 +85,24 @@ class DraftContract:
 
     def validate_native_groups(self, runner):
         import torch
-        from vllm.v1.kv_cache_interface import SlidingWindowSpec, UniformTypeKVCacheSpecs
+        from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec, UniformTypeKVCacheSpecs
         proposer = runner.speculator
+        if self.method == 'mtp':
+            names = set(proposer.draft_attn_layer_names)
+            groups = tuple(i for i, group in enumerate(runner.kv_cache_config.kv_cache_groups)
+                           if names.intersection(group.layer_names))
+            covered = set()
+            for i in groups:
+                group = runner.kv_cache_config.kv_cache_groups[i]
+                spec = group.kv_cache_spec
+                specs = tuple(spec.kv_cache_specs.values()) if isinstance(spec, UniformTypeKVCacheSpecs) else (spec,)
+                if any(type(s) is not FullAttentionSpec or s.dtype not in (torch.float8_e4m3fn, torch.uint8) or
+                       s.sliding_window is not None for s in specs):
+                    raise ValueError('MTP requires lockstep full FP8 attention groups')
+                covered.update(names.intersection(group.layer_names))
+            if len(covered) != self.layers or covered != names or proposer.num_speculative_steps != self.query_tokens - 1:
+                raise ValueError('MTP layer/query differs from the bounded contract')
+            return groups
         groups = tuple(proposer.draft_kv_cache_group_ids)
         if not groups or len(set(groups)) != len(groups):
             raise ValueError('Missing or duplicate native draft KV groups')
@@ -88,3 +118,20 @@ class DraftContract:
         if layers != self.layers or proposer.num_query_per_req != self.query_tokens:
             raise ValueError('Native draft groups/query differ from the model contract')
         return groups
+
+
+MTP_SOURCES = {
+    'v1/worker/gpu/spec_decode/mtp/speculator.py': '926d6c9ffdb368c971647911a60493820d056ce236fcae9d94a42fa2e006255d',
+    'v1/worker/gpu/spec_decode/autoregressive/speculator.py': '5b97f54e20ddf65b98e939832d050745f67ef43cfa145786da300f1a8322e3c6',
+    'model_executor/models/qwen3_5_mtp.py': 'a7550c4954899b38cecc536633c0fffd04820ed802610fb28cd4d79971b4f1f1',
+}
+
+
+@lru_cache(maxsize=1)
+def verify_mtp_sources():
+    from .integration import check_engine_version
+    check_engine_version()
+    package = distribution('vllm')
+    for relative, expected in MTP_SOURCES.items():
+        if hashlib.sha256(package.locate_file('vllm/' + relative).read_bytes()).hexdigest() != expected:
+            raise ValueError(f'Unqualified native MTP lifecycle source: {relative}')

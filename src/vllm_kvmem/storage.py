@@ -7,6 +7,8 @@ repository GC releases records only after all consumers have dropped leases.
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Condition, Lock
+import hashlib
+import time
 
 from . import _native
 
@@ -54,6 +56,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         # A full window read and one maximal capture flush must each fit intact.
         largest_batch = max((options.memory.select_budget + options.memory.gen_budget) // block,
                             max(16, (max_query_tokens + block - 1) // block + 1)) * record_bytes
+        if options.async_seal:
+            largest_batch *= 2  # Owned source tensors plus immutable snapshot.
         if options.archive_io_max_bytes < largest_batch:
             raise ValueError('Archive I/O byte capacity cannot fit one full serving batch')
     cls, kwargs = AsyncArchive, {}
@@ -62,11 +66,15 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         cls = CachedArchive
         kwargs.update(cache_bytes=options.cpu_read_cache_bytes,
                       gather_workers=options.cpu_gather_workers,
-                      namespace_bytes=(options.cpu_history_cache_bytes_per_request or
+                      namespace_bytes=(min(options.cpu_history_cache_bytes_per_request,
+                                           options.memory.repository_blocks * record_bytes)
+                          if options.cpu_history_cache_bytes_per_request else
                           (options.memory.select_budget + options.memory.gen_budget)
                           // options.memory.block_tokens * record_bytes))
-    return cls(str(directory), record_bytes, capacity, preallocate=options.nvme_preallocate,
+    archive = cls(str(directory), record_bytes, capacity, preallocate=options.nvme_preallocate,
                max_bytes=options.nvme_max_bytes, io_max_bytes=options.archive_io_max_bytes, **kwargs)
+    archive.async_seal = options.async_seal
+    return archive
 
 
 class AsyncArchive:
@@ -160,23 +168,47 @@ class AsyncArchive:
             return ready
 
     def write(self, namespace: str, leases: list, payload: bytes) -> ArchiveJob | None:
-        if len(payload) != len(leases) * self.record_bytes or not leases:
+        return self._write(namespace, leases, payload=payload)
+
+    def write_from_views(self, namespace: str, leases: list, views) -> ArchiveJob | None:
+        """Admit sealed, exclusively owned tensors before packing/hashing.
+
+        A successful call retains buffer exports and cloned generation leases.
+        The caller must never mutate sealed sources. Both source and snapshot
+        bytes count against I/O admission until the background write completes.
+        """
+        views = tuple(memoryview(v).cast('B') for v in views)
+        if (len(views) != 2 * len(leases) or not leases or
+                any(not v.c_contiguous or v.ndim != 1 for v in views) or
+                any(views[2*i].nbytes + views[2*i+1].nbytes != self.record_bytes
+                    for i in range(len(leases)))):
+            raise ValueError('Sealed views must cover each complete raw-K/V record')
+        return self._write(namespace, leases, views=views)
+
+    def _write(self, namespace, leases, *, payload=None, views=None):
+        deferred = views is not None
+        if deferred:
+            size = len(leases) * self.record_bytes
+        else:
+            size = len(payload)
+        if size != len(leases) * self.record_bytes or not leases:
             raise ValueError("Write requires complete, fixed-size records")
         keys = [self.key(namespace, lease) for lease in leases]
         if len(set(keys)) != len(keys):
             raise ValueError("Duplicate archive record in one batch")
-        size = len(leases) * self.record_bytes
+        admitted_bytes = size * (2 if deferred else 1)
         with self._lock:
             if any(key in self._entries for key in keys):
                 raise ValueError("Cannot overwrite immutable archive records")
-            self._check_extent(size)
-            if len(self._free_ids) < len(keys) or not self._admit(size):
+            self._check_extent(admitted_bytes)
+            if len(self._free_ids) < len(keys) or not self._admit(admitted_bytes):
                 return None
             entries, owned = [], []
             try:
                 # Snapshot only after byte admission. Refused writers do not
                 # allocate another full payload while the queue is saturated.
-                payload = bytes(payload)
+                if not deferred:
+                    payload = bytes(payload)
                 for key in keys:
                     block_id = self._free_ids.pop()
                     try:
@@ -190,19 +222,35 @@ class AsyncArchive:
                     self._entries[key] = entry
                     entries.append(entry)
                 owned = [lease.clone() for lease in leases]
-                self._cache_write(keys, payload)
+                if not deferred:
+                    self._cache_write(keys, payload)
             except BaseException:
                 owned.clear()
                 for key in keys:
                     self._release(key)
-                self._complete(size)
+                self._complete(admitted_bytes)
                 raise
         spans = [_native.IoSpan(e.allocation.slot, i * self.record_bytes, self.record_bytes)
                  for i, e in enumerate(entries)]
 
         def work():
+            snapshot = payload
             try:
-                stats = self.tier.io(spans, payload, True)
+                preparation = {}
+                if deferred:
+                    started = time.perf_counter()
+                    snapshot = _native.pack_record_views(views)
+                    packed = time.perf_counter()
+                    byte_view = memoryview(snapshot)
+                    digests = tuple(hashlib.sha256(byte_view[i*self.record_bytes:(i+1)*self.record_bytes])
+                                    .hexdigest() for i in range(len(keys)))
+                    hashed = time.perf_counter()
+                    with self._lock:
+                        self._cache_write(keys, snapshot)
+                    preparation = dict(record_digests=digests, seal_pack_seconds=packed-started,
+                        seal_hash_seconds=hashed-packed, seal_cache_seconds=time.perf_counter()-hashed)
+                stats = self.tier.io(spans, snapshot, True)
+                stats.update(preparation)
                 with self._lock:
                     for entry in entries:
                         entry.ready = True
@@ -215,7 +263,7 @@ class AsyncArchive:
             finally:
                 owned.clear()
                 with self._lock:
-                    self._complete(size)
+                    self._complete(admitted_bytes)
         # Executor submission and close are serialized; close cannot shut down
         # the pool while an admitted task still needs to be submitted.
         with self._lock:
@@ -225,7 +273,7 @@ class AsyncArchive:
                 owned.clear()
                 for key in keys:
                     self._release(key)
-                self._complete(size)
+                self._complete(admitted_bytes)
                 raise
 
     def _cache_write(self, keys, payload):

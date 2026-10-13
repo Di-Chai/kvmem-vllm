@@ -152,6 +152,7 @@ class NativeWindowAssembler:
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False,
                     direct_pinned_reads=False):
         modules = dict(runner.model.named_modules())
+        modules.update(getattr(runner, '_kvmem_mtp_modules', {}))
         groups = {name: group_id for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups)
                   for name in group.layer_names}
         index = runner.req_states.req_id_to_index[request_id]

@@ -32,6 +32,8 @@ def make_probe_runner(base):
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
                 raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
+            from .mtp_runtime import install_mtp_runtime
+            install_mtp_runtime(self)
             self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
             self._kvmem_probe_done = self._kvmem_serving
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
@@ -44,7 +46,8 @@ def make_probe_runner(base):
             if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes:
                 from .storage import make_shared_archive
                 modules = dict(self.model.named_modules())
-                layers = [modules[name] for name in self._kvmem_layers]
+                modules.update(getattr(self, '_kvmem_mtp_modules', {}))
+                layers = [modules[name] for name in getattr(self, '_kvmem_archive_layers', self._kvmem_layers)]
                 geometry = {(layer.num_kv_heads, layer.head_dim) for layer in layers}
                 if len(geometry) != 1:
                     raise ValueError('NVMe startup reservation requires uniform target KV geometry')
@@ -193,8 +196,13 @@ def make_probe_runner(base):
                 captured, original_batch = pending
                 if input_batch is not original_batch:
                     raise ValueError("Continuous authority requires the native unsharded target batch")
-                self._kvmem_capture_runtime.submit(captured, input_batch, result[2])
-                self._kvmem_pending_capture = None
+                if getattr(self.speculative_config, 'method', None) == 'mtp':
+                    # MTP's authoritative shifted-token prefix is produced by
+                    # propose after sampling; publish both layers together.
+                    self._kvmem_mtp_rejected = result[2]
+                else:
+                    self._kvmem_capture_runtime.submit(captured, input_batch, result[2])
+                    self._kvmem_pending_capture = None
             return result
 
         def execute_model(self, scheduler_output, intermediate_tensors=None,

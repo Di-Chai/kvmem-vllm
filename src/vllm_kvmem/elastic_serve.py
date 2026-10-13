@@ -29,7 +29,7 @@ def build_launch(profile, base, run_dir):
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
-        'cpu_gather_workers': 8}
+        'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash'}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
@@ -40,6 +40,8 @@ def build_launch(profile, base, run_dir):
         raise ValueError('context_mode must be full or meank')
     if type(cfg['verify_session_restore']) is not bool:
         raise ValueError('verify_session_restore must be boolean')
+    if type(cfg['async_seal']) is not bool:
+        raise ValueError('async_seal must be boolean')
     for name in ('host', 'served_model_name'):
         if not isinstance(cfg[name], str) or not cfg[name] or '\x00' in cfg[name]:
             raise ValueError(f'{name} must be a nonempty string')
@@ -52,7 +54,7 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization', 'profiler_config'}:
+                               'draft_quantization', 'profiler_config', 'async_seal', 'draft_method'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -73,15 +75,20 @@ def build_launch(profile, base, run_dir):
     cfg['backend_url'] = f"http://127.0.0.1:{cfg['backend_port']}"
     if cfg['context_mode'] == 'meank':
         from .serve import build_launch as build_mean_k_launch
-        if (not isinstance(cfg['draft_model'], str) or not cfg['draft_model'] or
+        if cfg['draft_method'] not in ('dflash', 'mtp'):
+            raise ValueError('MeanK draft_method must be dflash or mtp')
+        if ((cfg['draft_method'] == 'dflash' and
+                (not isinstance(cfg['draft_model'], str) or not cfg['draft_model'])) or
                 not cfg['active_context_tokens'] or cfg['max_output_tokens'] > cfg['gen_budget_tokens']):
             raise ValueError('MeanK requires a local DFlash2 draft, active context and output within G')
-        draft = Path(cfg['draft_model']).expanduser()
-        cfg['draft_model'] = str((base / draft if not draft.is_absolute() else draft).resolve())
+        if cfg['draft_method'] == 'dflash':
+            draft = Path(cfg['draft_model']).expanduser()
+            cfg['draft_model'] = str((base / draft if not draft.is_absolute() else draft).resolve())
         backend = {'model_format': 'safetensors', 'model': cfg['model'], 'tokenizer': cfg['tokenizer'],
             'hf_config_path': cfg['model'], 'draft_model': cfg['draft_model'], 'execution_mode': 'full_graph',
             'verify_session_restore': cfg['verify_session_restore'],
             'draft_tokens': cfg['draft_tokens'],
+            'draft_method': cfg['draft_method'],
             'draft_quantization': cfg['draft_quantization'],
             'profiler_config': cfg['profiler_config'],
             'host': '127.0.0.1', 'port': cfg['backend_port'], 'served_model_name': cfg['served_model_name'],
@@ -92,7 +99,11 @@ def build_launch(profile, base, run_dir):
                 'repository_blocks': (cfg['max_model_len'] + 127) // 128,
                 'cpu_read_cache_bytes': cfg['cpu_kv_bytes'],
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
-                'cpu_history_cache_bytes_per_request': min(cfg['cpu_kv_bytes'], 12 * 1024**3),
+                'async_seal': cfg['async_seal'],
+                # The archive clips this to its actual historical record
+                # geometry. MTP adds a layer; do not retain the target-only
+                # 12 GiB constant and leave global CPU capacity unused.
+                'cpu_history_cache_bytes_per_request': cfg['cpu_kv_bytes'],
                 'packed_assembly': True, 'direct_pinned_reads': True, 'prefill_cadence': 1,
                 'async_archive_retirement': True, 'verify_archive_on_finish': False,
                 'session_capacity': cfg['max_sessions'], 'session_checkpoint_bytes': cfg['session_checkpoint_bytes'],
@@ -103,12 +114,12 @@ def build_launch(profile, base, run_dir):
         build_mean_k_launch(backend, run_dir, run_dir / 'meank')
         cfg['geometry_file'] = str(run_dir / 'meank/capture/cache-geometry.json')
         cfg['mean_k_backend_profile'] = backend
-        cfg['draft_method'] = 'dflash'
-        cfg['mtp_k'] = None
+        cfg['mtp_k'] = cfg['draft_tokens'] if cfg['draft_method'] == 'mtp' else None
         return cfg, [sys.executable, '-m', 'vllm_kvmem', 'serve',
             '--config', str(run_dir / 'backend-profile.json'), '--run-dir', str(run_dir / 'meank')]
     if cfg['linear_backend_per_quant'] is not None:
         raise ValueError('Explicit linear backends currently require the MeanK profile')
+    cfg['draft_method'] = 'mtp'
     transfer = {'kv_connector': 'KVMemElasticConnector', 'kv_role': 'kv_both',
         'kv_connector_module_path': 'vllm_kvmem.elastic_connector',
         'kv_connector_extra_config': {'cpu_bytes_to_use': cfg['cpu_kv_bytes'],

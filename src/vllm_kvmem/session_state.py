@@ -62,6 +62,14 @@ class PromptStateAdapter:
         return result
 
     def _draft_views(self, request_id, begin, end):
+        if self.contract is not None and self.contract.method == 'mtp':
+            if begin != end:
+                raise ValueError('MTP working KV belongs to the immutable window checkpoint')
+            # MTP raw-K and FP8-V are part of target window assembly. Native
+            # autoregressive proposal overwrites its temporary hidden inputs
+            # with the next target batch; there is no extra persistent state.
+            self.contract.validate_native_groups(self.runner)
+            return {}
         if self.contract is None:
             if begin != end:
                 raise ValueError('Target-only snapshot cannot contain draft history')
@@ -115,7 +123,8 @@ class PromptStateAdapter:
             if event is not None:
                 event.synchronize()
         recurrent = self._recurrent_views(request_id)
-        begin = max(0, position - self.contract.sliding_window + 1) if self.contract else position
+        begin = (max(0, position - self.contract.sliding_window + 1)
+                 if self.contract and self.contract.method == 'dflash' else position)
         draft = self._draft_views(request_id, begin, position)
         size = sum(t.numel() * t.element_size() for t in recurrent.values())
         size += sum((position - begin) * cache.shape[2] * cache.shape[3] * cache.element_size()
@@ -146,7 +155,7 @@ class PromptStateAdapter:
         index = self._prefill_index(request_id, snapshot.position)
         recurrent = self._recurrent_views(request_id)
         expected_begin = (max(0, snapshot.position - self.contract.sliding_window + 1)
-                          if self.contract else snapshot.position)
+                          if self.contract and self.contract.method == 'dflash' else snapshot.position)
         if snapshot.draft_begin != expected_begin:
             raise ValueError('Checkpoint draft context differs from the model window')
         draft = self._draft_views(request_id, snapshot.draft_begin, snapshot.position)

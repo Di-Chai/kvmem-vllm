@@ -211,6 +211,8 @@ class SessionWorker:
                 with (self.runner._kvmem_probe_output / 'verified_restores.jsonl').open('a') as stream:
                     stream.write(json.dumps({'request_id': request_id, 'history_tokens': binding.history,
                         'working_tokens': checkpoint.window.window_tokens, 'target_kv_bytes': oracle.numel(),
+                        'working_attention_layers': len(self.runtime.names),
+                        'mtp_attention_layers': len(getattr(self.runner, '_kvmem_mtp_modules', {})),
                         'recurrent_tensors': len(recurrent), 'draft_layers': len(draft), 'byte_equal': True}) + '\n')
             restored = self.pool.finish_claim(checkpoint, event or _Ready())
             assert restored is authority

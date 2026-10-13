@@ -1,5 +1,16 @@
 # vllm-kvmem
 
+**MeanK with native Qwen MTP, 2026-10-14:** `draft_method: "mtp"` loads the
+checkpoint's MTP head. Target MeanK scores select both target and MTP immutable
+KV; both are re-RoPEd into the same bounded working window. At C8 with 64K input
+and 4K output, final steady decode measured 486.27 / 492.02 tok/s, about 22% above
+the preceding DFlash MeanK result. Eight users also completed full 32K input
+plus 16K output at 513.65 steady tok/s. Bounded background sealing and cached
+GPU-page credits reduce KVMem CPU overhead. See the [qw3 optimization and MTP
+report](docs/decode-optimization-20261014.md) and
+[MTP profile](examples/qwen-nvfp4-meank-mtp-elastic.json). The older full-context
+~592 tok/s result remains higher; fixed-length tests do not qualify agent quality.
+
 **Original MeanK integration, 2026-10-13:** `context_mode: "meank"` now uses
 model-attention MeanK scoring, the unchanged original KVMem selector, immutable
 CPU raw KV and dense re-RoPE assembly with vLLM batched CUDA Graph decode.
