@@ -22,6 +22,10 @@ def _fused_qk_rmsnorm_rope_gate_kernel(
     gate_out_ptr,
     raw_q_ptr,
     raw_k_ptr,
+    value_ptr,
+    value_out_ptr,
+    capture_enabled_ptr,
+    value_stride_t,
     q_weight_ptr,
     k_weight_ptr,
     cos_sin_cache_ptr,
@@ -44,6 +48,8 @@ def _fused_qk_rmsnorm_rope_gate_kernel(
     INPUT_DTYPE: tl.constexpr,
     HEAD_BLOCK: tl.constexpr,
     ROT_HALF_BLOCK: tl.constexpr,
+    HAS_CAPTURE_FLAG: tl.constexpr,
+    HAS_VALUE_CAPTURE: tl.constexpr,
     HAS_PASS: tl.constexpr,
     HAS_MROPE: tl.constexpr,
     MROPE_SECTION_H: tl.constexpr,
@@ -79,7 +85,15 @@ def _fused_qk_rmsnorm_rope_gate_kernel(
         raw_base = raw_k_ptr + token * k_out_stride_t + local_head * head_dim
     else:
         raw_base = raw_q_ptr + token * q_out_stride_t + local_head * head_dim
-    tl.store(raw_base + head_offs, x_norm, mask=head_mask)
+    enabled = True
+    if HAS_CAPTURE_FLAG:
+        enabled = tl.load(capture_enabled_ptr) != 0
+    tl.store(raw_base + head_offs, x_norm, mask=head_mask & enabled)
+    if HAS_VALUE_CAPTURE and is_k:
+        v = tl.load(value_ptr + token * value_stride_t + local_head * head_dim + head_offs,
+                    mask=head_mask, other=0)
+        tl.store(value_out_ptr + token * k_out_stride_t + local_head * head_dim + head_offs,
+                 v, mask=head_mask & enabled)
 
     # --- Pass-through tail [rotary_dim, head_dim): RMSNorm-only, no rotation ---
     # The rotary head [0, rotary_dim) will be overwritten by the RoPE store below.
@@ -160,6 +174,9 @@ def fused_qk_rmsnorm_rope_gate(
     norm_beta: float = 0.0,
     raw_q_output: torch.Tensor | None = None,
     raw_k_output: torch.Tensor | None = None,
+    capture_enabled: torch.Tensor | None = None,
+    value_input: torch.Tensor | None = None,
+    value_output: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fused split + QK-RMSNorm + (partial) RoPE + gate copy for Qwen attn.
 
@@ -248,6 +265,17 @@ def fused_qk_rmsnorm_rope_gate(
         if (raw.shape != output.shape or raw.dtype != output.dtype or
                 raw.device != output.device or not raw.is_contiguous()):
             raise ValueError('Content capture output must match native projection geometry')
+    if (value_input is None) != (value_output is None):
+        raise ValueError('Value capture requires both input and output')
+    if value_input is not None and (value_input.shape != k.shape or
+            value_input.dtype != k.dtype or value_output.shape != k_out.shape or
+            value_output.dtype != k.dtype or value_input.device != k.device or
+            value_output.device != k.device or value_input.stride(-1) != 1 or
+            not value_output.is_contiguous()):
+        raise ValueError('Value capture must match native KV geometry')
+    if capture_enabled is not None and (capture_enabled.numel() != 1 or
+            capture_enabled.device != k.device or capture_enabled.dtype != torch.int32):
+        raise ValueError('Capture gate must be a device int32 scalar')
     if n_tokens == 0:
         return q_out, k_out, gate_out, raw_q, raw_k
 
@@ -265,6 +293,10 @@ def fused_qk_rmsnorm_rope_gate(
         gate_out,
         raw_q,
         raw_k,
+        value_input if value_input is not None else k,
+        value_output if value_output is not None else raw_k,
+        capture_enabled if capture_enabled is not None else positions,
+        value_input.stride(0) if value_input is not None else 0,
         q_weight,
         k_weight,
         cos_sin_cache,
@@ -287,6 +319,8 @@ def fused_qk_rmsnorm_rope_gate(
         INPUT_DTYPE=tl.bfloat16 if q_gate.dtype == torch.bfloat16 else tl.float16,
         HEAD_BLOCK=head_block,
         ROT_HALF_BLOCK=rot_half_block,
+        HAS_CAPTURE_FLAG=capture_enabled is not None,
+        HAS_VALUE_CAPTURE=value_input is not None,
         HAS_PASS=rotary_dim < head_dim,
         HAS_MROPE=has_mrope,
         MROPE_SECTION_H=mrope_section_h,

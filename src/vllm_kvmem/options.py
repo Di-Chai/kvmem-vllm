@@ -28,6 +28,7 @@ class RuntimeOptions:
     reuse_resident_v: bool = False
     async_cpu_scatter: bool = False
     cpu_scatter_min_tokens: int = 128
+    batched_cpu_append: bool = False
 
     def __post_init__(self):
         if type(self.cpu_scatter_min_tokens) is not int or not 1<=self.cpu_scatter_min_tokens<=65536:
@@ -44,7 +45,7 @@ class RuntimeOptions:
         if any(type(value) is not bool for value in
                (self.packed_assembly, self.verify_archive_on_finish, self.direct_pinned_reads,
                 self.async_archive_retirement, self.repository_gc, self.nvme_preallocate,
-                self.session_capture_decode, self.async_seal, self.reuse_resident_v,self.async_cpu_scatter)):
+                self.session_capture_decode, self.async_seal, self.reuse_resident_v,self.async_cpu_scatter,self.batched_cpu_append)):
             raise ValueError("Assembly and archive verification settings must be boolean")
         if type(self.session_capture_terminal) is not bool:
             raise ValueError('Terminal checkpoint setting must be boolean')
@@ -97,6 +98,7 @@ class RuntimeOptions:
         reuse_v = payload.pop('reuse_resident_v', False)
         cpu_scatter = payload.pop('async_cpu_scatter', False)
         scatter_min = payload.pop('cpu_scatter_min_tokens',128)
+        batched_append = payload.pop('batched_cpu_append', False)
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -105,4 +107,4 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min)
+                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append)

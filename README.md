@@ -1,5 +1,13 @@
 # vllm-kvmem
 
+**Native compilation and batched history, 2026-10-14:** KVMem capture, MeanK
+probe/replay and native MTP now support native compilation with CUDA Graphs.
+Vectorized CPU copy/MeanK maintenance reduced the isolated component by 59.7%.
+Eight users completed 32K input plus 16K output each at 538.75 steady / 449.94
+whole-batch tok/s, versus 510.48 / 415.01 previously. The same native control
+still runs faster; see the [qualification and remaining-gap report](docs/compiled-capture-history-20261014.md)
+and [compiled profile](examples/qwen-nvfp4-meank-mtp-compiled-elastic.json).
+
 **Raw-K / resident V caching, 2026-10-14:** opt-in bounded GPU raw-key caching,
 shared V staging and adaptive CPU history maintenance now reduce C8/64K payload
 H2D by about 58% and assembly path time by 15–21%. Steady decode did not show a

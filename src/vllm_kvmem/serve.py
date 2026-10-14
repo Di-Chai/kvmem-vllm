@@ -92,8 +92,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('Serving profile contains unknown fields or is not an object')
     cfg = {**DEFAULTS, **profile}
     cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
-    if cfg['execution_mode'] not in ('eager', 'full_graph'):
-        raise ValueError('execution_mode must be eager or full_graph')
+    if cfg['execution_mode'] not in ('eager', 'full_graph', 'compiled_graph'):
+        raise ValueError('execution_mode must be eager, full_graph or compiled_graph')
     if type(cfg['verify_session_restore']) is not bool:
         raise ValueError('verify_session_restore must be boolean')
     if cfg['draft_method'] not in ('dflash', 'mtp'):
@@ -106,6 +106,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if cfg['model_format'] not in ('gguf', 'safetensors'):
         raise ValueError('model_format must be gguf or safetensors')
     is_gguf = cfg['model_format'] == 'gguf'
+    if cfg['execution_mode'] == 'compiled_graph' and (is_gguf or cfg['draft_method'] != 'mtp'):
+        raise ValueError('Compiled capture currently requires native safetensors Qwen MTP')
     if cfg['draft_method'] == 'mtp' and (is_gguf or cfg['draft_quantization'] is not None):
         raise ValueError('Bounded MTP requires native safetensors quantization metadata')
     if not is_gguf and 'mm_proj' in cfg:
@@ -203,8 +205,11 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
     env['KVMEM_BOUNDED_MTP' if cfg['draft_method'] == 'mtp' else 'KVMEM_BOUNDED_DFLASH'] = '1'
-    if cfg['execution_mode'] == 'full_graph':
-        argv += ['--compilation-config', json.dumps({'mode': 0, 'cudagraph_mode': 'FULL'})]
+    if cfg['execution_mode'] in ('full_graph', 'compiled_graph'):
+        compilation = ({'mode': 3, 'cudagraph_mode': 'FULL_AND_PIECEWISE'}
+                       if cfg['execution_mode'] == 'compiled_graph' else
+                       {'mode': 0, 'cudagraph_mode': 'FULL'})
+        argv += ['--compilation-config', json.dumps(compilation)]
         env['KVMEM_FULL_GRAPH'] = '1'
     else:
         argv += ['--enforce-eager']

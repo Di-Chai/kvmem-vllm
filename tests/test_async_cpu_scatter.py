@@ -12,14 +12,16 @@ from test_authority import setup,payload,drain
 from test_terminal_prefix import request
 
 
-def test_background_scatter_finishes_authorized_packet_before_terminal_clip(tmp_path,monkeypatch):
+@pytest.mark.parametrize('batched', [False, True])
+@pytest.mark.parametrize('later_packet', [False, True])
+def test_background_scatter_finishes_authorized_packet_before_terminal_clip(tmp_path,monkeypatch, batched, later_packet):
     a,archive=setup(tmp_path/'a')
     b,_=setup(tmp_path/'b','b',archive)
     for owner in (a,b):
         assert owner.append(*payload(0,4),history_begin=0,local_rope_begin=0)
         drain(owner)
     runtime=CaptureRuntime.__new__(CaptureRuntime)
-    runtime.options=RuntimeOptions(memory=a.memory.config,async_cpu_scatter=True,cpu_scatter_min_tokens=1)
+    runtime.options=RuntimeOptions(memory=a.memory.config,async_cpu_scatter=True,cpu_scatter_min_tokens=1,batched_cpu_append=batched)
     runtime.config,runtime.archive=a.memory.config,archive
     runtime.runner=NS(vllm_config=NS(max_concurrent_batches=1))
     runtime.layers,runtime.heads,runtime.dim=[None,None],1,2
@@ -68,11 +70,13 @@ def test_background_scatter_finishes_authorized_packet_before_terminal_clip(tmp_
         assert all(name.startswith('kvmem-scatter') for name in threads)
         latest=packet(8)
         runtime.queue.append(latest)
+        if later_packet:
+            runtime.queue.append(packet(12))
         runtime.finish({'a'},{'a':TerminalPrefix.from_request(request(12,0,10,6))})
         assert runtime.completed[0]['history_end']==9
-        assert runtime.completed[0]['terminal_discarded_tokens']==3
-        assert runtime.authorities=={'b':b} and b.history_end==12
-        assert runtime.cpu_scatter_batches==1 and len(released)==2
+        assert runtime.completed[0]['terminal_discarded_tokens']==(7 if later_packet else 3)
+        assert runtime.authorities=={'b':b} and b.history_end==(16 if later_packet else 12)
+        assert runtime.cpu_scatter_batches==1 and len(released)==(3 if later_packet else 2)
         drain(b)
         assert b.close() and archive.close()
     finally:

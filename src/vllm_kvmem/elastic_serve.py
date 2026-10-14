@@ -31,13 +31,15 @@ def build_launch(profile, base, run_dir):
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
         'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
-        'cpu_scatter_min_tokens':128}
+        'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
     cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
     if type(cfg['cpu_gather_workers']) is not int or not 1 <= cfg['cpu_gather_workers'] <= 16:
         raise ValueError('cpu_gather_workers must be an integer in [1, 16]')
+    if cfg['execution_mode'] not in ('full_graph', 'compiled_graph'):
+        raise ValueError('execution_mode must be full_graph or compiled_graph')
     if cfg['context_mode'] not in ('full', 'meank'):
         raise ValueError('context_mode must be full or meank')
     if type(cfg['verify_session_restore']) is not bool:
@@ -46,6 +48,8 @@ def build_launch(profile, base, run_dir):
         raise ValueError('async_seal must be boolean')
     if type(cfg['reuse_resident_v']) is not bool:
         raise ValueError('reuse_resident_v must be boolean')
+    if type(cfg['batched_cpu_append']) is not bool:
+        raise ValueError('batched_cpu_append must be boolean')
     if type(cfg['async_cpu_scatter']) is not bool:
         raise ValueError('async_cpu_scatter must be boolean')
     if type(cfg['gpu_raw_k_cache_bytes']) is not int or cfg['gpu_raw_k_cache_bytes'] < 0:
@@ -63,7 +67,7 @@ def build_launch(profile, base, run_dir):
     for name in set(defaults) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
                                'draft_quantization', 'profiler_config', 'async_seal', 'draft_method',
-                               'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter'}:
+                               'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -94,7 +98,7 @@ def build_launch(profile, base, run_dir):
             draft = Path(cfg['draft_model']).expanduser()
             cfg['draft_model'] = str((base / draft if not draft.is_absolute() else draft).resolve())
         backend = {'model_format': 'safetensors', 'model': cfg['model'], 'tokenizer': cfg['tokenizer'],
-            'hf_config_path': cfg['model'], 'draft_model': cfg['draft_model'], 'execution_mode': 'full_graph',
+            'hf_config_path': cfg['model'], 'draft_model': cfg['draft_model'], 'execution_mode': cfg['execution_mode'],
             'verify_session_restore': cfg['verify_session_restore'],
             'draft_tokens': cfg['draft_tokens'],
             'draft_method': cfg['draft_method'],
@@ -112,6 +116,7 @@ def build_launch(profile, base, run_dir):
                 'gpu_raw_k_cache_bytes': cfg['gpu_raw_k_cache_bytes'],
                 'reuse_resident_v': cfg['reuse_resident_v'],
                 'async_cpu_scatter':cfg['async_cpu_scatter'],
+                'batched_cpu_append':cfg['batched_cpu_append'],
                 'cpu_scatter_min_tokens':cfg['cpu_scatter_min_tokens'],
                 # The archive clips this to its actual historical record
                 # geometry. MTP adds a layer; do not retain the target-only

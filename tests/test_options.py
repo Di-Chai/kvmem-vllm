@@ -30,6 +30,7 @@ def test_public_connector_config_propagates_granularity_and_resource_options_wit
     ({'kvmem': {'gpu_raw_k_cache_bytes': 4096}}, 'direct packed'),
     ({'kvmem': {'reuse_resident_v': 1}}, 'boolean'),
     ({'kvmem': {'async_cpu_scatter': 1}}, 'boolean'),
+    ({'kvmem': {'batched_cpu_append': 1}}, 'boolean'),
     ({'kvmem': {'cpu_scatter_min_tokens': True}}, 'minimum'),
     ({'kvmem': {'cpu_scatter_min_tokens': 0}}, 'minimum'),
     ({'kvmem': {'cpu_scatter_min_tokens': 65537}}, 'minimum'),

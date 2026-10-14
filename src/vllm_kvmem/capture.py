@@ -56,9 +56,13 @@ def install_qwen_capture(model) -> list[str]:
 
 
 def _project_with_capture(self, qkv, positions):
-    sink = _sink.get()
     buffers = getattr(self, '_kvmem_capture_buffers', None)
-    if getattr(self, '_kvmem_mtp_prefix_only', False) and not getattr(self, '_kvmem_mtp_prefix_active', False):
+    # Compiled forwards and graph replays write stable tensors. ContextVar
+    # lookup/callbacks are reserved for the diagnostic eager-only adapter.
+    sink = _sink.get() if buffers is None else None
+    capture_gate = getattr(self, '_kvmem_capture_gate', None)
+    if (capture_gate is None and getattr(self, '_kvmem_mtp_prefix_only', False)
+            and not getattr(self, '_kvmem_mtp_prefix_active', False)):
         return self._kvmem_original_projection(qkv, positions)
     if sink is None and buffers is None:
         return self._kvmem_original_projection(qkv, positions)
@@ -70,6 +74,10 @@ def _project_with_capture(self, qkv, positions):
         self.rotary_emb.cos_sin_cache, positions, self.q_norm.variance_epsilon,
         self.num_heads, self.num_kv_heads, self.head_dim, self.rotary_emb.rotary_dim,
         norm_beta=1.0,
+        capture_enabled=capture_gate,
+        value_input=value if buffers is not None else None,
+        value_output=(buffers.value[:qkv.shape[0]].view(qkv.shape[0], -1)
+                      if buffers is not None else None),
         mrope_section=(getattr(self.rotary_emb, "mrope_section", None)
                        if positions.ndim == 2 else None),
         raw_q_output=(buffers.query[:qkv.shape[0]].view(qkv.shape[0], -1)
@@ -79,7 +87,6 @@ def _project_with_capture(self, qkv, positions):
     )
     raw_value = value.view(-1, self.num_kv_heads, self.head_dim)
     if buffers is not None:
-        buffers.value[:qkv.shape[0]].copy_(raw_value)
         raw_value = buffers.value[:qkv.shape[0]]
     if sink is not None:
         sink(CapturedLayer(self._kvmem_capture_name, positions,

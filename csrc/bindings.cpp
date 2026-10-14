@@ -87,7 +87,129 @@ struct RepositoryGcBridge {
     }
 };
 
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#define KVMEM_AVX2 __attribute__((target("avx2")))
+static bool native_decode_sum_supported() { return __builtin_cpu_supports("avx2"); }
+#else
+#define KVMEM_AVX2
+static bool native_decode_sum_supported() { return false; }
+#endif
+
+static inline float bf16_as_float(const char *source) {
+    uint16_t bf16;
+    std::memcpy(&bf16, source, 2);
+    const uint32_t bits = static_cast<uint32_t>(bf16) << 16;
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
+}
+
+template<int Count>
+KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
+                                     const py::buffer_info &sums, ssize_t begin) {
+    const auto width = sums.shape[1] * sums.shape[2];
+    auto *out = static_cast<float *>(sums.ptr);
+    for (ssize_t layer = 0; layer < sums.shape[0]; ++layer) {
+        const auto *base = static_cast<const char *>(raw.ptr) + layer * raw.strides[0] + begin * raw.strides[1];
+        auto *destination = out + layer * width;
+        for (ssize_t column = 0; column < width; ++column) {
+            float total = 0.f;
+            // Compile-time count permits vectorization across columns without
+            // reassociating the FP32 addition order along the token dimension.
+            for (int token = 0; token < Count; ++token)
+                total += bf16_as_float(base + token * raw.strides[1] + column * 2);
+            destination[column] += total;
+        }
+    }
+}
+
 PYBIND11_MODULE(_native, m) {
+    m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) {
+        struct Row {
+            py::buffer_info raw, values, dst_raw, dst_values, delta, sum;
+            ssize_t begin, offset, count;
+        };
+        std::vector<Row> rows;
+        rows.reserve(jobs.size());
+        for (const auto &job : jobs) {
+            if (job.size() != 9) throw std::invalid_argument("Invalid history scatter descriptor");
+            Row r{job[0].cast<py::buffer>().request(), job[1].cast<py::buffer>().request(),
+                  job[2].cast<py::buffer>().request(), job[3].cast<py::buffer>().request(),
+                  job[4].is_none() ? py::buffer_info{} : job[4].cast<py::buffer>().request(),
+                  job[5].cast<py::buffer>().request(),
+                  job[6].cast<ssize_t>(), job[7].cast<ssize_t>(), job[8].cast<ssize_t>()};
+            auto byte_rows = [](const py::buffer_info &v, bool writable) {
+                if (v.ndim != 4 || v.itemsize != 1 || (writable && v.readonly)) return false;
+                if (v.shape[0] <= 0 || v.shape[1] <= 0 || v.shape[2] <= 0 || v.shape[3] <= 0) return false;
+                return v.strides[3] == 1 && v.strides[2] == v.shape[3] &&
+                       v.strides[1] >= v.shape[2] * v.shape[3] &&
+                       v.strides[0] >= v.shape[2] * v.shape[3];
+            };
+            auto sums = [](const py::buffer_info &v, bool writable) {
+                return v.ndim == 3 && v.format == py::format_descriptor<float>::format() &&
+                       v.itemsize == 4 && (!writable || !v.readonly) &&
+                       v.strides[2] == 4 && v.strides[1] == v.shape[2] * 4 &&
+                       v.strides[0] == v.shape[1] * v.strides[1];
+            };
+            if (!byte_rows(r.raw, false) || !byte_rows(r.values, false) ||
+                !byte_rows(r.dst_raw, true) || !byte_rows(r.dst_values, true) ||
+                !sums(r.sum, true) ||
+                (r.delta.ptr && (!sums(r.delta, false) || r.delta.shape != r.sum.shape)) ||
+                (!r.delta.ptr && (!native_decode_sum_supported() || r.count > 4 ||
+                                 (r.sum.shape[1] * r.sum.shape[2]) % 64)) ||
+                r.sum.shape[0] <= 0 ||
+                r.sum.shape[0] > r.raw.shape[0] || r.sum.shape[1] != r.values.shape[2] ||
+                r.sum.shape[2] != r.values.shape[3] || r.begin < 0 || r.offset < 0 || r.count <= 0)
+                throw std::invalid_argument("Invalid history scatter geometry or buffer ownership");
+            for (ssize_t axis : {0, 2, 3}) {
+                if (r.values.shape[axis] != r.dst_values.shape[axis] ||
+                    r.raw.shape[axis] != r.dst_raw.shape[axis] ||
+                    r.raw.shape[axis] != r.values.shape[axis] * (axis == 3 ? 2 : 1))
+                    throw std::invalid_argument("History scatter codec mismatch");
+            }
+            if (r.raw.shape[1] != r.values.shape[1] ||
+                r.dst_raw.shape[1] != r.dst_values.shape[1] ||
+                r.count > r.raw.shape[1] || r.begin > r.raw.shape[1] - r.count ||
+                r.count > r.dst_raw.shape[1] || r.offset > r.dst_raw.shape[1] - r.count)
+                throw std::invalid_argument("History scatter extent outside owned rows");
+            rows.push_back(std::move(r));
+        }
+        // Every descriptor is validated before touching any destination. The
+        // exported buffers retain the packet and each authority through this call.
+        py::gil_scoped_release no_gil;
+        for (const auto &r : rows) {
+            for (ssize_t layer = 0; layer < r.raw.shape[0]; ++layer) {
+                auto copy_rows = [&](const py::buffer_info &dst, const py::buffer_info &src) {
+                    const auto width = src.shape[2] * src.shape[3];
+                    auto *out = static_cast<char *>(dst.ptr) + layer * dst.strides[0] + r.offset * dst.strides[1];
+                    const auto *in = static_cast<const char *>(src.ptr) + layer * src.strides[0] + r.begin * src.strides[1];
+                    if (src.strides[1] == width && dst.strides[1] == width) {
+                        std::memcpy(out, in, r.count * width);
+                    } else {
+                        for (ssize_t token = 0; token < r.count; ++token)
+                            std::memcpy(out + token * dst.strides[1], in + token * src.strides[1], width);
+                    }
+                };
+                copy_rows(r.dst_raw, r.raw);
+                copy_rows(r.dst_values, r.values);
+            }
+            auto *sum = static_cast<float *>(r.sum.ptr);
+            if (r.delta.ptr) {
+                const auto *delta = static_cast<const float *>(r.delta.ptr);
+                for (ssize_t i = 0; i < r.sum.size; ++i) sum[i] += delta[i];
+            } else {
+                // Qualified BF16 decode rows, retaining ATen's FP32 outer
+                // reduction order. Larger prefixes use the reference Torch sum.
+                switch (r.count) {
+                    case 1: add_decode_mean<1>(r.raw, r.sum, r.begin); break;
+                    case 2: add_decode_mean<2>(r.raw, r.sum, r.begin); break;
+                    case 3: add_decode_mean<3>(r.raw, r.sum, r.begin); break;
+                    case 4: add_decode_mean<4>(r.raw, r.sum, r.begin); break;
+                }
+            }
+        }
+    });
+
     m.def("pack_record_views", [](const std::vector<py::buffer> &sources) {
         // Sealed authority tensors stay owned by these exports. Copying their
         // immutable contents on an archive worker must not hold the engine GIL.

@@ -192,44 +192,60 @@ class CaptureRuntime:
             raw = data[header_bytes:header_bytes+elements*2].view(torch.bfloat16).reshape(shape)
             values = data[header_bytes+elements*2:].reshape(shape)
             while packet.next_request < n:
-                i = packet.next_request
-                request_id = packet.request_ids[i]
-                authority = self.authorities.get(request_id)
-                if authority is None:
-                    authority = RequestAuthority(request_id, self.config, self.archive,
-                        len(self.layers), self.heads, self.dim, resident_records=self.resident_records,
-                        gc_config=self.gc_config, gc_progress=self.gc_progress,
-                        scoring_layers=len(self.runner._kvmem_layers))
-                    self.authorities[request_id] = authority
-                    self.accepted[request_id] = self.rejected[request_id] = 0
-                    self.last_steps[request_id] = []
-                begin, end = starts[i:i+2]
-                accepted = end - begin - rejected[i]
-                if not 0 <= accepted <= end - begin:
-                    raise ValueError('Native sampling rejection count exceeds captured rows')
-                discarded = 0
-                terminal = self.terminal_prefixes.get(request_id)
-                if terminal is not None:
-                    retained = max(0, min(accepted, terminal.history_end - histories[i]))
-                    discarded = accepted - retained
-                    accepted = retained
-                success = not accepted or authority.append(raw[:, begin:end], values[:, begin:end],
-                    history_begin=histories[i], local_rope_begin=local[i], accepted=accepted)
-                if not success:
+                batched = self.options.batched_cpu_append
+                limit = n if batched else packet.next_request + 1
+                entries, metadata = [], []
+                for i in range(packet.next_request, limit):
+                    request_id = packet.request_ids[i]
+                    authority = self.authorities.get(request_id)
+                    if authority is None:
+                        authority = RequestAuthority(request_id, self.config, self.archive,
+                            len(self.layers), self.heads, self.dim, resident_records=self.resident_records,
+                            gc_config=self.gc_config, gc_progress=self.gc_progress,
+                            scoring_layers=len(self.runner._kvmem_layers))
+                        self.authorities[request_id] = authority
+                        self.accepted[request_id] = self.rejected[request_id] = 0
+                        self.last_steps[request_id] = []
+                    begin, end = starts[i:i+2]
+                    accepted = end - begin - rejected[i]
+                    if not 0 <= accepted <= end - begin:
+                        raise ValueError('Native sampling rejection count exceeds captured rows')
+                    discarded = 0
+                    terminal = self.terminal_prefixes.get(request_id)
+                    if terminal is not None:
+                        retained = max(0, min(accepted, terminal.history_end - histories[i]))
+                        discarded = accepted - retained
+                        accepted = retained
+                    entries.append((authority, raw[:, begin:end], values[:, begin:end],
+                        dict(history_begin=histories[i], local_rope_begin=local[i], accepted=accepted)))
+                    metadata.append((i, accepted, discarded, end - begin))
+                if batched:
+                    from .authority import append_authority_batch
+                    consumed = append_authority_batch(entries)
+                    if consumed:
+                        self.batched_append_calls = getattr(self, 'batched_append_calls', 0) + 1
+                        self.batched_append_requests = getattr(self, 'batched_append_requests', 0) + consumed
+                else:
+                    authority, request_raw, request_values, kwargs = entries[0]
+                    consumed = int(not kwargs['accepted'] or authority.append(
+                        request_raw, request_values, **kwargs))
+                if not consumed:
                     if not wait:
                         return False
                     self._wait_archive_progress()
                     continue
-                self.accepted[request_id] += accepted
-                self._archive_wait_deadline = None
-                self.rejected[request_id] += rejected[i]
-                self.terminal_discarded[request_id] = self.terminal_discarded.get(request_id, 0) + discarded
-                steps = self.last_steps[request_id]
-                steps.append({"history_begin": histories[i], "scheduled": end - begin,
-                              "accepted": accepted, "rejected": rejected[i],
-                              "terminal_discarded": discarded})
-                del steps[:max(0, len(steps) - self.runner.vllm_config.max_concurrent_batches - 1)]
-                packet.next_request += 1
+                for i, accepted, discarded, scheduled in metadata[:consumed]:
+                    request_id = packet.request_ids[i]
+                    self.accepted[request_id] += accepted
+                    self._archive_wait_deadline = None
+                    self.rejected[request_id] += rejected[i]
+                    self.terminal_discarded[request_id] = self.terminal_discarded.get(request_id, 0) + discarded
+                    steps = self.last_steps[request_id]
+                    steps.append({"history_begin": histories[i], "scheduled": scheduled,
+                                  "accepted": accepted, "rejected": rejected[i],
+                                  "terminal_discarded": discarded})
+                    del steps[:max(0, len(steps) - self.runner.vllm_config.max_concurrent_batches - 1)]
+                    packet.next_request += 1
             assert self.downloads.release(packet.download)
             self.queue.pop(0)
             if self.batches // 8 != self._progress_batch:
@@ -239,6 +255,8 @@ class CaptureRuntime:
 
     def _write_progress(self):
         progress = {"batches_submitted": self.batches,
+            'batched_append_calls': getattr(self, 'batched_append_calls', 0),
+            'batched_append_requests': getattr(self, 'batched_append_requests', 0),
             'full_graph_decode_calls': getattr(self.runner, '_kvmem_graph_decode_calls', 0),
             "accepted_history": {req: owner.history_end for req, owner in self.authorities.items()},
             "archive_used_slots": self.archive.tier.used_slots,

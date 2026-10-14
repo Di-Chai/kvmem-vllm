@@ -1,5 +1,9 @@
 # qw3 / KVMem 与 vLLM 迁移核对，2026-10-14
 
+后续更新：本报告冻结的 compilation NONE 限制已在单 GPU、同步 Qwen MTP 路径解除；
+CPU 历史维护也已批处理。详见[实现与测量](compiled-capture-history-20261014.md)。
+其余未迁移项仍按下表跟踪，不能把此更新当作整个 qw3 已完整迁移。
+
 本次核对当前 `/home/chaidi/qw3` 工作树和 kvmem-vllm `e9e8d6d` 的实现、
 公开配置及实际执行路径。qw3 HEAD 为 `1410cfe284726edb4161381546fe3915110331c9`，
 其工作树有未提交修改，所以 HEAD 不能单独标识本次参考内容。随报告保存相关文件

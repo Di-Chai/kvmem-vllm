@@ -5,6 +5,7 @@ speculative draft steps use the original projection and cannot overwrite that
 prefix capture. Target MeanK scores alone select both target and MTP raw KV;
 assembly re-RoPEs both into the same dense working frame, as in qw3.
 """
+import torch
 from dataclasses import replace
 from types import MethodType
 
@@ -26,6 +27,10 @@ def install_mtp_runtime(runner):
         module._kvmem_capture_name = name
         module._kvmem_mtp_prefix_only = True
         module._kvmem_mtp_prefix_active = False
+        if getattr(runner, '_kvmem_native_compilation', False):
+            # Native compiled forwards omit Python guards on later calls. A
+            # device gate survives both prefill and independent draft replays.
+            module._kvmem_capture_gate = torch.zeros((), dtype=torch.int32, device=runner.device)
     runner._kvmem_mtp_modules = mapped
     runner._kvmem_archive_layers = [*runner._kvmem_layers, *mapped]
     # Stable prefix outputs survive the independent single-token draft graphs.
@@ -39,11 +44,17 @@ def install_mtp_runtime(runner):
     def prefill(self, *args, **kwargs):
         for module in mapped.values():
             module._kvmem_mtp_prefix_active = True
+            gate = getattr(module, '_kvmem_capture_gate', None)
+            if gate is not None:
+                gate.fill_(1)
         try:
             return original_prefill(*args, **kwargs)
         finally:
             for module in mapped.values():
                 module._kvmem_mtp_prefix_active = False
+                gate = getattr(module, '_kvmem_capture_gate', None)
+                if gate is not None:
+                    gate.zero_()
 
     proposer._prefill = MethodType(prefill, proposer)
     original_propose = proposer.propose

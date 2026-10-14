@@ -199,6 +199,21 @@ class SessionWorker:
             if oracle is not None:
                 actual = self._target_bytes(request_id, checkpoint.window.window_tokens)
                 if not torch.equal(actual, oracle):
+                    import json
+                    width = self.runtime.heads * self.runtime.dim
+                    size = checkpoint.window.window_tokens * width
+                    differences = []
+                    for i, name in enumerate(self.runtime.names):
+                        row = {'layer': name}
+                        for j, kind in enumerate(('key', 'value')):
+                            begin = (2 * i + j) * size
+                            mismatch = (actual[begin:begin+size] != oracle[begin:begin+size])
+                            positions = mismatch.reshape(-1, width).any(dim=1).nonzero().flatten()
+                            row[kind] = {'bytes': int(mismatch.sum()), 'rows': positions.numel(),
+                                         'first_rows': positions[:8].tolist()}
+                        differences.append(row)
+                    (self.runner._kvmem_probe_output / 'restore_mismatch.json').write_text(
+                        json.dumps(differences, indent=2))
                     raise RuntimeError('Restored target KV differs from the native terminal window')
                 recurrent = self.model_adapter._recurrent_views(request_id)
                 draft = self.model_adapter._draft_views(request_id, checkpoint.model.draft_begin,

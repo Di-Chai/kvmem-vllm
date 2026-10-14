@@ -1,12 +1,12 @@
 """FULL decode graphs with original KVMem authority and explicit refresh batches.
 
 No semantic transaction is captured in a graph. Refresh commands dispatch an
-ordinary native eager batch, so MeanK query/probe, GDN rollback, KV assembly and
+ordinary uncaptured control batch (with compiled model forward when enabled),
+so MeanK query/probe, GDN rollback, KV assembly and
 connector acknowledgments retain the original ownership order.
 """
 from types import MethodType
 
-from .capture import install_persistent_capture
 from .window_batch import WindowBatchAdapter
 from .cache_groups import full_attention_groups
 from .options import RuntimeOptions
@@ -18,8 +18,8 @@ def initialize_graph_window(runner):
     adapter = WindowBatchAdapter(groups, cfg.select_budget + cfg.gen_budget)
     adapter.reserve_graph_buffers(runner.max_num_tokens, runner.max_num_reqs, runner.device)
     runner._kvmem_window_adapter = adapter
-    runner._kvmem_graph_captures = install_persistent_capture(
-        runner.model, runner._kvmem_layers, runner.max_num_tokens, adapter.buffers[0])
+    for record in runner._kvmem_graph_captures:
+        record.positions = adapter.buffers[0]
     manager = runner.cudagraph_manager
     if not hasattr(manager, '_kvmem_original_fullgraph'):
         manager._kvmem_original_fullgraph = manager.run_fullgraph

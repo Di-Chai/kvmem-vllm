@@ -360,3 +360,18 @@ def test_elastic_profiler_passthrough_preserves_execution_mode(tmp_path, mode, e
         assert json.loads(argv[argv.index('--profiler-config') + 1]) == expected
     assert json.loads(argv[argv.index('--speculative-config') + 1])['method'] == (
         'dflash' if mode == 'meank' else 'mtp')
+
+
+def test_compiled_mtp_capture_uses_native_compiler_without_changing_memory_policy(tmp_path):
+    cfg = nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp', draft_tokens=3, execution_mode='compiled_graph')
+    plan = build_launch(cfg, tmp_path, tmp_path/'compiled')
+    argv = plan['vllm_argv']
+    assert json.loads(argv[argv.index('--compilation-config')+1]) == {
+        'mode': 3, 'cudagraph_mode': 'FULL_AND_PIECEWISE'}
+    assert '--no-async-scheduling' in argv and '--no-enable-prefix-caching' in argv
+    assert plan['environment']['KVMEM_FULL_GRAPH'] == '1'
+    assert '--enforce-eager' not in argv
+    cfg['draft_method'] = 'dflash'
+    with pytest.raises(ValueError, match='native safetensors Qwen MTP'):
+        build_launch(cfg, tmp_path, tmp_path/'bad')

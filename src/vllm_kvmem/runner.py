@@ -24,14 +24,26 @@ def make_probe_runner(base):
             if not self.model_config.enforce_eager and not self._kvmem_graph:
                 raise ValueError("Runner capture probe currently requires enforce_eager")
             if self._kvmem_graph:
-                from vllm.config import CUDAGraphMode
-                if (self.vllm_config.compilation_config.cudagraph_mode != CUDAGraphMode.FULL or
-                        int(self.vllm_config.compilation_config.mode) != 0 or
+                from vllm.config import CUDAGraphMode, CompilationMode
+                compilation = self.vllm_config.compilation_config
+                self._kvmem_native_compilation = compilation.mode == CompilationMode.VLLM_COMPILE
+                allowed = ((CompilationMode.NONE, CUDAGraphMode.FULL),
+                           (CompilationMode.VLLM_COMPILE, CUDAGraphMode.FULL_AND_PIECEWISE))
+                if ((compilation.mode, compilation.cudagraph_mode) not in allowed or
                         self.vllm_config.max_concurrent_batches != 1):
-                    raise ValueError('KVMem graph capture requires FULL, compilation NONE, synchronous batches')
+                    raise ValueError('KVMem capture requires qualified native compilation/graphs and synchronous batches')
+                if self._kvmem_native_compilation and getattr(self.speculative_config, 'method', None) != 'mtp':
+                    raise ValueError('Compiled KVMem capture currently qualifies native Qwen MTP only')
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
                 raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
+            if self._kvmem_graph:
+                # Native memory profiling compiles before KV initialization.
+                # Allocate once now; later graph setup must retain these addresses.
+                from .capture import install_persistent_capture
+                self._kvmem_graph_captures = install_persistent_capture(
+                    self.model, self._kvmem_layers, self.max_num_tokens,
+                    self.input_buffers.positions)
             from .mtp_runtime import install_mtp_runtime
             install_mtp_runtime(self)
             self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'

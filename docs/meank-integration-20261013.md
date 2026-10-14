@@ -1,3 +1,6 @@
+截至 2026-10-14，原生编译捕获和 CPU 批处理已接通，资格范围与性能见
+[编译兼容与历史维护报告](compiled-capture-history-20261014.md)。
+
 # 原版 MeanK 与 vLLM 并发执行
 
 `elastic-serve` 的 `context_mode: "meank"` 保留完整已接受历史，由模型真实的
@@ -14,7 +17,7 @@ pre-RoPE Q 与历史 MeanK 评分，选择历史 KV 并重新装配 GPU working 
 | 历史权威 | 每用户独立的 immutable BF16 raw K＋FP8 V；仅写已接受 token；完整块异步 stage-out，尾部暂存到封块。CPU 缓存可淘汰，底层归档仍为权威。 |
 | GPU working set | 选中历史按原顺序紧密排列，raw K 在新 dense 位置重新施加 RoPE，V 原字节加载；用完成 fence 后提交 residency。普通、packed、direct 路径均有 FP8 字节对照。 |
 | 混合模型状态 | GDN 保留完整逻辑历史状态；临时查询后恢复所有 batch 邻居，再重放正式 forward。DFlash 使用独立的逻辑位置和原生 sliding KV；原生 MTP 的 raw KV 与 target 按同一个 MeanK 计划装配。 |
-| decode | 原生 vLLM scheduler、batching、attention、sampling；普通 decode 使用 FULL_DECODE_ONLY graph，MeanK 查询／装配事务使用显式 eager batch。 |
+| decode | 原生 vLLM scheduler、batching、attention、sampling；普通 decode 保留 FULL graph；`compiled_graph` 接通原生编译与 PIECEWISE prefill。MeanK 查询／装配事务在图外控制，模型 forward 可以继续使用编译代码。 |
 | 暂停／恢复 | 回合结束保留完整已接受历史、精确部分尾页、GDN accepted row、DFlash 尾部和待计算的最后一个输出 token；回收请求 GPU 页。恢复只装配 checkpoint working KV，并处理追加输入。 |
 | 用户隔离 | 服务端生成用户／会话 namespace 和 cache salt；客户端只提交准确 token ID 增量与版本；会话锁、字节 admission 和截止时间队列控制并发。 |
 

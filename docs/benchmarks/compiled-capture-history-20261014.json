@@ -1,0 +1,3851 @@
+{
+  "compiled-legacy-cpu-direct-01": {
+    "configuration": {
+      "label": "compiled-legacy-cpu",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 31.62283856421709,
+      "end": 83.64283691253513,
+      "seconds": 52.01999834831804,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 184,
+          "end_tokens": 3707,
+          "tokens": 3523,
+          "token_events": 1460
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 204,
+          "end_tokens": 3966,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 205,
+          "end_tokens": 3967,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 205,
+          "end_tokens": 3966,
+          "tokens": 3761,
+          "token_events": 1459
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 129,
+          "end_tokens": 3662,
+          "tokens": 3533,
+          "token_events": 1459
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 3649,
+          "tokens": 3521,
+          "token_events": 1459
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3649,
+          "tokens": 3521,
+          "token_events": 1459
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3651,
+          "tokens": 3523,
+          "token_events": 1460
+        }
+      ],
+      "output_tokens": 28906,
+      "output_tokens_per_second": 555.6709134523572
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 90.25958424340934,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 363.04177860638316,
+      "successful_requests_per_second": 0.08863324673007401,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 21.697632254566997,
+        "p95": 29.676469732588156,
+        "max": 29.677699403837323
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 89.62980763521045,
+        "p95": 90.2510336458683,
+        "max": 90.25166459009051
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.01606918546622471,
+        "p95": 0.017761952359859307,
+        "max": 0.018165459075171652
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9950206200151653,
+      "intervals": 197,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 35.64234213656597,
+    "mean_output_tokens_per_stream_event": 2.475676601575882,
+    "output_token_digest_multiset": [
+      "1986c342e7f06f790a1d62a17609d97d4164c732bf6804a0cdcc7acf465f6e21",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "89a50b71fd95fcff4169c868de227d22046f95a831b0f1b013bfdcc923b9cfeb",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745"
+    ]
+  },
+  "compiled-legacy-cpu-direct-02": {
+    "configuration": {
+      "label": "compiled-legacy-cpu",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 30.268909443169832,
+      "end": 81.30787217337638,
+      "seconds": 51.03896273020655,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 184,
+          "end_tokens": 3707,
+          "tokens": 3523,
+          "token_events": 1460
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 204,
+          "end_tokens": 3966,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 204,
+          "end_tokens": 3966,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 204,
+          "end_tokens": 3967,
+          "tokens": 3763,
+          "token_events": 1461
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 129,
+          "end_tokens": 3665,
+          "tokens": 3536,
+          "token_events": 1460
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 3651,
+          "tokens": 3523,
+          "token_events": 1460
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3651,
+          "tokens": 3523,
+          "token_events": 1460
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3651,
+          "tokens": 3523,
+          "token_events": 1460
+        }
+      ],
+      "output_tokens": 28915,
+      "output_tokens_per_second": 566.5279710492068
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 87.63701290264726,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 373.9059435583544,
+      "successful_requests_per_second": 0.09128563075155137,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 20.468320063780993,
+        "p95": 28.34253143132664,
+        "max": 28.343730619177222
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 87.09951421245933,
+        "p95": 87.62860616166145,
+        "max": 87.62922302819788
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.015764810043012993,
+        "p95": 0.0174351479646992,
+        "max": 0.01783187136927367
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9943178331449883,
+      "intervals": 193,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 34.95520091102238,
+    "mean_output_tokens_per_stream_event": 2.4753873812173617,
+    "output_token_digest_multiset": [
+      "1986c342e7f06f790a1d62a17609d97d4164c732bf6804a0cdcc7acf465f6e21",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "89a50b71fd95fcff4169c868de227d22046f95a831b0f1b013bfdcc923b9cfeb",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745"
+    ]
+  },
+  "compiled-batched-direct-01": {
+    "configuration": {
+      "label": "compiled-batched-direct-01",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 34.02370738424361,
+      "end": 88.42890043091029,
+      "seconds": 54.40519304666668,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 194,
+          "end_tokens": 3792,
+          "tokens": 3598,
+          "token_events": 1492
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 201,
+          "end_tokens": 3803,
+          "tokens": 3602,
+          "token_events": 1492
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 198,
+          "end_tokens": 3795,
+          "tokens": 3597,
+          "token_events": 1492
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 198,
+          "end_tokens": 3795,
+          "tokens": 3597,
+          "token_events": 1492
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 146,
+          "end_tokens": 3967,
+          "tokens": 3821,
+          "token_events": 1492
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 3610,
+          "tokens": 3482,
+          "token_events": 1492
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3608,
+          "tokens": 3480,
+          "token_events": 1491
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3608,
+          "tokens": 3480,
+          "token_events": 1491
+        }
+      ],
+      "output_tokens": 28657,
+      "output_tokens_per_second": 526.7328061021515
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 96.85585731547326,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 338.31717469878953,
+      "successful_requests_per_second": 0.08259696647919666,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 22.60237183002755,
+        "p95": 31.838384105917065,
+        "max": 31.839333073236048
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 93.4292795015499,
+        "p95": 96.84586718394421,
+        "max": 96.84631252847612
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.01743343469762995,
+        "p95": 0.01909743790784271,
+        "max": 0.01910579384000965
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9914814264303485,
+      "intervals": 205,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 36.47071764482432,
+    "mean_output_tokens_per_stream_event": 2.4012904307021956,
+    "output_token_digest_multiset": [
+      "64fd42dbb5cdaa13d5129efd470c534a4c6ae09ece5b59a38cc4a57a032886b0",
+      "64fd42dbb5cdaa13d5129efd470c534a4c6ae09ece5b59a38cc4a57a032886b0",
+      "968b70499b6696c87ff4bb976f2ede166db77b9e8578991c9b15258613d32c54",
+      "d0ff45c20db7375b49130cd19d23a4c7c13479d9bfa9f3180a07adaca78cf569",
+      "d0ff45c20db7375b49130cd19d23a4c7c13479d9bfa9f3180a07adaca78cf569",
+      "d0ff45c20db7375b49130cd19d23a4c7c13479d9bfa9f3180a07adaca78cf569",
+      "d3123b54930b60d591cf1e511ebf38609510f6ee450a9b519d7c082c85a24a74",
+      "f759eb1599536ecbef42f310ea4e95d46160660abf903053ae68cafecd05ff72"
+    ]
+  },
+  "compiled-batched-direct-02": {
+    "configuration": {
+      "label": "compiled-batched-direct-02",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 30.851641783490777,
+      "end": 81.99001131672412,
+      "seconds": 51.138369533233345,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 182,
+          "end_tokens": 3706,
+          "tokens": 3524,
+          "token_events": 1460
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 200,
+          "end_tokens": 3962,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 204,
+          "end_tokens": 3966,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 205,
+          "end_tokens": 3967,
+          "tokens": 3762,
+          "token_events": 1460
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 129,
+          "end_tokens": 3662,
+          "tokens": 3533,
+          "token_events": 1459
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 3649,
+          "tokens": 3521,
+          "token_events": 1459
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3649,
+          "tokens": 3521,
+          "token_events": 1459
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3651,
+          "tokens": 3523,
+          "token_events": 1460
+        }
+      ],
+      "output_tokens": 28908,
+      "output_tokens_per_second": 565.2898256995372
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 88.31299268919975,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 371.0439313875428,
+      "successful_requests_per_second": 0.09058689731141181,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 20.705363204702735,
+        "p95": 28.90308671472594,
+        "max": 28.904368681833148
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 87.78213397972286,
+        "p95": 88.30442559705116,
+        "max": 88.30490567162633
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.015873901144361467,
+        "p95": 0.01762446432517698,
+        "max": 0.018020642585415615
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9984957966813418,
+      "intervals": 194,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 35.03527928970341,
+    "mean_output_tokens_per_stream_event": 2.475635865376381,
+    "output_token_digest_multiset": [
+      "1986c342e7f06f790a1d62a17609d97d4164c732bf6804a0cdcc7acf465f6e21",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "40ea3b9c035d83b05fe0527145a4207e2d52efac9e176fe55e5954fb661df456",
+      "89a50b71fd95fcff4169c868de227d22046f95a831b0f1b013bfdcc923b9cfeb",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745",
+      "ca8b0365d9f545b45ee89238a34075ad38ae46d3837fb52c3cefa9ccdb0c3745"
+    ]
+  },
+  "compiled-batched-64k-direct": {
+    "configuration": {
+      "label": "compiled-batched-64k-direct",
+      "concurrency": 8,
+      "input_tokens": 65536,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 134.59543736558408,
+      "end": 189.9452095190063,
+      "seconds": 55.349772153422236,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 272,
+          "end_tokens": 3948,
+          "tokens": 3676,
+          "token_events": 1558
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 276,
+          "end_tokens": 3930,
+          "tokens": 3654,
+          "token_events": 1557
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 276,
+          "end_tokens": 3942,
+          "tokens": 3666,
+          "token_events": 1558
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 276,
+          "end_tokens": 3942,
+          "tokens": 3666,
+          "token_events": 1558
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 143,
+          "end_tokens": 3908,
+          "tokens": 3765,
+          "token_events": 1557
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 129,
+          "end_tokens": 3963,
+          "tokens": 3834,
+          "token_events": 1557
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 129,
+          "end_tokens": 3966,
+          "tokens": 3837,
+          "token_events": 1558
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 129,
+          "end_tokens": 3963,
+          "tokens": 3834,
+          "token_events": 1557
+        }
+      ],
+      "output_tokens": 29932,
+      "output_tokens_per_second": 540.7791005359961
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 192.85820834804326,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 169.907209450297,
+      "successful_requests_per_second": 0.04148125230720141,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 93.9333271435462,
+        "p95": 132.42238071565515,
+        "max": 132.427476962097
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 192.51918884320185,
+        "p95": 192.8176310951356,
+        "max": 192.84609749820083
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.02411861778037925,
+        "p95": 0.031330811002602175,
+        "max": 0.0314337292781625
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9950150586066017,
+      "intervals": 209,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 35.537574416322464,
+    "mean_output_tokens_per_stream_event": 2.4022471910112357,
+    "output_token_digest_multiset": [
+      "257dfe2c85be26aeb7e3c4e29e2dcde4e8f9acb5cbdb191f9dd9eb4ce351f833",
+      "257dfe2c85be26aeb7e3c4e29e2dcde4e8f9acb5cbdb191f9dd9eb4ce351f833",
+      "257dfe2c85be26aeb7e3c4e29e2dcde4e8f9acb5cbdb191f9dd9eb4ce351f833",
+      "3387af3597fbceed4adc9b2f577f86567ca4ca299ee1b4748913e0b7b1d74808",
+      "6034de2684731f7e9912e0431bf1dfb1383d29b56bc0b7f189295fb97f648fe9",
+      "94dd5d5179a96abb1e86fe629cc78ba70a888ba4590a5f3469d5b3f28067c3b2",
+      "e0f85d28ef6bfb9e963ac507a4a82fa49973347850573afd8add1591279c9a49",
+      "e0f85d28ef6bfb9e963ac507a4a82fa49973347850573afd8add1591279c9a49"
+    ]
+  },
+  "fast-auto-direct-01": {
+    "configuration": {
+      "label": "fast-auto-direct-01",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 34.746402696706355,
+      "end": 89.8326920941472,
+      "seconds": 55.08628939744085,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 192,
+          "end_tokens": 3941,
+          "tokens": 3749,
+          "token_events": 1599
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 189,
+          "end_tokens": 3960,
+          "tokens": 3771,
+          "token_events": 1600
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 192,
+          "end_tokens": 3967,
+          "tokens": 3775,
+          "token_events": 1599
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 192,
+          "end_tokens": 3968,
+          "tokens": 3776,
+          "token_events": 1600
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 143,
+          "end_tokens": 3897,
+          "tokens": 3754,
+          "token_events": 1600
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 131,
+          "end_tokens": 3949,
+          "tokens": 3818,
+          "token_events": 1600
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 131,
+          "end_tokens": 3948,
+          "tokens": 3817,
+          "token_events": 1599
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 131,
+          "end_tokens": 3949,
+          "tokens": 3818,
+          "token_events": 1600
+        }
+      ],
+      "output_tokens": 30278,
+      "output_tokens_per_second": 549.6467511461505
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 92.4348030379042,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 354.4985105508692,
+      "successful_requests_per_second": 0.0865474879274583,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 23.32188411662355,
+        "p95": 32.528973914077504,
+        "max": 32.53006766270846
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 91.81698958808556,
+        "p95": 92.27405135184526,
+        "max": 92.42826555296779
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.016760407452686473,
+        "p95": 0.018504808497852823,
+        "max": 0.01853284047568565
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9945772633345745,
+      "intervals": 208,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 34.43700204575501,
+    "mean_output_tokens_per_stream_event": 2.366023286707822,
+    "output_token_digest_multiset": [
+      "4b6684234d5a8c4d8b1497bd934e1d961e93151979ea7a84e5bf4c847f574c2b",
+      "d0df608ad1508bd4950ae0e6617b8d47d1246adfe18e7307f70d57d32d7341d6",
+      "d0df608ad1508bd4950ae0e6617b8d47d1246adfe18e7307f70d57d32d7341d6",
+      "d0df608ad1508bd4950ae0e6617b8d47d1246adfe18e7307f70d57d32d7341d6",
+      "e7b57f921372109f3cfba2ee400efe342d38efd39f009c53ba84480ae9ac8ca3",
+      "e7b57f921372109f3cfba2ee400efe342d38efd39f009c53ba84480ae9ac8ca3",
+      "e7b57f921372109f3cfba2ee400efe342d38efd39f009c53ba84480ae9ac8ca3",
+      "f7e664c3111574de3e71df4f1263cd716aeeb4698028b80dcf3a2dcdd91a0245"
+    ]
+  },
+  "fast-auto-direct-02": {
+    "configuration": {
+      "label": "fast-auto-direct-02",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 30.719133627600968,
+      "end": 77.13601877354085,
+      "seconds": 46.41688514593989,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 238,
+          "end_tokens": 3442,
+          "tokens": 3204,
+          "token_events": 1352
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 204,
+          "end_tokens": 3323,
+          "tokens": 3119,
+          "token_events": 1352
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 203,
+          "end_tokens": 3322,
+          "tokens": 3119,
+          "token_events": 1352
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 203,
+          "end_tokens": 3322,
+          "tokens": 3119,
+          "token_events": 1352
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 134,
+          "end_tokens": 3966,
+          "tokens": 3832,
+          "token_events": 1353
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 3266,
+          "tokens": 3138,
+          "token_events": 1352
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3266,
+          "tokens": 3138,
+          "token_events": 1352
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3266,
+          "tokens": 3138,
+          "token_events": 1352
+        }
+      ],
+      "output_tokens": 25807,
+      "output_tokens_per_second": 555.9830203784658
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 88.51935255154967,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 370.17893890398034,
+      "successful_requests_per_second": 0.09037571750585457,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 20.665045012254268,
+        "p95": 28.678061546711252,
+        "max": 28.679312977939844
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 87.95396142965183,
+        "p95": 88.51070399382152,
+        "max": 88.51117599755526
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.016106969494854757,
+        "p95": 0.017947451886738013,
+        "max": 0.017947925481222052
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9929339825040816,
+      "intervals": 175,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 34.328841746095875,
+    "mean_output_tokens_per_stream_event": 2.3857816400110936,
+    "output_token_digest_multiset": [
+      "24b2d76367a5818dd38afeaaeff58353f3ebf1fa663844dcf9fbf661c32f8446",
+      "24b2d76367a5818dd38afeaaeff58353f3ebf1fa663844dcf9fbf661c32f8446",
+      "24b2d76367a5818dd38afeaaeff58353f3ebf1fa663844dcf9fbf661c32f8446",
+      "be598b05e152e7e0637f49fcda5389eae27ee51011b3b2fe435436f9738c5f38",
+      "d29d2eef0abf3c47db680b6552c4a42fc328545fe72219534e37c2a7a5f0e01d",
+      "d29d2eef0abf3c47db680b6552c4a42fc328545fe72219534e37c2a7a5f0e01d",
+      "d29d2eef0abf3c47db680b6552c4a42fc328545fe72219534e37c2a7a5f0e01d",
+      "f3301b002f182b02db014048a7173d81012b07752946a6435824021d690bb1a4"
+    ]
+  },
+  "fast-auto-64k-direct": {
+    "configuration": {
+      "label": "fast-auto-64k-direct",
+      "concurrency": 8,
+      "input_tokens": 65536,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "e706ca27ec4d13163f23df55c3355465f9a00fe2b47a7314cb7a684b62ebf60a"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 141.06073808670044,
+      "end": 185.62384365685284,
+      "seconds": 44.5631055701524,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 259,
+          "end_tokens": 3246,
+          "tokens": 2987,
+          "token_events": 1339
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 299,
+          "end_tokens": 3745,
+          "tokens": 3446,
+          "token_events": 1339
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 270,
+          "end_tokens": 3968,
+          "tokens": 3698,
+          "token_events": 1339
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 270,
+          "end_tokens": 3964,
+          "tokens": 3694,
+          "token_events": 1338
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 153,
+          "end_tokens": 3855,
+          "tokens": 3702,
+          "token_events": 1339
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 129,
+          "end_tokens": 3487,
+          "tokens": 3358,
+          "token_events": 1338
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 129,
+          "end_tokens": 3487,
+          "tokens": 3358,
+          "token_events": 1338
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 129,
+          "end_tokens": 3487,
+          "tokens": 3358,
+          "token_events": 1338
+        }
+      ],
+      "output_tokens": 27601,
+      "output_tokens_per_second": 619.3688623552007
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 196.28818253800273,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 166.93822101927043,
+      "successful_requests_per_second": 0.04075640161603282,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 97.74620653316379,
+        "p95": 139.05917995180934,
+        "max": 139.06468652002513
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 191.01945479074493,
+        "p95": 194.9810357991606,
+        "max": 196.2875075964257
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.02191858797189717,
+        "p95": 0.031283077840648946,
+        "max": 0.03200531036084716
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9932474223063834,
+      "intervals": 168,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 33.293317572022715,
+    "mean_output_tokens_per_stream_event": 2.577605528576765,
+    "output_token_digest_multiset": [
+      "0b51cfac44418782dc2d173acf372aa4016a7a0b03796c407b26c5d783d8ffea",
+      "0b51cfac44418782dc2d173acf372aa4016a7a0b03796c407b26c5d783d8ffea",
+      "380d3c1cf18f71a8b802e13fd85eae427c24bc7cb43d0003cc9e37dd9f721797",
+      "63d8eb42870504d84855e450a24cd50e2126eaf325b852b9c4b73fa3dba7d24d",
+      "a9368152b6733da620daa47cbc5a20b5641e8f599af169deda20186f1751d57f",
+      "f1e0256392788f45f3cd606d2c0a3dff901e20f0beedbddccb63997eb0819d6a",
+      "f1e0256392788f45f3cd606d2c0a3dff901e20f0beedbddccb63997eb0819d6a",
+      "f1e0256392788f45f3cd606d2c0a3dff901e20f0beedbddccb63997eb0819d6a"
+    ]
+  },
+  "native-compiled-sync-direct-01": {
+    "configuration": {
+      "label": "native-compiled-sync",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 29.649870732799172,
+      "end": 72.26509849913418,
+      "seconds": 42.61522776633501,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 196,
+          "end_tokens": 3689,
+          "tokens": 3493,
+          "token_events": 1392
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 209,
+          "end_tokens": 3908,
+          "tokens": 3699,
+          "token_events": 1392
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 209,
+          "end_tokens": 3908,
+          "tokens": 3699,
+          "token_events": 1392
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 209,
+          "end_tokens": 3908,
+          "tokens": 3699,
+          "token_events": 1392
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 203,
+          "end_tokens": 3683,
+          "tokens": 3480,
+          "token_events": 1391
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 133,
+          "end_tokens": 3388,
+          "tokens": 3255,
+          "token_events": 1392
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3931,
+          "tokens": 3803,
+          "token_events": 1391
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3967,
+          "tokens": 3839,
+          "token_events": 1392
+        }
+      ],
+      "output_tokens": 28967,
+      "output_tokens_per_second": 679.7335487406035
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 79.15248950012028,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 413.98571550867274,
+      "successful_requests_per_second": 0.10107073132535956,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 20.336615503765643,
+        "p95": 27.93402633657679,
+        "max": 27.935010849498212
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 74.0487758712843,
+        "p95": 78.38330187341198,
+        "max": 79.14456140808761
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.013535444402523675,
+        "p95": 0.015134856091682618,
+        "max": 0.015441002929867479
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9970281642149937,
+      "intervals": 162,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 30.619887024490758,
+    "mean_output_tokens_per_stream_event": 2.601670558649183,
+    "output_token_digest_multiset": [
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1de77e3f1fe4a7e8bdfbac7ae5346e2ee4ee03aa70ed476d4d29f6530555e4eb",
+      "925ac609dd9a56dc1375cf6bb64abefffe872a212ac65c3446fb79b2cdce9265",
+      "ab7108730d85a1bd1e7a1ca51d130440e94bf94733d74cf2bfd5824372a151b3",
+      "d5fae76aa86aa5ac72ea9b1b581d0f898e4d3b776df1bc3fe82b01f344696c21",
+      "f756101af410d205a4f97b297dea384e26b66521f8a537ce01a384e37c8aaa17"
+    ]
+  },
+  "native-compiled-sync-direct-02": {
+    "configuration": {
+      "label": "native-compiled-sync",
+      "concurrency": 8,
+      "input_tokens": 32768,
+      "output_tokens": 4096,
+      "seed": 104729,
+      "temperature": 0,
+      "unique_cache_salts": true,
+      "session_checkpointing": false,
+      "scope": "direct_engine_SSE",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d"
+    },
+    "status": "passed",
+    "preemptions": 0.0,
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 29.238487222231925,
+      "end": 71.84569639433175,
+      "seconds": 42.60720917209983,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 194,
+          "end_tokens": 3685,
+          "tokens": 3491,
+          "token_events": 1392
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 206,
+          "end_tokens": 3904,
+          "tokens": 3698,
+          "token_events": 1392
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 209,
+          "end_tokens": 3908,
+          "tokens": 3699,
+          "token_events": 1392
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 209,
+          "end_tokens": 3908,
+          "tokens": 3699,
+          "token_events": 1392
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 203,
+          "end_tokens": 3687,
+          "tokens": 3484,
+          "token_events": 1392
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 133,
+          "end_tokens": 3388,
+          "tokens": 3255,
+          "token_events": 1392
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 3935,
+          "tokens": 3807,
+          "token_events": 1392
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 3967,
+          "tokens": 3839,
+          "token_events": 1392
+        }
+      ],
+      "output_tokens": 28972,
+      "output_tokens_per_second": 679.9788243105941
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 78.74452737439424,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 416.13050573283823,
+      "successful_requests_per_second": 0.10159436175118121,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 19.922204808332026,
+        "p95": 27.538545086141674,
+        "max": 27.539524954743683
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 73.64567302912474,
+        "p95": 77.97632071394473,
+        "max": 78.73663988150656
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.013537379239386764,
+        "p95": 0.015068269350596672,
+        "max": 0.015334664563328864
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9920883673379607,
+      "intervals": 161,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "mean_event_interval_ms": 30.608627278807347,
+    "mean_output_tokens_per_stream_event": 2.6016522988505746,
+    "output_token_digest_multiset": [
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1c4404f00629280ae4e21f268d9a4dc21fb7ffb145d04bbd35846e456a434abd",
+      "1de77e3f1fe4a7e8bdfbac7ae5346e2ee4ee03aa70ed476d4d29f6530555e4eb",
+      "925ac609dd9a56dc1375cf6bb64abefffe872a212ac65c3446fb79b2cdce9265",
+      "ab7108730d85a1bd1e7a1ca51d130440e94bf94733d74cf2bfd5824372a151b3",
+      "d5fae76aa86aa5ac72ea9b1b581d0f898e4d3b776df1bc3fe82b01f344696c21",
+      "f756101af410d205a4f97b297dea384e26b66521f8a537ce01a384e37c8aaa17"
+    ]
+  },
+  "compile-terminal-64k-02": {
+    "calls": {
+      "first": {
+        "status": 200,
+        "seconds": 23.834449170157313
+      },
+      "resume": {
+        "status": 200,
+        "seconds": 3.810408673249185
+      }
+    },
+    "status": "passed",
+    "prompt_tokens": 65536,
+    "restored_state": {
+      "history_tokens": 65792,
+      "working_tokens": 34048,
+      "target_kv_bytes": 1185415168,
+      "working_attention_layers": 17,
+      "mtp_attention_layers": 1,
+      "recurrent_tensors": 96,
+      "draft_layers": 0,
+      "byte_equal": true
+    },
+    "restore_integrity_status": "passed",
+    "expected_first_checkpoint_tokens": 65792,
+    "scope": "terminal_checkpoint_gpu_byte_integrity",
+    "cold_control": "not_run",
+    "final_history_tokens": 65953
+  },
+  "batched-terminal-64k": {
+    "calls": {
+      "first": {
+        "status": 200,
+        "seconds": 24.648628180846572
+      },
+      "resume": {
+        "status": 200,
+        "seconds": 3.7312203040346503
+      }
+    },
+    "status": "passed",
+    "prompt_tokens": 65536,
+    "restored_state": {
+      "history_tokens": 65792,
+      "working_tokens": 34048,
+      "target_kv_bytes": 1185415168,
+      "working_attention_layers": 17,
+      "mtp_attention_layers": 1,
+      "recurrent_tensors": 96,
+      "draft_layers": 0,
+      "byte_equal": true
+    },
+    "restore_integrity_status": "passed",
+    "expected_first_checkpoint_tokens": 65792,
+    "scope": "terminal_checkpoint_gpu_byte_integrity",
+    "cold_control": "not_run",
+    "final_history_tokens": 65953
+  },
+  "fast-auto-terminal-64k": {
+    "calls": {
+      "first": {
+        "status": 200,
+        "seconds": 31.314940778538585
+      },
+      "resume": {
+        "status": 200,
+        "seconds": 3.845671294257045
+      }
+    },
+    "status": "passed",
+    "prompt_tokens": 65536,
+    "restored_state": {
+      "history_tokens": 65792,
+      "working_tokens": 34048,
+      "target_kv_bytes": 1185415168,
+      "working_attention_layers": 17,
+      "mtp_attention_layers": 1,
+      "recurrent_tensors": 96,
+      "draft_layers": 0,
+      "byte_equal": true
+    },
+    "restore_integrity_status": "passed",
+    "expected_first_checkpoint_tokens": 65792,
+    "scope": "terminal_checkpoint_gpu_byte_integrity",
+    "cold_control": "not_run",
+    "final_history_tokens": 65953
+  },
+  "cpu_component": {
+    "scope": "CPU row copy and FP32 MeanK maintenance only; excludes authority reservation, archive I/O, GPU and network",
+    "layers": 17,
+    "scoring_layers": 16,
+    "kv_heads": 4,
+    "head_dim": 256,
+    "requests": 8,
+    "accepted_rows": [
+      1,
+      2,
+      3,
+      4,
+      1,
+      2,
+      3,
+      4
+    ],
+    "torch_threads": 1,
+    "samples_ms_per_packet": {
+      "reference": [
+        0.26021394,
+        0.26109548,
+        0.25974454,
+        0.26037098000000003,
+        0.25999281,
+        0.26017108,
+        0.25970969,
+        0.26093532999999997,
+        0.2625662,
+        0.26095817,
+        0.26043638,
+        0.26040653
+      ],
+      "fused": [
+        0.10506075,
+        0.1045606,
+        0.10496941,
+        0.1046281,
+        0.10517382,
+        0.10460116,
+        0.10543191,
+        0.10485654,
+        0.10504803,
+        0.10450421,
+        0.10506767,
+        0.10408136999999999
+      ]
+    },
+    "median_ms_per_packet": {
+      "reference": 0.260388755,
+      "fused": 0.10491297499999999
+    },
+    "reduction_fraction": 0.5970909918901837
+  },
+  "compiled_fast_profile": {
+    "phase": "decode",
+    "performance_eligible": false,
+    "window": {
+      "start_us": 1086454632967.063,
+      "end_us": 1086456160710.023,
+      "duration_us": 1527742.9599609375,
+      "policy": "second_C8_decode_iteration_start_to_last_start",
+      "complete_cycles": 46,
+      "limited_sample": false,
+      "observed_iteration_scopes": 48,
+      "observed_C8_decode_scopes": 48
+    },
+    "gpu_timelines": [
+      {
+        "device": 0,
+        "interval_union_us": 1391033.2687988281,
+        "summed_activity_us": 1396037.1319580078,
+        "uncovered_interval_us": 136709.69116210938
+      }
+    ],
+    "gpu_categories": [
+      {
+        "device": 0,
+        "category": "kernel",
+        "events": 51004,
+        "summed_us": 1392486.3647460938,
+        "interval_union_us": 1387966.8880615234
+      },
+      {
+        "device": 0,
+        "category": "gpu_memcpy",
+        "events": 1618,
+        "summed_us": 2892.3280029296875,
+        "interval_union_us": 2619.97900390625
+      },
+      {
+        "device": 0,
+        "category": "gpu_memset",
+        "events": 875,
+        "summed_us": 658.439208984375,
+        "interval_union_us": 658.439208984375
+      }
+    ],
+    "gpu_attribution": {
+      "mapped_launch_events": 53497,
+      "unmapped_launch_events": 0,
+      "mapped_but_unscoped_events": 0,
+      "boundary_clipped_events": 2
+    },
+    "gpu_stages": [
+      {
+        "device": 0,
+        "stage": "kvmem::target.graph",
+        "events": 44988,
+        "summed_us": 1154095.2829589844,
+        "interval_union_us": 1149865.0737304688
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::mtp.decode_graph",
+        "events": 2502,
+        "summed_us": 137550.6962890625,
+        "interval_union_us": 137382.73681640625
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::mtp.prefill_graph",
+        "events": 1664,
+        "summed_us": 71341.90051269531,
+        "interval_union_us": 71268.33337402344
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample",
+        "events": 506,
+        "summed_us": 26303.101440429688,
+        "interval_union_us": 26255.360595703125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.execute",
+        "events": 2316,
+        "summed_us": 2563.089111328125,
+        "interval_union_us": 2563.089111328125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::transfer.download",
+        "events": 46,
+        "summed_us": 1549.1478271484375,
+        "interval_union_us": 1549.1478271484375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::capture.submit",
+        "events": 552,
+        "summed_us": 1079.609130859375,
+        "interval_union_us": 1079.609130859375
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::draft.propose",
+        "events": 463,
+        "summed_us": 661.69189453125,
+        "interval_union_us": 661.69189453125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.sample_tokens",
+        "events": 276,
+        "summed_us": 433.7020263671875,
+        "interval_union_us": 401.76220703125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::runner.prepare_attn",
+        "events": 92,
+        "summed_us": 356.6378173828125,
+        "interval_union_us": 356.6378173828125
+      },
+      {
+        "device": 0,
+        "stage": "kvmem::window.prepare",
+        "events": 92,
+        "summed_us": 102.27294921875,
+        "interval_union_us": 102.27294921875
+      }
+    ],
+    "cpu_stages": [
+      {
+        "stage": "kvmem::runner.execute",
+        "calls": 46,
+        "inclusive_us": 317199.64978027344,
+        "exclusive_us": 217927.2003173828
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "calls": 46,
+        "inclusive_us": 196399.14208984375,
+        "exclusive_us": 70260.22912597656
+      },
+      {
+        "stage": "kvmem::target.graph",
+        "calls": 46,
+        "inclusive_us": 69088.86096191406,
+        "exclusive_us": 69088.86096191406
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "calls": 46,
+        "inclusive_us": 63725.201904296875,
+        "exclusive_us": 63725.201904296875
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "calls": 46,
+        "inclusive_us": 112529.583984375,
+        "exclusive_us": 32734.466796875
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "calls": 46,
+        "inclusive_us": 58291.93786621094,
+        "exclusive_us": 31160.866088867188
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "calls": 46,
+        "inclusive_us": 287324.06787109375,
+        "exclusive_us": 27199.723876953125
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "calls": 46,
+        "inclusive_us": 15918.05712890625,
+        "exclusive_us": 15918.05712890625
+      },
+      {
+        "stage": "kvmem::authority.prepare_append",
+        "calls": 368,
+        "inclusive_us": 17083.133666992188,
+        "exclusive_us": 13315.134643554688
+      },
+      {
+        "stage": "kvmem::runner.prepare_attn",
+        "calls": 46,
+        "inclusive_us": 27815.191772460938,
+        "exclusive_us": 11897.134643554688
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "calls": 46,
+        "inclusive_us": 71060.63220214844,
+        "exclusive_us": 10122.822998046875
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "calls": 46,
+        "inclusive_us": 8294.282104492188,
+        "exclusive_us": 8294.282104492188
+      },
+      {
+        "stage": "kvmem::mtp.decode_graph",
+        "calls": 92,
+        "inclusive_us": 7897.6090087890625,
+        "exclusive_us": 7897.6090087890625
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "calls": 736,
+        "inclusive_us": 7336.01171875,
+        "exclusive_us": 7336.01171875
+      },
+      {
+        "stage": "kvmem::authority.commit_append",
+        "calls": 368,
+        "inclusive_us": 10047.938110351562,
+        "exclusive_us": 6479.9254150390625
+      },
+      {
+        "stage": "kvmem::mtp.prefill_graph",
+        "calls": 46,
+        "inclusive_us": 5711.719970703125,
+        "exclusive_us": 5711.719970703125
+      },
+      {
+        "stage": "kvmem::capture.join_cpu_scatter",
+        "calls": 230,
+        "inclusive_us": 2417.4833984375,
+        "exclusive_us": 2417.4833984375
+      },
+      {
+        "stage": "kvmem::capture.progress",
+        "calls": 6,
+        "inclusive_us": 2268.8050537109375,
+        "exclusive_us": 2268.8050537109375
+      },
+      {
+        "stage": "kvmem::capture.finish",
+        "calls": 46,
+        "inclusive_us": 1244.654296875,
+        "exclusive_us": 768.1824951171875
+      }
+    ],
+    "cpu_operators": [
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::copy_",
+        "calls": 3274,
+        "inclusive_us": 24421.419677734375,
+        "exclusive_us": 24421.419677734375
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "vllm::flashinfer_mm_fp4",
+        "calls": 46,
+        "inclusive_us": 16412.133544921875,
+        "exclusive_us": 15250.8232421875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::index",
+        "calls": 644,
+        "inclusive_us": 30779.404663085938,
+        "exclusive_us": 14151.3818359375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::slice",
+        "calls": 5214,
+        "inclusive_us": 12637.3544921875,
+        "exclusive_us": 10055.867919921875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::empty",
+        "calls": 1572,
+        "inclusive_us": 6517.6475830078125,
+        "exclusive_us": 6517.6475830078125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::fill_",
+        "calls": 1242,
+        "inclusive_us": 5339.5362548828125,
+        "exclusive_us": 5177.3638916015625
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::index",
+        "calls": 138,
+        "inclusive_us": 5533.2911376953125,
+        "exclusive_us": 5018.8214111328125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::empty_strided",
+        "calls": 1848,
+        "inclusive_us": 4970.671142578125,
+        "exclusive_us": 4970.671142578125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::nonzero",
+        "calls": 598,
+        "inclusive_us": 6024.0699462890625,
+        "exclusive_us": 4862.2957763671875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::copy_",
+        "calls": 644,
+        "inclusive_us": 4700.5289306640625,
+        "exclusive_us": 4700.5289306640625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::sub",
+        "calls": 322,
+        "inclusive_us": 4698.81396484375,
+        "exclusive_us": 4698.81396484375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::sum",
+        "calls": 1656,
+        "inclusive_us": 16001.921020507812,
+        "exclusive_us": 4641.92578125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::_to_copy",
+        "calls": 1848,
+        "inclusive_us": 21874.275390625,
+        "exclusive_us": 4431.089599609375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::as_strided",
+        "calls": 8250,
+        "inclusive_us": 4292.2825927734375,
+        "exclusive_us": 4292.2825927734375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::slice",
+        "calls": 2300,
+        "inclusive_us": 5474.403076171875,
+        "exclusive_us": 4257.020263671875
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::empty",
+        "calls": 644,
+        "inclusive_us": 3782.8341064453125,
+        "exclusive_us": 3782.8341064453125
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::cat",
+        "calls": 184,
+        "inclusive_us": 3677.2305908203125,
+        "exclusive_us": 3677.2305908203125
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::copy_",
+        "calls": 184,
+        "inclusive_us": 3444.3240966796875,
+        "exclusive_us": 3444.3240966796875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::fill_",
+        "calls": 552,
+        "inclusive_us": 4051.8358154296875,
+        "exclusive_us": 3303.7152099609375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::arange",
+        "calls": 276,
+        "inclusive_us": 8285.911987304688,
+        "exclusive_us": 3298.9136962890625
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::slice",
+        "calls": 1748,
+        "inclusive_us": 3964.8544921875,
+        "exclusive_us": 3047.574462890625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::select",
+        "calls": 1288,
+        "inclusive_us": 2934.949462890625,
+        "exclusive_us": 2373.022705078125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::is_pinned",
+        "calls": 276,
+        "inclusive_us": 2295.406494140625,
+        "exclusive_us": 2295.406494140625
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::index",
+        "calls": 92,
+        "inclusive_us": 2531.258056640625,
+        "exclusive_us": 2215.4659423828125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::to",
+        "calls": 1856,
+        "inclusive_us": 23921.655517578125,
+        "exclusive_us": 2047.380126953125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::copy_",
+        "calls": 92,
+        "inclusive_us": 1849.2130126953125,
+        "exclusive_us": 1849.2130126953125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::as_strided",
+        "calls": 3266,
+        "inclusive_us": 1660.9710693359375,
+        "exclusive_us": 1660.9710693359375
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::_index_put_impl_",
+        "calls": 46,
+        "inclusive_us": 1836.4600830078125,
+        "exclusive_us": 1642.7801513671875
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::empty_strided",
+        "calls": 184,
+        "inclusive_us": 1593.859375,
+        "exclusive_us": 1593.859375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::eq",
+        "calls": 322,
+        "inclusive_us": 2910.896728515625,
+        "exclusive_us": 1482.045166015625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::fill_",
+        "calls": 276,
+        "inclusive_us": 1455.6817626953125,
+        "exclusive_us": 1455.6817626953125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "_C::scaled_fp4_quant",
+        "calls": 46,
+        "inclusive_us": 1432.404296875,
+        "exclusive_us": 1432.404296875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::ge",
+        "calls": 138,
+        "inclusive_us": 2643.2196044921875,
+        "exclusive_us": 1404.1661376953125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::select",
+        "calls": 782,
+        "inclusive_us": 1741.9427490234375,
+        "exclusive_us": 1366.60302734375
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "operator": "aten::copy_",
+        "calls": 46,
+        "inclusive_us": 1234.8980712890625,
+        "exclusive_us": 1234.8980712890625
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::index",
+        "calls": 46,
+        "inclusive_us": 1401.5118408203125,
+        "exclusive_us": 1211.6722412109375
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::sub",
+        "calls": 46,
+        "inclusive_us": 1193.136962890625,
+        "exclusive_us": 1193.136962890625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::gather",
+        "calls": 46,
+        "inclusive_us": 1233.920166015625,
+        "exclusive_us": 1187.0389404296875
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::as_strided",
+        "calls": 1978,
+        "inclusive_us": 1120.6339111328125,
+        "exclusive_us": 1120.6339111328125
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::div",
+        "calls": 46,
+        "inclusive_us": 1079.2388916015625,
+        "exclusive_us": 1079.2388916015625
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::clamp",
+        "calls": 46,
+        "inclusive_us": 1053.1156005859375,
+        "exclusive_us": 1034.72265625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::item",
+        "calls": 1104,
+        "inclusive_us": 1280.4605712890625,
+        "exclusive_us": 1021.3629150390625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::resize_",
+        "calls": 184,
+        "inclusive_us": 993.5257568359375,
+        "exclusive_us": 993.5257568359375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::max",
+        "calls": 230,
+        "inclusive_us": 1427.5899658203125,
+        "exclusive_us": 987.626708984375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::index",
+        "calls": 92,
+        "inclusive_us": 2355.4588623046875,
+        "exclusive_us": 942.76611328125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::as_strided_",
+        "calls": 598,
+        "inclusive_us": 912.4146728515625,
+        "exclusive_us": 912.4146728515625
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::slice",
+        "calls": 874,
+        "inclusive_us": 1230.3697509765625,
+        "exclusive_us": 861.3929443359375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::index_select",
+        "calls": 46,
+        "inclusive_us": 2704.7889404296875,
+        "exclusive_us": 806.348876953125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::empty",
+        "calls": 506,
+        "inclusive_us": 802.013671875,
+        "exclusive_us": 802.013671875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::reshape",
+        "calls": 644,
+        "inclusive_us": 1406.3175048828125,
+        "exclusive_us": 795.373779296875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::nonzero",
+        "calls": 92,
+        "inclusive_us": 973.121337890625,
+        "exclusive_us": 712.790283203125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::view",
+        "calls": 690,
+        "inclusive_us": 665.8359375,
+        "exclusive_us": 665.8359375
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::_to_copy",
+        "calls": 184,
+        "inclusive_us": 5666.2353515625,
+        "exclusive_us": 628.0518798828125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::as_strided",
+        "calls": 690,
+        "inclusive_us": 616.0152587890625,
+        "exclusive_us": 616.0152587890625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::any",
+        "calls": 92,
+        "inclusive_us": 722.33544921875,
+        "exclusive_us": 602.49072265625
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::sub",
+        "calls": 184,
+        "inclusive_us": 600.5400390625,
+        "exclusive_us": 600.5400390625
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::unbind",
+        "calls": 92,
+        "inclusive_us": 1231.378173828125,
+        "exclusive_us": 582.0867919921875
+      },
+      {
+        "stage": "kvmem::runner.prepare_attn",
+        "operator": "aten::slice",
+        "calls": 230,
+        "inclusive_us": 787.8504638671875,
+        "exclusive_us": 576.090576171875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::all",
+        "calls": 92,
+        "inclusive_us": 624.3876953125,
+        "exclusive_us": 572.549560546875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::lt",
+        "calls": 46,
+        "inclusive_us": 1033.9578857421875,
+        "exclusive_us": 563.270751953125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::bitwise_not",
+        "calls": 138,
+        "inclusive_us": 557.5699462890625,
+        "exclusive_us": 557.5699462890625
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::new_empty",
+        "calls": 506,
+        "inclusive_us": 3217.5960693359375,
+        "exclusive_us": 551.2412109375
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::slice",
+        "calls": 368,
+        "inclusive_us": 775.5064697265625,
+        "exclusive_us": 549.486083984375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::gt",
+        "calls": 92,
+        "inclusive_us": 1027.4989013671875,
+        "exclusive_us": 543.5247802734375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::_to_copy",
+        "calls": 184,
+        "inclusive_us": 961.20068359375,
+        "exclusive_us": 537.98046875
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::view",
+        "calls": 368,
+        "inclusive_us": 533.619873046875,
+        "exclusive_us": 533.619873046875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::add",
+        "calls": 92,
+        "inclusive_us": 1209.9334716796875,
+        "exclusive_us": 528.5274658203125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::clamp_",
+        "calls": 92,
+        "inclusive_us": 528.364013671875,
+        "exclusive_us": 498.7369384765625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::copy_",
+        "calls": 138,
+        "inclusive_us": 448.6893310546875,
+        "exclusive_us": 448.6893310546875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::max",
+        "calls": 92,
+        "inclusive_us": 563.3172607421875,
+        "exclusive_us": 413.6817626953125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::item",
+        "calls": 322,
+        "inclusive_us": 483.705078125,
+        "exclusive_us": 390.2491455078125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::unbind",
+        "calls": 46,
+        "inclusive_us": 800.654296875,
+        "exclusive_us": 389.781005859375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::max",
+        "calls": 92,
+        "inclusive_us": 599.0772705078125,
+        "exclusive_us": 387.1998291015625
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "operator": "aten::view",
+        "calls": 376,
+        "inclusive_us": 380.031005859375,
+        "exclusive_us": 380.031005859375
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::as_strided",
+        "calls": 874,
+        "inclusive_us": 368.976806640625,
+        "exclusive_us": 368.976806640625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::empty",
+        "calls": 230,
+        "inclusive_us": 349.7918701171875,
+        "exclusive_us": 349.7918701171875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::empty_strided",
+        "calls": 276,
+        "inclusive_us": 348.0843505859375,
+        "exclusive_us": 348.0843505859375
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::_to_copy",
+        "calls": 92,
+        "inclusive_us": 2456.6751708984375,
+        "exclusive_us": 344.173095703125
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::view",
+        "calls": 414,
+        "inclusive_us": 340.9832763671875,
+        "exclusive_us": 340.9832763671875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::slice",
+        "calls": 138,
+        "inclusive_us": 397.2772216796875,
+        "exclusive_us": 330.337890625
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::permute",
+        "calls": 92,
+        "inclusive_us": 406.4488525390625,
+        "exclusive_us": 330.29296875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::gt",
+        "calls": 46,
+        "inclusive_us": 672.169921875,
+        "exclusive_us": 305.1190185546875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::expand",
+        "calls": 92,
+        "inclusive_us": 380.0625,
+        "exclusive_us": 302.3348388671875
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::empty_strided",
+        "calls": 46,
+        "inclusive_us": 301.4012451171875,
+        "exclusive_us": 301.4012451171875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::all",
+        "calls": 46,
+        "inclusive_us": 326.8712158203125,
+        "exclusive_us": 297.91552734375
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::stack",
+        "calls": 92,
+        "inclusive_us": 2148.033203125,
+        "exclusive_us": 290.43994140625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::zeros",
+        "calls": 92,
+        "inclusive_us": 752.1820068359375,
+        "exclusive_us": 283.413330078125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::clone",
+        "calls": 92,
+        "inclusive_us": 597.9034423828125,
+        "exclusive_us": 279.2728271484375
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::item",
+        "calls": 230,
+        "inclusive_us": 344.184326171875,
+        "exclusive_us": 277.023193359375
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::_to_copy",
+        "calls": 92,
+        "inclusive_us": 576.788818359375,
+        "exclusive_us": 276.8421630859375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::zeros",
+        "calls": 92,
+        "inclusive_us": 396.42333984375,
+        "exclusive_us": 272.39404296875
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::view",
+        "calls": 184,
+        "inclusive_us": 271.166015625,
+        "exclusive_us": 271.166015625
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::t",
+        "calls": 92,
+        "inclusive_us": 498.9144287109375,
+        "exclusive_us": 270.081298828125
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "operator": "aten::detach",
+        "calls": 760,
+        "inclusive_us": 269.0404052734375,
+        "exclusive_us": 269.0404052734375
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::sub",
+        "calls": 46,
+        "inclusive_us": 267.236328125,
+        "exclusive_us": 267.236328125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::empty_strided",
+        "calls": 92,
+        "inclusive_us": 263.2890625,
+        "exclusive_us": 263.2890625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::_local_scalar_dense",
+        "calls": 1104,
+        "inclusive_us": 259.09765625,
+        "exclusive_us": 259.09765625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::zeros",
+        "calls": 46,
+        "inclusive_us": 463.978759765625,
+        "exclusive_us": 252.9742431640625
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::eq",
+        "calls": 92,
+        "inclusive_us": 252.835693359375,
+        "exclusive_us": 252.835693359375
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::gt",
+        "calls": 46,
+        "inclusive_us": 470.2921142578125,
+        "exclusive_us": 249.1138916015625
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::to",
+        "calls": 276,
+        "inclusive_us": 1195.0072021484375,
+        "exclusive_us": 233.8065185546875
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::reshape",
+        "calls": 184,
+        "inclusive_us": 350.6607666015625,
+        "exclusive_us": 228.09130859375
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::to",
+        "calls": 230,
+        "inclusive_us": 5882.4923095703125,
+        "exclusive_us": 216.2569580078125
+      },
+      {
+        "stage": "kvmem::runner.prepare_attn",
+        "operator": "aten::as_strided",
+        "calls": 230,
+        "inclusive_us": 211.7598876953125,
+        "exclusive_us": 211.7598876953125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::as_strided",
+        "calls": 92,
+        "inclusive_us": 211.33642578125,
+        "exclusive_us": 211.33642578125
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::as_strided_",
+        "calls": 92,
+        "inclusive_us": 206.8779296875,
+        "exclusive_us": 206.8779296875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::zero_",
+        "calls": 92,
+        "inclusive_us": 1568.3792724609375,
+        "exclusive_us": 205.0439453125
+      },
+      {
+        "stage": "kvmem::authority.prepare_append",
+        "operator": "aten::empty",
+        "calls": 24,
+        "inclusive_us": 204.9580078125,
+        "exclusive_us": 204.9580078125
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::unsqueeze",
+        "calls": 46,
+        "inclusive_us": 225.5205078125,
+        "exclusive_us": 203.157470703125
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "operator": "aten::record_stream",
+        "calls": 46,
+        "inclusive_us": 194.5399169921875,
+        "exclusive_us": 194.5399169921875
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::to",
+        "calls": 184,
+        "inclusive_us": 2649.3662109375,
+        "exclusive_us": 192.6910400390625
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::zeros",
+        "calls": 46,
+        "inclusive_us": 330.12109375,
+        "exclusive_us": 189.2637939453125
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::min",
+        "calls": 46,
+        "inclusive_us": 223.846435546875,
+        "exclusive_us": 185.912841796875
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::unsqueeze",
+        "calls": 138,
+        "inclusive_us": 243.7677001953125,
+        "exclusive_us": 179.9610595703125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::numpy_T",
+        "calls": 92,
+        "inclusive_us": 584.2626953125,
+        "exclusive_us": 177.8138427734375
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "operator": "aten::to",
+        "calls": 760,
+        "inclusive_us": 171.45654296875,
+        "exclusive_us": 171.45654296875
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::index_put_",
+        "calls": 46,
+        "inclusive_us": 2004.85595703125,
+        "exclusive_us": 168.3958740234375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::embedding",
+        "calls": 46,
+        "inclusive_us": 2868.959716796875,
+        "exclusive_us": 164.1707763671875
+      },
+      {
+        "stage": "kvmem::target.graph",
+        "operator": "aten::slice",
+        "calls": 46,
+        "inclusive_us": 247.0283203125,
+        "exclusive_us": 161.8214111328125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::transpose",
+        "calls": 92,
+        "inclusive_us": 228.8331298828125,
+        "exclusive_us": 156.1474609375
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::flatten",
+        "calls": 92,
+        "inclusive_us": 199.998046875,
+        "exclusive_us": 151.33154296875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::new_ones",
+        "calls": 46,
+        "inclusive_us": 1795.6329345703125,
+        "exclusive_us": 150.3060302734375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::new_empty",
+        "calls": 92,
+        "inclusive_us": 996.0789794921875,
+        "exclusive_us": 148.5487060546875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::to",
+        "calls": 138,
+        "inclusive_us": 725.0281982421875,
+        "exclusive_us": 148.2393798828125
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::as_strided",
+        "calls": 230,
+        "inclusive_us": 139.0162353515625,
+        "exclusive_us": 139.0162353515625
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::zero_",
+        "calls": 506,
+        "inclusive_us": 136.3643798828125,
+        "exclusive_us": 136.3643798828125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::empty_like",
+        "calls": 46,
+        "inclusive_us": 432.578857421875,
+        "exclusive_us": 131.1776123046875
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::reshape",
+        "calls": 92,
+        "inclusive_us": 249.5711669921875,
+        "exclusive_us": 128.281982421875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::empty_strided",
+        "calls": 92,
+        "inclusive_us": 126.2108154296875,
+        "exclusive_us": 126.2108154296875
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "operator": "aten::slice",
+        "calls": 46,
+        "inclusive_us": 180.954833984375,
+        "exclusive_us": 121.421630859375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::view",
+        "calls": 92,
+        "inclusive_us": 121.2891845703125,
+        "exclusive_us": 121.2891845703125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::empty",
+        "calls": 46,
+        "inclusive_us": 116.660888671875,
+        "exclusive_us": 116.660888671875
+      },
+      {
+        "stage": "kvmem::capture.submit",
+        "operator": "aten::reshape",
+        "calls": 92,
+        "inclusive_us": 176.244873046875,
+        "exclusive_us": 112.4189453125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::reshape",
+        "calls": 92,
+        "inclusive_us": 172.18310546875,
+        "exclusive_us": 107.1185302734375
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::reshape",
+        "calls": 92,
+        "inclusive_us": 188.2728271484375,
+        "exclusive_us": 97.0380859375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::_local_scalar_dense",
+        "calls": 322,
+        "inclusive_us": 93.4559326171875,
+        "exclusive_us": 93.4559326171875
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::lift_fresh",
+        "calls": 330,
+        "inclusive_us": 91.9857177734375,
+        "exclusive_us": 91.9857177734375
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::detach",
+        "calls": 92,
+        "inclusive_us": 90.202880859375,
+        "exclusive_us": 90.202880859375
+      },
+      {
+        "stage": "kvmem::target.graph",
+        "operator": "aten::as_strided",
+        "calls": 46,
+        "inclusive_us": 85.2069091796875,
+        "exclusive_us": 85.2069091796875
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "operator": "aten::resolve_conj",
+        "calls": 760,
+        "inclusive_us": 72.842529296875,
+        "exclusive_us": 72.842529296875
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::_local_scalar_dense",
+        "calls": 230,
+        "inclusive_us": 67.1611328125,
+        "exclusive_us": 67.1611328125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::view",
+        "calls": 92,
+        "inclusive_us": 65.0645751953125,
+        "exclusive_us": 65.0645751953125
+      },
+      {
+        "stage": "kvmem::authority.append_batch",
+        "operator": "aten::resolve_neg",
+        "calls": 760,
+        "inclusive_us": 61.52001953125,
+        "exclusive_us": 61.52001953125
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "operator": "aten::as_strided",
+        "calls": 46,
+        "inclusive_us": 59.533203125,
+        "exclusive_us": 59.533203125
+      },
+      {
+        "stage": "kvmem::runner.sample",
+        "operator": "aten::alias",
+        "calls": 46,
+        "inclusive_us": 59.3382568359375,
+        "exclusive_us": 59.3382568359375
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::zero_",
+        "calls": 92,
+        "inclusive_us": 37.549560546875,
+        "exclusive_us": 37.549560546875
+      },
+      {
+        "stage": "kvmem::transfer.download",
+        "operator": "aten::flatten",
+        "calls": 46,
+        "inclusive_us": 34.3411865234375,
+        "exclusive_us": 34.3411865234375
+      },
+      {
+        "stage": "kvmem::authority.prepare_append",
+        "operator": "aten::zero_",
+        "calls": 8,
+        "inclusive_us": 27.381103515625,
+        "exclusive_us": 27.381103515625
+      },
+      {
+        "stage": "kvmem::draft.propose",
+        "operator": "aten::lift_fresh",
+        "calls": 92,
+        "inclusive_us": 26.72412109375,
+        "exclusive_us": 26.72412109375
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::resolve_conj",
+        "calls": 46,
+        "inclusive_us": 24.47119140625,
+        "exclusive_us": 24.47119140625
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::zero_",
+        "calls": 46,
+        "inclusive_us": 24.1964111328125,
+        "exclusive_us": 24.1964111328125
+      },
+      {
+        "stage": "kvmem::authority.prepare_append",
+        "operator": "aten::zeros",
+        "calls": 8,
+        "inclusive_us": 59.6390380859375,
+        "exclusive_us": 22.764892578125
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::detach_",
+        "calls": 46,
+        "inclusive_us": 22.7147216796875,
+        "exclusive_us": 22.7147216796875
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::resolve_conj",
+        "calls": 92,
+        "inclusive_us": 22.1007080078125,
+        "exclusive_us": 22.1007080078125
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::resolve_conj",
+        "calls": 46,
+        "inclusive_us": 16.036376953125,
+        "exclusive_us": 16.036376953125
+      },
+      {
+        "stage": "kvmem::runner.sample_tokens",
+        "operator": "aten::resolve_neg",
+        "calls": 92,
+        "inclusive_us": 12.2139892578125,
+        "exclusive_us": 12.2139892578125
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "operator": "aten::view",
+        "calls": 7,
+        "inclusive_us": 10.0660400390625,
+        "exclusive_us": 10.0660400390625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::resolve_neg",
+        "calls": 46,
+        "inclusive_us": 8.291259765625,
+        "exclusive_us": 8.291259765625
+      },
+      {
+        "stage": "kvmem::capture.drain",
+        "operator": "aten::resolve_neg",
+        "calls": 46,
+        "inclusive_us": 8.1983642578125,
+        "exclusive_us": 8.1983642578125
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "operator": "aten::detach",
+        "calls": 14,
+        "inclusive_us": 7.1842041015625,
+        "exclusive_us": 7.1842041015625
+      },
+      {
+        "stage": "kvmem::window.prepare",
+        "operator": "aten::lift_fresh",
+        "calls": 46,
+        "inclusive_us": 6.77685546875,
+        "exclusive_us": 6.77685546875
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "operator": "aten::to",
+        "calls": 14,
+        "inclusive_us": 3.375,
+        "exclusive_us": 3.375
+      },
+      {
+        "stage": "kvmem::runner.execute",
+        "operator": "aten::detach_",
+        "calls": 8,
+        "inclusive_us": 3.3369140625,
+        "exclusive_us": 3.3369140625
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "operator": "aten::resolve_neg",
+        "calls": 14,
+        "inclusive_us": 1.94970703125,
+        "exclusive_us": 1.94970703125
+      },
+      {
+        "stage": "kvmem::authority.flush",
+        "operator": "aten::resolve_conj",
+        "calls": 14,
+        "inclusive_us": 1.6337890625,
+        "exclusive_us": 1.6337890625
+      }
+    ],
+    "top_kernels": [
+      {
+        "name": "_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEEENS1_10collective13CollectiveMmaINS1_42MainloopSm120TmaWarpSpecializedBlockScaledILi3ELi3ENS5_IJNS4_1CILi1EEESB_SB_EEENS1_51KernelTmaWarpSpecializedCooperativeBlockScaledSm120ILi3EEEEENS5_IJNSA_ILi128EEENSA_ILi32EEENSA_ILi256EEEEEENS5_IJNS_12float_e2m1_tENS_13float_ue4m3_tEEEENS5_IJNS5_IJlSB_lEEENS4_6LayoutINS5_IJNS5_IJNS5_IJSH_NSA_ILi4EEEEEEiEEENS5_IJNS5_IJNSA_ILi16EEESP_EEEiEEENS5_IJSB_iEEEEEENS5_IJSU_NS5_IJNS5_IJNSA_ILi0EEESB_EEENSA_ILi512EEEEEENS5_IJSX_iEEEEEEEEEEESM_S14_NS4_8TiledMMAINS4_8MMA_AtomIJNS4_5SM12011BLOCKSCALED19SM120_16x8x64_TN_VSISK_SK_fSL_Li16EEEEEENSO_INS5_IJSP_NSA_ILi2EEESB_EEENS5_IJSB_SP_SX_EEEEENS5_IJSG_NSO_INS5_IJNSA_ILi8EEES1C_S1C_EEENS5_IJSB_SS_S1G_EEEEENSA_ILi64EEEEEEEENS5_IJNS4_13SM90_TMA_LOADES1N_EEENS5_IJNS4_14ComposedLayoutINS4_7SwizzleILi3ELi4ELi3EEENS4_18smem_ptr_flag_bitsILi4EEENSO_INS5_IJS1G_SI_EEENS5_IJSI_SB_EEEEEEENSO_INS5_IJNS5_IJSQ_SB_EEENS5_IJST_SB_SP_EEEEEENS5_IJNS5_IJST_SZ_EEENS5_IJSY_SP_SZ_EEEEEEEEEEENS5_IJNS4_9Copy_AtomIJNS4_17SM75_U32x4_LDSM_NENS_15integer_subbyteILi4ELb0EEEEEENS26_IJNS4_13UniversalCopyISL_SL_EESL_EEEEEENS4_8identityES1O_S25_S2E_S2F_EENS_8epilogue10collective18CollectiveEpilogueINS2H_22Sm90TmaWarpSpecializedILi2ELi2ELi4ELb0ELb1EEEJSJ_NS5_IJS1K_SH_EEEvNS5_IJSB_llEEENS_10bfloat16_tES2N_NS2H_6fusion15FusionCallbacksINS2H_23Sm120TmaWarpSpecializedILi2ELi2ELi4ELb0ELb1EEENS2P_17LinearCombinationIS2O_fvfLNS_15FloatRoundStyleE2EEESJ_S2M_JEEES1N_NS1P_IS1R_NS1S_ILi16EEENSO_INS5_IJS1K_S1G_EEENS5_IJSB_S1K_EEEEEEENS4_17SM75_U16x4_LDSM_TENS4_14SM90_TMA_STOREES31_NS4_17SM90_U16x4_STSM_TENS26_IJNS4_17SM90_U32x2_STSM_NENS_6half_tEEEEvEEENS1_25StaticPersistentSchedulerEvEEEEvNT_6ParamsE",
+        "calls": 5888,
+        "summed_us": 391373.5656738281
+      },
+      {
+        "name": "kernel_mha(unsigned int, unsigned int, unsigned int, unsigned int const*, float, float const*, Vec<__nv_bfloat16, 256u>*, Vec<__nv_bfloat16, 256u> const*, unsigned int const*, float const*, KVCacheList<true>, unsigned int, float, float const*, unsigned int, unsigned int, unsigned int, unsigned int*, void*)",
+        "calls": 782,
+        "summed_us": 300829.04040527344
+      },
+      {
+        "name": "sm89_xmma_gemm_e4m3bf16_e4m3f32_f32_tn_n_tilesize64x128x64_stage4_warpsize2x2x1_tensor16x8x32_execute_kernel__5x_cublas",
+        "calls": 2944,
+        "summed_us": 194840.65771484375
+      },
+      {
+        "name": "sm89_xmma_gemm_e4m3bf16_e4m3f32_f32_tn_n_tilesize32x64x64_stage5_warpsize2x2x1_tensor16x8x32_execute_kernel__5x_cublas",
+        "calls": 2944,
+        "summed_us": 108649.92858886719
+      },
+      {
+        "name": "void (anonymous namespace)::gdn_decode_post_conv_mtp_kernel<float, 3, false>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float const*, void const*, int const*, int const*, int const*, float*, __nv_bfloat16 const*, void const*, __nv_bfloat16*, int, int, int, int, bool, float, float, (anonymous namespace)::GdnDecodeStrides)",
+        "calls": 2208,
+        "summed_us": 104023.20617675781
+      },
+      {
+        "name": "_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEEENS1_10collective13CollectiveMmaINS1_42MainloopSm120TmaWarpSpecializedBlockScaledILi7ELi3ENS5_IJNS4_1CILi1EEESB_SB_EEENS1_51KernelTmaWarpSpecializedCooperativeBlockScaledSm120ILi3EEEEENS5_IJNSA_ILi128EEENSA_ILi32EEESG_EEENS5_IJNS_12float_e2m1_tENS_13float_ue4m3_tEEEENS5_IJNS5_IJlSB_lEEENS4_6LayoutINS5_IJNS5_IJNS5_IJSH_NSA_ILi4EEEEEEiEEENS5_IJNS5_IJNSA_ILi16EEESO_EEEiEEENS5_IJSB_iEEEEEENS5_IJST_NS5_IJNS5_IJNSA_ILi0EEESB_EEENSA_ILi512EEEEEENS5_IJSW_iEEEEEEEEEEESL_S13_NS4_8TiledMMAINS4_8MMA_AtomIJNS4_5SM12011BLOCKSCALED19SM120_16x8x64_TN_VSISJ_SJ_fSK_Li16EEEEEENSN_INS5_IJSO_NSA_ILi2EEESB_EEENS5_IJSB_SO_SW_EEEEENS5_IJSG_NSN_INS5_IJNSA_ILi8EEES1B_S1B_EEENS5_IJSB_SR_S1F_EEEEENSA_ILi64EEEEEEEENS5_IJNS4_13SM90_TMA_LOADES1M_EEENS5_IJNS4_14ComposedLayoutINS4_7SwizzleILi2ELi4ELi3EEENS4_18smem_ptr_flag_bitsILi4EEENSN_INS5_IJS1F_SG_EEENS5_IJSG_SB_EEEEEEENSN_INS5_IJNS5_IJSP_SB_EEENS5_IJSS_SB_S1B_EEEEEENS5_IJNS5_IJSS_SY_EEENS5_IJSX_SO_SY_EEEEEEEEEEENS5_IJNS4_9Copy_AtomIJNS4_17SM75_U32x4_LDSM_NENS_15integer_subbyteILi4ELb0EEEEEENS25_IJNS4_13UniversalCopyISK_SK_EESK_EEEEEENS4_8identityES1N_S24_S2D_S2E_EENS_8epilogue10collective18CollectiveEpilogueINS2G_22Sm90TmaWarpSpecializedILi2ELi2ELi4ELb0ELb1EEEJSI_NS5_IJS1J_SH_EEEvNS5_IJSB_llEEENS_10bfloat16_tES2M_NS2G_6fusion15FusionCallbacksINS2G_23Sm120TmaWarpSpecializedILi2ELi2ELi4ELb0ELb1EEENS2O_17LinearCombinationIS2N_fvfLNS_15FloatRoundStyleE2EEESI_S2L_JEEES1M_NS1O_INS1P_ILi3ELi4ELi3EEENS1R_ILi16EEENSN_INS5_IJS1J_S1F_EEENS5_IJSB_S1J_EEEEEEENS4_17SM75_U16x4_LDSM_TENS4_14SM90_TMA_STOREES31_NS4_17SM90_U16x4_STSM_TENS25_IJNS4_17SM90_U32x2_STSM_NENS_6half_tEEEEvEEENS1_25StaticPersistentSchedulerEvEEEEvNT_6ParamsE",
+        "calls": 185,
+        "summed_us": 89934.25183105469
+      },
+      {
+        "name": "kernel_mha(unsigned int, float, float const*, Vec<__nv_bfloat16, 256u>*, Vec<__nv_bfloat16, 256u> const*, float const*, KVCacheList<true>, unsigned int, float, float const*, unsigned int, unsigned int, unsigned int, unsigned int*, void*)",
+        "calls": 93,
+        "summed_us": 34636.842529296875
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_64x6_tn_align8>(cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_64x6_tn_align8::Params)",
+        "calls": 93,
+        "summed_us": 22438.811645507812
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_s161616gemm_bf16_32x32_128x1_tn_align8>(cutlass_80_wmma_tensorop_s161616gemm_bf16_32x32_128x1_tn_align8::Params)",
+        "calls": 278,
+        "summed_us": 22127.36083984375
+      },
+      {
+        "name": "triton_red_fused__to_copy_add_clamp_fused_add_rms_norm_mul_reciprocal_view_3",
+        "calls": 2898,
+        "summed_us": 13777.969116210938
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x128_64x4_tn_align8>(cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x128_64x4_tn_align8::Params)",
+        "calls": 46,
+        "summed_us": 11812.5341796875
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x64_64x4_tn_align8>(cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_128x64_64x4_tn_align8::Params)",
+        "calls": 138,
+        "summed_us": 11628.351684570312
+      },
+      {
+        "name": "void vllm::cvt_fp16_to_fp4<__nv_bfloat16, false, false>(int, int, int, int, __nv_bfloat16 const*, float const*, unsigned int*, unsigned int*)",
+        "calls": 6072,
+        "summed_us": 11569.340942382812
+      },
+      {
+        "name": "triton_red_fused__to_copy_add_fused_add_rms_norm_scaled_fp4_quant_view_1",
+        "calls": 2944,
+        "summed_us": 10508.182250976562
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8>(cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8::Params)",
+        "calls": 93,
+        "summed_us": 9899.297119140625
+      },
+      {
+        "name": "_causal_conv1d_update_kernel",
+        "calls": 2208,
+        "summed_us": 7368.0662841796875
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_wmma_tensorop_s161616gemm_bf16_32x32_64x1_tn_align8>(cutlass_80_wmma_tensorop_s161616gemm_bf16_32x32_64x1_tn_align8::Params)",
+        "calls": 2208,
+        "summed_us": 7346.20654296875
+      },
+      {
+        "name": "void cublasLt::splitKreduce_kernel<32, 16, int, float, __nv_bfloat16, float, __nv_bfloat16, false, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, float const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, float const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+        "calls": 2486,
+        "summed_us": 5436.9107666015625
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x64_32x4_tn_align8>(cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x64_32x4_tn_align8::Params)",
+        "calls": 46,
+        "summed_us": 5226.5089111328125
+      },
+      {
+        "name": "triton_poi_fused_mul_scaled_fp4_quant_silu_slice_2",
+        "calls": 2944,
+        "summed_us": 4250.8466796875
+      },
+      {
+        "name": "void vllm::reshape_and_cache_flash_kernel<__nv_bfloat16, unsigned char, (vllm::Fp8KVCacheDataType)1>(__nv_bfloat16 const*, __nv_bfloat16 const*, unsigned char*, unsigned char*, long const*, long, long, long, long, long, int, int, int, float const*, float const*, int)",
+        "calls": 875,
+        "summed_us": 2813.7518310546875
+      },
+      {
+        "name": "triton_poi_fused__to_copy_clamp_mul_reciprocal_view_0",
+        "calls": 2208,
+        "summed_us": 2773.3831787109375
+      },
+      {
+        "name": "_fused_qk_rmsnorm_rope_gate_kernel",
+        "calls": 875,
+        "summed_us": 2295.5155029296875
+      },
+      {
+        "name": "triton_poi_fused_zeros_4",
+        "calls": 2162,
+        "summed_us": 1601.255859375
+      },
+      {
+        "name": "_resample_kernel",
+        "calls": 46,
+        "summed_us": 1507.9609375
+      },
+      {
+        "name": "triton_poi_fused_4",
+        "calls": 736,
+        "summed_us": 1065.7735595703125
+      },
+      {
+        "name": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<c10::BFloat16, at::native::ArgMaxOps<float>, unsigned int, long, 4, 4> >(at::native::ReduceOp<c10::BFloat16, at::native::ArgMaxOps<float>, unsigned int, long, 4, 4>)",
+        "calls": 139,
+        "summed_us": 1047.553466796875
+      },
+      {
+        "name": "triton_poi_fused__to_copy_clamp_mul_reciprocal_sigmoid_view_0",
+        "calls": 736,
+        "summed_us": 1028.228759765625
+      },
+      {
+        "name": "_compute_local_logits_stats_kernel",
+        "calls": 46,
+        "summed_us": 1005.3746337890625
+      },
+      {
+        "name": "triton_poi_fused_5",
+        "calls": 736,
+        "summed_us": 725.7174072265625
+      }
+    ],
+    "memcpy_events": [
+      {
+        "name": "Memcpy DtoH (Device -> Pinned)",
+        "calls": 138,
+        "summed_us": 1589.2470703125
+      },
+      {
+        "name": "Memcpy DtoD (Device -> Device)",
+        "calls": 828,
+        "summed_us": 842.0859375
+      },
+      {
+        "name": "Memcpy HtoD (Pinned -> Device)",
+        "calls": 652,
+        "summed_us": 460.9949951171875
+      }
+    ],
+    "cuda_api_waits": [
+      {
+        "name": "cudaEventSynchronize",
+        "calls": 46,
+        "summed_us": 835771.2489013672
+      },
+      {
+        "name": "cudaEventQuery",
+        "calls": 1016,
+        "summed_us": 3404.4964599609375
+      },
+      {
+        "name": "cudaStreamWaitEvent",
+        "calls": 92,
+        "summed_us": 226.8079833984375
+      }
+    ],
+    "cuda_api_totals": [
+      {
+        "name": "cudaEventSynchronize",
+        "calls": 46,
+        "summed_us": 835771.2489013672
+      },
+      {
+        "name": "cudaGraphLaunch",
+        "calls": 184,
+        "summed_us": 72846.26782226562
+      },
+      {
+        "name": "cudaLaunchKernel",
+        "calls": 1794,
+        "summed_us": 21327.357055664062
+      },
+      {
+        "name": "cudaMemcpyAsync",
+        "calls": 1618,
+        "summed_us": 16319.873901367188
+      },
+      {
+        "name": "cuLaunchKernelEx",
+        "calls": 836,
+        "summed_us": 7411.0980224609375
+      },
+      {
+        "name": "cudaEventQuery",
+        "calls": 1016,
+        "summed_us": 3404.4964599609375
+      },
+      {
+        "name": "cudaEventRecordWithFlags",
+        "calls": 836,
+        "summed_us": 1793.136962890625
+      },
+      {
+        "name": "cudaLaunchKernelExC",
+        "calls": 92,
+        "summed_us": 1432.7269287109375
+      },
+      {
+        "name": "cudaStreamIsCapturing",
+        "calls": 1626,
+        "summed_us": 1065.89892578125
+      },
+      {
+        "name": "cudaPointerGetAttributes",
+        "calls": 276,
+        "summed_us": 861.8232421875
+      },
+      {
+        "name": "cudaFuncSetAttribute",
+        "calls": 92,
+        "summed_us": 704.291259765625
+      },
+      {
+        "name": "cudaStreamWaitEvent",
+        "calls": 92,
+        "summed_us": 226.8079833984375
+      },
+      {
+        "name": "cudaGetDriverEntryPointByVersion",
+        "calls": 460,
+        "summed_us": 220.054931640625
+      },
+      {
+        "name": "cudaDeviceGetAttribute",
+        "calls": 230,
+        "summed_us": 181.6021728515625
+      },
+      {
+        "name": "cudaEventRecord",
+        "calls": 46,
+        "summed_us": 139.69140625
+      },
+      {
+        "name": "cudaDriverGetVersion",
+        "calls": 460,
+        "summed_us": 37.4437255859375
+      }
+    ],
+    "profiler_overhead": [
+      {
+        "name": "Activity Buffer Request",
+        "calls": 4,
+        "summed_us": 4918.8770751953125
+      },
+      {
+        "name": "Buffer Flush",
+        "calls": 3,
+        "summed_us": 1023.7520751953125
+      }
+    ],
+    "limitations": [
+      "Instrumented sample is not a throughput benchmark; profiler overhead changes timing.",
+      "GPU union includes traced kernel/memcpy/memset only; uncovered intervals do not prove hardware idle.",
+      "GPU stages use the innermost CPU kvmem launch scope, including shared CUDA graph launch correlations.",
+      "CPU exclusive time excludes nested kvmem scopes only; it includes CUDA API waits and unlabelled work.",
+      "CPU operator exclusive time excludes nested cpu_op intervals; operator rows are instrumented host costs, not uninstrumented savings.",
+      "Stage GPU unions can overlap each other across streams and must not be summed as wall time.",
+      "CUDA wait API duration is host waiting; event queries and stream wait insertion are not all blocking."
+    ]
+  },
+  "test_status": {
+    "full_cpu_gpu_passed": 669,
+    "skipped": 6,
+    "wide_exponent_bf16_reduction": "bitwise_equal",
+    "native_vllm_sources_modified": false
+  },
+  "final_c8_32k_16k": {
+    "status": "passed",
+    "configuration": {
+      "concurrency": 8,
+      "distinct_authenticated_users": 8,
+      "input_tokens_per_user": 32768,
+      "output_tokens_per_user": 16384,
+      "context_end_tokens_per_user": 49152,
+      "mtp_k": 3,
+      "kv_cache_dtype": "fp8_e4m3",
+      "cpu_kv_bytes": 107374182400,
+      "active_bytes": 51539607552,
+      "context_mode": "meank",
+      "draft_method": "mtp",
+      "draft_tokens": 3,
+      "draft_quantization": null,
+      "unique_session_salts": true,
+      "ignore_eos": true,
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+      "harness_sha256": "d4b08a98540329228332b47231cd6c2ac22990ae9e5c55f1757b8b4b3cd1a4c1"
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 291.3113855300471,
+      "successful_output_tokens": 131072,
+      "successful_output_tokens_per_second": 449.9377865424373,
+      "successful_requests_per_second": 0.02746202310439681,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 23.44918846199289,
+        "p95": 33.02967811739072,
+        "max": 33.03135527018458
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 284.0823208000511,
+        "p95": 291.30496764224955,
+        "max": 291.30633644293994
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.015649345531063258,
+        "p95": 0.016788036797015696,
+        "max": 0.016788238528298458
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 35.24499243404716,
+      "end": 222.8565823417157,
+      "seconds": 187.61158990766853,
+      "trim_tokens_each_end": 128,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 138,
+          "end_tokens": 16256,
+          "tokens": 16118,
+          "token_events": 5214
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 236,
+          "end_tokens": 12624,
+          "tokens": 12388,
+          "token_events": 5214
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 204,
+          "end_tokens": 12123,
+          "tokens": 11919,
+          "token_events": 5214
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 203,
+          "end_tokens": 12128,
+          "tokens": 11925,
+          "token_events": 5214
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 203,
+          "end_tokens": 12128,
+          "tokens": 11925,
+          "token_events": 5214
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 128,
+          "end_tokens": 12396,
+          "tokens": 12268,
+          "token_events": 5214
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 128,
+          "end_tokens": 12396,
+          "tokens": 12268,
+          "token_events": 5214
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 128,
+          "end_tokens": 12392,
+          "tokens": 12264,
+          "token_events": 5213
+        }
+      ],
+      "output_tokens": 101075,
+      "output_tokens_per_second": 538.7460340256335
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "coverage_fraction": 0.9994477377006359,
+      "intervals": 706,
+      "violations": [],
+      "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+    },
+    "context_growth_windows": [
+      {
+        "status": "passed",
+        "generated_token_band": [
+          0,
+          4096
+        ],
+        "start": 33.29816826246679,
+        "end": 85.75674254167825,
+        "seconds": 52.45857427921146,
+        "active_streams": 8,
+        "output_tokens": 27729,
+        "output_tokens_per_second": 528.5885173396446,
+        "per_request": [
+          {
+            "client_index": 0,
+            "tokens": 4084,
+            "context_start_tokens": 32779,
+            "context_end_tokens": 36863
+          },
+          {
+            "client_index": 1,
+            "tokens": 3467,
+            "context_start_tokens": 32868,
+            "context_end_tokens": 36335
+          },
+          {
+            "client_index": 2,
+            "tokens": 3355,
+            "context_start_tokens": 32845,
+            "context_end_tokens": 36200
+          },
+          {
+            "client_index": 3,
+            "tokens": 3351,
+            "context_start_tokens": 32845,
+            "context_end_tokens": 36196
+          },
+          {
+            "client_index": 4,
+            "tokens": 3351,
+            "context_start_tokens": 32845,
+            "context_end_tokens": 36196
+          },
+          {
+            "client_index": 5,
+            "tokens": 3374,
+            "context_start_tokens": 32769,
+            "context_end_tokens": 36143
+          },
+          {
+            "client_index": 6,
+            "tokens": 3374,
+            "context_start_tokens": 32769,
+            "context_end_tokens": 36143
+          },
+          {
+            "client_index": 7,
+            "tokens": 3373,
+            "context_start_tokens": 32769,
+            "context_end_tokens": 36142
+          }
+        ],
+        "native_confirmation": {
+          "status": "passed",
+          "coverage_fraction": 0.9961402220924136,
+          "intervals": 197,
+          "violations": [],
+          "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+        }
+      },
+      {
+        "status": "passed",
+        "generated_token_band": [
+          4096,
+          8192
+        ],
+        "start": 96.76371418125927,
+        "end": 134.44928539078683,
+        "seconds": 37.68557120952755,
+        "active_streams": 8,
+        "output_tokens": 19558,
+        "output_tokens_per_second": 518.9784676808987,
+        "per_request": [
+          {
+            "client_index": 0,
+            "tokens": 3126,
+            "context_start_tokens": 37833,
+            "context_end_tokens": 40959
+          },
+          {
+            "client_index": 1,
+            "tokens": 2412,
+            "context_start_tokens": 37073,
+            "context_end_tokens": 39485
+          },
+          {
+            "client_index": 2,
+            "tokens": 2349,
+            "context_start_tokens": 36927,
+            "context_end_tokens": 39276
+          },
+          {
+            "client_index": 3,
+            "tokens": 2338,
+            "context_start_tokens": 36926,
+            "context_end_tokens": 39264
+          },
+          {
+            "client_index": 4,
+            "tokens": 2338,
+            "context_start_tokens": 36926,
+            "context_end_tokens": 39264
+          },
+          {
+            "client_index": 5,
+            "tokens": 2333,
+            "context_start_tokens": 36866,
+            "context_end_tokens": 39199
+          },
+          {
+            "client_index": 6,
+            "tokens": 2333,
+            "context_start_tokens": 36866,
+            "context_end_tokens": 39199
+          },
+          {
+            "client_index": 7,
+            "tokens": 2329,
+            "context_start_tokens": 36866,
+            "context_end_tokens": 39195
+          }
+        ],
+        "native_confirmation": {
+          "status": "passed",
+          "coverage_fraction": 0.9964500450663326,
+          "intervals": 141,
+          "violations": [],
+          "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+        }
+      },
+      {
+        "status": "passed",
+        "generated_token_band": [
+          8192,
+          12288
+        ],
+        "start": 160.95793966017663,
+        "end": 179.6276981374249,
+        "seconds": 18.66975847724825,
+        "active_streams": 8,
+        "output_tokens": 10550,
+        "output_tokens_per_second": 565.0849748729568,
+        "per_request": [
+          {
+            "client_index": 0,
+            "tokens": 1738,
+            "context_start_tokens": 43318,
+            "context_end_tokens": 45056
+          },
+          {
+            "client_index": 1,
+            "tokens": 1293,
+            "context_start_tokens": 41258,
+            "context_end_tokens": 42551
+          },
+          {
+            "client_index": 2,
+            "tokens": 1194,
+            "context_start_tokens": 41002,
+            "context_end_tokens": 42196
+          },
+          {
+            "client_index": 3,
+            "tokens": 1189,
+            "context_start_tokens": 40997,
+            "context_end_tokens": 42186
+          },
+          {
+            "client_index": 4,
+            "tokens": 1189,
+            "context_start_tokens": 40997,
+            "context_end_tokens": 42186
+          },
+          {
+            "client_index": 5,
+            "tokens": 1317,
+            "context_start_tokens": 40960,
+            "context_end_tokens": 42277
+          },
+          {
+            "client_index": 6,
+            "tokens": 1317,
+            "context_start_tokens": 40960,
+            "context_end_tokens": 42277
+          },
+          {
+            "client_index": 7,
+            "tokens": 1313,
+            "context_start_tokens": 40960,
+            "context_end_tokens": 42273
+          }
+        ],
+        "native_confirmation": {
+          "status": "passed",
+          "coverage_fraction": 0.9815076703481657,
+          "intervals": 69,
+          "violations": [],
+          "scope": "Engine-wide gauges with roughly 1s publication; isolated batch, no ownership-ID snapshots."
+        }
+      },
+      {
+        "status": "not_applicable",
+        "generated_token_band": [
+          12288,
+          16384
+        ],
+        "native_confirmation": {
+          "status": "not_applicable"
+        }
+      }
+    ],
+    "peak_gateway_active_requests": 8,
+    "peak_gateway_active_bytes": 20499660800,
+    "peak_native_kv_usage": 0.3136882129277566
+  },
+  "published_wheel": {
+    "package_files": 73,
+    "all_source_wheel_installed_equal": true,
+    "wheel_sha256": "966200a04fe89fe04796bf1726688065562e6d6d924294323507cdcb9a431b71",
+    "files": [
+      {
+        "path": "vllm_kvmem/__init__.py",
+        "sha256": "d75c0d95e06dca6cb8a7c64af16b7ff581f40c7e5503460998c84aec018ca116"
+      },
+      {
+        "path": "vllm_kvmem/__main__.py",
+        "sha256": "f19b6128b9d8e9e2158ea064c41d10f2abbaf11181371fabb96232642ecebcbd"
+      },
+      {
+        "path": "vllm_kvmem/_fused_capture.py",
+        "sha256": "1f10b7301ac20709aacec5cd6b5e49cc86ce65e77fc6c7d03b111795d365ee5e"
+      },
+      {
+        "path": "vllm_kvmem/_native.cpython-312-x86_64-linux-gnu.so",
+        "sha256": "20f7178a6ef9462b7de8976bb3867e80842dab02e142228d5ab0346690fe933b"
+      },
+      {
+        "path": "vllm_kvmem/admission.py",
+        "sha256": "9c8dd1df9ebbcbc90dff9bb87b60fad9de7d8561d6de3a39ac2ccfafadccf8cd"
+      },
+      {
+        "path": "vllm_kvmem/archive_admission.py",
+        "sha256": "ca15f38beb6393bc5941358adb5f7d4083ee36354c03106477c5746ce5ea78bf"
+      },
+      {
+        "path": "vllm_kvmem/assembly.py",
+        "sha256": "9d87e115b55810d1398bb11f4aa962d92510f3c06fff7238759aa0b5d523b208"
+      },
+      {
+        "path": "vllm_kvmem/authority.py",
+        "sha256": "47b41d31c87e5afe7ae98a35e4007170810ca857bf29533f42d17e7c6b5b385c"
+      },
+      {
+        "path": "vllm_kvmem/bounded_runtime.py",
+        "sha256": "8403423b3b81a104eee3fb8f9f4c68397726208c4098fd94000c881cc60d3b32"
+      },
+      {
+        "path": "vllm_kvmem/cache_groups.py",
+        "sha256": "78dbc0101ad143e4714a61e3b3bbe865c0454d5024a108beb9236093e3fa66fd"
+      },
+      {
+        "path": "vllm_kvmem/cache_manifest.py",
+        "sha256": "6b8b6594b2f36d9b3d1b2bebd0d206d6d90078b1fe84f2d362523e83d6e77b1a"
+      },
+      {
+        "path": "vllm_kvmem/cached_storage.py",
+        "sha256": "ef292535f190fede87edf30918463ef98a5c31ea458266aa1680b34e71c445bc"
+      },
+      {
+        "path": "vllm_kvmem/cancellation.py",
+        "sha256": "8271960d729adb5c18ab673bc637546d7b6e0c4bacf20307b6d65e3fc74c39a3"
+      },
+      {
+        "path": "vllm_kvmem/capacity.py",
+        "sha256": "e25280c0e49229171f121a8c9daad19e82c574cd419c00629d6ae37195e00523"
+      },
+      {
+        "path": "vllm_kvmem/capture.py",
+        "sha256": "0493ddf020ec62811d3e495f7816b2fa7e6e7285003990529edaac13e5ee738d"
+      },
+      {
+        "path": "vllm_kvmem/capture_runtime.py",
+        "sha256": "ca2067c9ad7320a5c62b68f54d2a720fd8d4ccb8ca31069e49de980e1bdee07e"
+      },
+      {
+        "path": "vllm_kvmem/codec.py",
+        "sha256": "d91159dced30ea106653693b6b8bbc233100474c9ba6faca489a26eff0c66af9"
+      },
+      {
+        "path": "vllm_kvmem/compat.py",
+        "sha256": "a4dd852121e9c51b89cb33f906c5a18031fdc48d42568f02697346b392fd8c05"
+      },
+      {
+        "path": "vllm_kvmem/compression_probe.py",
+        "sha256": "1344ac0769c5d3c2638c462aab9f3f77a7d84cc90345c3be5951cccfaa895481"
+      },
+      {
+        "path": "vllm_kvmem/config.py",
+        "sha256": "58e21e75ae3eb0e75bbeede57d9d258ba846c8649ecf59281b0a489b4a26c9db"
+      },
+      {
+        "path": "vllm_kvmem/connector.py",
+        "sha256": "a30dd089b82aa2032818e296c2755fcdcf985f3e9744877b54fe6ba97ec2d0b6"
+      },
+      {
+        "path": "vllm_kvmem/diagnostics.py",
+        "sha256": "1c8b1d7d078862c40937fbdc6ad5c1890453a3af4fd5cd67b7aa5fc20c506e15"
+      },
+      {
+        "path": "vllm_kvmem/draft_contract.py",
+        "sha256": "9bab09e5e2b905d2efd710bf3de89800f1e1d7c285e67f7d3b737d18de24d229"
+      },
+      {
+        "path": "vllm_kvmem/draft_quantization.py",
+        "sha256": "096c194d596e8206d35769bea0dfe621066f1b3ecabd773ea8a108248c1684c1"
+      },
+      {
+        "path": "vllm_kvmem/elastic.py",
+        "sha256": "2846fd4598393929ec414b3eb247483d0ce595eafde0377d8b00aaf2d7fab406"
+      },
+      {
+        "path": "vllm_kvmem/elastic_connector.py",
+        "sha256": "904d6ae27abbcf227615a98b48478bb16546b4e0f0095d3d691d21692a55ddca"
+      },
+      {
+        "path": "vllm_kvmem/elastic_control.py",
+        "sha256": "6067af9062e1bc3dc0ce16bc9398e1f3b438b992dfcfef6a05154c2e92c87a9a"
+      },
+      {
+        "path": "vllm_kvmem/elastic_gateway.py",
+        "sha256": "19fda2864ab985504356772d696be4fc1dde9cd768c5ada0e23336feecdb465f"
+      },
+      {
+        "path": "vllm_kvmem/elastic_serve.py",
+        "sha256": "e45002601fa3cda12424aae58b284410c8ee417d490b8dbd30dcb212fe05cc2c"
+      },
+      {
+        "path": "vllm_kvmem/elastic_stream.py",
+        "sha256": "5219eec08513d0f9724a2d5d8ed1f35c059f09b5e89bb2f47e69d0c0d7d2ec1c"
+      },
+      {
+        "path": "vllm_kvmem/gpu_raw_cache.py",
+        "sha256": "3b40735e182f90085f6b07d8813cb0ddeef740c661c186c1616c7ceb3cd31272"
+      },
+      {
+        "path": "vllm_kvmem/graph_runtime.py",
+        "sha256": "f25d59ae481b1548659d8a30dc9735897aad311437a4647fa5d68ec52930db97"
+      },
+      {
+        "path": "vllm_kvmem/http_sessions.py",
+        "sha256": "f6b786c8376e0bd99025d126f7875b62231be8819d7661e0e0d0bf105b14e39f"
+      },
+      {
+        "path": "vllm_kvmem/integration.py",
+        "sha256": "57a1fc82e98f36e6089476d826927277fa7869d6231b214b7b576e2866202905"
+      },
+      {
+        "path": "vllm_kvmem/measurement.py",
+        "sha256": "034c0d245a0938903a425e91e0a2e968b64d029a9a65265ffa368eee253f2ceb"
+      },
+      {
+        "path": "vllm_kvmem/memory.py",
+        "sha256": "4f3155c6a14c470e4f6a9c477d2ddda3cdc6b6573e5149544c0e63042bbfeb32"
+      },
+      {
+        "path": "vllm_kvmem/metadata.py",
+        "sha256": "f2c071eecdbc91ded11b9a31e95d499cd568428c71a595ddd154fcdf49269db1"
+      },
+      {
+        "path": "vllm_kvmem/metadata_patch.py",
+        "sha256": "dfbaf2ad51b89f57ce67cdb357681f7c55318281b02973a2dca2bde103faba53"
+      },
+      {
+        "path": "vllm_kvmem/mtp_runtime.py",
+        "sha256": "4f358a83699759123af83bfa807d2f9b2885e78f39f3aed1a2fc614757ed24d6"
+      },
+      {
+        "path": "vllm_kvmem/multi_user.py",
+        "sha256": "241fc09eca880fb9f9fa44f6666ad6a618e8dd1b248034f6e576619445fa354d"
+      },
+      {
+        "path": "vllm_kvmem/native_state.py",
+        "sha256": "c84c31e774042ba9153c0f973c8c989f4ed60d93c94353a1787cfd689dcaf071"
+      },
+      {
+        "path": "vllm_kvmem/options.py",
+        "sha256": "33aced640c8b6806feb5f9793e8fbfad4b1a13281eb4ef4914a3ad886eae4660"
+      },
+      {
+        "path": "vllm_kvmem/packed_assembly.py",
+        "sha256": "3c12da46f42a67a81209a44d82b3d1b2a78e052ef1cc361506cbc8c346906c7a"
+      },
+      {
+        "path": "vllm_kvmem/pages.py",
+        "sha256": "65845352d34b8acb30dc3071fe328d285f1052f41efd2f13dd789b1cf8387351"
+      },
+      {
+        "path": "vllm_kvmem/profile_scopes.py",
+        "sha256": "0bae51b7dc3cda73f3484bd8aab0a7bcd6e12e4b061866230ec6500c5faa7b4f"
+      },
+      {
+        "path": "vllm_kvmem/profile_worker.py",
+        "sha256": "aad8cc46d4e55c3a299ae80c29dd52f358490f183653afa031f2d53180a41e09"
+      },
+      {
+        "path": "vllm_kvmem/profiling.py",
+        "sha256": "591d2dda03f97d28d39b6444a089f6f4cb901fd3acf1696a3a5cbbd05a9e58dc"
+      },
+      {
+        "path": "vllm_kvmem/prompt_checkpoints.py",
+        "sha256": "7cdfab8389d04b9799cd59d5bcf1c78737523d1ce2e7eb4d11d5664ac1261cc0"
+      },
+      {
+        "path": "vllm_kvmem/q8_adapter.py",
+        "sha256": "b36857cdb4b63a590deb305e8dbcbef4032e7114dbecfb83e9529be2e927166a"
+      },
+      {
+        "path": "vllm_kvmem/q8_tensorcore.py",
+        "sha256": "ee38c864527e834fe2e81b86ca708f91a48f272ee42d96639619573c1b880463"
+      },
+      {
+        "path": "vllm_kvmem/read_cache.py",
+        "sha256": "aa098f9d3df47095148b3bf87b42eb810acc0e2a60458fcda1a6989ebd5abecb"
+      },
+      {
+        "path": "vllm_kvmem/refresh_probe.py",
+        "sha256": "a33b70148352e72678efc69cf00fe985658bbaa5c2ff269c53fe2e2bf5bf367c"
+      },
+      {
+        "path": "vllm_kvmem/replay_probe.py",
+        "sha256": "b060b41477dfc574121b20270442228e38c05a4f6b5c284c04e0f6fc47db90da"
+      },
+      {
+        "path": "vllm_kvmem/repository_gc.py",
+        "sha256": "6be25a2a2bcdfe1f5eb094b86220198f9c835acdaad07c993b55e1682886dcd4"
+      },
+      {
+        "path": "vllm_kvmem/retirement.py",
+        "sha256": "6f32eae2c7de74516db4231c3c41428c600d2a4fc060c3ebada2832956997756"
+      },
+      {
+        "path": "vllm_kvmem/retrieval.py",
+        "sha256": "fb8bc20c1eaff307c97ae93744fb95fa6b6c607a9e89a3743a4417b0bc9942d4"
+      },
+      {
+        "path": "vllm_kvmem/runner.py",
+        "sha256": "38cfe6f86febcbf99017c488103aebad69a9339496374f865419eca3feb38692"
+      },
+      {
+        "path": "vllm_kvmem/scheduler.py",
+        "sha256": "dfb58919d0d2cdf08ca21e4cfdbba34f7330edcbadd504f53a7f6d937b0a78be"
+      },
+      {
+        "path": "vllm_kvmem/serve.py",
+        "sha256": "3e25c19b3652c8390e65b7a06e674ebc679d753f9a6ef83307d6068625f147b4"
+      },
+      {
+        "path": "vllm_kvmem/session_control.py",
+        "sha256": "60e98ead40920d4171f99bdefda95bd237551b7b8a3dc09de39ad90c9ce275fd"
+      },
+      {
+        "path": "vllm_kvmem/session_state.py",
+        "sha256": "28170ee5e012453aa1acb0c7950d4363a6e188bc53047492b0086ad15e80e916"
+      },
+      {
+        "path": "vllm_kvmem/session_worker.py",
+        "sha256": "425d86c6d19febc2b8a1f6394c0a14d107bdd9a2e7b4c0dd94f2610d300386f5"
+      },
+      {
+        "path": "vllm_kvmem/speculative_admission.py",
+        "sha256": "4f8adda8485b5d923dd16301af766dd9fff9249427281c1bb51a1e846ab08d56"
+      },
+      {
+        "path": "vllm_kvmem/split_assembly.py",
+        "sha256": "3fc2dd61f5f5b9ae43ec03758d8f348d8aef3de7875c645a06016567ba240ca6"
+      },
+      {
+        "path": "vllm_kvmem/state.py",
+        "sha256": "6c390014879724c47f6355202ffadc62365ca733bebf6ead7e46cea19bba4c6f"
+      },
+      {
+        "path": "vllm_kvmem/storage.py",
+        "sha256": "8e76796bcb8c27bcbf66d194cfb59774afbebed0e6fac83ccc2ac10f7f5feab2"
+      },
+      {
+        "path": "vllm_kvmem/telemetry.py",
+        "sha256": "23f884212ffd2a6fa64f80c5b9e94b22efdd77178d525cc25ca4d99b71707f47"
+      },
+      {
+        "path": "vllm_kvmem/terminal.py",
+        "sha256": "51e4042cf3ed60c00b91e6a9e299a67e25f2aed9ddd58542a514e1b64c012a33"
+      },
+      {
+        "path": "vllm_kvmem/transfer.py",
+        "sha256": "d8542593e08e5ee9df70d285408af409a2166f1a6f2be47bb7bc51ffe380096f"
+      },
+      {
+        "path": "vllm_kvmem/window_assembly.py",
+        "sha256": "2284a9b71834b2ee9b906a8fdbcf47b0706a854b2473d25887bf138a7db7ceda"
+      },
+      {
+        "path": "vllm_kvmem/window_batch.py",
+        "sha256": "455ce6a8a3e00a699fb2642d13c5ee0ea2311a9b359ef0517f659a1afa9be1be"
+      },
+      {
+        "path": "vllm_kvmem/window_bridge.py",
+        "sha256": "007634ad3bb4560e2f531fc8118f22a111a5b4dcb95c928ceae8f90ed185e9a6"
+      },
+      {
+        "path": "vllm_kvmem/window_manager.py",
+        "sha256": "d547dc7fe020acd48153181071d8fb10da5c73b2060ee78517738ba238993a81"
+      }
+    ]
+  },
+  "published_service_smoke": {
+    "turns": [
+      {
+        "http_status": 200,
+        "history_tokens": 272,
+        "active_requests": 0,
+        "active_reserved_bytes": 0
+      },
+      {
+        "http_status": 200,
+        "history_tokens": 292,
+        "active_requests": 0,
+        "active_reserved_bytes": 0
+      }
+    ],
+    "cleanup_sessions": 0,
+    "status": "passed"
+  }
+}

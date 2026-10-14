@@ -4,7 +4,7 @@ CPU record buffers and admitted archive writes have a shared per-request bound.
 The caller retries after poll() on backpressure. An incomplete tail is never
 published to the immutable archive; repeated decode appends extend it in memory.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 import hashlib
 
@@ -30,6 +30,7 @@ class Record:
     archived: bool = False
     submitted: bool = False
     digest: str | None = None
+    scatter_views: tuple | None = field(default=None, repr=False)
 
 
 def record_key(handle):
@@ -152,6 +153,7 @@ class RequestAuthority:
         keys = []
         for record in records:
             record.submitted = True
+            record.scatter_views = None
             record.raw = record.values = None
             key = record_key(record.handle)
             del self._unsubmitted[key]
@@ -159,8 +161,8 @@ class RequestAuthority:
         self.writes.append((job, keys))
         return True
 
-    def append(self, raw, values, *, history_begin, local_rope_begin, accepted=None):
-        """Publish a CPU-ready accepted prefix; rejected candidate rows are ignored.
+    def _prepare_append(self, raw, values, *, history_begin, local_rope_begin, accepted=None):
+        """Reserve a CPU-ready accepted prefix; no copied rows are published here.
 
         raw/values: [layers, candidate tokens, KV heads, head_dim]. The caller
         must have observed its DMA fence before passing these CPU tensors.
@@ -177,17 +179,17 @@ class RequestAuthority:
         if history_begin != self.history_end:
             raise ValueError("Capture skipped or repeated logical history")
         if count == 0:
-            return True
+            return (raw, values, count, [])
         self.flush()
         block = self.shape[1]
         # Includes I/O-owned byte snapshots after torch staging was released.
         tail = self.history_end % block
         new_records = (tail + count + block - 1) // block - bool(tail)
         if self._resident_count + new_records > self.resident_records:
-            return False
+            return None
         spans = self.memory.begin_append(count, local_rope_begin)
         if spans is None:
-            return False
+            return None
         if self.gc is not None:
             # Recycled reservations become ready after their release callback
             # queued the old generation. Drop it before installing a new index.
@@ -200,6 +202,7 @@ class RequestAuthority:
             if ((offset and previous is None) or
                     (previous is not None and (previous.count != offset or previous.submitted))):
                 raise RuntimeError("Repository append no longer matches the authoritative tail")
+        rows = []
         for span in spans:
             key = record_key(span.handle)
             offset = span.storage_begin % block
@@ -217,15 +220,32 @@ class RequestAuthority:
                     torch.zeros((self.scoring_layers, self.shape[2], self.shape[3]), dtype=torch.float32))
                 self.records[key] = record
                 self._resident_count += 1
-            record.raw[:, offset:offset+n].copy_(raw[:, start:start+n])
-            record.values[:, offset:offset+n].copy_(values[:, start:start+n])
-            record.key_sum.add_(raw[:record.key_sum.shape[0], start:start+n].float().sum(dim=1))
+            rows.append((key, record, offset, start, n))
+        return raw, values, count, rows
+
+    def _commit_prepared_append(self, prepared):
+        raw, values, count, rows = prepared
+        if not count:
+            return
+        for key, record, offset, start, n in rows:
             record.count += n
-            if record.count == block:
+            if record.count == self.shape[1]:
                 self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
         self.flush()
+
+    def append(self, raw, values, *, history_begin, local_rope_begin, accepted=None):
+        prepared = self._prepare_append(raw, values, history_begin=history_begin,
+            local_rope_begin=local_rope_begin, accepted=accepted)
+        if prepared is None:
+            return False
+        raw, values, count, rows = prepared
+        for key, record, offset, start, n in rows:
+            record.raw[:, offset:offset+n].copy_(raw[:, start:start+n])
+            record.values[:, offset:offset+n].copy_(values[:, start:start+n])
+            record.key_sum.add_(raw[:record.key_sum.shape[0], start:start+n].float().sum(dim=1))
+        self._commit_prepared_append(prepared)
         return True
 
     def publish_sealed(self, wait_for_progress):
@@ -412,3 +432,51 @@ class RequestAuthority:
     @property
     def gc_reclaimed_records(self):
         return self.gc.reclaimed_records if self.gc is not None else 0
+
+
+# The fast reduction is qualified against the pinned ATen outer-reduction
+# kernel on x86; other Torch versions/CPUs use the reference operation.
+_FUSED_DECODE_SUM = (torch.__version__.split('+')[0].startswith('2.13.') and
+                     torch.backends.cpu.get_cpu_capability() in ('AVX2', 'AVX512'))
+
+
+def append_authority_batch(entries):
+    """Copy a capacity-admitted prefix of one packet in one GIL-free call.
+
+    Each entry is (authority, raw, values, append keyword arguments). The caller
+    has already clipped rejected/EOS/cancelled rows and observed the DMA fence.
+    Small qualified BF16 decode reductions use the same FP32 addition order;
+    other geometries and larger prefixes retain the reference Torch reduction. No prefix is published before
+    all admitted copies complete. Backpressure consumes only the returned prefix.
+    """
+    if len({id(entry[0]) for entry in entries}) != len(entries):
+        raise ValueError('A history batch must contain distinct authority owners')
+    plans, jobs = [], []
+    for authority, raw, values, kwargs in entries:
+        # Later queued packets can start beyond an EOS/cancelled prefix. They
+        # are fully discarded, as on the reference drain path, without opening
+        # a transaction or requiring authority.history_end to reach those rows.
+        if kwargs.get('accepted') == 0:
+            plans.append((authority, (raw, values, 0, [])))
+            continue
+        prepared = authority._prepare_append(raw, values, **kwargs)
+        if prepared is None:
+            break
+        plans.append((authority, prepared))
+        source_raw = raw.view(torch.uint8).numpy()
+        source_values = values.numpy()
+        for key, record, offset, start, n in prepared[3]:
+            fused = (raw.dtype == torch.bfloat16 and n <= 4 and
+                     raw.shape[2] * raw.shape[3] % 64 == 0 and _FUSED_DECODE_SUM)
+            delta = (None if fused else
+                     raw[:record.key_sum.shape[0], start:start+n].float().sum(dim=1).numpy())
+            if record.scatter_views is None:
+                record.scatter_views = (record.raw.view(torch.uint8).numpy(),
+                                        record.values.numpy(), record.key_sum.numpy())
+            destination_raw, destination_values, sums = record.scatter_views
+            jobs.append((source_raw, source_values, destination_raw,
+                         destination_values, delta, sums, start, offset, n))
+    _native.scatter_history_batch(jobs)
+    for authority, prepared in plans:
+        authority._commit_prepared_append(prepared)
+    return len(plans)

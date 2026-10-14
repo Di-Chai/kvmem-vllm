@@ -114,8 +114,12 @@ def install_bounded_target(runner):
             bundle = state_adapter.borrow(batch.req_ids)
             checkpoints = StateCheckpoints("bounded-query", bundle.bytes, capacity=1)
             before = checkpoints.capture(0, bundle.tensors)
-            with capture_to(captured.append):
+            if getattr(runner, '_kvmem_graph', False):
                 original(*args, **kwargs)
+                captured = runner._kvmem_graph_captures
+            else:
+                with capture_to(captured.append):
+                    original(*args, **kwargs)
             if tuple(c.name for c in captured) != tuple(runner._kvmem_layers):
                 raise RuntimeError("Native provisional batch missed attention layers")
 

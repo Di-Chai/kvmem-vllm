@@ -32,6 +32,7 @@ def _wrap(owner, method_name, stage):
 def _owned_stages():
     # Import only in an explicitly enabled profiler worker, after model loading.
     from .authority import RequestAuthority
+    from . import authority as authority_module
     from .capture_runtime import CaptureRuntime
     from .cached_storage import CachedArchive
     from .native_state import NativeRecurrentState
@@ -48,6 +49,9 @@ def _owned_stages():
         (CaptureRuntime, 'join_cpu_scatter', 'capture.join_cpu_scatter'),
         (CaptureRuntime, '_write_progress', 'capture.progress'),
         (RequestAuthority, 'append', 'authority.append'),
+        (authority_module, 'append_authority_batch', 'authority.append_batch'),
+        (RequestAuthority, '_prepare_append', 'authority.prepare_append'),
+        (RequestAuthority, '_commit_prepared_append', 'authority.commit_append'),
         (RequestAuthority, 'flush', 'authority.flush'),
         (RequestAuthority, 'select_for_queries', 'authority.select'),
         (WindowBatchAdapter, 'prepare', 'window.prepare'),
