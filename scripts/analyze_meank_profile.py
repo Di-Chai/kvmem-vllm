@@ -84,12 +84,18 @@ def analyze_trace(trace, phase='auto'):
             if stack:
                 children[id(stack[-1])].append(row)
             stack.append(row)
-        scope_index[thread] = ([e['ts'] for e in rows], rows)
+        prefix_ends, latest_end = [], float('-inf')
+        for row in rows:
+            latest_end = max(latest_end, row['ts'] + row['dur'])
+            prefix_ends.append(latest_end)
+        scope_index[thread] = ([e['ts'] for e in rows], rows, prefix_ends)
 
     def stage_for(api):
-        starts, rows = scope_index.get((api['pid'], api['tid']), ((), ()))
+        starts, rows, prefix_ends = scope_index.get((api['pid'], api['tid']), ((), (), ()))
         index = bisect_right(starts, api['ts']) - 1
         for i in range(index, -1, -1):
+            if prefix_ends[i] <= api['ts']:
+                break  # No earlier scope can contain this unscoped operation.
             scope = rows[i]
             if scope['ts'] <= api['ts'] < scope['ts'] + scope['dur']:
                 return scope['name']
@@ -145,6 +151,39 @@ def analyze_trace(trace, phase='auto'):
 
     cpu = [dict(stage=stage, **row) for stage, row in cpu_rows.items()]
     cpu.sort(key=lambda row: row['exclusive_us'], reverse=True)
+    # Attribute CPU torch operators separately from launch scopes. Nested aten
+    # operators (to -> _to_copy -> copy_) must not triple-count the same work.
+    operators = defaultdict(list)
+    for event in events:
+        if event.get('cat') == 'cpu_op':
+            operators[event['pid'], event['tid']].append(event)
+    operator_rows = defaultdict(lambda: dict(calls=0, inclusive_us=0.0, exclusive_us=0.0))
+    for rows in operators.values():
+        rows.sort(key=lambda e: (e['ts'], -e['dur']))
+        stack, direct_children = [], defaultdict(list)
+        for row in rows:
+            end = row['ts'] + row['dur']
+            while stack and (row['ts'] >= stack[-1]['ts'] + stack[-1]['dur']
+                             or end > stack[-1]['ts'] + stack[-1]['dur']):
+                stack.pop()
+            if stack:
+                direct_children[id(stack[-1])].append(row)
+            stack.append(row)
+        for event in rows:
+            span = _interval(event, window)
+            if span is None:
+                continue
+            stage = stage_for(event)
+            if stage == 'unscoped':
+                continue
+            row = operator_rows[stage, event['name']]
+            row['calls'] += 1
+            row['inclusive_us'] += span[1] - span[0]
+            nested = [p for child in direct_children[id(event)] if (p := _interval(child, span))]
+            row['exclusive_us'] += max(0.0, span[1] - span[0] - interval_union(nested))
+    cpu_operators = [dict(stage=stage, operator=name, **row)
+                     for (stage, name), row in operator_rows.items()]
+    cpu_operators.sort(key=lambda row: row['exclusive_us'], reverse=True)
     gpu_stages = [dict(device=device, stage=stage, events=stage_events[device, stage],
                        summed_us=sum(b-a for a, b in spans), interval_union_us=interval_union(spans))
                   for (device, stage), spans in by_stage.items()]
@@ -165,6 +204,7 @@ def analyze_trace(trace, phase='auto'):
         gpu_attribution=dict(mapped_launch_events=mapped, unmapped_launch_events=unmapped,
                              mapped_but_unscoped_events=unscoped, boundary_clipped_events=clipped),
         gpu_stages=gpu_stages, cpu_stages=cpu,
+        cpu_operators=cpu_operators,
         top_kernels=_totals([e for e in gpu if e['cat'] == 'kernel'], window, 30),
         memcpy_events=_totals([e for e in gpu if e['cat'] == 'gpu_memcpy'], window),
         cuda_api_waits=_totals([e for e in apis if any(s in e['name'].lower()
@@ -176,6 +216,7 @@ def analyze_trace(trace, phase='auto'):
             'GPU union includes traced kernel/memcpy/memset only; uncovered intervals do not prove hardware idle.',
             'GPU stages use the innermost CPU kvmem launch scope, including shared CUDA graph launch correlations.',
             'CPU exclusive time excludes nested kvmem scopes only; it includes CUDA API waits and unlabelled work.',
+            'CPU operator exclusive time excludes nested cpu_op intervals; operator rows are instrumented host costs, not uninstrumented savings.',
             'Stage GPU unions can overlap each other across streams and must not be summed as wall time.',
             'CUDA wait API duration is host waiting; event queries and stream wait insertion are not all blocking.',
         ])

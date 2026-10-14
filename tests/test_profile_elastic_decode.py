@@ -51,6 +51,18 @@ def test_headroom_scales_with_delay_iterations_and_largest_accepted_draft_batch(
         collector.validate_collection(cfg, NS(concurrency=8, output_tokens=1024))
 
 
+@pytest.mark.parametrize('mode,method,depth', [('meank', 'mtp', 2), ('meank', 'mtp', 3),
+    ('meank', 'dflash', 7), ('full', 'mtp', 3)])
+def test_decode_only_accepts_native_and_bounded_methods_with_finite_headroom(mode, method, depth):
+    cfg = config()
+    cfg.update(context_mode=mode, draft_method=method, draft_tokens=depth, mtp_k=depth)
+    _, headroom = collector.validate_collection(cfg, NS(phase='decode', concurrency=8, output_tokens=4096))
+    assert headroom == 512 + 84 * (depth + 1)
+    if mode == 'full':
+        with pytest.raises(ValueError, match='requires MeanK'):
+            collector.validate_collection(cfg, NS(phase='both', concurrency=8, output_tokens=4096))
+
+
 def trace_file(tmp_path, names, *, compressed=True, with_kernel=True):
     rows = [dict(cat='user_annotation', ph='X', name=name, ts=i * 100, dur=20)
             for i, name in enumerate(names)]

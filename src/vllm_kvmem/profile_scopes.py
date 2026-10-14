@@ -45,6 +45,7 @@ def _owned_stages():
         (CaptureRuntime, 'submit', 'capture.submit'),
         (CaptureRuntime, 'drain', 'capture.drain'),
         (CaptureRuntime, 'finish', 'capture.finish'),
+        (CaptureRuntime, 'join_cpu_scatter', 'capture.join_cpu_scatter'),
         (CaptureRuntime, '_write_progress', 'capture.progress'),
         (RequestAuthority, 'append', 'authority.append'),
         (RequestAuthority, 'flush', 'authority.flush'),
@@ -86,5 +87,7 @@ def install_profile_scopes(runner):
     _wrap(speculator, 'propose', 'draft.propose')
     _wrap(getattr(speculator, 'model', None), 'precompute_and_store_context_kv', 'draft.context_kv')
     _wrap(getattr(speculator, 'query_cudagraph_manager', None), 'run_fullgraph', 'draft.graph')
+    _wrap(getattr(speculator, 'prefill_cudagraph_manager', None), 'run_fullgraph', 'mtp.prefill_graph')
+    _wrap(getattr(speculator, 'decode_cudagraph_manager', None), 'run_fullgraph', 'mtp.decode_graph')
     for owner, method, stage in _owned_stages():
         _wrap(owner, method, stage)

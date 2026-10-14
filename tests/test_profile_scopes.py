@@ -111,3 +111,19 @@ def test_late_graph_managers_and_counter_wrapper_do_not_duplicate_scopes(monkeyp
         assert speculator.query_cudagraph_manager.run_fullgraph(5) == 5
     names = [event.name for event in trace.events() if event.name.startswith('kvmem::')]
     assert names == ['kvmem::target.graph', 'kvmem::draft.graph']
+
+
+def test_mtp_graph_scopes_distinguish_prefix_and_fused_drafts_without_duplicates(monkeypatch):
+    monkeypatch.setattr(profiling, '_owned_stages', lambda: ())
+    class Graph:
+        def run_fullgraph(self, value):
+            return value
+    proposer = NS(prefill_cudagraph_manager=Graph(), decode_cudagraph_manager=Graph())
+    runner = NS(vllm_config=NS(profiler_config=NS(profiler='torch')), speculator=proposer)
+    profiling.install_profile_scopes(runner)
+    profiling.install_profile_scopes(runner)
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) as trace:
+        assert proposer.prefill_cudagraph_manager.run_fullgraph(1) == 1
+        assert proposer.decode_cudagraph_manager.run_fullgraph(2) == 2
+    assert [e.name for e in trace.events() if e.name.startswith('kvmem::')] == [
+        'kvmem::mtp.prefill_graph', 'kvmem::mtp.decode_graph']

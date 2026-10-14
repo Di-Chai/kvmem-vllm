@@ -35,13 +35,17 @@ def validate_collection(cfg, args):
     directory = profiler.get('torch_profiler_dir')
     if not isinstance(directory, str) or not directory or '\x00' in directory or '://' in directory:
         raise ValueError('Require a local torch_profiler_dir')
-    if cfg.get('context_mode') != 'meank' or cfg.get('draft_tokens') not in (1, 3, 7):
-        raise ValueError('Two-phase collection requires the MeanK DFlash profile')
+    phase = getattr(args, 'phase', 'both')
+    mode = cfg.get('context_mode', 'full')
+    drafts = cfg.get('mtp_k', 3) if mode == 'full' else cfg.get('draft_tokens')
+    if (mode not in ('meank', 'full') or type(drafts) is not int or not 1 <= drafts <= 16
+            or (phase == 'both' and mode != 'meank')):
+        raise ValueError('Two-phase collection requires MeanK; decode-only also supports native MTP')
     if type(args.concurrency) is not int or args.concurrency <= 0:
         raise ValueError('concurrency must be positive')
     # Reserve every possible accepted candidate plus margin for control RPCs
     # and progress sampling. The trace is validated again after collection.
-    headroom = 512 + (maximum + delay + 2) * (cfg['draft_tokens'] + 1)
+    headroom = 512 + (maximum + delay + 2) * (drafts + 1)
     if type(args.output_tokens) is not int or args.output_tokens <= 512 + headroom:
         raise ValueError(f'output_tokens must exceed {512 + headroom} for the configured profile window')
     return profiler, headroom
@@ -108,10 +112,16 @@ def run(args):
     profiler, headroom = validate_collection(cfg, args)
     args.output.mkdir(parents=True, exist_ok=False)
     batch = args.output / 'batch'
-    command = [sys.executable, str(Path(__file__).with_name('qualify_elastic_long_output.py')),
-        '--launch', str(args.launch), '--input', str(args.input), '--output', str(batch),
-        '--concurrency', str(args.concurrency), '--output-tokens', str(args.output_tokens),
-        '--port', str(args.port)]
+    if getattr(args, 'direct', False):
+        command = [sys.executable, str(Path(__file__).with_name('qualify_kvmem_overhead.py')),
+            '--backend', cfg['backend_url'], '--model', cfg['served_model_name'],
+            '--input', str(args.input), '--output', str(batch), '--label', 'instrumented',
+            '--concurrency', str(args.concurrency), '--output-tokens', str(args.output_tokens)]
+    else:
+        command = [sys.executable, str(Path(__file__).with_name('qualify_elastic_long_output.py')),
+            '--launch', str(args.launch), '--input', str(args.input), '--output', str(batch),
+            '--concurrency', str(args.concurrency), '--output-tokens', str(args.output_tokens),
+            '--port', str(args.port)]
     capture = args.capture
     traces = Path(profiler['torch_profiler_dir'])
     existing_requests = {r['request_id'] for r in read_refreshes(capture / 'bounded_refresh.jsonl')}
@@ -168,13 +178,14 @@ def run(args):
             print(json.dumps({'phase': report['phase'], 'trace_files': len(files)}), flush=True)
 
         try:
-            # Capture actual scoring/reassembly, beyond the all-history bootstrap.
-            wait_until(lambda: any(r['history_begin'] > cfg['active_context_tokens']
-                                   for r in fresh_refreshes()))
-            report, before = start('prefill')
-            initial = len(fresh_refreshes())
-            wait_until(lambda: len(fresh_refreshes()) >= initial + args.concurrency)
-            stop(report, before)
+            if getattr(args, 'phase', 'both') == 'both':
+                # Capture actual scoring/reassembly beyond bootstrap.
+                wait_until(lambda: any(r['history_begin'] > cfg['active_context_tokens']
+                                       for r in fresh_refreshes()))
+                report, before = start('prefill')
+                initial = len(fresh_refreshes())
+                wait_until(lambda: len(fresh_refreshes()) >= initial + args.concurrency)
+                stop(report, before)
 
             def ready_for_decode():
                 path = batch / 'progress.json'
@@ -222,4 +233,6 @@ if __name__ == '__main__':
     parser.add_argument('--output-tokens', type=int, default=4096)
     parser.add_argument('--port', type=int, default=18384)
     parser.add_argument('--timeout', type=float, default=1200)
+    parser.add_argument('--phase', choices=('both', 'decode'), default='both')
+    parser.add_argument('--direct', action='store_true', help='Use direct engine SSE for native controls')
     run(parser.parse_args())

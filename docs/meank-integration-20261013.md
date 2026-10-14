@@ -10,7 +10,7 @@ pre-RoPE Q 与历史 MeanK 评分，选择历史 KV 并重新装配 GPU working 
 | 上下文语义 | 当前实现和证据 |
 | --- | --- |
 | MeanK 分数 | 每页 raw K 均值；QK / sqrt(D)；先屏蔽固定保留页，再按 layer/query/head 做页间 softmax；平均 head/layer，累加 query。GPU 测试与原版 CUDA kernel 对照，包含 2048 页。 |
-| 选页和保留带 | 直接使用未经修改的 qw3 `KvMemStore`；自动 sink/recent、mandatory 生成页、top-k 及历史顺序均由原 C++ 核心决定。32K K 对应 1024 sink／4096 recent token。 |
+| 选页和保留带 | 直接使用未经修改的 qw3 `KvMemStore`；自动 sink/recent、top-k 及历史顺序由原 C++ 核心决定。低层 mandatory 参数可用，在线入口尚未接入消息／工具／文件证据 span。32K K 对应 1024 sink／4096 recent token。 |
 | 历史权威 | 每用户独立的 immutable BF16 raw K＋FP8 V；仅写已接受 token；完整块异步 stage-out，尾部暂存到封块。CPU 缓存可淘汰，底层归档仍为权威。 |
 | GPU working set | 选中历史按原顺序紧密排列，raw K 在新 dense 位置重新施加 RoPE，V 原字节加载；用完成 fence 后提交 residency。普通、packed、direct 路径均有 FP8 字节对照。 |
 | 混合模型状态 | GDN 保留完整逻辑历史状态；临时查询后恢复所有 batch 邻居，再重放正式 forward。DFlash 使用独立的逻辑位置和原生 sliding KV；原生 MTP 的 raw KV 与 target 按同一个 MeanK 计划装配。 |
@@ -24,6 +24,9 @@ pre-RoPE Q 与历史 MeanK 评分，选择历史 KV 并重新装配 GPU working 
 此处核对的是原版 MeanK 主路径。qw3 后续可选的 action-attention fusion 和
 query-history 加权模式没有作为本入口的可配置功能接入。分块 prefill 的查询批次
 由 vLLM 原生调度决定；没有声称不同分块、量化或 batch 下生成 token 都完全相同。
+当前索引和 scorer 使用 FP32，而 qw3 生产索引/Query 使用 FP16；当前 Query 是调度
+chunk，尚未提供原版显式 Query span 与完整请求策略。所有功能及性能优化的逐项
+状态见 [完整迁移核对](qw3-parity-audit-20261014.md)。
 
 ## 启动和预算
 

@@ -56,3 +56,24 @@ def test_prefill_limited_sample_preserves_unmapped_activity_and_thread_boundarie
     assert next(row for row in result['cpu_stages'] if row['stage'] == 'kvmem::runner.execute')['exclusive_us'] == 100
     with pytest.raises(ValueError, match='CPU kvmem'):
         analyzer.analyze_trace({'traceEvents': []})
+
+
+def test_cpu_operators_exclude_nested_costs_and_follow_owner_thread():
+    rows = [event('user_annotation', 'execute_context_0(0)_generation_8(32)', t, 8)
+            for t in (0, 100, 200, 300)]
+    rows += [event('user_annotation', 'kvmem::authority.append', 105, 75, tid=2),
+             event('user_annotation', 'kvmem::authority.flush', 155, 20, tid=2),
+             event('cpu_op', 'aten::to', 120, 30, tid=2),
+             event('cpu_op', 'aten::_to_copy', 125, 20, tid=2),
+             event('cpu_op', 'aten::copy_', 130, 10, tid=2),
+             event('cpu_op', 'aten::empty', 160, 4, tid=2),
+             event('cpu_op', 'aten::to', 120, 50, tid=3),
+             event('gpu_user_annotation', 'kvmem::authority.append', 110, 70, pid=0),
+             event('kernel', 'gemm', 140, 10, pid=0, device=0)]
+    result = analyzer.analyze_trace({'traceEvents': rows}, 'decode')
+    rows = {(r['stage'], r['operator']): r for r in result['cpu_operators']}
+    for name in ('aten::to', 'aten::_to_copy', 'aten::copy_'):
+        assert rows['kvmem::authority.append', name]['exclusive_us'] == 10
+        assert rows['kvmem::authority.append', name]['calls'] == 1
+    assert rows['kvmem::authority.flush', 'aten::empty']['exclusive_us'] == 4
+    assert sum(r['exclusive_us'] for r in rows.values()) == 34
