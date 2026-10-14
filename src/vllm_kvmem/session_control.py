@@ -5,6 +5,7 @@ lookups either wait for that particular session or use ordinary native prefill.
 Generation-qualified messages cannot release a newer incarnation of a session.
 """
 from dataclasses import dataclass, field
+import hashlib
 
 from .prompt_checkpoints import token_bytes
 
@@ -53,6 +54,10 @@ class SessionNotice:
     history: int = 0
     window: int = 0
     ready_records: int = 0
+    prompt_history: int = 0
+    prompt_window: int = 0
+    prompt_tokens: bytes = b''
+    active_records: tuple = ()
 
 
 @dataclass
@@ -75,15 +80,23 @@ class _Entry:
     tokens: bytes = b''
     candidate_position: int = 0
     candidate_tokens: bytes = b''
+    terminal_position: int = 0
+    terminal_tokens: bytes = b''
     ready_records: int = 0
     retained_position: int = 0
     retained_tokens: bytes = b''
     pressure_restore: bool = False
+    prompt_history: int = 0
+    prompt_window: int = 0
+    prompt_tokens: bytes = b''
+    query: tuple | None = None
+    mandatory: tuple = ()
+    active_records: tuple = ()
 
 
 class SessionLedger:
     def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
-                 select_budget=None, gen_budget=None):
+                 select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -98,6 +111,8 @@ class SessionLedger:
         self.generation = 0
         self.commands = SessionCommands()
         self.terminal_capture = terminal_capture
+        self.checkpoint_policy = checkpoint_policy
+        self.memory_config = memory_config
         self.select_budget, self.gen_budget = select_budget, gen_budget
         self.hits = self.misses = self.waits = 0
 
@@ -115,6 +130,7 @@ class SessionLedger:
     def lookup(self, request, local_tokens):
         namespace = self.namespace(request)
         if namespace is None:
+            self.cold_plan(request)
             return 0
         if local_tokens:
             raise ValueError('Prompt session import requires native prefix caching disabled')
@@ -136,17 +152,41 @@ class SessionLedger:
             prompt = request.prompt_token_ids
             from .request_plan import request_plan
             plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
-            if len(prompt) <= entry.history or token_bytes(prompt, entry.history) != entry.tokens:
+            matches = len(prompt)>entry.history and token_bytes(prompt,entry.history)==entry.tokens
+            output = self.output_tokens(request)
+            effective, changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
+                self.select_budget+self.gen_budget,entry.query if matches else None,entry.mandatory) if plan is not None else (None,False))
+            needs_p = not matches or (effective is not None and effective.query is not None and entry.history>effective.replay_begin)
+            if needs_p:
+                ceiling = effective.replay_begin if effective is not None and effective.query is not None else len(prompt)-1
+                if (entry.prompt_history and entry.prompt_history<=ceiling and len(prompt)>entry.prompt_history
+                        and token_bytes(prompt,entry.prompt_history)==entry.prompt_tokens):
+                    entry.history,entry.window,entry.tokens = entry.prompt_history,entry.prompt_window,entry.prompt_tokens
+                    effective,changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
+                        self.select_budget+self.gen_budget,entry.query,entry.mandatory) if plan is not None else (None,False))
+                else:
+                    if effective is not None:
+                        self.set_plan(request,effective)
+                    self._evict(entry)
+                    self.waits += 1
+                    return None
+            if changed:
+                if self.memory_config is not None and not needs_p:
+                    required=set(effective.mandatory_fit(entry.history,self.memory_config)['hard_blocks'])
+                    available={b//self.block_tokens for b,n in entry.active_records}
+                    changed=not required.issubset(available)
+            if changed:
+                # A new historical hard pin must be applied before using a
+                # cached view which may omit it. Rebuild from durable tokens.
+                self.set_plan(request,effective)
                 self._evict(entry)
                 self.waits += 1
                 return None
-            if plan is not None and plan.query is not None and entry.history > plan.replay_begin:
-                self._evict(entry)  # Never reuse state causally after the Query boundary.
-                self.waits += 1
-                return None
-            if plan is not None and plan.prefill_window != 'keep_selected' and entry.window > self.select_budget:
-                entry.window = self.select_budget
-                entry.pressure_restore = True
+            if effective is not None:
+                self.set_plan(request,effective)
+                entry.query = plan.query or entry.query
+                entry.mandatory = effective.mandatory
+            entry.pressure_restore = False  # A checkpoint is storage, not a selection trigger.
             entry.phase, entry.request_id = 'lookup', request.request_id
             self.requests[request.request_id] = entry
             try:
@@ -156,6 +196,7 @@ class SessionLedger:
                 del self.requests[request.request_id]
                 raise
             return entry.history
+        self.cold_plan(request)
         if len(self.entries) >= self.capacity:
             idle = next((e for e in self.entries.values() if e.phase == 'idle'), None)
             if idle is not None:
@@ -170,8 +211,43 @@ class SessionLedger:
             return 0
         self.generation += 1
         entry = _Entry(namespace, self.generation, request.request_id)
+        from .request_plan import request_plan
+        plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
+        if plan is not None:
+            from dataclasses import replace
+            if (plan.prefill_window=='keep_selected' and
+                    request.num_prompt_tokens+self.output_tokens(request)>self.select_budget+self.gen_budget-self.block_tokens):
+                plan = replace(plan,prefill_window='pressure')  # Original cold checkpoint-hole fallback.
+            self.set_plan(request,plan)
+            entry.query,entry.mandatory = plan.query,plan.mandatory
         self.entries[namespace] = self.requests[request.request_id] = entry
         return 0
+
+    @staticmethod
+    def output_tokens(request):
+        params = getattr(request,'sampling_params',None)
+        return getattr(params,'max_tokens',None) or getattr(request,'max_tokens',0) or 0
+
+    def cold_plan(self,request):
+        if not self.gen_budget:
+            return
+        from .request_plan import request_plan
+        from dataclasses import replace
+        plan=request_plan(request,self.block_tokens,self.gen_budget)
+        if (plan is not None and plan.prefill_window=='keep_selected' and
+                request.num_prompt_tokens+self.output_tokens(request)>self.select_budget+self.gen_budget-self.block_tokens):
+            self.set_plan(request,replace(plan,prefill_window='pressure'))
+
+    @staticmethod
+    def set_plan(request, plan):
+        request.kv_transfer_params = {**(getattr(request,'kv_transfer_params',None) or {}),
+                                      'kvmem_request_plan':plan.payload()}
+
+    def snapshot(self):
+        return [{'namespace':list(e.namespace),'history':e.history,'window':e.window,
+                 'prefix_sha256':hashlib.sha256(e.tokens).hexdigest(),'query':e.query,
+                 'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records}
+                for e in self.entries.values() if e.phase=='idle']
 
     def allocated(self, request, external_tokens):
         entry = self.requests.get(request.request_id)
@@ -193,9 +269,12 @@ class SessionLedger:
         from .request_plan import request_plan
         plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
         at_query = plan is not None and plan.replay_begin == position
+        at_point = plan is not None and plan.prefill_checkpoint(request.num_prompt_tokens)==position
+        if self.checkpoint_policy=='pm' and not at_point:
+            return
         if (entry is None or entry.phase != 'active' or entry.candidate_position or
                 not 0 < position < request.num_prompt_tokens or position % self.block_tokens or
-                (position + query_tokens < request.num_prompt_tokens and not at_query)):
+                (position + query_tokens < request.num_prompt_tokens and not (at_query or at_point))):
             return
         entry.candidate_position = position
         entry.candidate_tokens = token_bytes(request.prompt_token_ids, position)
@@ -237,11 +316,12 @@ class SessionLedger:
             from .terminal import TerminalPrefix
             position = TerminalPrefix.from_request(request).history_end
             if position:
-                entry.retained_position = entry.retained_position or entry.candidate_position
-                entry.retained_tokens = entry.retained_tokens or entry.candidate_tokens
-                entry.candidate_position = position
+                # The final prefill batch can capture P and finish the request
+                # before its connector acknowledgment is consumed. M has its
+                # own pending identity; an unacknowledged P is not retained yet.
+                entry.terminal_position = position
                 tokens = tuple(request.all_token_ids)
-                entry.candidate_tokens = token_bytes(tokens, position)
+                entry.terminal_tokens = token_bytes(tokens, position)
                 self.commands.terminals.append(SessionCapture(request.request_id, entry.generation, position, tokens))
 
     def _evict(self, entry):
@@ -262,13 +342,19 @@ class SessionLedger:
         if entry.request_id != notice.request_id:
             raise ValueError('Session completion belongs to another native request')
         if notice.kind in ('captured', 'capture_deferred'):
+            terminal = notice.history == entry.terminal_position and bool(entry.terminal_position)
+            position = entry.terminal_position if terminal else entry.candidate_position
+            identity = entry.terminal_tokens if terminal else entry.candidate_tokens
             if (entry.phase not in ('active', 'retiring') or
-                    notice.history != entry.candidate_position or not notice.history):
+                    notice.history != position or not notice.history):
                 raise ValueError('Checkpoint acknowledgment differs from the requested accepted prefix')
-            if notice.kind == 'captured':
+            if notice.kind == 'captured' and notice.history >= entry.retained_position:
                 entry.retained_position = notice.history
-                entry.retained_tokens = entry.candidate_tokens
-            entry.candidate_position, entry.candidate_tokens = 0, b''
+                entry.retained_tokens = identity
+            if terminal:
+                entry.terminal_position, entry.terminal_tokens = 0, b''
+            else:
+                entry.candidate_position, entry.candidate_tokens = 0, b''
             return
         if notice.kind == 'restored':
             if (entry.phase not in ('active', 'retiring') or not entry.history or
@@ -288,10 +374,17 @@ class SessionLedger:
             if (notice.history != expected or not 0 < notice.window <= notice.history or
                     type(notice.ready_records) is not int or notice.ready_records < 0):
                 raise ValueError('Worker retained a different prompt checkpoint')
+            if (notice.prompt_history and (not 0<notice.prompt_history<notice.history or
+                    not 0<notice.prompt_window<=notice.prompt_history or
+                    notice.prompt_tokens!=identity[:notice.prompt_history*4])):
+                raise ValueError('P checkpoint differs from the retained token lineage')
             entry.history, entry.window = notice.history, notice.window
+            entry.prompt_history,entry.prompt_window,entry.prompt_tokens = notice.prompt_history,notice.prompt_window,notice.prompt_tokens
+            entry.active_records = notice.active_records
             entry.ready_records = notice.ready_records
             entry.tokens = identity
             entry.candidate_position, entry.candidate_tokens = 0, b''
+            entry.terminal_position, entry.terminal_tokens = 0, b''
             entry.retained_position, entry.retained_tokens = 0, b''
             entry.request_id, entry.phase, entry.allocated = None, 'idle', False
             # Most recently retired session is the last idle eviction candidate.

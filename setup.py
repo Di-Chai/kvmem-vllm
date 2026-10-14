@@ -17,7 +17,7 @@ setup(
             f"third_party/qw3/src/{name}.cpp" for name in
             ("kvmem_store", "kvmem_repository", "kvmem_repository_gc", "kvmem_gc")
         ],
-        include_dirs=["third_party/qw3/include"],
+        include_dirs=["third_party/qw3/include", "third_party/qw3/src"],
         cxx_std=17,
         extra_compile_args=["-pthread"],
         extra_link_args=["-pthread"],

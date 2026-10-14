@@ -31,8 +31,13 @@ class RuntimeOptions:
     batched_cpu_append: bool = False
     request_planning: bool = False
     mean_k_backend: str = 'torch_reference'
+    session_checkpoint_policy: str = 'sealed'
 
     def __post_init__(self):
+        if self.session_checkpoint_policy not in ('sealed','pm'):
+            raise ValueError('Invalid checkpoint policy')
+        if self.session_checkpoint_policy=='pm' and self.session_capacity and not self.session_capture_terminal:
+            raise ValueError('P/M checkpoints require terminal capture')
         if type(self.request_planning) is not bool or self.mean_k_backend not in ('torch_reference', 'qw3_cuda'):
             raise ValueError('Invalid request planning or MeanK backend')
         if self.request_planning and self.memory.gen_budget < 3 * self.memory.block_tokens:
@@ -107,6 +112,7 @@ class RuntimeOptions:
         batched_append = payload.pop('batched_cpu_append', False)
         planning = payload.pop('request_planning', False)
         scorer = payload.pop('mean_k_backend', 'torch_reference')
+        checkpoint_policy = payload.pop('session_checkpoint_policy','sealed')
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -115,4 +121,4 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer)
+                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy)

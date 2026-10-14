@@ -28,6 +28,7 @@ class RefreshCommand:
     groups: tuple[tuple[int, RefreshTicket], ...]
     query_span: tuple[int, int] | None = None
     selection: str = 'chunk'
+    mandatory_spans: tuple = ()
 
 
 @dataclass

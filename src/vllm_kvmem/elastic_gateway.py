@@ -155,8 +155,8 @@ def create_app(config):
             if config.get('request_planning'):
                 from .request_plan import RequestPlan
                 plan = RequestPlan.parse(fields, len(prompt), 128, config['gen_budget_tokens'])
-                if plan.prefill_window == 'keep_selected' and len(prompt) + max_output > limit + config['gen_budget_tokens'] - 128:
-                    raise ValueError('keep_selected requires verified active headroom; this cold prompt exceeds K+G')
+                # Exact-prefix checkpoint and active-headroom finalization belong
+                # to the native session owner, not the logical prompt length.
             ranges = body.get('active_ranges')
             if ranges is not None:
                 if mean_k:
@@ -173,7 +173,7 @@ def create_app(config):
             await _wait_for_request(request, ticket.ready, turn_deadline, queue_deadline)
             if session.version and config.get('max_restore_inflight'):
                 remaining = queue_deadline - time.monotonic()
-                restore_extent = limit + 8 if mean_k else len(prompt) + 4
+                restore_extent = limit + config['gen_budget_tokens'] + 8 if mean_k else len(prompt) + 4
                 restore_ticket = restores.enter(user, geometry.active_bytes(restore_extent), remaining)
                 await _wait_for_request(request, restore_ticket.ready, turn_deadline, queue_deadline)
             admitted = time.monotonic()

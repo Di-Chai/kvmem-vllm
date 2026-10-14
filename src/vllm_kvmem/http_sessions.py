@@ -22,7 +22,7 @@ def validate_session_payload(payload, header):
     session_namespace(session, payload.get('cache_salt'))
 
 
-def normalize_query_plan(payload):
+def normalize_query_plan(payload, session_header=None):
     if not isinstance(payload, dict):
         return False  # Preserve native request-schema errors.
     from .request_plan import FIELDS, RequestPlan
@@ -51,7 +51,10 @@ def normalize_query_plan(payload):
         raise ValueError('max_tokens must be a positive integer')
     if max_tokens > cfg['gen_budget']:
         raise ValueError('Single-turn output must remain within G')
-    if plan.prefill_window == 'keep_selected' and len(prompt) + max_tokens > cfg['select_budget'] + cfg['gen_budget'] - cfg['block_tokens']:
+    extras = payload.get('vllm_xargs')
+    session = payload.get('session_id') or session_header or (extras.get('session_id') if isinstance(extras,dict) else None)
+    if (plan.prefill_window == 'keep_selected' and not session
+            and len(prompt) + max_tokens > cfg['select_budget'] + cfg['gen_budget'] - cfg['block_tokens']):
         raise ValueError('keep_selected requires verified active headroom; this cold prompt exceeds K+G')
     params['kvmem_request_plan'] = fields or {}
     for key in FIELDS:
@@ -70,7 +73,7 @@ async def validate_prompt_session(request, call_next):
         else:
             try:
                 validate_session_payload(payload, request.headers.get('X-Session-ID'))
-                if normalize_query_plan(payload):
+                if normalize_query_plan(payload,request.headers.get('X-Session-ID')):
                     request._body = json.dumps(payload).encode()
                     request._json = payload
             except ValueError as error:

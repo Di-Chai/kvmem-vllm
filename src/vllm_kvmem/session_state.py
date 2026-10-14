@@ -39,7 +39,8 @@ class PromptStateAdapter:
                 RuntimeOptions.from_vllm(runner.vllm_config).memory)
             self.contract.validate_native_groups(runner)
         self._identity = object()  # Snapshots never cross workers/model loads.
-        self.capture_decode = RuntimeOptions.from_vllm(runner.vllm_config).session_capture_decode
+        options = RuntimeOptions.from_vllm(runner.vllm_config)
+        self.capture_decode = options.session_capture_decode or options.session_checkpoint_policy=='pm'
 
     def _prefill_index(self, request_id, position, *, terminal=False):
         index = self.runner.req_states.req_id_to_index[request_id]

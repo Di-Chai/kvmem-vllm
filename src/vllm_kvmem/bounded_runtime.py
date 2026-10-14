@@ -139,11 +139,18 @@ def install_bounded_target(runner):
             i, history, query = extents[request_id]
             authority = runtime.authorities[request_id]
             score_query = query
+            from .request_plan import RequestPlan
+            mandatory_fit = RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
+                mandatory=getattr(job.command,'mandatory_spans',())).mandatory_fit(history,cfg)
+            required = set(mandatory_fit['hard_blocks'])
+            mandatory = [r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
+            if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory} != required:
+                raise ValueError('Required historical blocks are missing from the durable source')
             if history <= cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
             elif job.command.selection == 'pressure':
                 plan = authority.memory.select({r.handle.slot: float(r.history_begin)
-                    for r in authority.records.values()})
+                    for r in authority.records.values()},tuple(h.slot for h in mandatory))
             else:
                 begin, end = batch.query_start_loc_np[i:i+2]
                 if job.command.query_span is not None:
@@ -158,7 +165,7 @@ def install_bounded_target(runner):
                         history, int(batch.prefill_len_np[i]), query)
                     end = begin + score_query
                 queries = torch.stack([c.query[begin:end] for c in captured])
-                plan = authority.select_for_queries(queries)
+                plan = authority.select_for_queries(queries,mandatory)
             selected = plan.total_window_tokens
             if not 0 < selected <= cfg.select_budget:
                 raise RuntimeError("Original selector exceeded its reserved prefix")
@@ -182,6 +189,8 @@ def install_bounded_target(runner):
                 "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
                 "query_score_tokens": score_query, "draft_groups": list(draft_groups),
                 "selection": job.command.selection, "query_span": job.command.query_span,
+                "mandatory_fit":mandatory_fit,
+                "selected_history_ranges":[[r[2],r[3]] for r in authority.memory._store.working_records()],
                 "replay_span": [history, history + query], "mean_k_backend": runtime.options.mean_k_backend,
                 "assembly_seconds": time.perf_counter() - assembly_start,
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,

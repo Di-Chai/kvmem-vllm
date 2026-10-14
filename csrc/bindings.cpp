@@ -4,6 +4,8 @@
 #include "qw3/kvmem_store.hpp"
 #include "qw3/nvme_kv_tier.hpp"
 #include "qw3/kvmem_repository_gc.hpp"
+#include "kvmem_request_plan.hpp"
+#include "kvmem_prefix_reuse_policy.hpp"
 #include <filesystem>
 #include <cstring>
 #include <limits>
@@ -124,6 +126,29 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
 }
 
 PYBIND11_MODULE(_native, m) {
+    m.def("fit_mandatory_blocks", [](uint32_t prompt, uint32_t budget, uint32_t sink, uint32_t recent,
+            const std::vector<std::array<uint32_t,3>> &spans, uint32_t live_begin, uint32_t live_end,
+            bool pin_live) {
+        if (!budget || prompt > (1u<<24)) throw std::invalid_argument("Invalid mandatory capacity");
+        detail::KvmemMandatoryFitInput input;
+        input.prompt_blocks=prompt; input.budget_blocks=budget;
+        input.sink_blocks=sink; input.recent_blocks=recent;
+        input.live_begin=live_begin; input.live_end=live_end; input.pin_live_suffix=pin_live;
+        for (const auto &span:spans) {
+            if (span[0]>=span[1] || span[2]>3) throw std::invalid_argument("Invalid mandatory span");
+            input.hard_spans.push_back({span[0],span[1],static_cast<uint8_t>(span[2])});
+        }
+        const auto result=detail::kvmem_fit_mandatory_blocks(input);
+        py::dict out;
+        out["hard_blocks"]=result.hard_blocks; out["raw_mandatory_blocks"]=result.raw_mandatory_blocks;
+        out["fitted_live_blocks"]=result.fitted_live_blocks; out["soft_retrievable_blocks"]=result.soft_retrievable_blocks;
+        out["retrieval_reserve_blocks"]=result.retrieval_reserve_blocks;
+        out["capacity_fitted"]=result.capacity_fitted; out["replay_begin_block"]=result.replay_begin_block;
+        return out;
+    }, py::arg("prompt_blocks"),py::arg("budget_blocks"),py::arg("sink_blocks"),py::arg("recent_blocks"),
+       py::arg("spans"),py::arg("live_begin")=0,py::arg("live_end")=0,py::arg("pin_live")=false);
+    m.def("replay_capture_begin", &detail::kvmem_replay_capture_begin);
+    m.def("branch_safe_checkpoint", &detail::kvmem_branch_safe_prompt_checkpoint_split);
     m.def("finalize_mean_bf16", [](py::buffer raw, py::buffer sums, ssize_t count) {
         auto a=raw.request(), b=sums.request(true);
         if (a.ndim!=4 || a.itemsize!=1 || b.ndim!=3 || b.itemsize!=4 ||

@@ -4,11 +4,29 @@ Query replay starts at the preceding sealed block. The complete tail + Query
 is admitted atomically; a caller receives a capacity error instead of a
 silently shortened Query. Prefix pressure never supplies a semantic Query.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 FIELDS = {'kvmem_query_span', 'kvmem_query_message_range', 'kvmem_message_spans',
-          'kvmem_reselect', 'kvmem_prefill_window'}
+          'kvmem_reselect', 'kvmem_prefill_window', 'kvmem_replay_span',
+          'kvmem_mandatory_spans', 'kvmem_mandatory_parts'}
+PARTS = {'system', 'root', 'query', 'policy', 'tool-call', 'tool-result'}
+KINDS = PARTS | {'file', 'explicit'}
+
+
+def _parts(value):
+    selected = {'system', 'root', 'query', 'policy'}
+    if value is None or value == 'default':
+        return selected
+    if isinstance(value, str):
+        return set() if value == 'none' else _parts(value.split(','))
+    if isinstance(value, dict):
+        if set(value) - PARTS or any(type(v) is not bool for v in value.values()):
+            raise ValueError('Invalid mandatory parts')
+        return (selected - set(value)) | {k for k,v in value.items() if v}
+    if not isinstance(value, list) or any(not isinstance(v,str) or v not in PARTS for v in value) or len(set(value)) != len(value):
+        raise ValueError('Invalid mandatory parts')
+    return set(value)
 
 
 def _range(value, limit, label):
@@ -25,17 +43,74 @@ class RequestPlan:
     prefill_window: str = 'pressure'
     block_tokens: int = 128
     gen_budget: int = 16384
+    replay: tuple[int, int] | None = None
+    mandatory: tuple[tuple[int, int, str], ...] = ()
+    explicit_mandatory: bool = False
 
     @property
     def replay_begin(self):
-        return None if self.query is None else self.query[0] // self.block_tokens * self.block_tokens
+        if self.query is None:
+            return None
+        from . import _native
+        start = _native.replay_capture_begin(self.query[0], *(self.replay or (0,0)))
+        return start // self.block_tokens * self.block_tokens
+
+    @property
+    def replay_end(self):
+        return None if self.query is None else (self.replay[1] if self.replay else self.query[1])
+
+    def payload(self):
+        out = {'kvmem_reselect':self.reselect,'kvmem_prefill_window':self.prefill_window,
+               'kvmem_mandatory_spans':[{'begin':b,'end':e,'kind':k} for b,e,k in self.mandatory]}
+        if self.query is not None:
+            out['kvmem_query_span'] = list(self.query)
+        if self.replay is not None:
+            out['kvmem_replay_span'] = list(self.replay)
+        return out
+
+    def continuation(self, prompt_tokens, output_tokens, history, window, capacity,
+                     previous_query=None, previous_mandatory=()):
+        """Finalize against the exact checkpoint, preserving a stable epoch."""
+        query = self.query
+        if self.reselect == 'auto' and query == previous_query and query is not None and query[1] <= history:
+            query = None  # Exact prompt-prefix validation proves the old Q is unchanged.
+        mandatory = self.mandatory
+        if not self.explicit_mandatory:
+            inherited = tuple(s for s in previous_mandatory if query is None or s[2] != 'query')
+            mandatory = tuple(dict.fromkeys(inherited + mandatory))
+        changed = any(s[0] < history and s not in previous_mandatory for s in mandatory)
+        fits = window + prompt_tokens - history + output_tokens <= capacity - self.block_tokens
+        policy = self.prefill_window
+        if query is None and policy != 'semantic_chunk':
+            policy = 'keep_selected' if fits and not changed else 'pressure'
+        return replace(self,query=query,replay=self.replay if query else None,
+                       mandatory=mandatory,prefill_window=policy), changed
+
+    def mandatory_fit(self, history, config):
+        from . import _native
+        bt = self.block_tokens
+        count = (history + bt - 1) // bt
+        spans = [(b//bt,min(count,(e+bt-1)//bt),1 if k in ('root','policy') else 0)
+                 for b,e,k in self.mandatory if b < history]
+        spans = [s for s in spans if s[0] < s[1]]
+        return _native.fit_mandatory_blocks(count,config.select_budget//bt,
+                                           config.sink_blocks,config.recent_blocks,spans)
+
+    def prefill_checkpoint(self,prompt_tokens):
+        if self.query is not None:
+            return self.replay_begin
+        if self.prefill_window=='semantic_chunk' or any(k=='query' for b,e,k in self.mandatory):
+            return None  # Retain the old Query origin on stable tool callbacks.
+        from . import _native
+        point=_native.branch_safe_checkpoint(prompt_tokens,0,self.block_tokens)
+        return point if point and point%self.block_tokens==0 else None
 
     def prefill_boundary(self, history, capacity):
         # Reserve a replay block AND native MTP allocation lookahead. Pressure
         # must be visited before allocation; a filled old view cannot be probed.
         boundary = capacity - (1 if self.prefill_window == 'keep_selected' else 2) * self.block_tokens
         if self.query is not None and history < self.replay_begin:
-            query_boundary = (capacity - (self.query[1] - self.replay_begin) - self.block_tokens) // self.block_tokens * self.block_tokens
+            query_boundary = (capacity - (self.replay_end - self.replay_begin) - self.block_tokens) // self.block_tokens * self.block_tokens
             boundary = min(boundary, query_boundary)
         return boundary
 
@@ -75,10 +150,34 @@ class RequestPlan:
             raise ValueError('off forbids a Query')
         if window == 'semantic_chunk' and query is not None:
             raise ValueError('semantic_chunk and explicit Query are separate policies')
-        plan = cls(query, mode, window, block_tokens, gen_budget)
-        if query is not None and query[1] - plan.replay_begin > gen_budget:
+        replay = payload.get('kvmem_replay_span')
+        if replay is not None:
+            replay = _range(replay,prompt_tokens,'live replay span')
+            if query is None or not replay[0] <= query[0] < query[1] <= replay[1]:
+                raise ValueError('Live replay must contain the complete scoring Query')
+        mandatory = []
+        parts = _parts(payload.get('kvmem_mandatory_parts'))
+        root = next((s for s in spans if s['role']=='user'),None)
+        for span in spans:
+            kind = ('system' if span['role']=='system' else 'policy' if span['role']=='developer'
+                    else 'root' if span is root else 'tool-result' if span['role']=='tool' else None)
+            if kind in parts:
+                mandatory.append((span['begin'],span['end'],kind))
+        if query is not None and 'query' in parts:
+            mandatory.append((*query,'query'))
+        explicit = payload.get('kvmem_mandatory_spans',[])
+        if not isinstance(explicit,list):
+            raise ValueError('Mandatory spans must be a list')
+        for span in explicit:
+            if not isinstance(span,dict) or set(span) != {'begin','end','kind'} or span['kind'] not in KINDS:
+                raise ValueError('Invalid mandatory span')
+            begin,end = _range([span['begin'],span['end']],prompt_tokens,'mandatory span')
+            mandatory.append((begin,end,span['kind']))
+        plan = cls(query, mode, window, block_tokens, gen_budget, replay,
+                   tuple(dict.fromkeys(mandatory)), bool(set(payload)&{'kvmem_mandatory_spans','kvmem_message_spans','kvmem_mandatory_parts'}))
+        if query is not None and plan.replay_end - plan.replay_begin > gen_budget:
             raise ValueError('Complete partial tail + Query exceeds G replay capacity')
-        if query is not None and query[1] - plan.replay_begin > gen_budget - block_tokens:
+        if query is not None and plan.replay_end - plan.replay_begin > gen_budget - block_tokens:
             raise ValueError('Query replay must leave one block of pressure headroom')
         return plan
 
@@ -88,8 +187,11 @@ class RequestPlan:
             raise ValueError('Invalid explicit working-set extent')
         if history >= prompt_tokens:
             return min(desired, capacity - local)
+        checkpoint=self.prefill_checkpoint(prompt_tokens)
+        if checkpoint is not None and history<checkpoint:
+            desired=min(desired,checkpoint-history)
         if self.query is not None:
-            begin, end = self.replay_begin, self.query[1]
+            begin, end = self.replay_begin, self.replay_end
             if history < begin:
                 desired = min(desired, begin - history)
             elif history == begin:

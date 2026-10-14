@@ -18,7 +18,12 @@
     "tests/kvmem_repository_gc_test.cpp": "abc57321b0b65d43dede732137ae98ca7c0dbb303ee31ecd507557e2e60abbdf",
     "tests/kvmem_gc_test.cpp": "9205a182a124fb8b3bb190d7b5330cb792a76b99868dba526911d3ed8d9c9720",
     "tests/nvme_kv_tier_test.cpp": "143983b41ca49e2ad288f80528f813de182dca03e10f99184beac612254e4bb3",
-    "include/qw3/kvmem_attention.hpp": "ff02184d3f300bea8a7c9794188bd71bb6fac6e49bac25a8e03e33d5fc754594"
+    "include/qw3/kvmem_attention.hpp": "ff02184d3f300bea8a7c9794188bd71bb6fac6e49bac25a8e03e33d5fc754594",
+    "include/qw3/qw3.hpp": "48e6e32043ab1194ef591e1512c1f401d35d60fc98b457c764ca9150ef586f22",
+    "include/qw3/kvmem_mandatory.hpp": "64df2f9682d21c2e773c886f2b5e579583e9cbf3713eec5003039ad5ca6778fc",
+    "src/kvmem_request_plan.hpp": "1dd6c7eaefa44f367e07f0382780206e930a9be6db56dff2e16a488d5a70fe08",
+    "src/kvmem_refresh_policy.hpp": "57f2a13f4c82c9dade2387a51b349e5042c53e28349336e4f06be44c887afeb0",
+    "src/kvmem_prefix_reuse_policy.hpp": "cca8913d451ee7da61cc51e75248e641cb2b2f7d32fd443841e9ad07c2f80e1e"
   },
   "cuda_reference": {
     "source": "src/kernels_cuda.cu",
@@ -26,5 +31,6 @@
     "symbol": "block_attn_score_softmax_pages_kernel",
     "file": "cuda/mean_k_reference.cuh",
     "sha256": "ef1dd4c1bc6ebddc3995bcf1b87655b81a652665fe0df1954e396e753d580b7b"
-  }
+  },
+  "context_policy_import": "2026-10-14; original request capacity-fit, refresh and replay-boundary helpers, unchanged"
 }

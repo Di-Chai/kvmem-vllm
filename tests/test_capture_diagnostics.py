@@ -52,7 +52,7 @@ def test_runtime_retirements_bound_serving_reports_and_preserve_qualification(
     if retirement == 'checkpoint':
         worker = SessionWorker.__new__(SessionWorker)
         worker.runner = NS(_kvmem_capture_runtime=runtime)
-        worker.pool = NS(idle=lambda _: True)
+        worker.pool = NS(idle=lambda _: True,prompts={})
         worker.bindings, worker.retiring, worker.completed = {}, {}, []
     # Exercise all production append sites without writing every intermediate
     # snapshot to disk; the final report below uses the real serialization path.
@@ -73,7 +73,7 @@ def test_runtime_retirements_bound_serving_reports_and_preserve_qualification(
             assert runtime.retirement_done(request_id)
         else:
             worker.bindings[request_id] = SessionBinding(('tenant', 'session'), 1, request_id, (1,))
-            worker.retiring[request_id] = (NS(position=1, window=NS(window_tokens=1),
+            worker.retiring[request_id] = (NS(position=1, window=NS(window_tokens=1,records=((0,1,0,1,0),)),
                 authority=NS(memory=NS(repository=NS(ready_slots=2)))), {'request_id': request_id})
             assert worker.retirement_done(request_id)
             worker.completed.clear()  # Connector consumes notices after each engine step.

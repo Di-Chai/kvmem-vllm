@@ -32,10 +32,17 @@ def build_launch(profile, base, run_dir):
         'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
-        'request_planning': False, 'mean_k_backend': 'torch_reference'}
+        'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
+    cfg['session_checkpoint_policy'] = cfg['session_checkpoint_policy'] or ('pm' if cfg['request_planning'] else 'sealed')
+    if 'session_checkpoint_bytes' not in profile and cfg['session_checkpoint_policy']=='pm':
+        # P and M each own a recurrent-model snapshot. Keep both for the
+        # qualified eight-user Qwen 27B profile; explicit quotas stay authoritative.
+        cfg['session_checkpoint_bytes'] = 4 * 1024**3
+    if cfg['session_checkpoint_policy'] not in ('sealed','pm'):
+        raise ValueError('Invalid checkpoint policy')
     if type(cfg['request_planning']) is not bool or cfg['mean_k_backend'] not in ('torch_reference','qw3_cuda'):
         raise ValueError('Invalid Query planning or MeanK backend')
     if cfg['request_planning'] and (cfg['context_mode'] != 'meank' or cfg['draft_method'] != 'mtp'):
@@ -73,7 +80,7 @@ def build_launch(profile, base, run_dir):
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
                                'draft_quantization', 'profiler_config', 'async_seal', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
-                               'request_planning', 'mean_k_backend'}:
+                               'request_planning', 'mean_k_backend', 'session_checkpoint_policy'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -131,14 +138,16 @@ def build_launch(profile, base, run_dir):
                 'packed_assembly': True, 'direct_pinned_reads': True, 'prefill_cadence': 1,
                 'async_archive_retirement': True, 'verify_archive_on_finish': False,
                 'session_capacity': cfg['max_sessions'], 'session_checkpoint_bytes': cfg['session_checkpoint_bytes'],
-                'session_capture_terminal': not cfg['request_planning'],
-                'session_capture_decode': cfg['request_planning'],
+                'session_capture_terminal': not cfg['request_planning'] or cfg['session_checkpoint_policy']=='pm',
+                'session_capture_decode': cfg['request_planning'] and cfg['session_checkpoint_policy']=='sealed',
+                'session_checkpoint_policy':cfg['session_checkpoint_policy'],
                 'request_planning': cfg['request_planning'], 'mean_k_backend': cfg['mean_k_backend']}}
         if cfg['linear_backend_per_quant'] is not None:
             backend['linear_backend_per_quant'] = cfg['linear_backend_per_quant']
         # Validate the concrete native arguments before creating any resources.
         build_mean_k_launch(backend, run_dir, run_dir / 'meank')
         cfg['geometry_file'] = str(run_dir / 'meank/capture/cache-geometry.json')
+        cfg['session_views_file'] = str(run_dir / 'meank/capture/scheduler_resources.json')
         cfg['mean_k_backend_profile'] = backend
         cfg['mtp_k'] = cfg['draft_tokens'] if cfg['draft_method'] == 'mtp' else None
         return cfg, [sys.executable, '-m', 'vllm_kvmem', 'serve',

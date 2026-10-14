@@ -174,7 +174,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if options.request_planning:
         if cfg['draft_method'] != 'mtp':
             raise ValueError('Explicit Query planning currently requires native Qwen MTP')
-        if options.session_capacity and (options.session_capture_terminal or not options.session_capture_decode):
+        if (options.session_capacity and options.session_checkpoint_policy!='pm'
+                and (options.session_capture_terminal or not options.session_capture_decode)):
             raise ValueError('Explicit Query sessions require sealed decode checkpoints, not terminal checkpoints')
         cfg['long_prefill_token_threshold'] = 0
         cfg['max_num_batched_tokens'] = options.memory.gen_budget + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)

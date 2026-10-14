@@ -4,11 +4,22 @@
 records the current KV management, qw3 parity gaps, qualification results and next
 steps. Per-turn output stays within G. The explicit token-ID Query profile now
 supports request planning, complete Query/partial-tail replay and the original
-FP16 MeanK CUDA scorer. See the [cross-turn and concurrency qualification](docs/explicit-query-20261014.md)
+FP16 MeanK CUDA scorer. Stable continuations preserve selected pages, admission uses
+actual active headroom, mandatory spans use the original capacity-fit helper, and
+P/M checkpoints retain both the Query origin and accepted terminal state. See the
+[current context-policy qualification](docs/context-policy-20261014.md)
 and [profile](examples/qwen-nvfp4-meank-explicit-query-elastic.json); remaining
 qw3 protocol and GPU-index gaps are listed separately.
 
-**Explicit Query qualification, 2026-10-14:** real-model C8 cross-turn recovery
+**Current P/M qualification:** final-wheel C8 completed five turns per user,
+40 turns and 32 checked restores, including oversized mandatory spans and a 20K
+tool continuation that exhausts active headroom. Each history reached 73,447 tokens.
+At C8 / 32K input + 4K output, two normal-service runs measured **561.08 / 561.39
+steady tok/s** and **337.23 / 334.17 whole-batch tok/s** with KVMem and sessions enabled.
+C8 input throughput with one output token measured **6,426 / 7,573 tok/s**.
+See [measurement conditions, diagnostic comparison and remaining limits](docs/context-policy-20261014.md).
+
+**Earlier explicit Query baseline, 2026-10-14:** real-model C8 cross-turn recovery
 and short-turn replay pass with complete Query spans and CPU GDN byte checks.
 At 32K input + 4K output each, session-enabled steady decode measured **503.22
 tok/s**, including periodic CPU checkpoints, versus 378.21 before pinned

@@ -8,6 +8,7 @@ completed; the scheduler must not advertise a hit before idle() reports readines
 from array import array
 from dataclasses import dataclass
 from enum import Enum, auto
+import time
 
 
 class CheckpointPhase(Enum):
@@ -45,6 +46,7 @@ class PromptCheckpoint:
     claimant: str | None = None
     restore_started: bool = False
     restore_records: tuple | None = None
+    kind: str = 'P'
 
     @property
     def position(self):
@@ -52,16 +54,19 @@ class PromptCheckpoint:
 
 
 class PromptCheckpointPool:
-    def __init__(self, capacity, max_payload_bytes):
+    def __init__(self, capacity, max_payload_bytes, *, retain_prompt=False):
         if any(type(v) is not int or v <= 0 for v in (capacity, max_payload_bytes)):
             raise ValueError('Checkpoint pool needs positive entry and payload limits')
         self.capacity = capacity
         self.max_payload_bytes = max_payload_bytes
         self.entries = {}
+        self.prompts = {}
+        self.retain_prompt = retain_prompt
         self.payload_bytes = 0
 
     def _owned(self, checkpoint):
-        if self.entries.get(checkpoint.namespace) is not checkpoint:
+        if (self.entries.get(checkpoint.namespace) is not checkpoint and
+                self.prompts.get(checkpoint.namespace) is not checkpoint):
             raise ValueError('Stale or foreign prompt checkpoint lease')
 
     def capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False, terminal=False):
@@ -79,7 +84,8 @@ class PromptCheckpointPool:
                 (position % authority.memory.config.block_tokens and not terminal)):
             raise ValueError('Prompt checkpoint requires a sealed authority boundary')
         token_size = position * 4
-        retained_bytes = self.payload_bytes - (previous.payload_bytes if previous else 0)
+        preserve = self.retain_prompt and terminal and previous is not None and previous.kind=='P'
+        retained_bytes = self.payload_bytes - (previous.payload_bytes if previous and not preserve else 0)
         if token_size >= self.max_payload_bytes - retained_bytes:
             raise BufferError('Prompt checkpoint payload capacity is exhausted')
         identity = token_bytes(tokens, position)
@@ -94,10 +100,16 @@ class PromptCheckpointPool:
                                       **({'terminal': True} if terminal else {}))
         checkpoint = PromptCheckpoint(namespace, request_id, authority, window,
                                       model, identity, fixed + model.bytes)
+        checkpoint.kind = 'M' if terminal else 'P'
         # Keep the previous snapshot available if any validation/copy/admission
         # above fails. Only a complete CPU-owned replacement releases its leases.
         if previous is not None:
-            self._remove(previous)
+            if preserve:
+                if namespace in self.prompts:
+                    self._remove(self.prompts[namespace])
+                self.prompts[namespace] = previous
+            else:
+                self._remove(previous)
         self.entries[namespace] = checkpoint
         self.payload_bytes += checkpoint.payload_bytes
         return checkpoint
@@ -107,6 +119,9 @@ class PromptCheckpointPool:
         self._owned(checkpoint)
         if checkpoint.phase is not CheckpointPhase.LIVE:
             raise ValueError('Only a live borrowed snapshot may be dropped')
+        prompt = self.prompts.get(checkpoint.namespace)
+        if prompt is not None and prompt is not checkpoint:
+            self._remove(prompt)
         self._remove(checkpoint)
 
     def update_live_window(self, checkpoint):
@@ -151,6 +166,9 @@ class PromptCheckpointPool:
             # immutable archive generation is necessary before transfer.
             checkpoint.phase = CheckpointPhase.IDLE
             checkpoint.fence = None
+            prompt = self.prompts.get(checkpoint.namespace)
+            if prompt is not None:
+                prompt.phase = CheckpointPhase.IDLE
             return True
         if not checkpoint.rewind_started:
             spans = authority.begin_rewind(checkpoint.window.prefix)
@@ -164,10 +182,21 @@ class PromptCheckpointPool:
         checkpoint.fence = None
         return True
 
-    def claim(self, namespace, request_id, tokens):
+    def claim(self, namespace, request_id, tokens, *, position=None):
         checkpoint = self.entries.get(namespace)
         if checkpoint is None or checkpoint.phase is not CheckpointPhase.IDLE:
             return None
+        if not request_id or request_id == checkpoint.request_id:
+            raise ValueError('Checkpoint import requires a fresh native request identity')
+        if position is not None and checkpoint.position != position:
+            prompt = self.prompts.get(namespace)
+            if prompt is None or prompt.position!=position or prompt.phase is not CheckpointPhase.IDLE:
+                return None
+            if len(tokens)<=position or token_bytes(tokens,position)!=prompt.tokens:
+                return None
+            self._remove(checkpoint)  # Release later-prefix pins before a P rewind.
+            del self.prompts[namespace]
+            self.entries[namespace] = checkpoint = prompt
         # No hash-only equality and no reuse of reserialized generated suffixes.
         if len(tokens) <= checkpoint.position or token_bytes(tokens, checkpoint.position) != checkpoint.tokens:
             return None
@@ -199,6 +228,11 @@ class PromptCheckpointPool:
                 tuple(authority.memory._store.working_records()) != checkpoint.restore_records):
             raise ValueError('Checkpoint import did not commit its exact target prefix')
         self._remove(checkpoint)
+        prompt = self.prompts.pop(checkpoint.namespace,None)
+        if prompt is not None:
+            prompt.phase = CheckpointPhase.LIVE
+            prompt.request_id = checkpoint.claimant
+            self.entries[prompt.namespace] = prompt
         return authority
 
     def prepare_claim_window(self, checkpoint, *, pressure=False):
@@ -206,6 +240,24 @@ class PromptCheckpointPool:
         if checkpoint.phase is not CheckpointPhase.CLAIMED or checkpoint.restore_started:
             raise ValueError('No unsubmitted checkpoint import')
         memory = checkpoint.authority.memory
+        if memory.history_end > checkpoint.position:
+            deadline = time.monotonic()+180
+            authority = checkpoint.authority
+            while True:
+                remaining = deadline-time.monotonic()
+                if remaining<=0:
+                    raise TimeoutError('P checkpoint rewind did not drain')
+                if not checkpoint.rewind_started:
+                    spans = authority.begin_rewind(checkpoint.window.prefix)
+                    if spans is not None:
+                        class Ready:
+                            def query(self): return True
+                        authority.attach_rewind_completion(Ready())
+                        checkpoint.rewind_started = True
+                if checkpoint.rewind_started and authority.poll_rewind():
+                    break
+                if not authority.archive.wait_for_idle(remaining):
+                    raise TimeoutError('P checkpoint archive did not drain')
         if pressure:
             memory._validate_window_checkpoint(checkpoint.window)
             if memory.history_end != checkpoint.position:
@@ -242,6 +294,9 @@ class PromptCheckpointPool:
         if checkpoint.fence is not None and not checkpoint.fence.query():
             return False
         # Release our prefix pins before closing. External readers still keep
+        prompt = self.prompts.get(checkpoint.namespace)
+        if prompt is not None and prompt is not checkpoint:
+            self._remove(prompt)
         # the entry and its credits unavailable until authority.close succeeds.
         checkpoint.window = checkpoint.model = None
         checkpoint.tokens = b''
@@ -251,7 +306,12 @@ class PromptCheckpointPool:
         return True
 
     def _remove(self, checkpoint):
-        del self.entries[checkpoint.namespace]
+        if self.entries.get(checkpoint.namespace) is checkpoint:
+            del self.entries[checkpoint.namespace]
+        elif self.prompts.get(checkpoint.namespace) is checkpoint:
+            del self.prompts[checkpoint.namespace]
+        else:
+            raise ValueError('Checkpoint is no longer owned')
         self.payload_bytes -= checkpoint.payload_bytes
         # Do not let an obsolete Python lease retain native prefix/storage pins.
         checkpoint.window = checkpoint.model = checkpoint.authority = None

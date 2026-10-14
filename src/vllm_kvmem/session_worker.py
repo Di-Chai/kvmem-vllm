@@ -75,7 +75,8 @@ def verify_preserved_authority(authority, timeout=180):
 class SessionWorker:
     def __init__(self, runner, options):
         self.runner, self.options = runner, options
-        self.pool = PromptCheckpointPool(options.session_capacity, options.session_checkpoint_bytes)
+        self.pool = PromptCheckpointPool(options.session_capacity, options.session_checkpoint_bytes,
+            retain_prompt=getattr(options,'session_checkpoint_policy','sealed')=='pm')
         self.bindings = {}
         self.identities = {}
         self.imports = set()
@@ -140,15 +141,15 @@ class SessionWorker:
             try:
                 self.pool.capture(binding.namespace, request_id, authority,
                     command.tokens or binding.tokens, self.model_adapter,
-                    replace=getattr(self.options, 'session_capture_decode', False))
+                    replace=getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt)
             except BufferError:
                 # Cache admission failure preserves ordinary native execution.
                 self.checkpoint_deferrals += 1
-                if getattr(self.options, 'session_capture_decode', False):
+                if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
                     self.completed.append(SessionNotice('capture_deferred', binding.namespace,
                         binding.generation, request_id, command.position))
             else:
-                if getattr(self.options, 'session_capture_decode', False):
+                if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
                     self.completed.append(SessionNotice('captured', binding.namespace,
                         binding.generation, request_id, command.position))
 
@@ -164,9 +165,9 @@ class SessionWorker:
                 block = layer.key.shape[1]
                 pages = layer.kernel_page_table[positions // block].long()
                 offsets = positions % block
-                rows.extend((layer.key[pages, offsets].view(torch.uint8).flatten(),
-                             layer.value[pages, offsets].view(torch.uint8).flatten()))
-            return torch.cat(rows).cpu()
+                rows.extend((layer.key[pages, offsets].view(torch.uint8).flatten().cpu(),
+                             layer.value[pages, offsets].view(torch.uint8).flatten().cpu()))
+            return torch.cat(rows)
         finally:
             assembler.close()
 
@@ -183,7 +184,7 @@ class SessionWorker:
         from .window_assembly import NativeWindowAssembler
         from .window_batch import WindowBatchAdapter
         binding = self.bindings[request_id]
-        checkpoint = self.pool.claim(binding.namespace, request_id, binding.tokens)
+        checkpoint = self.pool.claim(binding.namespace, request_id, binding.tokens,position=binding.history)
         if (checkpoint is None or checkpoint.position != binding.history or
                 (checkpoint.window.window_tokens != binding.window and not binding.pressure_restore)):
             raise ValueError('Worker cannot restore the advertised exact prompt prefix')
@@ -209,6 +210,8 @@ class SessionWorker:
             if event is not None:
                 event.synchronize()
             oracle = getattr(self, 'restore_oracles', {}).pop(binding.namespace, None)
+            if isinstance(oracle,tuple):
+                oracle = oracle[1] if oracle[0]==checkpoint.position else None
             if binding.pressure_restore:
                 # The intended selected page set changed; an old-view byte
                 # oracle is not a valid comparison for a pressure refresh.
@@ -221,6 +224,7 @@ class SessionWorker:
                 with (self.runner._kvmem_probe_output/'verified_state_restores.jsonl').open('a') as stream:
                     stream.write(json.dumps({'request_id':request_id,'history_tokens':binding.history,
                         'working_tokens':binding.window,'recurrent_tensors':len(recurrent),
+                        'checkpoint_kind':checkpoint.kind,
                         'pressure_restore':binding.pressure_restore,'recurrent_byte_equal':True})+'\n')
             if oracle is not None:
                 actual = self._target_bytes(request_id, checkpoint.window.window_tokens)
@@ -306,12 +310,16 @@ class SessionWorker:
         if checkpoint.request_id != request_id or checkpoint.authority is not authority:
             raise ValueError('Terminal request does not own the retained prompt snapshot')
         if command is not None and kind == 'captured' and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
-            self.restore_oracles[binding.namespace] = self._target_bytes(request_id, checkpoint.window.window_tokens)
+            self.restore_oracles[binding.namespace] = (checkpoint.position,self._target_bytes(request_id, checkpoint.window.window_tokens))
         verified = verify_preserved_authority(authority) if self.options.verify_archive_on_finish else 0
         self.pool.retire(checkpoint, _Ready())  # Capture downloads and CPU state copies have drained.
         self.retiring[request_id] = (checkpoint, {**report, 'history_end': authority.history_end,
             'checkpoint_tokens': checkpoint.position, 'sealed_records_verified': verified,
-            'retirement_strategy': 'terminal_checkpoint' if command is not None else 'checkpoint_rewind',
+            'retirement_strategy': 'terminal_checkpoint' if checkpoint.kind=='M' else 'checkpoint_rewind',
+            'checkpoint_kind': checkpoint.kind, 'checkpoint_payload_bytes': checkpoint.payload_bytes,
+            'checkpoint_pool_bytes': self.pool.payload_bytes,
+            'checkpoint_pool_limit_bytes': self.pool.max_payload_bytes,
+            'checkpoint_deferrals': self.checkpoint_deferrals,
             'authority_namespace': authority.memory.request_id})
         return True
 
@@ -323,9 +331,13 @@ class SessionWorker:
         if not self.pool.idle(checkpoint):
             return False
         binding = self.bindings.pop(request_id)
+        prompt = self.pool.prompts.get(binding.namespace)
         self.completed.append(SessionNotice('retired', binding.namespace, binding.generation,
             request_id, checkpoint.position, checkpoint.window.window_tokens,
-            checkpoint.authority.memory.repository.ready_slots))
+            checkpoint.authority.memory.repository.ready_slots,
+            prompt.position if prompt else 0,prompt.window.window_tokens if prompt else 0,
+            prompt.tokens if prompt else b'',
+            tuple((r[2],r[3]) for r in checkpoint.window.records)))
         self.runtime.completed.append({**report, 'retirement_ack_ready_at': time.perf_counter()})
         del self.retiring[request_id]
         self.runtime._write_archive_report()

@@ -126,9 +126,10 @@ class KVMemScheduler(Scheduler):
                                                     prepare_import, abort_import, commit_import,
                                                     terminal_capture=options.session_capture_terminal,
                                                     select_budget=config.select_budget if options.request_planning else None,
-                                                    gen_budget=config.gen_budget if options.request_planning else None)
+                                                    gen_budget=config.gen_budget if options.request_planning else None,
+                                                    checkpoint_policy=options.session_checkpoint_policy,memory_config=config)
 
-    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk'):
+    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=()):
         if getattr(request, "num_in_flight_tokens", 0):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:
@@ -145,7 +146,7 @@ class KVMemScheduler(Scheduler):
                 self.window_managers[group_id].abort_preparation(ticket)
             raise
         groups = tuple(prepared)
-        command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups,query_span,selection)
+        command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups,query_span,selection,mandatory_spans)
         self.transactions[request.request_id] = (command, request.next_decode_eligible_step)
         request.next_decode_eligible_step = 2**62
         self.connector.queue(command)
@@ -168,6 +169,7 @@ class KVMemScheduler(Scheduler):
         if sessions is not None:
             report['sessions'] = dict(entries=len(sessions.entries), hits=sessions.hits,
                                       misses=sessions.misses, waits=sessions.waits)
+            report['session_views'] = sessions.snapshot()
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
         temporary = path / "scheduler_resources.tmp"
         temporary.write_text(json.dumps(report))
@@ -290,7 +292,8 @@ class KVMemScheduler(Scheduler):
                         (action is not None and request.num_computed_tokens >= self.query_policy.select_budget)):
                     self.begin_refresh(request, self.query_policy.select_budget, replay_tokens=query_tokens,
                         query_span=plan.query if action == 'query' else None,
-                        selection='pressure' if action == 'pressure' else 'query' if action == 'query' else 'chunk')
+                        selection='pressure' if action == 'pressure' else 'query' if action == 'query' else 'chunk',
+                        mandatory_spans=plan.mandatory if plan is not None else ())
                     # Native V2 otherwise defers start_load_kv until after model
                     # forward. The query command must exist before this forward.
                     output.has_sync_kv_loads = True

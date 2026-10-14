@@ -1,5 +1,8 @@
 # 显式 Query、跨轮恢复与原版 MeanK 评分
 
+本报告保存 `5043645` 的历史行为和测量；当前 profile 的 P/M 与必留内容策略见
+[后续实现报告](context-policy-20261014.md)。
+
 日期：2026-10-14。本次补齐 token-ID 请求的 Query 规划、Query 边界重放、
 FP16 MeanK index 和原版基础 CUDA scorer；继续保留单轮输出不超过 G。
 这是单 GPU、同步 Qwen MTP 的有界适配，不代表 qw3 所有协议和可选策略均已迁移。
@@ -41,7 +44,8 @@ HTTP middleware 将规划放入原生支持的 `kv_transfer_params.kvmem_request
 这些同名 Query 字段尚不兼容 qw3 的聊天 API 格式：原版 span 指定消息内容的
 UTF-8 字节坐标，message range 可含混合角色整轮；本版接收绝对 token 坐标，
 message range 限于 user。跨轮自动 gate 和默认恢复保持选页也仍不同，详见
-[最新上下文管理对照](context-management-parity-20261014.md)。
+[修改前上下文管理对照](context-management-parity-20261014.md) 与
+[后续 P/M 上下文策略](context-policy-20261014.md)。
 
 ## Query 与恢复的执行顺序
 

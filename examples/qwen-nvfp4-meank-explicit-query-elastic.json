@@ -21,7 +21,7 @@
   "gpu_memory_utilization": 0.82,
   "active_bytes": 51539607552,
   "cpu_kv_bytes": 107374182400,
-  "session_checkpoint_bytes": 2147483648,
+  "session_checkpoint_bytes": 4294967296,
   "max_sessions": 8,
   "max_sessions_per_user": 1,
   "max_inflight": 8,

@@ -1,0 +1,2005 @@
+{
+  "schema": "kvmem.context_policy_qualification.v1",
+  "date": "2026-10-14",
+  "baseline_commit": "50436456921cfa003c1c4c4a6522b6401d859211",
+  "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319",
+  "runtime_source_sha256": {
+    "src/vllm_kvmem/__init__.py": "d75c0d95e06dca6cb8a7c64af16b7ff581f40c7e5503460998c84aec018ca116",
+    "src/vllm_kvmem/__main__.py": "f19b6128b9d8e9e2158ea064c41d10f2abbaf11181371fabb96232642ecebcbd",
+    "src/vllm_kvmem/_fused_capture.py": "1f10b7301ac20709aacec5cd6b5e49cc86ce65e77fc6c7d03b111795d365ee5e",
+    "src/vllm_kvmem/admission.py": "9c8dd1df9ebbcbc90dff9bb87b60fad9de7d8561d6de3a39ac2ccfafadccf8cd",
+    "src/vllm_kvmem/archive_admission.py": "ca15f38beb6393bc5941358adb5f7d4083ee36354c03106477c5746ce5ea78bf",
+    "src/vllm_kvmem/assembly.py": "9d87e115b55810d1398bb11f4aa962d92510f3c06fff7238759aa0b5d523b208",
+    "src/vllm_kvmem/authority.py": "0325c0ad3760699960377881d5e67b031c2dfa2d70ecfafb4ee0f55552e7b382",
+    "src/vllm_kvmem/bounded_runtime.py": "0f625936f7378cde0c84374c27117c20439a914809f53da4df04e7605ab115a2",
+    "src/vllm_kvmem/cache_groups.py": "78dbc0101ad143e4714a61e3b3bbe865c0454d5024a108beb9236093e3fa66fd",
+    "src/vllm_kvmem/cache_manifest.py": "6b8b6594b2f36d9b3d1b2bebd0d206d6d90078b1fe84f2d362523e83d6e77b1a",
+    "src/vllm_kvmem/cached_storage.py": "ef292535f190fede87edf30918463ef98a5c31ea458266aa1680b34e71c445bc",
+    "src/vllm_kvmem/cancellation.py": "8271960d729adb5c18ab673bc637546d7b6e0c4bacf20307b6d65e3fc74c39a3",
+    "src/vllm_kvmem/capacity.py": "e25280c0e49229171f121a8c9daad19e82c574cd419c00629d6ae37195e00523",
+    "src/vllm_kvmem/capture.py": "0493ddf020ec62811d3e495f7816b2fa7e6e7285003990529edaac13e5ee738d",
+    "src/vllm_kvmem/capture_runtime.py": "796844b2ddf385d1871015233fafe3e5df4bc31c9120a85c4c27cadad408406c",
+    "src/vllm_kvmem/codec.py": "d91159dced30ea106653693b6b8bbc233100474c9ba6faca489a26eff0c66af9",
+    "src/vllm_kvmem/compat.py": "a4dd852121e9c51b89cb33f906c5a18031fdc48d42568f02697346b392fd8c05",
+    "src/vllm_kvmem/compression_probe.py": "1344ac0769c5d3c2638c462aab9f3f77a7d84cc90345c3be5951cccfaa895481",
+    "src/vllm_kvmem/config.py": "58e21e75ae3eb0e75bbeede57d9d258ba846c8649ecf59281b0a489b4a26c9db",
+    "src/vllm_kvmem/connector.py": "c583d7eb21f53316191936ba888e3e9ab34ae93451d86a9042c0cfc3ea5c162d",
+    "src/vllm_kvmem/cuda_scoring.py": "05c74d91b6ac35c5bcec26339a1993bc3120f9009ad64e1f5becd2d1342d3af4",
+    "src/vllm_kvmem/diagnostics.py": "1c8b1d7d078862c40937fbdc6ad5c1890453a3af4fd5cd67b7aa5fc20c506e15",
+    "src/vllm_kvmem/draft_contract.py": "9bab09e5e2b905d2efd710bf3de89800f1e1d7c285e67f7d3b737d18de24d229",
+    "src/vllm_kvmem/draft_quantization.py": "096c194d596e8206d35769bea0dfe621066f1b3ecabd773ea8a108248c1684c1",
+    "src/vllm_kvmem/elastic.py": "2846fd4598393929ec414b3eb247483d0ce595eafde0377d8b00aaf2d7fab406",
+    "src/vllm_kvmem/elastic_connector.py": "904d6ae27abbcf227615a98b48478bb16546b4e0f0095d3d691d21692a55ddca",
+    "src/vllm_kvmem/elastic_control.py": "6067af9062e1bc3dc0ce16bc9398e1f3b438b992dfcfef6a05154c2e92c87a9a",
+    "src/vllm_kvmem/elastic_gateway.py": "c0c22c1227d4544771b1895b5746bb365ad4f4d73dca21afe781972a3cf4b2db",
+    "src/vllm_kvmem/elastic_serve.py": "31b8c97f2ba899e45da1bf1887924c98cefe7576b36e40ae5d7e6646ccf4ebbb",
+    "src/vllm_kvmem/elastic_stream.py": "5219eec08513d0f9724a2d5d8ed1f35c059f09b5e89bb2f47e69d0c0d7d2ec1c",
+    "src/vllm_kvmem/gpu_raw_cache.py": "3b40735e182f90085f6b07d8813cb0ddeef740c661c186c1616c7ceb3cd31272",
+    "src/vllm_kvmem/graph_runtime.py": "f25d59ae481b1548659d8a30dc9735897aad311437a4647fa5d68ec52930db97",
+    "src/vllm_kvmem/http_sessions.py": "510d359ac2bffa9073b6da602ed3ee634b33105ef312ba630987843a8400567a",
+    "src/vllm_kvmem/integration.py": "57a1fc82e98f36e6089476d826927277fa7869d6231b214b7b576e2866202905",
+    "src/vllm_kvmem/measurement.py": "034c0d245a0938903a425e91e0a2e968b64d029a9a65265ffa368eee253f2ceb",
+    "src/vllm_kvmem/memory.py": "4f3155c6a14c470e4f6a9c477d2ddda3cdc6b6573e5149544c0e63042bbfeb32",
+    "src/vllm_kvmem/metadata.py": "f2c071eecdbc91ded11b9a31e95d499cd568428c71a595ddd154fcdf49269db1",
+    "src/vllm_kvmem/metadata_patch.py": "dfbaf2ad51b89f57ce67cdb357681f7c55318281b02973a2dca2bde103faba53",
+    "src/vllm_kvmem/mtp_runtime.py": "4f358a83699759123af83bfa807d2f9b2885e78f39f3aed1a2fc614757ed24d6",
+    "src/vllm_kvmem/multi_user.py": "241fc09eca880fb9f9fa44f6666ad6a618e8dd1b248034f6e576619445fa354d",
+    "src/vllm_kvmem/native_state.py": "c84c31e774042ba9153c0f973c8c989f4ed60d93c94353a1787cfd689dcaf071",
+    "src/vllm_kvmem/options.py": "830f77d9e52bff85c060eeee2ed6a2f8180f1a3105b9b911746c1c8d629b68f2",
+    "src/vllm_kvmem/packed_assembly.py": "489a654599e6f6dc252b72e87c0705ef42104a092182e206b62b0f831c65174d",
+    "src/vllm_kvmem/pages.py": "65845352d34b8acb30dc3071fe328d285f1052f41efd2f13dd789b1cf8387351",
+    "src/vllm_kvmem/profile_scopes.py": "0bae51b7dc3cda73f3484bd8aab0a7bcd6e12e4b061866230ec6500c5faa7b4f",
+    "src/vllm_kvmem/profile_worker.py": "aad8cc46d4e55c3a299ae80c29dd52f358490f183653afa031f2d53180a41e09",
+    "src/vllm_kvmem/profiling.py": "591d2dda03f97d28d39b6444a089f6f4cb901fd3acf1696a3a5cbbd05a9e58dc",
+    "src/vllm_kvmem/prompt_checkpoints.py": "5fa05fef7215f5d4ae13b2f3ed19692555558a8e4190594b4b65277bca056d4e",
+    "src/vllm_kvmem/q8_adapter.py": "b36857cdb4b63a590deb305e8dbcbef4032e7114dbecfb83e9529be2e927166a",
+    "src/vllm_kvmem/q8_tensorcore.py": "ee38c864527e834fe2e81b86ca708f91a48f272ee42d96639619573c1b880463",
+    "src/vllm_kvmem/read_cache.py": "aa098f9d3df47095148b3bf87b42eb810acc0e2a60458fcda1a6989ebd5abecb",
+    "src/vllm_kvmem/refresh_probe.py": "a33b70148352e72678efc69cf00fe985658bbaa5c2ff269c53fe2e2bf5bf367c",
+    "src/vllm_kvmem/replay_probe.py": "b060b41477dfc574121b20270442228e38c05a4f6b5c284c04e0f6fc47db90da",
+    "src/vllm_kvmem/repository_gc.py": "6be25a2a2bcdfe1f5eb094b86220198f9c835acdaad07c993b55e1682886dcd4",
+    "src/vllm_kvmem/request_plan.py": "55bc5ea494481051cb5ea624a98fb9464807939dd32b52fad02e3817bbca6cb3",
+    "src/vllm_kvmem/retirement.py": "6f32eae2c7de74516db4231c3c41428c600d2a4fc060c3ebada2832956997756",
+    "src/vllm_kvmem/retrieval.py": "fb8bc20c1eaff307c97ae93744fb95fa6b6c607a9e89a3743a4417b0bc9942d4",
+    "src/vllm_kvmem/runner.py": "38cfe6f86febcbf99017c488103aebad69a9339496374f865419eca3feb38692",
+    "src/vllm_kvmem/scheduler.py": "f358dc851e31aa6abb58312b91c873ea6c88e2b8c6cc712392ab1eb4de4d85f4",
+    "src/vllm_kvmem/serve.py": "8d58d1d3005e0fe06a13b3fc848c1b036dac74eb868fa2fa00cdc3efcd7a4dcc",
+    "src/vllm_kvmem/session_control.py": "494e85bd56973a3606c5f5cedd6291482fbe4ade6f4ed259ef5f9ba4b18a36f2",
+    "src/vllm_kvmem/session_state.py": "b857f3d281bddfceb850bdf50af1345f8ec8de1bd89a4433feaba64344661fbd",
+    "src/vllm_kvmem/session_worker.py": "17b53496754d4af8cb77dbc5c4f777e4b4b99b94e6af7a8f4fd353b67776247f",
+    "src/vllm_kvmem/speculative_admission.py": "4f8adda8485b5d923dd16301af766dd9fff9249427281c1bb51a1e846ab08d56",
+    "src/vllm_kvmem/split_assembly.py": "3fc2dd61f5f5b9ae43ec03758d8f348d8aef3de7875c645a06016567ba240ca6",
+    "src/vllm_kvmem/state.py": "6c390014879724c47f6355202ffadc62365ca733bebf6ead7e46cea19bba4c6f",
+    "src/vllm_kvmem/storage.py": "8e76796bcb8c27bcbf66d194cfb59774afbebed0e6fac83ccc2ac10f7f5feab2",
+    "src/vllm_kvmem/telemetry.py": "23f884212ffd2a6fa64f80c5b9e94b22efdd77178d525cc25ca4d99b71707f47",
+    "src/vllm_kvmem/terminal.py": "51e4042cf3ed60c00b91e6a9e299a67e25f2aed9ddd58542a514e1b64c012a33",
+    "src/vllm_kvmem/transfer.py": "d8542593e08e5ee9df70d285408af409a2166f1a6f2be47bb7bc51ffe380096f",
+    "src/vllm_kvmem/window_assembly.py": "2284a9b71834b2ee9b906a8fdbcf47b0706a854b2473d25887bf138a7db7ceda",
+    "src/vllm_kvmem/window_batch.py": "455ce6a8a3e00a699fb2642d13c5ee0ea2311a9b359ef0517f659a1afa9be1be",
+    "src/vllm_kvmem/window_bridge.py": "007634ad3bb4560e2f531fc8118f22a111a5b4dcb95c928ceae8f90ed185e9a6",
+    "src/vllm_kvmem/window_manager.py": "d547dc7fe020acd48153181071d8fb10da5c73b2060ee78517738ba238993a81"
+  },
+  "configuration": {
+    "active_context_tokens": 32768,
+    "gen_budget_tokens": 16384,
+    "draft_method": "mtp",
+    "draft_tokens": 3,
+    "execution_mode": "compiled_graph",
+    "request_planning": true,
+    "mean_k_backend": "qw3_cuda",
+    "session_checkpoint_policy": "pm",
+    "session_checkpoint_bytes": 4294967296,
+    "cpu_kv_bytes": 107374182400,
+    "gpu_raw_k_cache_bytes": 4294967296,
+    "reuse_resident_v": true,
+    "max_num_seqs": 8,
+    "target_quantization": "NVFP4",
+    "target_and_mtp_kv_dtype": "fp8_e4m3",
+    "block_tokens": 128,
+    "target_full_attention_layers": 16,
+    "mtp_kv_layers": 1,
+    "synchronous_batches": 1,
+    "prefix_caching": false
+  },
+  "validation": {
+    "cpu_suite": {
+      "passed": 652,
+      "skipped": 73
+    },
+    "final_worker_targeted": {
+      "passed": 38,
+      "skipped": 1
+    },
+    "final_launcher": {
+      "passed": 87
+    },
+    "gpu_suite_intermediate": {
+      "passed": 713,
+      "skipped": 6
+    }
+  },
+  "functional": {
+    "c8_four_turns": {
+      "status": "passed",
+      "concurrency": 8,
+      "input_tokens": 50006,
+      "outputs_per_turn": 17,
+      "successful_turns": 32,
+      "pressure_tool_tokens": 0,
+      "oversized_file": false,
+      "clients": [
+        {
+          "client_index": 0,
+          "seconds": 209.22774607036263,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            75.46923968195915,
+            39.95078754611313,
+            33.31943972967565,
+            31.52054696995765
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 1,
+          "seconds": 209.22374417539686,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            45.30642405804247,
+            70.59551384020597,
+            27.805987124331295,
+            40.38313043303788
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 2,
+          "seconds": 215.63760505523533,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            95.9221136374399,
+            26.671448978595436,
+            28.042192982509732,
+            33.72904090024531
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 3,
+          "seconds": 219.34634097572416,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            116.23965508118272,
+            29.811058336868882,
+            32.70791014842689,
+            27.212148413062096
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 4,
+          "seconds": 215.5831251628697,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            89.62592702452093,
+            36.46600767970085,
+            35.665461608208716,
+            33.72808696143329
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 5,
+          "seconds": 209.21064083650708,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            54.663862807676196,
+            55.81825371645391,
+            39.54881599359214,
+            37.12940914276987
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 6,
+          "seconds": 219.33869435545057,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            120.22935547307134,
+            24.599939786829054,
+            34.80468441452831,
+            19.467791019938886
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 7,
+          "seconds": 225.19416117481887,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430
+          ],
+          "turn_seconds": [
+            140.5788952112198,
+            37.6902675377205,
+            27.01153686735779,
+            7.775617464445531
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        }
+      ],
+      "state_restores": 24,
+      "restore_kinds": {
+        "P": 8,
+        "M": 16
+      },
+      "query_replays": 24,
+      "pressure_refreshes": 8,
+      "all_recurrent_byte_equal": true,
+      "final_owned_blocks": 0,
+      "final_requests": 0,
+      "checkpoint_deferrals": 0,
+      "peak_checkpoint_pool_bytes": 2513838880,
+      "wheel_sha256": "3824c8aa93bf3eeec9dbfa10319f5bbdad61e78361387a6b5471ecab05aff748"
+    },
+    "c1_pressure_oversized_file": {
+      "status": "passed",
+      "concurrency": 1,
+      "input_tokens": 50006,
+      "outputs_per_turn": 17,
+      "successful_turns": 5,
+      "pressure_tool_tokens": 20000,
+      "oversized_file": true,
+      "clients": [
+        {
+          "client_index": 0,
+          "seconds": 89.16888859961182,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            64.03049884084612,
+            3.4015398398041725,
+            1.4929373105987906,
+            3.617874297313392,
+            8.835030609741807
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        }
+      ],
+      "state_restores": 4,
+      "restore_kinds": {
+        "P": 1,
+        "M": 3
+      },
+      "query_replays": 3,
+      "pressure_refreshes": 2,
+      "all_recurrent_byte_equal": true,
+      "final_owned_blocks": 0,
+      "final_requests": 0,
+      "wheel_sha256": "3824c8aa93bf3eeec9dbfa10319f5bbdad61e78361387a6b5471ecab05aff748"
+    },
+    "quota_trial_2_gib": {
+      "successful_turns": 32,
+      "full_m_gate": "failed",
+      "observed": "M capture quota exhaustion retained P; full M qualification rerun at 4 GiB passed.",
+      "wheel_sha256": "2b700c1901733e631157e266c5c2ea0641505ea5cc1ab7b04a29cdfcb49149f5"
+    },
+    "final_one_token": {
+      "schema": "kvmem.prefill_service_qualification.v1",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+      "prompt_sessions": true,
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 1,
+          "round": 0,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 32768,
+          "seconds_to_all_first_tokens": 6.968938656151295,
+          "effective_input_tokens_per_second": 4702.007237655416,
+          "wall_seconds": 6.970365285873413,
+          "whole_input_tokens_per_second": 4701.044874421391,
+          "ttft_mean_seconds": 6.968938656151295,
+          "ttft_max_seconds": 6.968938656151295,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.0005710972473025322,
+              "first_token": 6.969509753398597,
+              "ttft_seconds": 6.968938656151295,
+              "request_seconds": 6.96913250349462,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        },
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round": 0,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 262144,
+          "seconds_to_all_first_tokens": 49.345987347885966,
+          "effective_input_tokens_per_second": 5312.367105999968,
+          "wall_seconds": 49.348118115216494,
+          "whole_input_tokens_per_second": 5312.137727075105,
+          "ttft_mean_seconds": 28.283199625089765,
+          "ttft_max_seconds": 49.32889244426042,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.0006520198658108711,
+              "first_token": 6.419737763702869,
+              "ttft_seconds": 6.4190857438370585,
+              "request_seconds": 6.419253231026232,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 1,
+              "started": 0.0031585870310664177,
+              "first_token": 12.767439485527575,
+              "ttft_seconds": 12.764280898496509,
+              "request_seconds": 12.76441171951592,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 2,
+              "started": 0.0054316651076078415,
+              "first_token": 19.172285112552345,
+              "ttft_seconds": 19.166853447444737,
+              "request_seconds": 19.166998621076345,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 3,
+              "started": 0.00783154834061861,
+              "first_token": 31.659454270265996,
+              "ttft_seconds": 31.651622721925378,
+              "request_seconds": 31.651827084831893,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 4,
+              "started": 0.00958868395537138,
+              "first_token": 25.369576967321336,
+              "ttft_seconds": 25.359988283365965,
+              "request_seconds": 25.360179315321147,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 5,
+              "started": 0.011494599282741547,
+              "first_token": 37.74957844149321,
+              "ttft_seconds": 37.73808384221047,
+              "request_seconds": 37.738300123251975,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 6,
+              "started": 0.014854734763503075,
+              "first_token": 43.85164435394108,
+              "ttft_seconds": 43.83678961917758,
+              "request_seconds": 43.83699305076152,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 7,
+              "started": 0.017746923491358757,
+              "first_token": 49.34663936775178,
+              "ttft_seconds": 49.32889244426042,
+              "request_seconds": 49.32909398339689,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        }
+      ],
+      "scope": "Input-token service throughput with one generated token per request. Includes queueing, CPU history/checkpoints and MTP preparation; not isolated GPU kernel throughput. No sustained decode is interleaved.",
+      "verify_session_restore": true,
+      "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319"
+    },
+    "final_c8_pressure_oversized_file": {
+      "status": "passed",
+      "concurrency": 8,
+      "input_tokens": 50006,
+      "outputs_per_turn": 17,
+      "successful_turns": 40,
+      "pressure_tool_tokens": 20000,
+      "oversized_file": true,
+      "clients": [
+        {
+          "client_index": 0,
+          "seconds": 287.3062933636829,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            99.57435767631978,
+            50.04180737771094,
+            25.226755836047232,
+            33.86598712671548,
+            56.28651100862771
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 1,
+          "seconds": 313.61228299792856,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            161.36210127733648,
+            19.45310039073229,
+            22.99729525949806,
+            59.95092759281397,
+            24.400165900588036
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 2,
+          "seconds": 270.77824131026864,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            91.73189684096724,
+            60.22356850840151,
+            21.812884317710996,
+            24.359243699349463,
+            54.05722585041076
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 3,
+          "seconds": 311.5173644516617,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            153.42261943686754,
+            24.2007446186617,
+            25.58445430546999,
+            45.15712494123727,
+            46.88869456760585
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 4,
+          "seconds": 297.8998443381861,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            130.32522590644658,
+            33.4710729168728,
+            19.298628322780132,
+            35.48648207355291,
+            58.690839203074574
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 5,
+          "seconds": 282.89086666796356,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            112.377546928823,
+            39.03127204440534,
+            23.01217245683074,
+            24.40693367086351,
+            62.79466515220702
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 6,
+          "seconds": 305.5022417427972,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            145.00523340143263,
+            20.33296710718423,
+            25.127413363195956,
+            51.129654413089156,
+            45.145666281692684
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        },
+        {
+          "client_index": 7,
+          "seconds": 315.2893823767081,
+          "histories": [
+            50023,
+            52088,
+            52116,
+            53430,
+            73447
+          ],
+          "turn_seconds": [
+            169.74293018504977,
+            21.282922515645623,
+            28.835480192676187,
+            64.9782207524404,
+            15.687535889446735
+          ],
+          "m_checkpoints": [
+            50022,
+            52087,
+            52115,
+            53429,
+            73446
+          ],
+          "active_windows": [
+            34790,
+            36855,
+            36883,
+            33973,
+            37862
+          ],
+          "first_query": [
+            48033,
+            49997
+          ],
+          "fresh_query": [
+            52302,
+            53404
+          ],
+          "fresh_replay": [
+            52224,
+            53404
+          ]
+        }
+      ],
+      "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319",
+      "state_restores": 32,
+      "restore_kinds": {
+        "P": 8,
+        "M": 24
+      },
+      "query_replays": 24,
+      "pressure_refreshes": 16,
+      "all_recurrent_byte_equal": true,
+      "final_owned_blocks": 0,
+      "final_requests": 0,
+      "checkpoint_deferrals": 0,
+      "peak_checkpoint_pool_bytes": 2514489024
+    }
+  },
+  "performance": {
+    "previous_sealed_verified": {
+      "status": "passed",
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 32768,
+        "input_file_sha256": "256401e4b3a7bb4d4fd849e8dc045248d6390b871c8c718a732d73a0291b6d0b",
+        "token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "frozen_file": "input.json"
+      },
+      "configuration": {
+        "api_base": "http://127.0.0.1:18381/v1",
+        "model": "kvmem-meank",
+        "endpoint": "completions",
+        "concurrency": [
+          8
+        ],
+        "rounds": 1,
+        "output_tokens": 4096,
+        "prompt_sessions": true,
+        "trim_tokens": 64,
+        "allow_queued": false,
+        "seed": 104729,
+        "timeout": 600.0,
+        "sample_interval": 0.25,
+        "min_window_seconds": 2,
+        "min_events_per_request": 4,
+        "min_native_intervals": 3,
+        "min_native_coverage": 0.9
+      },
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round_index": 0,
+          "end_to_end": {
+            "status": "passed",
+            "attempted": 8,
+            "success": 8,
+            "rejected": 0,
+            "failure": 0,
+            "wall_seconds": 104.66554413828999,
+            "successful_output_tokens": 32768,
+            "successful_output_tokens_per_second": 313.0734213420329,
+            "successful_requests_per_second": 0.07643394075733224,
+            "ttft_seconds": {
+              "count": 8,
+              "p50": 20.192467504180968,
+              "p95": 34.90248296461068,
+              "max": 36.621232179924846
+            },
+            "request_latency_seconds": {
+              "count": 8,
+              "p50": 103.056795893237,
+              "p95": 104.38502193829045,
+              "max": 104.64405073132366
+            },
+            "tpot_seconds": {
+              "count": 8,
+              "p50": 0.019797395188270436,
+              "p95": 0.023988224986101408,
+              "max": 0.02451382278622798
+            },
+            "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+          },
+          "steady_decode_window": {
+            "status": "passed",
+            "start": 39.12554577738047,
+            "end": 99.97113474830985,
+            "seconds": 60.845588970929384,
+            "trim_tokens_each_end": 64,
+            "active_streams": 8,
+            "end_inclusive": true,
+            "per_request": [
+              {
+                "client_index": 0,
+                "start_tokens": 92,
+                "end_tokens": 3774,
+                "tokens": 3682,
+                "token_events": 1628
+              },
+              {
+                "client_index": 1,
+                "start_tokens": 97,
+                "end_tokens": 3896,
+                "tokens": 3799,
+                "token_events": 1628
+              },
+              {
+                "client_index": 2,
+                "start_tokens": 105,
+                "end_tokens": 3973,
+                "tokens": 3868,
+                "token_events": 1628
+              },
+              {
+                "client_index": 3,
+                "start_tokens": 82,
+                "end_tokens": 4030,
+                "tokens": 3948,
+                "token_events": 1629
+              },
+              {
+                "client_index": 4,
+                "start_tokens": 71,
+                "end_tokens": 4002,
+                "tokens": 3931,
+                "token_events": 1628
+              },
+              {
+                "client_index": 5,
+                "start_tokens": 75,
+                "end_tokens": 3888,
+                "tokens": 3813,
+                "token_events": 1628
+              },
+              {
+                "client_index": 6,
+                "start_tokens": 73,
+                "end_tokens": 3886,
+                "tokens": 3813,
+                "token_events": 1628
+              },
+              {
+                "client_index": 7,
+                "start_tokens": 66,
+                "end_tokens": 3831,
+                "tokens": 3765,
+                "token_events": 1628
+              }
+            ],
+            "output_tokens": 30619,
+            "output_tokens_per_second": 503.2246464838897
+          },
+          "native_confirmation": {
+            "status": "passed",
+            "actual_stable_owner_count": 8,
+            "interval_count": 241,
+            "seconds": 60.56020179670304,
+            "sse_window_coverage_fraction": 0.9953096489153438,
+            "required_coverage_fraction": 0.9,
+            "violations": [],
+            "accepted_input_tokens": 30547,
+            "accepted_input_tokens_per_second": 504.40716995204946,
+            "sample_count": 417,
+            "sample_errors": 0,
+            "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+          }
+        }
+      ]
+    },
+    "pm_verified": {
+      "status": "passed",
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 32768,
+        "input_file_sha256": "256401e4b3a7bb4d4fd849e8dc045248d6390b871c8c718a732d73a0291b6d0b",
+        "token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "frozen_file": "input.json"
+      },
+      "configuration": {
+        "api_base": "http://127.0.0.1:18381/v1",
+        "model": "kvmem-meank",
+        "endpoint": "completions",
+        "concurrency": [
+          8
+        ],
+        "rounds": 1,
+        "output_tokens": 4096,
+        "prompt_sessions": true,
+        "trim_tokens": 64,
+        "allow_queued": false,
+        "seed": 104729,
+        "timeout": 600.0,
+        "sample_interval": 0.25,
+        "min_window_seconds": 2,
+        "min_events_per_request": 4,
+        "min_native_intervals": 3,
+        "min_native_coverage": 0.9
+      },
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round_index": 0,
+          "end_to_end": {
+            "status": "passed",
+            "attempted": 8,
+            "success": 8,
+            "rejected": 0,
+            "failure": 0,
+            "wall_seconds": 109.11410196311772,
+            "successful_output_tokens": 32768,
+            "successful_output_tokens_per_second": 300.30948713738303,
+            "successful_requests_per_second": 0.07331774588315015,
+            "ttft_seconds": {
+              "count": 8,
+              "p50": 25.70433176588267,
+              "p95": 40.4405236071907,
+              "max": 41.69210245460272
+            },
+            "request_latency_seconds": {
+              "count": 8,
+              "p50": 104.9332846342586,
+              "p95": 108.58057915885001,
+              "max": 109.06959091313183
+            },
+            "tpot_seconds": {
+              "count": 8,
+              "p50": 0.019461124729233205,
+              "p95": 0.02270821400252836,
+              "max": 0.023473647111965406
+            },
+            "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+          },
+          "steady_decode_window": {
+            "status": "passed",
+            "start": 43.2553454041481,
+            "end": 99.4452956514433,
+            "seconds": 56.1899502472952,
+            "trim_tokens_each_end": 64,
+            "active_streams": 8,
+            "end_inclusive": true,
+            "per_request": [
+              {
+                "client_index": 0,
+                "start_tokens": 102,
+                "end_tokens": 3934,
+                "tokens": 3832,
+                "token_events": 1637
+              },
+              {
+                "client_index": 1,
+                "start_tokens": 96,
+                "end_tokens": 4025,
+                "tokens": 3929,
+                "token_events": 1637
+              },
+              {
+                "client_index": 2,
+                "start_tokens": 88,
+                "end_tokens": 3936,
+                "tokens": 3848,
+                "token_events": 1638
+              },
+              {
+                "client_index": 3,
+                "start_tokens": 104,
+                "end_tokens": 3888,
+                "tokens": 3784,
+                "token_events": 1638
+              },
+              {
+                "client_index": 4,
+                "start_tokens": 91,
+                "end_tokens": 3989,
+                "tokens": 3898,
+                "token_events": 1637
+              },
+              {
+                "client_index": 5,
+                "start_tokens": 94,
+                "end_tokens": 4031,
+                "tokens": 3937,
+                "token_events": 1638
+              },
+              {
+                "client_index": 6,
+                "start_tokens": 85,
+                "end_tokens": 3848,
+                "tokens": 3763,
+                "token_events": 1637
+              },
+              {
+                "client_index": 7,
+                "start_tokens": 66,
+                "end_tokens": 3948,
+                "tokens": 3882,
+                "token_events": 1637
+              }
+            ],
+            "output_tokens": 30873,
+            "output_tokens_per_second": 549.439888523235
+          },
+          "native_confirmation": {
+            "status": "passed",
+            "actual_stable_owner_count": 8,
+            "interval_count": 222,
+            "seconds": 55.780568566173315,
+            "sse_window_coverage_fraction": 0.9927143256165885,
+            "required_coverage_fraction": 0.9,
+            "violations": [],
+            "accepted_input_tokens": 30630,
+            "accepted_input_tokens_per_second": 549.115951797142,
+            "sample_count": 435,
+            "sample_errors": 0,
+            "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+          }
+        }
+      ],
+      "wheel_sha256": "3824c8aa93bf3eeec9dbfa10319f5bbdad61e78361387a6b5471ecab05aff748",
+      "preemptions_total": 0
+    },
+    "metric_notes": [
+      "Same frozen 32K token IDs; each decode request generates 4096 accepted tokens. KVMem and session snapshots enabled.",
+      "Verified comparisons keep recovery byte-oracle enabled. Production runs disable only that diagnostic.",
+      "Output sequences can differ across scheduling; these measurements are not a paired causal or quality benchmark.",
+      "Fixed K-sized performance input does not trigger semantic reselection in its steady window. Separate 50K/73K functional gates exercise selection and restoration."
+    ],
+    "pm_verified_final": {
+      "status": "passed",
+      "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319",
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 32768,
+        "input_file_sha256": "256401e4b3a7bb4d4fd849e8dc045248d6390b871c8c718a732d73a0291b6d0b",
+        "token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "frozen_file": "input.json"
+      },
+      "configuration": {
+        "api_base": "http://127.0.0.1:18381/v1",
+        "model": "kvmem-meank",
+        "endpoint": "completions",
+        "concurrency": [
+          8
+        ],
+        "rounds": 1,
+        "output_tokens": 4096,
+        "prompt_sessions": true,
+        "trim_tokens": 64,
+        "allow_queued": false,
+        "seed": 104729,
+        "timeout": 600.0,
+        "sample_interval": 0.25,
+        "min_window_seconds": 2,
+        "min_events_per_request": 4,
+        "min_native_intervals": 3,
+        "min_native_coverage": 0.9
+      },
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round_index": 0,
+          "end_to_end": {
+            "status": "passed",
+            "attempted": 8,
+            "success": 8,
+            "rejected": 0,
+            "failure": 0,
+            "wall_seconds": 108.73267667740583,
+            "successful_output_tokens": 32768,
+            "successful_output_tokens_per_second": 301.36294811556905,
+            "successful_requests_per_second": 0.0735749385047776,
+            "ttft_seconds": {
+              "count": 8,
+              "p50": 25.796208483632654,
+              "p95": 40.01908911443315,
+              "max": 41.1968378983438
+            },
+            "request_latency_seconds": {
+              "count": 8,
+              "p50": 103.55317318020388,
+              "p95": 108.0682870323304,
+              "max": 108.68794583249837
+            },
+            "tpot_seconds": {
+              "count": 8,
+              "p50": 0.019139735010521935,
+              "p95": 0.022298784021103937,
+              "max": 0.02305069663954196
+            },
+            "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+          },
+          "steady_decode_window": {
+            "status": "passed",
+            "start": 42.752105112187564,
+            "end": 97.84576689638197,
+            "seconds": 55.09366178419441,
+            "trim_tokens_each_end": 64,
+            "active_streams": 8,
+            "end_inclusive": true,
+            "per_request": [
+              {
+                "client_index": 0,
+                "start_tokens": 102,
+                "end_tokens": 3935,
+                "tokens": 3833,
+                "token_events": 1638
+              },
+              {
+                "client_index": 1,
+                "start_tokens": 96,
+                "end_tokens": 4027,
+                "tokens": 3931,
+                "token_events": 1638
+              },
+              {
+                "client_index": 2,
+                "start_tokens": 88,
+                "end_tokens": 3936,
+                "tokens": 3848,
+                "token_events": 1638
+              },
+              {
+                "client_index": 3,
+                "start_tokens": 100,
+                "end_tokens": 3886,
+                "tokens": 3786,
+                "token_events": 1638
+              },
+              {
+                "client_index": 4,
+                "start_tokens": 89,
+                "end_tokens": 3989,
+                "tokens": 3900,
+                "token_events": 1638
+              },
+              {
+                "client_index": 5,
+                "start_tokens": 93,
+                "end_tokens": 4031,
+                "tokens": 3938,
+                "token_events": 1639
+              },
+              {
+                "client_index": 6,
+                "start_tokens": 84,
+                "end_tokens": 3848,
+                "tokens": 3764,
+                "token_events": 1638
+              },
+              {
+                "client_index": 7,
+                "start_tokens": 66,
+                "end_tokens": 3950,
+                "tokens": 3884,
+                "token_events": 1638
+              }
+            ],
+            "output_tokens": 30884,
+            "output_tokens_per_second": 560.572650280076
+          },
+          "native_confirmation": {
+            "status": "passed",
+            "actual_stable_owner_count": 8,
+            "interval_count": 218,
+            "seconds": 54.78288519568741,
+            "sse_window_coverage_fraction": 0.9943591226568979,
+            "required_coverage_fraction": 0.9,
+            "violations": [],
+            "accepted_input_tokens": 30781,
+            "accepted_input_tokens_per_second": 561.8725609293598,
+            "sample_count": 433,
+            "sample_errors": 0,
+            "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+          }
+        }
+      ],
+      "preemptions_total": 0
+    },
+    "prefill_production": {
+      "schema": "kvmem.prefill_service_qualification.v1",
+      "input_token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+      "prompt_sessions": true,
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 1,
+          "round": 0,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 32768,
+          "seconds_to_all_first_tokens": 7.037440846674144,
+          "effective_input_tokens_per_second": 4656.2380720380725,
+          "wall_seconds": 7.0387193113565445,
+          "whole_input_tokens_per_second": 4655.392344901555,
+          "ttft_mean_seconds": 7.037440846674144,
+          "ttft_max_seconds": 7.037440846674144,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.0004707165062427521,
+              "first_token": 7.037911563180387,
+              "ttft_seconds": 7.037440846674144,
+              "request_seconds": 7.037656954489648,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        },
+        {
+          "status": "passed",
+          "concurrency": 1,
+          "round": 1,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 32768,
+          "seconds_to_all_first_tokens": 5.523808672092855,
+          "effective_input_tokens_per_second": 5932.138845711485,
+          "wall_seconds": 5.524992231279612,
+          "whole_input_tokens_per_second": 5930.86806791958,
+          "ttft_mean_seconds": 5.523808672092855,
+          "ttft_max_seconds": 5.523808672092855,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.00040203146636486053,
+              "first_token": 5.52421070355922,
+              "ttft_seconds": 5.523808672092855,
+              "request_seconds": 5.524060033261776,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        },
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round": 0,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 262144,
+          "seconds_to_all_first_tokens": 40.791473012417555,
+          "effective_input_tokens_per_second": 6426.441131954203,
+          "wall_seconds": 40.79325238801539,
+          "whole_input_tokens_per_second": 6426.160814699223,
+          "ttft_mean_seconds": 24.417444519815035,
+          "ttft_max_seconds": 40.77434414438903,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.0005506481975317001,
+              "first_token": 6.594315531663597,
+              "ttft_seconds": 6.593764883466065,
+              "request_seconds": 6.593934500589967,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 1,
+              "started": 0.002651282586157322,
+              "first_token": 12.0212082285434,
+              "ttft_seconds": 12.018556945957243,
+              "request_seconds": 12.018759745173156,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 2,
+              "started": 0.004475537687540054,
+              "first_token": 17.28089448530227,
+              "ttft_seconds": 17.27641894761473,
+              "request_seconds": 17.276602336205542,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 3,
+              "started": 0.0076970867812633514,
+              "first_token": 22.747150959447026,
+              "ttft_seconds": 22.739453872665763,
+              "request_seconds": 22.739617000333965,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 4,
+              "started": 0.01171297300606966,
+              "first_token": 27.388160008005798,
+              "ttft_seconds": 27.376447034999728,
+              "request_seconds": 27.37661077454686,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 5,
+              "started": 0.015007332898676395,
+              "first_token": 31.99121975991875,
+              "ttft_seconds": 31.976212427020073,
+              "request_seconds": 31.976371929049492,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 6,
+              "started": 0.017679516226053238,
+              "first_token": 40.79202366061509,
+              "ttft_seconds": 40.77434414438903,
+              "request_seconds": 40.77450387738645,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 7,
+              "started": 0.021251398138701916,
+              "first_token": 36.60560930054635,
+              "ttft_seconds": 36.584357902407646,
+              "request_seconds": 36.584524584934115,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        },
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round": 1,
+          "input_tokens_per_request": 32768,
+          "output_tokens_per_request": 1,
+          "aggregate_input_tokens": 262144,
+          "seconds_to_all_first_tokens": 34.61712365411222,
+          "effective_input_tokens_per_second": 7572.668446382013,
+          "wall_seconds": 34.61923049762845,
+          "whole_input_tokens_per_second": 7572.20759190352,
+          "ttft_mean_seconds": 20.163807486882433,
+          "ttft_max_seconds": 34.60190902464092,
+          "clients": [
+            {
+              "client_index": 0,
+              "started": 0.0028892122209072113,
+              "first_token": 5.864829042926431,
+              "ttft_seconds": 5.8619398307055235,
+              "request_seconds": 5.86210532207042,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 1,
+              "started": 0.0009627239778637886,
+              "first_token": 9.814614744856954,
+              "ttft_seconds": 9.81365202087909,
+              "request_seconds": 9.81385148409754,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 2,
+              "started": 0.004664771258831024,
+              "first_token": 13.791643159464002,
+              "ttft_seconds": 13.78697838820517,
+              "request_seconds": 13.787202128209174,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 3,
+              "started": 0.009326308034360409,
+              "first_token": 21.949088538065553,
+              "ttft_seconds": 21.939762230031192,
+              "request_seconds": 21.93992347549647,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 4,
+              "started": 0.0063672903925180435,
+              "first_token": 17.790054065175354,
+              "ttft_seconds": 17.783686774782836,
+              "request_seconds": 17.783884596079588,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 5,
+              "started": 0.011852147988975048,
+              "first_token": 26.425679666921496,
+              "ttft_seconds": 26.41382751893252,
+              "request_seconds": 26.41393797751516,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 6,
+              "started": 0.01414099708199501,
+              "first_token": 31.12284510396421,
+              "ttft_seconds": 31.108704106882215,
+              "request_seconds": 31.108910380862653,
+              "input_tokens": 32768
+            },
+            {
+              "client_index": 7,
+              "started": 0.01617735344916582,
+              "first_token": 34.618086378090084,
+              "ttft_seconds": 34.60190902464092,
+              "request_seconds": 34.60207625851035,
+              "input_tokens": 32768
+            }
+          ],
+          "final_native_requests": 0,
+          "final_owned_blocks": 0
+        }
+      ],
+      "scope": "Input-token service throughput with one generated token per request. Includes queueing, CPU history/checkpoints and MTP preparation; not isolated GPU kernel throughput. No sustained decode is interleaved.",
+      "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319",
+      "verify_session_restore": false
+    },
+    "pm_production_final": {
+      "status": "passed",
+      "wheel_sha256": "54e30791a431d6664248705602d501e096dc9296b3b41f47064e55628bbd2319",
+      "verify_session_restore": false,
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 32768,
+        "input_file_sha256": "256401e4b3a7bb4d4fd849e8dc045248d6390b871c8c718a732d73a0291b6d0b",
+        "token_ids_sha256": "19543eb03ad997478d92dc001aab03bd091f3b92a17c639e721e1d09fa3d3c8d",
+        "frozen_file": "input.json"
+      },
+      "configuration": {
+        "api_base": "http://127.0.0.1:18381/v1",
+        "model": "kvmem-meank",
+        "endpoint": "completions",
+        "concurrency": [
+          8
+        ],
+        "rounds": 2,
+        "output_tokens": 4096,
+        "prompt_sessions": true,
+        "trim_tokens": 64,
+        "allow_queued": false,
+        "seed": 104729,
+        "timeout": 600.0,
+        "sample_interval": 0.25,
+        "min_window_seconds": 2,
+        "min_events_per_request": 4,
+        "min_native_intervals": 3,
+        "min_native_coverage": 0.9
+      },
+      "batches": [
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round_index": 0,
+          "end_to_end": {
+            "status": "passed",
+            "attempted": 8,
+            "success": 8,
+            "rejected": 0,
+            "failure": 0,
+            "wall_seconds": 97.16879995539784,
+            "successful_output_tokens": 32768,
+            "successful_output_tokens_per_second": 337.2275876108491,
+            "successful_requests_per_second": 0.08233095400655496,
+            "ttft_seconds": {
+              "count": 8,
+              "p50": 22.031104068737477,
+              "p95": 36.07921182592399,
+              "max": 37.28352403268218
+            },
+            "request_latency_seconds": {
+              "count": 8,
+              "p50": 95.5443234690465,
+              "p95": 97.12935866368935,
+              "max": 97.13191733229905
+            },
+            "tpot_seconds": {
+              "count": 8,
+              "p50": 0.017965277960530785,
+              "p95": 0.02157180886719062,
+              "max": 0.021778286472235845
+            },
+            "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+          },
+          "steady_decode_window": {
+            "status": "passed",
+            "start": 38.800304188393056,
+            "end": 93.4879515087232,
+            "seconds": 54.68764732033014,
+            "trim_tokens_each_end": 64,
+            "active_streams": 8,
+            "end_inclusive": true,
+            "per_request": [
+              {
+                "client_index": 0,
+                "start_tokens": 99,
+                "end_tokens": 3934,
+                "tokens": 3835,
+                "token_events": 1638
+              },
+              {
+                "client_index": 1,
+                "start_tokens": 107,
+                "end_tokens": 3840,
+                "tokens": 3733,
+                "token_events": 1637
+              },
+              {
+                "client_index": 2,
+                "start_tokens": 90,
+                "end_tokens": 3938,
+                "tokens": 3848,
+                "token_events": 1638
+              },
+              {
+                "client_index": 3,
+                "start_tokens": 100,
+                "end_tokens": 3886,
+                "tokens": 3786,
+                "token_events": 1638
+              },
+              {
+                "client_index": 4,
+                "start_tokens": 91,
+                "end_tokens": 3990,
+                "tokens": 3899,
+                "token_events": 1638
+              },
+              {
+                "client_index": 5,
+                "start_tokens": 94,
+                "end_tokens": 4031,
+                "tokens": 3937,
+                "token_events": 1638
+              },
+              {
+                "client_index": 6,
+                "start_tokens": 85,
+                "end_tokens": 3849,
+                "tokens": 3764,
+                "token_events": 1638
+              },
+              {
+                "client_index": 7,
+                "start_tokens": 66,
+                "end_tokens": 3948,
+                "tokens": 3882,
+                "token_events": 1637
+              }
+            ],
+            "output_tokens": 30684,
+            "output_tokens_per_second": 561.0773456804608
+          },
+          "native_confirmation": {
+            "status": "passed",
+            "actual_stable_owner_count": 8,
+            "interval_count": 217,
+            "seconds": 54.52801591716707,
+            "sse_window_coverage_fraction": 0.9970810336340117,
+            "required_coverage_fraction": 0.9,
+            "violations": [],
+            "accepted_input_tokens": 30594,
+            "accepted_input_tokens_per_second": 561.0693784728023,
+            "sample_count": 387,
+            "sample_errors": 0,
+            "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+          }
+        },
+        {
+          "status": "passed",
+          "concurrency": 8,
+          "round_index": 1,
+          "end_to_end": {
+            "status": "passed",
+            "attempted": 8,
+            "success": 8,
+            "rejected": 0,
+            "failure": 0,
+            "wall_seconds": 98.05886396858841,
+            "successful_output_tokens": 32768,
+            "successful_output_tokens_per_second": 334.16662883731453,
+            "successful_requests_per_second": 0.081583649618485,
+            "ttft_seconds": {
+              "count": 8,
+              "p50": 22.823588998056948,
+              "p95": 36.98807603251189,
+              "max": 38.22884848807007
+            },
+            "request_latency_seconds": {
+              "count": 8,
+              "p50": 96.53658438147977,
+              "p95": 97.79620462069288,
+              "max": 98.04457229375839
+            },
+            "tpot_seconds": {
+              "count": 8,
+              "p50": 0.018023920222953127,
+              "p95": 0.021517491780621737,
+              "max": 0.02199129638090384
+            },
+            "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+          },
+          "steady_decode_window": {
+            "status": "passed",
+            "start": 39.599719879217446,
+            "end": 94.60095045156777,
+            "seconds": 55.00123057235032,
+            "trim_tokens_each_end": 64,
+            "active_streams": 8,
+            "end_inclusive": true,
+            "per_request": [
+              {
+                "client_index": 0,
+                "start_tokens": 102,
+                "end_tokens": 3934,
+                "tokens": 3832,
+                "token_events": 1637
+              },
+              {
+                "client_index": 1,
+                "start_tokens": 96,
+                "end_tokens": 4027,
+                "tokens": 3931,
+                "token_events": 1638
+              },
+              {
+                "client_index": 2,
+                "start_tokens": 90,
+                "end_tokens": 3938,
+                "tokens": 3848,
+                "token_events": 1638
+              },
+              {
+                "client_index": 3,
+                "start_tokens": 104,
+                "end_tokens": 3888,
+                "tokens": 3784,
+                "token_events": 1638
+              },
+              {
+                "client_index": 4,
+                "start_tokens": 91,
+                "end_tokens": 3990,
+                "tokens": 3899,
+                "token_events": 1638
+              },
+              {
+                "client_index": 5,
+                "start_tokens": 94,
+                "end_tokens": 4031,
+                "tokens": 3937,
+                "token_events": 1638
+              },
+              {
+                "client_index": 6,
+                "start_tokens": 85,
+                "end_tokens": 3849,
+                "tokens": 3764,
+                "token_events": 1638
+              },
+              {
+                "client_index": 7,
+                "start_tokens": 66,
+                "end_tokens": 3948,
+                "tokens": 3882,
+                "token_events": 1637
+              }
+            ],
+            "output_tokens": 30877,
+            "output_tokens_per_second": 561.3874394934389
+          },
+          "native_confirmation": {
+            "status": "passed",
+            "actual_stable_owner_count": 8,
+            "interval_count": 218,
+            "seconds": 54.74614783003926,
+            "sse_window_coverage_fraction": 0.9953622357235168,
+            "required_coverage_fraction": 0.9,
+            "violations": [],
+            "accepted_input_tokens": 30776,
+            "accepted_input_tokens_per_second": 562.1582745062691,
+            "sample_count": 391,
+            "sample_errors": 0,
+            "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+          }
+        }
+      ],
+      "preemptions_total": 0,
+      "final_requests": 0,
+      "final_owned_blocks": 0,
+      "checkpoint_deferrals": 0
+    }
+  },
+  "software": {
+    "vllm": "0.30.0",
+    "torch": "2.13.0+cu130",
+    "flashinfer-python": "0.6.18.post1"
+  },
+  "device": {
+    "name": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "advertised_memory_gb": 96
+  },
+  "status": "passed"
+}

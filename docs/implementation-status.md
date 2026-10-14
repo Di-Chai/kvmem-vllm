@@ -1,8 +1,9 @@
 # KVMem + vLLM 实现状态
 
-更新日期：2026-10-14。当前为显式 Query / 原版基础 FP16 MeanK 版本；此前编译与
+更新日期：2026-10-14。当前为显式 Query / 原版基础 FP16 MeanK + P/M 跨轮上下文版本；此前编译与
 CPU 批处理基线为 `3bc639b`。新增路径的契约和资格范围见
-[Query 与真实模型验收报告](explicit-query-20261014.md)。
+[跨轮上下文实现与验收](context-policy-20261014.md)。此前 Query 基线见
+[历史验收报告](explicit-query-20261014.md)。
 开发分支：`main`。
 
 当前已实现分离式 KV 管理和有界 MeanK 主路径，但**尚未完整复现 qw3 的请求级
@@ -42,9 +43,14 @@ CPU 批处理基线为 `3bc639b`。新增路径的契约和资格范围见
   有界异步封页、缓存 scatter views、大包 CPU scatter 与 GPU 工作重叠。
 - [x] **token-ID 弹性会话**：鉴权、用户 namespace、版本化增量历史、用户配额、
   active/restore 字节准入、队列 deadline 和取消后资源释放。
-- [x] **回合结束暂停与恢复**：旧配置使用终态 checkpoint；显式 Query 配置保留
-  最近封页检查点并重放尾部。GPU 请求页回收，exact-prefix 命中时恢复 KV/GDN；
-  压力恢复重新选取 K 页，禁止复用已归还物理页的 residency 标记。
+- [x] **跨轮保持选页与实际 headroom**：exact-prefix 校验后恢复原 active frame；
+  稳定工具续接/重复旧 Query auto 不自动重选。按实际窗口+增量+输出检查空间，
+  不足时在运行容量边界压力刷新。网关全局字节预留仍为保守 K+G。
+- [x] **必留 spans / capacity fit**：system/root/Query/policy 与显式工具/文件范围，
+  Query 和压力选页均接入原版 qw3 helper；超额按结构边缘与优先级适配，保留检索额度。
+- [x] **P/M 暂停恢复**：保留 Query 前 P 和终态 M，普通续接从 M，强制旧 Query
+  可退回匹配 P；支持包含 Query 的独立 live replay span 和 branch-safe 模板尾块。
+  GPU 请求页回收，检查点配额内保留 CPU 快照，失配/缓存不足可降级重放。
 
 ## 部分实现，仍有行为差异
 
@@ -52,9 +58,9 @@ CPU 批处理基线为 `3bc639b`。新增路径的契约和资格范围见
 | --- | --- | --- |
 | MeanK 评分 | 新配置的 FP16 Q/index、原版基础 CUDA kernel、串行 token 顺序封页均值 | 增量 GPU index、one-dot/two-pass、Adaptive 和在线逐层评分；旧配置仍为 FP32/PyTorch。 |
 | Query 语义 | token-ID 完整 Query、调用方提供的角色和 user message range | 与 qw3 同名字段协议不同；默认最后 user Query / 自动聊天模板映射、混合角色整轮 Query、超过 G−B 的跨 batch 捕获。 |
-| 重选策略 | auto/force/off 的简化计划，pressure/keep_selected 和 semantic_chunk；长 prefill 留出 MTP 空间 | 原版任务/Query 身份、增长/evidence gate、private query；默认恢复可能缩至 K 并改变选页，keep_selected 尚按完整逻辑 prompt 准入。 |
-| Query 回滚/重放 | Query 前封页检查点、partial tail + 完整 Query、CPU 检查点跨轮恢复 | 独立 live replay span、原版 P/M + Query snapshot + branch-safe 恢复、编辑与 ladder；早于已有检查点的 Query 冷恢复。新配置终态后 rewind，旧 Query 后缀可能重算。 |
-| mandatory 内容 | sink/recent 和低层 `mandatory_handles` | 在线消息、工具、文件证据 spans 的规划与映射。 |
+| 重选策略 | exact-prefix 证明下的旧 Query auto、保持选页、实际 active headroom、容量压力刷新 | 完整任务/Query 身份、增长/evidence gate、private query；未证明全部原版 gate 等价。 |
+| Query 回滚/重放 | partial tail + 完整 Query、包含 Query 的 live span、一个 P + 一个 M、branch-safe 恢复 | 任意分离的历史 Query/live suffix、Query tensor cache、编辑与完整 ladder；无匹配 P 时仍冷恢复。 |
+| mandatory 内容 | 在线 token spans、角色映射、原版 capacity fit 和 generation-qualified handles | 聊天模板自动坐标与完整证据生命周期；不保证超大 span 整体驻留 GPU。 |
 | historical storage | CPU cache + NVMe arena、预算内历史保留 | 原版 offline archive/session 格式、重启持久恢复、完整公开 GC policy。 |
 | resident KV 复用 | raw-K cache、同位置 K 跳过、resident V 复用 | 原版完整免搬动页窗口；当前 dense native 窗口仍需搬动部分 resident V。 |
 | 工具等待 | 终态释放 GPU 页、CPU checkpoint、历史 TTL | 短工具等待期间暂留 GPU 页的 TTL 策略和细粒度带宽协调。 |
@@ -80,11 +86,15 @@ CPU 批处理基线为 `3bc639b`。新增路径的契约和资格范围见
 
 | 验证 | 结果及范围 |
 | --- | --- |
-| 最新独占 CPU/GPU 回归 | 699 passed、6 skipped；pinned/frame 针对测试 21 passed，包含真实 GPU DMA fence 检查；新增四个真实 I/O 背压回归。 |
+| 当前上下文策略回归 | 最终 CPU 652 passed / 73 skipped；最终 worker 针对回归 38 passed / 1 skipped、launcher 87 passed。中间版本 GPU 713 passed / 6 skipped；最终 wheel 另过真实模型验收。 |
+| 当前 P/M 与 mandatory 真实模型 | C8 四轮 32 回合、24 次恢复全部通过；另有 C1 五轮边界测试。最终确认顺序修复后另过单 token C1/C8 共 9 请求及 C8 五轮 40 回合（32 恢复），每用户历史 73,447；4 GiB 检查点配额零降级，GPU 请求页归零。 |
 | 显式 Query 跨轮与并发 | 最终安装包连续完成三组 C8、50,006 token 输入，共 48 回合、48 次完整 Query/partial-tail 重放、24 次 CPU checkpoint 恢复；96 个 GDN tensor 字节检查及 GPU 页回收均通过。 |
-| 新版 C8，32K 输入 + 4K 输出，不带 session | 稳态 decode 576.48 token/s、整轮 347.38 token/s；KVMem KV 历史维护开启，未计周期会话检查点。 |
+| 当前正常 P/M 配置 C8，32K 输入 + 4K 输出 | 两轮稳态 **561.08 / 561.39**，整轮 **337.23 / 334.17 token/s**；8 路原生共同 decode、零抢占。关闭验收字节 oracle，实际 KVMem 和会话维护开启。 |
+| 当前独立 prefill 测法 | 每路 32K 输入、1 token 输出：C1 **4,656 / 5,932**；C8 合计 **6,426 / 7,573 输入 token/s**，包含排队与历史维护。 |
+| 同诊断开关的最终对照 | 稳态 560.57、整轮 301.36，对此前 503.22 / 313.07；稳态提高约 11.4%，整轮没有提升。见完整口径说明。 |
+| 此前显式 Query 基线：C8，32K 输入 + 4K 输出，不带 session | 稳态 decode 576.48 token/s、整轮 347.38 token/s；KVMem KV 历史维护开启，未计周期会话检查点。 |
 | 相同输入输出，带 session，pinned 优化前 | 稳态 decode 378.21 token/s、整轮 259.13 token/s；原生确认 8 路 decode。最终快照配置的结果见新报告，不能用上一行代替完整恢复方案的吞吐。 |
-| 相同输入输出，带 session，最终 pinned 快照 | 稳态 decode **503.22 token/s**、整轮 **313.07 token/s**；本轮相对 pageable 快照速率增幅 33.1%，单次、生成序列不同，不代表稳定提升保证。 |
+| 此前显式 Query 基线：带 session，周期 pinned 快照 | 稳态 decode **503.22 token/s**、整轮 **313.07 token/s**；本轮相对 pageable 快照速率增幅 33.1%，单次、生成序列不同，不代表稳定提升保证。 |
 | 同组 C8、32K 输入的有效 prefill | 262,144 输入 token / 36.65 秒 = **7,153 输入 token/s**，包含排队、历史维护和穿插 decode；不是纯 GPU prefill 吞吐。 |
 | 64K 两回合恢复 | 17 层 KV、96 个 GDN state tensor 恢复字节检查通过。 |
 | 8 独立用户，32K 输入 + 16K 输出 | 8 路完成，零抢占；稳态 decode 538.75 token/s，整轮 449.94 token/s。 |
@@ -103,8 +113,8 @@ KVMem 的原生同步编译控制相比，当前吞吐仍有差距；见对应�
 ## 下一阶段顺序
 
 1. 原版 Query / 消息协议及默认 user Query；DSH 的会话与坐标适配。
-2. 跨轮自动 gate、保持原选页的恢复与实际 active headroom 准入。
-3. mandatory spans / capacity fit、独立 replay span、P/M 与 Query snapshot 恢复。
+2. 完整增长/evidence/private-query gate；当前已覆盖稳定旧 Query 的 auto。
+3. Query tensor cache、任意历史编辑与 checkpoint ladder。
 4. 独立 prefill budget、prefill-only ingest；再迁移增量 GPU index 等效率优化，
    并做工具负载和 SLO 验收。最新具体对照见上下文一致性报告。
 
@@ -113,7 +123,8 @@ KVMem 的原生同步编译控制相比，当前吞吐仍有差距；见对应�
 
 ## 关联文档
 
-- [上下文管理一致性核对](context-management-parity-20261014.md)
+- [本轮跨轮上下文策略与性能](context-policy-20261014.md)
+- [修改前上下文管理一致性核对](context-management-parity-20261014.md)
 - [完整 qw3 功能审计](qw3-parity-audit-20261014.md)：冻结版本的旧状态以本清单
   和后续编译/批处理更新为准。
 - [原生编译、CPU 批处理与最新测量](compiled-capture-history-20261014.md)

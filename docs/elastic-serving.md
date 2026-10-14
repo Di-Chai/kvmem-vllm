@@ -130,3 +130,15 @@ prefix 才能命中缓存；上下文改变时重建相应状态，不套用不�
 此次覆盖真实模型 CPU 恢复、完整／有限上下文、32客户端、正常停止检索和取消／
 deadline 回收。工具等待为回合之间的模拟等待。持续负载下的工具 CPU／磁盘／
 传输竞争、通用任务质量、硬 SLO、跨 worker／重启持久化和 NVMe 历史层尚未验收。
+
+## 显式 Query profile 的 P/M 上下文策略
+
+`qwen-nvfp4-meank-explicit-query-elastic.json` 默认启用 P/M：稳定续接保持选页，
+依据实际 active window 与新增输入/输出判定 headroom；不足时才做容量压力刷新。
+`kvmem_mandatory_spans` 和 `kvmem_mandatory_parts` 管理必留内容，超额使用原版 qw3
+容量适配；`kvmem_replay_span` 可涵盖 Query 前的消息 header。
+
+此 MeanK 路径的 CPU historical authority/read cache、NVMe arena、P/M 检查点和
+完整 token 账本分别有预算。8 用户 P+M 示例预留 4 GiB 检查点；配额不足会保留可用的
+旧检查点并增加重放，而不会截断逻辑历史。网关全局 active 字节仍按 K+G 保守预留。
+字段、实际测试和剩余协议限制见 [跨轮上下文报告](context-policy-20261014.md)。

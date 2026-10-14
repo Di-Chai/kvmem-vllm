@@ -111,6 +111,36 @@ def test_terminal_checkpoint_uses_full_accepted_identity_at_a_partial_block():
     assert events[-1] == ('prepare', ('new', 29, 13))
 
 
+@pytest.mark.parametrize('p_saved,m_saved', [(True,True),(True,False),(False,True),(False,False)])
+def test_one_token_finish_keeps_pending_p_and_m_acknowledgments_separate(p_saved,m_saved):
+    control, _ = ledger()
+    control.terminal_capture = True
+    req = request()
+    control.lookup(req,0); control.allocated(req,0)
+    control.capture_before_final_prefill(req,9)
+    binding = control.take_commands().bindings[0]
+    req.all_token_ids = req.prompt_token_ids+[700]
+    req.num_computed_tokens = 25; req.num_in_flight_tokens = 0
+    req.num_tokens = 26; req.num_output_tokens = 1
+    req.status = SimpleNamespace(name='FINISHED_LENGTH_CAPPED')
+    req.is_finished = lambda: True
+    control.finished(req)  # P acknowledgment arrives after this transition.
+    assert control.take_commands().terminals[0].position == 25
+    for position,saved in [(16,p_saved),(25,m_saved)]:
+        notice = SessionNotice('captured' if saved else 'capture_deferred',
+            binding.namespace,binding.generation,'a',position)
+        control.consume(notice)
+        with pytest.raises(ValueError,match='acknowledgment'):
+            control.consume(notice)
+    position = 25 if m_saved else 16 if p_saved else 0
+    control.consume(SessionNotice('retired',binding.namespace,binding.generation,
+                                  'a',position,12 if position else 0))
+    if position:
+        assert control.entries[binding.namespace].history == position
+    else:
+        assert not control.entries
+
+
 def test_prefix_miss_and_lru_eviction_hold_capacity_until_generation_ack():
     control, _ = ledger(capacity=1)
     binding, retired = first_turn(control)

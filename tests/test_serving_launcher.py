@@ -375,3 +375,21 @@ def test_compiled_mtp_capture_uses_native_compiler_without_changing_memory_polic
     cfg['draft_method'] = 'dflash'
     with pytest.raises(ValueError, match='native safetensors Qwen MTP'):
         build_launch(cfg, tmp_path, tmp_path/'bad')
+
+
+@pytest.mark.parametrize('quota', [None, 1024**3])
+def test_pm_launch_budgets_both_snapshots_and_honors_explicit_quota(tmp_path, quota):
+    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    model = nvfp4_profile(tmp_path)
+    users = tmp_path/'users.json'
+    users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
+    cfg = {key:model[key] for key in ('model','tokenizer')}
+    cfg.update(users_file=users.name,context_mode='meank',draft_method='mtp',
+               active_context_tokens=32768,request_planning=True)
+    if quota is not None:
+        cfg['session_checkpoint_bytes'] = quota
+    resolved, _ = build_elastic_launch(cfg,tmp_path,tmp_path/'run')
+    assert resolved['session_checkpoint_bytes'] == (quota or 4*1024**3)
+    options = resolved['mean_k_backend_profile']['kvmem']
+    assert options['session_checkpoint_policy']=='pm'
+    assert options['session_capture_terminal'] and not options['session_capture_decode']
