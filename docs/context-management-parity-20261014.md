@@ -1,87 +1,112 @@
-# 上下文管理主路径与 qw3 的一致性核对
+# 当前上下文管理与 qw3 的一致性核对
 
-**后续实现更新：** 下文冻结 `3bc639b` 的审计结论。显式 token-ID Query、
-请求策略、partial-tail/full-Query replay、FP16 index 和原版基础 CUDA scorer
-已补齐有界适配，并新增真实模型跨轮及并发验收。
-当前状态请以[新报告](explicit-query-20261014.md)和
-[实现清单](implementation-status.md)为准；增量 GPU index、mandatory spans、
-完整 qw3/DSH 协议及附加策略仍有缺口。
+核对日期：2026-10-14。运行时代码基线为 `5043645`。参考 qw3 HEAD 为
+`1410cfe284726edb4161381546fe3915110331c9`，但其工作树有未提交修改；
+本次以实际文件内容为准，相关 SHA256 和 CPU 策略对照保存在
+[核对数据](benchmarks/context-parity-5043645.json)。本报告替代此前针对
+`3bc639b` 的上下文管理核对；历史完整审计仍保留在
+[qw3 功能审计](qw3-parity-audit-20261014.md)。
 
-核对日期：2026-10-14。vLLM 集成基线为 `3bc639b`，参考当前
-`/home/chaidi/qw3` 工作树。重新检查的 10 个 vendored C++ 核心文件均与该工作树
-逐字节相同，且与上次审计的文件哈希相同。该结论不覆盖未迁移的 executor、
-请求规划及 CUDA scorer。
+**结论：分离式 KV 和有界显式 Query / 基础 MeanK 主路径已实现，完整的
+请求级上下文管理还没有与 qw3 等价。** 原版 Store 和 scorer 的相同源码，
+只能证明对应组件相同，不能证明 Query、重选时机、消息保留和恢复策略相同。
+本轮以用户确认的单轮输出不超过 G 为边界，不将多 epoch 输出列为待补齐要求。
 
-本次以**单轮输出不超过 G**的设计为准。保留该限制，不将多 epoch 生成作为
-本次需要补齐的功能；没有修改运行时、输出限制或服务配置。
+本次只做代码核对、原版 helper 编译和 CPU 对照，没有更改服务或新增 GPU 压测。
+此前最终安装包三组 C8、48 回合和 24 次恢复的成功记录仍有效，但它们证明的是
+已实现路径可以运行，不是与 qw3 的完整逐页等价验收。
 
-结论：GPU active view、CPU/NVMe historical view 的分离已经实现；但决定何时
-重选、用哪些 Query、如何保留消息，以及如何重放 Query 的完整主路径还不与
-qw3 等价。原版 Store 相同不能替代请求规划的一致性。
+## 已接入或确认相同的部分
 
-## 已接通的核心契约
+- 10 个 vendored Store / repository / GC / NVMe C++ 核心文件逐字节相同。
+  `block_attn_score_softmax_pages_kernel` 的基础 kernel body 也与当前 qw3 源码
+  相同。此范围不包括两边各自的请求处理器和模型执行器。
+- GPU 有界 working window 与 CPU authority / NVMe historical storage 分离；
+  使用原版 sink/recent、TopK、历史顺序和 generation lease。
+- 明确的 token-ID Query 只对指定内容捕获 Q，完整 partial tail + Query 原子
+  调度；provisional → select → 全 batch GDN rollback → durable replay。
+- 新配置采用 FP16 Q / MeanK index 和 FP32 归约；封页均值按原版 token 顺序累加。
+  旧配置仍可以使用 FP32 PyTorch scorer，不能将所有入口概括为原版数值路径。
+- 移动 K 从 immutable raw K 重建并 dense re-RoPE；target 和原生 MTP 共用
+  选页及装配，MeanK 只对 target full-attention 层评分。
+- token-ID 网关维护完整逻辑历史，鉴权和 namespace 隔离；释放回合 GPU 页，
+  exact-prefix 命中后恢复 CPU 检查点并重放后缀。accepted 与 rejected draft
+  历史分开，恢复和资源回收已通过真实模型并发验收。
 
-- historical authority 保留已接受的 raw K 和 V，生成的 rejected draft 不作为
-  历史发布。CPU cache 有预算；被淘汰的封页通过 NVMe arena 读取，不能将
-  CPU cache budget 理解为整个 historical view 永远常驻 RAM。
-- GPU full-attention working window 采用 K + G 的有界容量；原版 Store 的
-  sink/recent、TopK、历史排序和 remap 计划已接入。
-- dense 窗口的移动 K 从 immutable raw K 重建并重新应用 RoPE；同位置 K
-  可以跳过，resident V 可以复用。逻辑历史位置与 GPU dense attention 位置
-  分离。原生物理页、lookahead 和 staging 仍有额外显存开销。
-- target 和原生 MTP 共用历史选页计划、同步重建窗口；MeanK 只对 target
-  的 full-attention 层评分。GDN 保留完整逻辑状态，provisional 执行后回滚
-  同一 batch 中所有受影响请求，再提交 durable replay。
-- token-ID 弹性会话入口能保留历史、释放终态 GPU 请求页，并在 exact-prefix
-  匹配时恢复 active KV/GDN checkpoint。已有 64K 两回合真实恢复验证。
+## 影响上下文行为的剩余差异
 
-## 主路径中仍不一致的部分
+| 项目 | qw3 实际实现 | 当前 vLLM 实际实现与影响 |
+| --- | --- | --- |
+| 默认 Query | 开启 query-conditioned 时，普通 chat 可从最后 user 消息自动映射 Query。 | 显式规划只接 token IDs。没有 Query 元数据的 token-ID 请求默认做容量压力刷新；chat/text 入口仍走 legacy semantic-chunk，工具/历史 chunk 可能成为评分 Query。 |
+| Query 字段协议 | `kvmem_query_span` 为 `{message_index, content_start, content_end}`，偏移是消息内容的 UTF-8 字节；服务经聊天模板/tokenizer 映射。 | 同名字段为完整逻辑 prompt 的绝对 token 范围 `[begin,end]`，不是兼容原 API 的实现。客户端不能直接复制 qw3 请求。 |
+| Query message range | `{message_begin,message_end}` 可选保留角色的 user/assistant/tool 整轮，使用重渲染 LCP/LCS 映射。 | 调用方提供 token message spans；范围只能含 user 消息，混合角色整轮被拒绝。完整 Query + partial tail 必须不超过 G−B，尚无跨 batch / host streaming 的长 Query 捕获。 |
+| `auto` 跨轮 gate | 区分新 user Query、同一任务工具回调、证据变化、增长阈值、初始 headroom；稳定回调保持 epoch，特定配置生成 private retrieval query。 | `auto/force/off` 是简化计划及组合检查；没有对应的任务/Query 身份、刷新水位和 evidence 状态机，也没有 private-query 生成。提供 Query 就按该边界走，未提供则压力刷新。 |
+| 恢复是否保留原选页 | keep-selected continuation 保存已有 A+B epoch，checkpoint 本身不能成为压力重选触发器。 | 默认 `pressure` 恢复在旧窗口大于 K 时先缩回 K，并按历史位置做压力选页。即使还有 G headroom，也可能改变此前 Query 选页。仅 `keep_selected` 分支跳过这一步。 |
+| 长历史 `keep_selected` | 在实际 checkpoint / active window 上检查增量后缀及剩余额度；必要时 pressure-ingest。 | HTTP 准入以完整逻辑 prompt + 输出 ≤ K+G−B 为条件，长历史即使 active view 有空间也会被拒绝，无法普遍承接稳定工具回调。 |
+| mandatory / 内容生命周期 | 请求可映射 system、root task、project policy、current Query、工具/文件证据等 spans；超额时按优先级保留结构边缘、尾部并留检索额度，原历史仍可检索。 | 低层支持 mandatory handles，在线 `select_for_queries` 调用没有传入语义 spans，主要依靠 sink/recent；不保证某条消息、工具结构或证据片段必留。 |
+| 重放起点 | 可分别指定评分 Query 和 live replay suffix；消息 header 在更早 block 时，从更早 replay origin 捕获/重放。 | 只有 Query 起点向下封页对齐，尚无独立的 live replay span。已实现的 partial-tail replay 不覆盖全部原版消息/工具边界规则。 |
+| P/M、旧 Query 与模板改写 | 可选 P/M checkpoint、保留 Query snapshot 和 replay checkpoints，以 token LCP、选择 generation、branch-safe tail 等决定恢复位置。 | 新配置每会话保留一个最近封页 checkpoint；旧 Query 在其前面时冷恢复，没有同等级的旧 Query snapshot / checkpoint ladder / 模板改写分支恢复。 |
+| 历史 KV 尾部 | 原版支持终态 M 与 P 等多种保留/恢复路径，不需要一律回退到单个封页点。 | 新显式规划启动要求 sealed decode checkpoint，拒绝 terminal capture；回合结束 authority 会 rewind 到封页 checkpoint。之后的逻辑 tokens 仍保留，但相应 KV 下一轮重算，短轮可能重放上一完整 Query。旧模式已有 terminal capture，尚未组合成新模式的 P/M 策略。 |
+| prefill budget / ingest | prefill budget 可独立于 semantic budget，公开支持 `max_tokens=0` 及 start/append/finish 历史构建。 | `prefill_budget = select_budget`，公开回合要求正输出；没有对应连续 ingest 协议。压力阈值还需预留原生 MTP allocation headroom。 |
 
-| 项目 | qw3 | 当前 vLLM 集成 | 实际影响 |
-| --- | --- | --- | --- |
-| Query 来源与范围 | 显式 `kvmem_query_span` / `kvmem_query_message_range`，调用方指定用户 Query；可跨物理 chunk 捕获完整跨度。 | `bounded_runtime.py` 从当前原生调度 chunk 获取 Q；弹性网关没有角色、消息范围和 Query 字段。投机 decode 的 Query 排除未验证 draft。 | 工具输出、历史或其他输入 chunk 可能参与检索，结果取决于 chunk 划分。 |
-| 重选时机与策略 | 支持 `auto/force/off`、`pressure/keep_selected` 和单独的 `semantic_chunk`，还有跨轮刷新 gate。 | `QueryPolicy.refresh` 在长 prefill 的 block 边界触发；导入长 checkpoint 后也触发；没有公开原版策略。 | 不能要求只在明确用户 Query 或预算压力时刷新，也不能按原版保持上次选页。 |
-| MeanK 数值路径 | 生产 Query/index 为 FP16，归约为 FP32；专用 CUDA scorer 和增量 index。 | CPU FP32 mean index，PyTorch FP32 einsum/softmax；基础页间 softmax、层/头平均、Query 求和定义相同。 | 不能保证相同输入张量的 bitwise score 或近似平分时的 TopK 一致；刷新准备和评分效率也不同。 |
-| Query checkpoint 与重放 | 对显式 Query 使用其开始前的 block-aligned checkpoint，必要时重放 partial tail + 完整 Query。 | 当前事务回滚并重放被调度的 chunk；终态会话 checkpoint/partial tail 是另一套恢复边界。 | 已有终态恢复不等于已实现任意 Query 起点的原版重放契约。 |
-| prefill budget 与历史构建 | prefill budget 可独立于 semantic select budget；`start/append` 可用 `max_tokens=0` 连续 ingest，`finish` 再生成。 | `KVMemConfig.native()` 固定 `prefill_budget = select_budget`；公开 turn 要求正数输出。 | 无法直接采用原版分阶段历史构建和相同压力阈值。 |
-| 必留语义与内容组织 | 请求规划可映射工具、文件证据、消息等 mandatory spans，并处理组合预算；可做 round/message expansion。 | 低层有 `mandatory_handles`，在线选择调用未传入消息或工具对应 handles；主要保留 sink/recent。 | 不能保证完整工具片段、某条消息或文件证据一定保留。 |
+参照代码：qw3 的 `src/qw3_server.cpp`、`src/kvmem_refresh_policy.hpp`、
+`src/kvmem_request_plan.hpp`、`src/kvmem_prefix_reuse_policy.hpp` 和
+`src/qwen_native_backend.cpp`；本集成的 [Query 计划](../src/vllm_kvmem/request_plan.py)、
+[HTTP 规划入口](../src/vllm_kvmem/http_sessions.py)、
+[会话恢复 gate](../src/vllm_kvmem/session_control.py)、
+[检查点生命周期](../src/vllm_kvmem/prompt_checkpoints.py)、
+[在线选择调用](../src/vllm_kvmem/bounded_runtime.py)。
+证据文件记录对应来源哈希，避免将参考工作树变化与本次结论混淆。
 
-例如，在 qw3 **显式 Query 模式**中，一条跨两个物理 chunk 的用户问题可以
-作为完整 Query 评分并重放；当前集成会分别用两个调度 chunk 触发选择。这会
-改变第一段提交时的 attention window，也可能改变第二段捕获的 Q，不能用
-“两边都是 MeanK”推断它们等价。qw3 自己的 opt-in semantic-chunk 路径也会
-按 chunk 选择，但它不能代表原版所有请求策略。
+## 已复现的具体差异
 
-## 历史与会话的边界
+使用实际 qw3 header 编译 helper，再调用当前安装版本的 RequestPlan / SessionLedger：
 
-- 当前 elastic 协议是版本化 append-only token ID。没有接通原版任意历史
-  编辑、分支、命名 snapshot、offline archive build/attach、readonly base +
-  writable overlay 或完整 GC policy 的公开协议。NVMe arena 不代表进程重启
-  后可以恢复原版 session/archive 格式。
-- active KV 有界不等于逻辑历史无界：当前仍受原生 `max_model_len` 和会话配额
-  限制，默认逻辑上限为 262,144。
-- 当前 DSH 可选入口直接调用 18381 的原生聊天 API，没有发送 KVMem
-  `session_id` / `X-Session-ID`，也没有经过 18382 的 token-ID 弹性网关。
-  DSH 两轮工具测试只验证聊天/工具链；它发送完整历史，不能据此声称已验证
-  跨轮 CPU KV checkpoint 复用或 qw3 请求规划。
+1. K=32,768、G=16,384、已有 active window=34,816；同一任务增长 2,048 token，
+   guided 刷新阈值 4,096。qw3 决定不重选，保留 headroom，禁止 checkpoint
+   压力选页；当前默认恢复将窗口变为 32,768，`pressure_restore=true`。
+   这改变 active view，并非仅多了一次搬运。
+2. 同一长历史的 `keep_selected` 请求，即使实际 active + 小增量可以容纳，
+   当前 HTTP 检查仍按完整 52,096 token prompt 拒绝。不能仅切换请求字段就
+   声称已有完整 qw3 工具续接行为。
+3. qw3 原格式 Query span 被当前 token-range parser 拒绝；包含 user、assistant、
+   tool 的 Query message range 也被当前实现拒绝。两边字段名字相同不代表协议相同。
+4. Query 从 token 49,152 开始，live header 从 49,149 开始。原版 replay helper
+   选择 block 起点 49,024；当前只有 Query 坐标时选择 49,152。这里只比较实际
+   helper 的边界决策，不声称已做两模型输出质量对照。
 
-## 尚未移植的附加策略与效率优化
+现有真实模型短轮记录还说明尾部重算规模：首轮 prompt=50,006、输出=17，
+逻辑历史为 50,023；下一轮实际恢复 checkpoint=48,000，需先重放旧后缀
+**2,023 token**，再处理新增内容。它不是只回放不足一页的尾部，也不是只
+加载 32K active context。完整 tokens 没有丢失；CPU 可直接恢复的 KV prefix
+与逻辑历史结束位置不同。
 
-Adaptive/SubBlockMeanK/PerToken、Query history/decay、action attention、
-CacheBlend、多模态索引和 MRoPE 等没有完整接通；它们不应与基础 MeanK 主路径
-混为一谈。增量 GPU index、原版专用 scorer、Q-only early exit、provisional
-前缀精确重用和提前 Query prefetch 也仍未移植。
+## 尚未接入的效率优化与扩展
 
-此前报告中的两个执行缺口已补齐：原生编译兼容和 CPU 历史批处理。
-它们改善执行效率，但没有修复上表的 Query、策略、精度或消息保留差异。
+以下缺口与请求语义差异分开看：增量 GPU MeanK index、one-dot/two-pass、
+在线逐层评分、Q-only early exit、provisional 前缀精确复用、提前 Query
+prefetch 等主要影响成本；不能以它们代替上面的语义迁移。
 
-若以基础 MeanK 上下文语义等价为目标，优先级应为：显式 Query/请求规划与
-重选策略 → Query checkpoint/partial-tail replay → 原版索引精度和评分路径 →
-独立 prefill budget、prefill-only ingest 与 mandatory spans。后续应固定同一
-历史、Query 和配置，比较每次选择的页 ID、mandatory 覆盖、重放范围、历史
-长度及 MTP/GDN 状态，不能仅用最终吞吐证明一致。
+此外仍缺原版完整 no-copy logical page window、Adaptive/SubBlockMeanK/PerToken、
+query history/decay、action attention、CacheBlend、多模态/MRoPE、任意历史编辑与
+分支、offline archive/session 格式和完整 GC policy。工具等待当前立即归还 GPU
+页，没有 warm-idle GPU TTL；历史 TTL 与 GPU residency TTL 的含义不同。
+逻辑历史仍受 262,144 token 及配额限制，100 GiB 是 read cache 预算。
 
-本次是代码与已留存证据的核对，没有新增 GPU 压测。参见
-[完整功能审计](qw3-parity-audit-20261014.md)、
-[最新编译和批处理验证](compiled-capture-history-20261014.md)。DSH 接入记录保存在
-本地 `deploy/vllm-kvmem-dsh-20261014/README.md`，位于本仓库的父目录。
+DSH 当前原生聊天连接没有该 token-ID 规划与弹性 session 协议。多 GPU、异步
+多在途 batch、长期工具负载的带宽分配和逐 token SLO 仍未验收或实现。
+
+## 语义补齐优先级与验收
+
+1. 聊天/DSH 的准确 Query 与消息坐标、默认最后 user Query、兼容原字段协议。
+2. 原版跨轮 gate 与 checkpoint finalize：稳定工具回调保持选页、实际 active
+   headroom 准入、增长/evidence 触发；需要时再接 private-query 策略。
+3. mandatory spans 与 capacity fit、独立 live replay span；补齐 P/M、Query
+   snapshot 和 branch-safe 恢复，减少终态后缀重算。
+4. 独立 prefill budget 与 prefill-only ingest；随后再迁移索引/评分效率优化。
+
+验收需固定同一 token history、Query、K/G、block size、keep bands 和配置，
+逐事件对比触发原因、候选/必留页、最终页 ID 顺序、replay 范围及保留历史位置。
+已有 scorer 测试是与 PyTorch 定义的数值容差对照，已有恢复 oracle 是本实现
+CPU checkpoint 的 GDN 字节对照；它们尚未构成两套模型执行器的完整逐页、
+逐轮质量等价验证。CUDA kernel 原码相同也不能消除 Q/K 来源和近似同分排序差异。

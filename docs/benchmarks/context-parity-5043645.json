@@ -1,0 +1,93 @@
+{
+  "schema": "kvmem.context_parity_review.v1",
+  "date": "2026-10-14",
+  "vllm_commit": "50436456921cfa003c1c4c4a6522b6401d859211",
+  "qw3_head": "1410cfe284726edb4161381546fe3915110331c9",
+  "qw3_worktree_has_changes": true,
+  "core_files_identical": {
+    "include/qw3/kvmem_store.hpp": "4690a044f201b639edf3e10a8e58ea89eb517dd916e8cc63eeba07914a6cb90c",
+    "include/qw3/kvmem_repository.hpp": "ce44bd6b86960d0b86e5ef017d067584a012566e666c0d5cc0075250b05e4549",
+    "include/qw3/kvmem_repository_gc.hpp": "b10e9f031880169848f0b01b5dfd778adc64a26cc139fe9e1197ab8800252a83",
+    "include/qw3/kvmem_gc.hpp": "d7a071e825cacbb4ca5587618ae87b55e57a17a3d6f3e2340b3d1a4f7a1338c6",
+    "include/qw3/nvme_kv_tier.hpp": "892eab55d7694db85393ca2d2c5a12c4826ba73e7063cb18e06be65c256b2399",
+    "src/kvmem_store.cpp": "950c04b45c28afe73d3e50c9267fde5b241826b5f57c4be8e3eb9385f6c2b348",
+    "src/kvmem_repository.cpp": "4aa098e338d175c292bb1e5677857d772a4bbfe30ddb660c647ee53229dcbb52",
+    "src/kvmem_repository_gc.cpp": "6dca57b60563364d503ec1f7e5f7d0fbde7ca71a2492af62e36b144b3fb06452",
+    "src/kvmem_gc.cpp": "69179c581e1927f8aa7ea52965071af26a02e39147344c422231dc4227c227db",
+    "include/qw3/kvmem_attention.hpp": "ff02184d3f300bea8a7c9794188bd71bb6fac6e49bac25a8e03e33d5fc754594"
+  },
+  "original_mean_k_kernel_body_identical": true,
+  "policy_fixture": {
+    "conditions": {
+      "known_conversation": true,
+      "same_user_query": true,
+      "selection_started": true,
+      "select_budget": 32768,
+      "gen_budget": 16384,
+      "block_tokens": 128,
+      "guidance_enabled": true,
+      "growth_since_refresh": 2048,
+      "refresh_trigger": 4096,
+      "checkpoint_history": 50048,
+      "prior_active_window": 34816,
+      "next_prompt": 52096
+    },
+    "qw3": {
+      "stable_tool": {
+        "reselect": false,
+        "headroom_grace": true,
+        "remaining_until_refresh": 2048,
+        "checkpoint_pressure_allowed": false
+      },
+      "new_user_query": {
+        "reselect": true,
+        "private_query": false
+      },
+      "growth_at_threshold": {
+        "reselect": true,
+        "private_query": true
+      },
+      "live_header_replay_begin": 49024
+    },
+    "vllm_default_restore": {
+      "restored_history": 50048,
+      "active_window": 32768,
+      "pressure_restore": true
+    },
+    "vllm_keep_selected_rejection": "keep_selected requires verified active headroom; this cold prompt exceeds K+G",
+    "vllm_qw3_wire_span_rejection": "Invalid Query span: expected a nonempty half-open range",
+    "vllm_whole_round_query_rejection": "Query message range must contain user messages",
+    "vllm_query_only_replay_begin": 49152
+  },
+  "existing_short_turn_evidence": {
+    "source": "explicit-query-20261014.json",
+    "first_prompt_tokens": 50006,
+    "first_accepted_outputs": 17,
+    "retained_checkpoint_tokens": 48000,
+    "next_turn_replayed_old_suffix_tokens": 2023
+  },
+  "upstream_source_sha256": {
+    "src/kvmem_refresh_policy.hpp": "57f2a13f4c82c9dade2387a51b349e5042c53e28349336e4f06be44c887afeb0",
+    "src/kvmem_request_plan.hpp": "1dd6c7eaefa44f367e07f0382780206e930a9be6db56dff2e16a488d5a70fe08",
+    "src/kvmem_prefix_reuse_policy.hpp": "cca8913d451ee7da61cc51e75248e641cb2b2f7d32fd443841e9ad07c2f80e1e",
+    "src/kvmem_mandatory_request.hpp": "471117bed9b75ef5ab249fb4602f221f89c5401a334e685a9a9a73097c2de2e2",
+    "src/kvmem_session_cache.hpp": "6b68835106d5b94bbc385b0cdb133014ba74ebde7c99fedc3e6bbc64b6d4b10d",
+    "src/qw3_server.cpp": "e7c87794f1cd08f9f2677e6e6ea75b15aede41ecee123f59a767f2ce5fa4b8f2",
+    "src/qwen_native_backend.cpp": "95c535fa60e5091729ac1510659f32942adc54908b459865557d70b0f6cc40f9",
+    "src/qwen_executor.cpp": "8b361cf2e2cd534a097030f8e987a492fe237e61719728a8210e354d4be4b603",
+    "src/kernels_cuda.cu": "017898aaea1261624f017d92dae9392c0150de1476db6610d6c30b4c6116a821"
+  },
+  "adapter_source_sha256": {
+    "src/vllm_kvmem/request_plan.py": "77ef2a977557cbae5f350ae8ca6c0034d8d8b02ce76212f4f64aeb57621df506",
+    "src/vllm_kvmem/http_sessions.py": "94d34f949425d1cf5fcba9a3536e7a31e31496b53b57bd7b3b95fcdcb1fc0fcf",
+    "src/vllm_kvmem/config.py": "58e21e75ae3eb0e75bbeede57d9d258ba846c8649ecf59281b0a489b4a26c9db",
+    "src/vllm_kvmem/authority.py": "0325c0ad3760699960377881d5e67b031c2dfa2d70ecfafb4ee0f55552e7b382",
+    "src/vllm_kvmem/session_control.py": "4b6af91951bcf6204314269842d6f60b2bf1ef3f676a18de575c11dee14707cb",
+    "src/vllm_kvmem/prompt_checkpoints.py": "eddb9432e5499b6301eeecff970631c24b7126cc1b65f8c005eb215a954a3500",
+    "src/vllm_kvmem/session_worker.py": "33e47a0b6ee99410a55344216ff129f6f6bd87c9b6ff4f82afa0bc213c2c4ac2",
+    "src/vllm_kvmem/scheduler.py": "60d30a06a542dc9950e830c37a95fa093586a87a210502890110293373c9850d",
+    "src/vllm_kvmem/cuda_scoring.py": "05c74d91b6ac35c5bcec26339a1993bc3120f9009ad64e1f5becd2d1342d3af4",
+    "src/vllm_kvmem/serve.py": "739639cf1b18f0ca9063d926f7c95291248dbcb60ec9071049b750366a11dcf8"
+  },
+  "scope": "Code audit and CPU policy fixtures against the actual qw3 helpers; no new GPU model or throughput measurement."
+}

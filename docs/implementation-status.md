@@ -51,9 +51,9 @@ CPU 批处理基线为 `3bc639b`。新增路径的契约和资格范围见
 | 项目 | 已有部分 | 尚缺部分 |
 | --- | --- | --- |
 | MeanK 评分 | 新配置的 FP16 Q/index、原版基础 CUDA kernel、串行 token 顺序封页均值 | 增量 GPU index、one-dot/two-pass、Adaptive 和在线逐层评分；旧配置仍为 FP32/PyTorch。 |
-| Query 语义 | token-ID 完整 Query、调用方提供的角色和 message range | 自动聊天模板坐标映射；超过 G−B 的完整 Query 跨 batch 累计。 |
-| 重选策略 | auto/force/off、pressure/keep_selected 和独立 semantic_chunk；长 prefill 留出 MTP 空间 | keep_selected 对长逻辑历史的缓存空间快速准入；原版所有跨轮 gate 与附加策略。 |
-| Query 回滚/重放 | Query 前封页检查点、partial tail + 完整 Query、CPU 检查点跨轮恢复 | 任意历史编辑、checkpoint ladder；早于已有检查点的 Query 采用冷恢复。 |
+| Query 语义 | token-ID 完整 Query、调用方提供的角色和 user message range | 与 qw3 同名字段协议不同；默认最后 user Query / 自动聊天模板映射、混合角色整轮 Query、超过 G−B 的跨 batch 捕获。 |
+| 重选策略 | auto/force/off 的简化计划，pressure/keep_selected 和 semantic_chunk；长 prefill 留出 MTP 空间 | 原版任务/Query 身份、增长/evidence gate、private query；默认恢复可能缩至 K 并改变选页，keep_selected 尚按完整逻辑 prompt 准入。 |
+| Query 回滚/重放 | Query 前封页检查点、partial tail + 完整 Query、CPU 检查点跨轮恢复 | 独立 live replay span、原版 P/M + Query snapshot + branch-safe 恢复、编辑与 ladder；早于已有检查点的 Query 冷恢复。新配置终态后 rewind，旧 Query 后缀可能重算。 |
 | mandatory 内容 | sink/recent 和低层 `mandatory_handles` | 在线消息、工具、文件证据 spans 的规划与映射。 |
 | historical storage | CPU cache + NVMe arena、预算内历史保留 | 原版 offline archive/session 格式、重启持久恢复、完整公开 GC policy。 |
 | resident KV 复用 | raw-K cache、同位置 K 跳过、resident V 复用 | 原版完整免搬动页窗口；当前 dense native 窗口仍需搬动部分 resident V。 |
@@ -102,10 +102,11 @@ KVMem 的原生同步编译控制相比，当前吞吐仍有差距；见对应�
 
 ## 下一阶段顺序
 
-1. 增量 GPU index、one-dot/two-pass 与在线评分。
-2. keep_selected 缓存空间准入，以及更大 Query 的有界跨 batch 捕获。
-3. 独立 prefill budget、prefill-only ingest 和 mandatory spans。
-4. DSH 的完整 token 坐标及会话适配、工具负载和 SLO 验收。
+1. 原版 Query / 消息协议及默认 user Query；DSH 的会话与坐标适配。
+2. 跨轮自动 gate、保持原选页的恢复与实际 active headroom 准入。
+3. mandatory spans / capacity fit、独立 replay span、P/M 与 Query snapshot 恢复。
+4. 独立 prefill budget、prefill-only ingest；再迁移增量 GPU index 等效率优化，
+   并做工具负载和 SLO 验收。最新具体对照见上下文一致性报告。
 
 一致性验证应固定历史、Query 和配置，比较选中的页 ID、mandatory 覆盖、
 重放范围、历史长度及 MTP/GDN 状态。吞吐相近不能代替语义等价验证。

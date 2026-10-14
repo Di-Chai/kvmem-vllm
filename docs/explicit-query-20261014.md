@@ -38,6 +38,10 @@ HTTP middleware 将规划放入原生支持的 `kv_transfer_params.kvmem_request
 
 `keep_selected` 当前采用保守准入：完整 prompt + 输出额度必须不超过 K+G−B。
 它尚未开放“逻辑历史很长但缓存 active view 仍有空间”的快速准入。
+这些同名 Query 字段尚不兼容 qw3 的聊天 API 格式：原版 span 指定消息内容的
+UTF-8 字节坐标，message range 可含混合角色整轮；本版接收绝对 token 坐标，
+message range 限于 user。跨轮自动 gate 和默认恢复保持选页也仍不同，详见
+[最新上下文管理对照](context-management-parity-20261014.md)。
 
 ## Query 与恢复的执行顺序
 
