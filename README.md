@@ -1,5 +1,10 @@
 # vllm-kvmem
 
+**Implementation status, 2026-10-14:** the [implemented / partial / missing checklist](docs/implementation-status.md)
+records the current KV management, qw3 parity gaps, qualification results and next
+steps. Per-turn output stays within G. Explicit Query planning and the original
+FP16 MeanK scoring path are still incomplete.
+
 **Native compilation and batched history, 2026-10-14:** KVMem capture, MeanK
 probe/replay and native MTP now support native compilation with CUDA Graphs.
 Vectorized CPU copy/MeanK maintenance reduced the isolated component by 59.7%.
