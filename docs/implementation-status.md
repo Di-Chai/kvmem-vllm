@@ -2,7 +2,7 @@
 
 更新日期：2026-10-14。运行时基线：`3bc639b`；本次文档补充前已提交的仓库版本：
 [`9cbf943`](https://github.com/Di-Chai/kvmem-vllm/commit/9cbf9432e0ed1787fbe3c9cc445b04274d4dd95c)。
-开发分支：`codex/multi-user-serving-20261013`。
+开发分支：`main`。
 
 当前已实现分离式 KV 管理和有界 MeanK 主路径，但**尚未完整复现 qw3 的请求级
 上下文管理语义**。单轮输出不超过 generation budget G 是保留的设计；多 epoch
