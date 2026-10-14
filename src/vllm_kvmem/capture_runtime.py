@@ -202,7 +202,7 @@ class CaptureRuntime:
                         authority = RequestAuthority(request_id, self.config, self.archive,
                             len(self.layers), self.heads, self.dim, resident_records=self.resident_records,
                             gc_config=self.gc_config, gc_progress=self.gc_progress,
-                            scoring_layers=len(self.runner._kvmem_layers))
+                            scoring_layers=len(self.runner._kvmem_layers),mean_k_backend=self.options.mean_k_backend)
                         self.authorities[request_id] = authority
                         self.accepted[request_id] = self.rejected[request_id] = 0
                         self.last_steps[request_id] = []

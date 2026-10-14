@@ -67,6 +67,20 @@ def test_native_prefill_cadence_releases_regularly_and_never_waits_on_unavailabl
     assert not scheduler._throttle_mixed_prefill()
 
 
+def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatch):
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    scheduler, request, _ = setup_scheduler()
+    scheduler._bounded_target = scheduler.request_planning = True
+    scheduler.query_policy = SpeculativeQueryPolicy(16,32,48,4)
+    request.num_prompt_tokens = 200
+    monkeypatch.setattr(Scheduler,'_reserve_prefill_lookahead',lambda self,r,h,n:n)
+    tokens = scheduler._reserve_prefill_lookahead(request,32,52)
+    assert tokens==32 and 32+tokens+7<=scheduler.query_policy.capacity
+    scheduler.query_policy = SpeculativeQueryPolicy(16,32,256,4)
+    assert scheduler._reserve_prefill_lookahead(request,32,272)==128
+
+
 def test_suspended_refresh_commits_all_group_tables_and_resumes_request():
     scheduler, request, pools = setup_scheduler()
     scheduler.begin_refresh(request, 32)

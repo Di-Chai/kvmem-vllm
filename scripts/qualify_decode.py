@@ -12,6 +12,7 @@ import json
 import math
 from pathlib import Path
 import time
+import uuid
 
 import httpx
 
@@ -259,6 +260,8 @@ def make_payload(args, prompt):
     payload = {'model': args.model, 'max_tokens': args.output_tokens, 'temperature': 0,
                'seed': args.seed, 'ignore_eos': True, 'stream': True, 'return_token_ids': True,
                'stream_options': {'include_usage': True}}
+    if getattr(args, 'prompt_sessions', False):
+        payload['session_id'] = 'decode-qualification-' + uuid.uuid4().hex
     if args.endpoint == 'chat/completions':
         payload.update(messages=[{'role': 'user', 'content': prompt}],
                        chat_template_kwargs={'enable_thinking': False})
@@ -452,6 +455,8 @@ def parse_args(argv=None):
     parser.add_argument('--concurrency', type=int, nargs='+', default=[1, 2, 4, 8])
     parser.add_argument('--rounds', type=int, default=2)
     parser.add_argument('--output-tokens', type=int, default=1024)
+    parser.add_argument('--prompt-sessions', action='store_true',
+                        help='Include native session/checkpoint maintenance in the decode measurement')
     parser.add_argument('--trim-tokens', type=int, default=64)
     prompt_source = parser.add_mutually_exclusive_group()
     prompt_source.add_argument('--prompt-file', type=Path)

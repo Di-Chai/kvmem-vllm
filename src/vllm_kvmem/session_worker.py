@@ -170,6 +170,14 @@ class SessionWorker:
         finally:
             assembler.close()
 
+    def selection_committed(self, request_id, history):
+        binding = self.bindings.get(request_id)
+        checkpoint = self.pool.entries.get(binding.namespace) if binding is not None else None
+        if checkpoint is not None and checkpoint.position == history:
+            if checkpoint.request_id != request_id:
+                raise ValueError('Selected frame belongs to another checkpoint request')
+            self.pool.update_live_window(checkpoint)
+
     def _restore(self, request_id):
         from .cache_groups import full_attention_groups
         from .window_assembly import NativeWindowAssembler
@@ -177,7 +185,7 @@ class SessionWorker:
         binding = self.bindings[request_id]
         checkpoint = self.pool.claim(binding.namespace, request_id, binding.tokens)
         if (checkpoint is None or checkpoint.position != binding.history or
-                checkpoint.window.window_tokens != binding.window):
+                (checkpoint.window.window_tokens != binding.window and not binding.pressure_restore)):
             raise ValueError('Worker cannot restore the advertised exact prompt prefix')
         if request_id in self.runtime.authorities:
             raise ValueError('Native import already owns a different authority')
@@ -186,7 +194,12 @@ class SessionWorker:
         assembler = NativeWindowAssembler.from_runner(self.runner, request_id, self.runtime.names,
             cfg.block_tokens, packed=self.options.packed_assembly,
             direct_pinned_reads=self.options.direct_pinned_reads)
-        plan = self.pool.prepare_claim_window(checkpoint)
+        if binding.pressure_restore:
+            plan = self.pool.prepare_claim_window(checkpoint, pressure=True)
+            if plan.total_window_tokens != binding.window:
+                raise ValueError('Pressure restore differs from its reserved window')
+        else:
+            plan = self.pool.prepare_claim_window(checkpoint)
         try:
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
@@ -196,6 +209,19 @@ class SessionWorker:
             if event is not None:
                 event.synchronize()
             oracle = getattr(self, 'restore_oracles', {}).pop(binding.namespace, None)
+            if binding.pressure_restore:
+                # The intended selected page set changed; an old-view byte
+                # oracle is not a valid comparison for a pressure refresh.
+                oracle = None
+            if os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+                recurrent = self.model_adapter._recurrent_views(request_id)
+                if any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name,t in recurrent.items()):
+                    raise RuntimeError('Query-boundary recurrent state differs from its CPU checkpoint')
+                import json
+                with (self.runner._kvmem_probe_output/'verified_state_restores.jsonl').open('a') as stream:
+                    stream.write(json.dumps({'request_id':request_id,'history_tokens':binding.history,
+                        'working_tokens':binding.window,'recurrent_tensors':len(recurrent),
+                        'pressure_restore':binding.pressure_restore,'recurrent_byte_equal':True})+'\n')
             if oracle is not None:
                 actual = self._target_bytes(request_id, checkpoint.window.window_tokens)
                 if not torch.equal(actual, oracle):

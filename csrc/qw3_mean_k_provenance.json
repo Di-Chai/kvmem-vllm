@@ -1,0 +1,10 @@
+{
+  "upstream_file": "qw3/src/kernels_cuda.cu",
+  "upstream_file_sha256": "017898aaea1261624f017d92dae9392c0150de1476db6610d6c30b4c6116a821",
+  "kernel": "block_attn_score_softmax_pages_kernel",
+  "kernel_source_sha256": "cc32e353308b731703ec3fcdaae9376eb0ed7e9aeecf95162c8c5073169760db",
+  "kernel_body_unchanged": true,
+  "host_adapter": "FP16 tensors, current Torch CUDA stream; layer strides measured in tokens/pages",
+  "qualified_path": "one MeanK per sealed block; at most 8192 eligible pages",
+  "license": "third_party/qw3/LICENSE"
+}

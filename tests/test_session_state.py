@@ -1,5 +1,6 @@
 from dataclasses import replace
 from types import SimpleNamespace
+import os
 
 import pytest
 import torch
@@ -56,6 +57,20 @@ def test_cpu_owned_checkpoint_restores_new_request_pages_and_preserves_neighbour
     assert torch.equal(cache[2], before[2][2])
     assert torch.equal(cache[8], before[2][1] if draft else before[2][8])
     assert adapter.runner.model_state.num_accepted_tokens_gpu.tolist() == [1, 1, 1]
+
+
+@pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1' or not torch.cuda.is_available(),reason='Opt-in CUDA checkpoint gate')
+def test_pinned_snapshot_fences_gpu_copy_before_source_reuse():
+    adapter,conv,ssm,_,_=fixture('cuda',draft=False)
+    before=conv.clone(),ssm.clone()
+    snapshot=adapter.capture('a',8,max_bytes=4096)
+    assert all(t.is_pinned() for t in snapshot.recurrent.values())
+    conv[1].fill_(-11);ssm[1].fill_(-11)
+    adapter.runner.req_states.req_id_to_index['new']=2
+    adapter.runner._kvmem_request_generations['new']=3
+    completed=adapter.restore(snapshot,'new');completed.synchronize()
+    assert torch.equal(conv[5],before[0][1]) and torch.equal(ssm[5],before[1][1])
+    assert torch.equal(conv[3:5],before[0][3:5]) and torch.equal(ssm[3:5],before[1][3:5])
 
 
 def test_invalid_checkpoint_or_layout_fails_before_any_destination_write():

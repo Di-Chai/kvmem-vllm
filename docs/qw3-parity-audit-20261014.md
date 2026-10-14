@@ -2,7 +2,10 @@
 
 后续更新：本报告冻结的 compilation NONE 限制已在单 GPU、同步 Qwen MTP 路径解除；
 CPU 历史维护也已批处理。详见[实现与测量](compiled-capture-history-20261014.md)。
-其余未迁移项仍按下表跟踪，不能把此更新当作整个 qw3 已完整迁移。
+后续又补齐了有界显式 Query、请求策略、Query 边界重放、FP16 index 和基础
+原版 CUDA scorer，见[真实模型验收报告](explicit-query-20261014.md)。
+下表保留冻结版本的旧状态，当前进度以[实现清单](implementation-status.md)为准；
+不能把这些更新当作整个 qw3 已完整迁移。
 
 按“单轮输出不超过 G”重新聚焦上下文管理主路径的核对见
 [上下文一致性报告](context-management-parity-20261014.md)。本次保留该输出限制，

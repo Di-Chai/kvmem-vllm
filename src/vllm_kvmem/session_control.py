@@ -27,6 +27,7 @@ class SessionBinding:
     tokens: tuple[int, ...]
     history: int = 0
     window: int = 0
+    pressure_restore: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,10 +78,12 @@ class _Entry:
     ready_records: int = 0
     retained_position: int = 0
     retained_tokens: bytes = b''
+    pressure_restore: bool = False
 
 
 class SessionLedger:
-    def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False):
+    def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
+                 select_budget=None, gen_budget=None):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -95,6 +98,7 @@ class SessionLedger:
         self.generation = 0
         self.commands = SessionCommands()
         self.terminal_capture = terminal_capture
+        self.select_budget, self.gen_budget = select_budget, gen_budget
         self.hits = self.misses = self.waits = 0
 
     @staticmethod
@@ -130,10 +134,19 @@ class SessionLedger:
             return None
         if entry is not None:
             prompt = request.prompt_token_ids
+            from .request_plan import request_plan
+            plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
             if len(prompt) <= entry.history or token_bytes(prompt, entry.history) != entry.tokens:
                 self._evict(entry)
                 self.waits += 1
                 return None
+            if plan is not None and plan.query is not None and entry.history > plan.replay_begin:
+                self._evict(entry)  # Never reuse state causally after the Query boundary.
+                self.waits += 1
+                return None
+            if plan is not None and plan.prefill_window != 'keep_selected' and entry.window > self.select_budget:
+                entry.window = self.select_budget
+                entry.pressure_restore = True
             entry.phase, entry.request_id = 'lookup', request.request_id
             self.requests[request.request_id] = entry
             try:
@@ -170,16 +183,19 @@ class SessionLedger:
             raise ValueError('Session allocation differs from its exact prefix lease')
         entry.phase, entry.allocated = 'active', True
         self.commands.bindings.append(SessionBinding(entry.namespace, entry.generation,
-            request.request_id, tuple(request.prompt_token_ids), entry.history, entry.window))
+            request.request_id, tuple(request.prompt_token_ids), entry.history, entry.window,entry.pressure_restore))
         self.hits += int(bool(external_tokens))
         self.misses += int(not external_tokens)
 
     def capture_before_final_prefill(self, request, query_tokens):
         entry = self.requests.get(request.request_id)
         position = request.num_computed_tokens
+        from .request_plan import request_plan
+        plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
+        at_query = plan is not None and plan.replay_begin == position
         if (entry is None or entry.phase != 'active' or entry.candidate_position or
                 not 0 < position < request.num_prompt_tokens or position % self.block_tokens or
-                position + query_tokens < request.num_prompt_tokens):
+                (position + query_tokens < request.num_prompt_tokens and not at_query)):
             return
         entry.candidate_position = position
         entry.candidate_tokens = token_bytes(request.prompt_token_ids, position)

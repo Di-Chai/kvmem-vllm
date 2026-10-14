@@ -61,6 +61,7 @@ class KVMemScheduler(Scheduler):
             self.connector.scheduler_archive_update = lambda sequence, capacity: self.archive_admission.update(
                 sequence, capacity, {k for k, r in self.requests.items() if not r.is_finished()})
         self.prefill_cadence = options.prefill_cadence
+        self.request_planning = options.request_planning
         self.session_capture_decode = options.session_capture_decode
         self._mixed_steps = 0
         self._scheduled_queries = {"prefill": {}, "decode": {}}
@@ -70,7 +71,8 @@ class KVMemScheduler(Scheduler):
             from .speculative_admission import SpeculativeQueryPolicy
             self.query_policy = SpeculativeQueryPolicy(config.block_tokens, config.select_budget,
                                                        config.gen_budget, self.draft_contract.query_tokens)
-        if self._bounded_target and not config.block_tokens <= self.scheduler_config.max_num_batched_tokens <= config.gen_budget:
+        if self._bounded_target and not config.block_tokens <= self.scheduler_config.max_num_batched_tokens <= (
+                config.gen_budget + self.scheduler_config.max_num_seqs * (self.draft_contract.query_tokens if self.draft_contract else 1)):
             raise ValueError("Bounded target batch budget must fit an aligned block and G headroom")
         coordinator = self.kv_cache_manager.coordinator
         managers = list(coordinator.single_type_managers)
@@ -122,9 +124,11 @@ class KVMemScheduler(Scheduler):
                         raise RuntimeError('Acknowledged prompt import did not commit')
             self.connector.sessions = SessionLedger(options.session_capacity, config.block_tokens,
                                                     prepare_import, abort_import, commit_import,
-                                                    terminal_capture=options.session_capture_terminal)
+                                                    terminal_capture=options.session_capture_terminal,
+                                                    select_budget=config.select_budget if options.request_planning else None,
+                                                    gen_budget=config.gen_budget if options.request_planning else None)
 
-    def begin_refresh(self, request, window_tokens, *, replay_tokens=0):
+    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk'):
         if getattr(request, "num_in_flight_tokens", 0):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:
@@ -141,7 +145,7 @@ class KVMemScheduler(Scheduler):
                 self.window_managers[group_id].abort_preparation(ticket)
             raise
         groups = tuple(prepared)
-        command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups)
+        command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups,query_span,selection)
         self.transactions[request.request_id] = (command, request.next_decode_eligible_step)
         request.next_decode_eligible_step = 2**62
         self.connector.queue(command)
@@ -235,7 +239,19 @@ class KVMemScheduler(Scheduler):
         offsets = {m.offsets.get(request.request_id, 0) for m in self.window_managers.values()}
         if len(offsets) != 1:
             raise RuntimeError("Full-attention groups disagree on committed history mapping")
-        tokens = self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offsets.pop())
+        offset = offsets.pop()
+        from .request_plan import request_plan
+        plan = request_plan(request, self.query_policy.block_tokens, self.query_policy.gen_budget)
+        if plan is not None and num_computed_tokens < request.num_prompt_tokens:
+            tokens = plan.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offset, self.query_policy.capacity)
+        else:
+            if (plan is None and getattr(self, 'request_planning', False)
+                    and num_computed_tokens < request.num_prompt_tokens):
+                # Legacy chat/text entries share the larger atomic-Query batch
+                # budget. Their chunk still needs room for native MTP lookahead.
+                tokens = min(tokens, self.query_policy.gen_budget - self.query_policy.block_tokens,
+                             8 * self.query_policy.block_tokens)
+            tokens = self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offset)
         if (self.session_capture_decode and self.connector.sessions is not None and
                 request.request_id in self.connector.sessions.requests and
                 num_computed_tokens >= request.num_prompt_tokens):
@@ -263,8 +279,18 @@ class KVMemScheduler(Scheduler):
                 offset = next(iter(self.window_managers.values())).offsets.get(request_id, 0)
                 imported_query = (connector.sessions is not None and connector.sessions.import_scheduled(request_id)
                                   and request.num_computed_tokens > self.query_policy.select_budget)
-                if imported_query or self.query_policy.refresh(request.num_computed_tokens, request.num_prompt_tokens, offset):
-                    self.begin_refresh(request, self.query_policy.select_budget, replay_tokens=query_tokens)
+                from .request_plan import request_plan
+                plan = request_plan(request, self.query_policy.block_tokens, self.query_policy.gen_budget)
+                action = (plan.action(request.num_computed_tokens, request.num_prompt_tokens, offset,
+                    self.query_policy.capacity) if plan is not None else None)
+                if action == 'exhausted':
+                    raise RuntimeError('keep_selected append headroom was exhausted')
+                if ((plan is None and (imported_query or self.query_policy.refresh(
+                        request.num_computed_tokens, request.num_prompt_tokens, offset))) or
+                        (action is not None and request.num_computed_tokens >= self.query_policy.select_budget)):
+                    self.begin_refresh(request, self.query_policy.select_budget, replay_tokens=query_tokens,
+                        query_span=plan.query if action == 'query' else None,
+                        selection='pressure' if action == 'pressure' else 'query' if action == 'query' else 'chunk')
                     # Native V2 otherwise defers start_load_kv until after model
                     # forward. The query command must exist before this forward.
                     output.has_sync_kv_loads = True

@@ -1,4 +1,6 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import pytest
 
 torch = pytest.importorskip('torch')
@@ -26,6 +28,37 @@ def test_packed_records_preserve_order_bytes_and_owned_lifetime(tmp_path, direct
         read_packed_records(authority, [records[2].handle])
     assert authority.close() and archive.close()
     assert packed.numpy().tobytes() == expected  # Read payload owns bytes after retirement.
+
+
+@pytest.mark.parametrize('region',[None,(0,24)])
+@pytest.mark.parametrize('limiter',['pending','bytes'])
+def test_packed_restore_waits_for_real_archive_backpressure(tmp_path,region,limiter):
+    authority,archive=setup(tmp_path)
+    assert authority.append(*payload(0,8),history_begin=0,local_rope_begin=0)
+    drain(authority)
+    handle=next(iter(authority.records.values())).handle
+    entered,release=Event(),Event();native_tier=archive.tier
+    class PausedTier:
+        def __getattr__(self,name):return getattr(native_tier,name)
+        def io(self,*args):
+            entered.set();assert release.wait(5)
+            return native_tier.io(*args)
+    archive.tier=PausedTier()
+    if limiter=='pending':archive.max_pending=1
+    else:archive.io_max_bytes=archive.record_bytes if region is None else region[1]+2*archive.record_bytes
+    lease=authority.memory.repository.pin(handle)
+    occupied=archive.read(authority.memory.request_id,[lease])
+    assert entered.wait(5)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future=executor.submit(read_packed_records,authority,[handle],region=region)
+        try:
+            with pytest.raises(TimeoutError):future.result(timeout=.05)
+        finally:release.set()
+        result,stats=future.result(timeout=5)
+    source,_=occupied.result(timeout=5);lease.reset()
+    expected=bytes(source) if region is None else bytes(source)[region[0]:region[0]+region[1]]
+    assert result.numpy().tobytes()==expected and stats['admission_wait_seconds']>0
+    assert authority.close() and archive.close()
 
 
 @pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1', reason='Explicit GPU qualification only')

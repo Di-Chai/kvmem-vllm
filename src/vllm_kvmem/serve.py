@@ -171,6 +171,13 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
     if not options.memory.speculation:
         raise ValueError('The mainline serving profile requires the DFlash2 transaction contract')
+    if options.request_planning:
+        if cfg['draft_method'] != 'mtp':
+            raise ValueError('Explicit Query planning currently requires native Qwen MTP')
+        if options.session_capacity and (options.session_capture_terminal or not options.session_capture_decode):
+            raise ValueError('Explicit Query sessions require sealed decode checkpoints, not terminal checkpoints')
+        cfg['long_prefill_token_threshold'] = 0
+        cfg['max_num_batched_tokens'] = options.memory.gen_budget + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)
     if (cfg['max_model_len'] < options.memory.select_budget + options.memory.gen_budget or
             cfg['long_prefill_token_threshold'] % options.memory.block_tokens):
         raise ValueError('Model context must cover K+G and prefill chunks must align to authority records')
@@ -245,6 +252,9 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         # Admission counters and tenant queues have a single API process owner.
         argv += ['--api-server-count', '1']
         env['KVMEM_MULTI_USER_CONFIG'] = json.dumps(settings)
+    if options.request_planning:
+        env['KVMEM_REQUEST_PLAN_CONFIG'] = json.dumps({'block_tokens': options.memory.block_tokens,
+            'gen_budget': options.memory.gen_budget, 'select_budget': options.memory.select_budget})
     return {'scope': 'experimental mainline serving; see support matrix for qualification limits',
             'profile': cfg, 'vllm_argv': argv, 'environment': env}
 

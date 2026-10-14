@@ -124,6 +124,27 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
 }
 
 PYBIND11_MODULE(_native, m) {
+    m.def("finalize_mean_bf16", [](py::buffer raw, py::buffer sums, ssize_t count) {
+        auto a=raw.request(), b=sums.request(true);
+        if (a.ndim!=4 || a.itemsize!=1 || b.ndim!=3 || b.itemsize!=4 ||
+            b.format!=py::format_descriptor<float>::format() || count<=0 || count>a.shape[1] ||
+            b.shape[0]>a.shape[0] || b.shape[1]!=a.shape[2] || b.shape[2]*2!=a.shape[3] ||
+            b.shape[0]<=0 || b.shape[1]<=0 || b.shape[2]<=0 ||
+            a.strides[3]!=1 || a.strides[2]!=a.shape[3] ||
+            a.strides[1]<a.shape[2]*a.shape[3] || a.strides[0]<a.shape[1]*a.strides[1] || b.strides[2]!=4 ||
+            b.strides[1]!=b.shape[2]*4 || b.strides[0]!=b.shape[1]*b.strides[1])
+            throw std::invalid_argument("Invalid BF16 content-index buffers");
+        py::gil_scoped_release release;
+        for (ssize_t l=0;l<b.shape[0];++l) {
+            float *out=reinterpret_cast<float*>(static_cast<char*>(b.ptr)+l*b.strides[0]);
+            const ssize_t channels=b.shape[1]*b.shape[2];
+            std::fill(out,out+channels,0.f);
+            for (ssize_t t=0;t<count;++t) {
+                const char *row=static_cast<const char*>(a.ptr)+l*a.strides[0]+t*a.strides[1];
+                for (ssize_t d=0;d<channels;++d) out[d]+=bf16_as_float(row+d*2);
+            }
+        }
+    });
     m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) {
         struct Row {
             py::buffer_info raw, values, dst_raw, dst_values, delta, sum;

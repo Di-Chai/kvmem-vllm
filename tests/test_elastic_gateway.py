@@ -91,6 +91,31 @@ def test_meank_gateway_passes_complete_history_and_stable_tenant_session_to_engi
         assert response.status_code == 400 and len(observed) == 2
 
 
+def test_explicit_query_is_forwarded_and_invalid_force_preserves_history(tmp_path):
+    cfg=configuration(tmp_path)
+    cfg.update(context_mode='meank',request_planning=True,active_context_tokens=128,
+        gen_budget_tokens=512,max_model_len=1024,active_bytes=1000,token_history_bytes=8000,max_body_bytes=10000)
+    seen=[]
+    def upstream(request):
+        payload=json.loads(request.content);seen.append(payload)
+        return httpx.Response(200,json={'choices':[{'token_ids':[8],'finish_reason':'stop'}],
+            'usage':{'completion_tokens':1,'prompt_tokens':len(payload['prompt'])}})
+    with TestClient(create_app(cfg)) as client:
+        client.app.state.client=httpx.AsyncClient(transport=httpx.MockTransport(upstream),base_url='http://native')
+        path='/v1/kvmem/sessions/query/turn';headers={'Authorization':'Bearer key-a'}
+        result=client.post(path,headers=headers,json={'append_token_ids':list(range(300)),
+            'max_tokens':2,'kvmem_query_span':[133,263],'kvmem_reselect':'force'})
+        assert result.status_code==200
+        assert seen[0]['kv_transfer_params']['kvmem_request_plan']=={
+            'kvmem_query_span':[133,263],'kvmem_reselect':'force'}
+        result=client.post(path,headers=headers,json={'version':1,'append_token_ids':[7],
+            'max_tokens':2,'kvmem_reselect':'force'})
+        assert result.status_code==400 and len(seen)==1
+        state=client.get('/v1/kvmem/status',headers=headers).json()
+        assert state['sessions'][0]['version']==1 and state['sessions'][0]['history_tokens']==301
+        assert state['active_reserved_bytes']==0
+
+
 class _Request:
     """Drive real ASGI receive/disconnect events without a network server."""
     def __init__(self, app, path, *, user='a', body=None, method='POST'):

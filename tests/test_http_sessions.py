@@ -59,3 +59,25 @@ def test_native_http_middleware_rejects_before_dispatch_and_preserves_valid_stre
             assert result.status_code == 200 and received[-1] == raw
 
     asyncio.run(run())
+
+
+def test_query_metadata_body_replay_reaches_native_endpoint(monkeypatch):
+    import json
+    import httpx
+    from fastapi import FastAPI
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'block_tokens':128,'gen_budget':4096,'select_budget':8192}))
+    async def endpoint(request):
+        return JSONResponse(await request.json())
+    app=FastAPI(routes=[Route('/v1/completions',endpoint,methods=['POST'])])
+    app.middleware('http')(validate_prompt_session)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+            response=await client.post('/v1/completions',json={'prompt':list(range(4096)),
+                'max_tokens':None,'kvmem_query_span':[1001,3003],'kvmem_reselect':'force'})
+            assert response.status_code==200
+            body=response.json()
+            assert body['max_tokens']==16 and 'kvmem_query_span' not in body
+            assert body['kv_transfer_params']['kvmem_request_plan']['kvmem_query_span']==[1001,3003]
+    asyncio.run(run())

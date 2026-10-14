@@ -44,6 +44,7 @@ class PromptCheckpoint:
     rewind_started: bool = False
     claimant: str | None = None
     restore_started: bool = False
+    restore_records: tuple | None = None
 
     @property
     def position(self):
@@ -107,6 +108,25 @@ class PromptCheckpointPool:
         if checkpoint.phase is not CheckpointPhase.LIVE:
             raise ValueError('Only a live borrowed snapshot may be dropped')
         self._remove(checkpoint)
+
+    def update_live_window(self, checkpoint):
+        """Keep the pre-Query model state with the committed replay KV frame.
+
+        A short turn may end before the next sealed decode checkpoint. Its
+        replay must use the selected frame used by the original durable Query,
+        without rerunning selection from the older pressure frame.
+        """
+        self._owned(checkpoint)
+        if (checkpoint.phase is not CheckpointPhase.LIVE or
+                checkpoint.authority.history_end != checkpoint.position):
+            raise ValueError('Window update requires the exact live checkpoint boundary')
+        window = checkpoint.authority.memory.checkpoint_window()
+        delta = (len(window.records) - len(checkpoint.window.records)) * 5 * 8
+        if self.payload_bytes + delta > self.max_payload_bytes:
+            raise BufferError('Updated checkpoint window exceeds its payload budget')
+        checkpoint.window = window
+        checkpoint.payload_bytes += delta
+        self.payload_bytes += delta
 
     def retire(self, checkpoint, completion):
         """Caller has detached capture and all further suffix execution."""
@@ -176,16 +196,29 @@ class PromptCheckpointPool:
         authority = checkpoint.authority
         if (not checkpoint.restore_started or authority.memory.phase is not Phase.READY or
                 authority.history_end != checkpoint.position or
-                tuple(authority.memory._store.working_records()) != checkpoint.window.records):
+                tuple(authority.memory._store.working_records()) != checkpoint.restore_records):
             raise ValueError('Checkpoint import did not commit its exact target prefix')
         self._remove(checkpoint)
         return authority
 
-    def prepare_claim_window(self, checkpoint):
+    def prepare_claim_window(self, checkpoint, *, pressure=False):
         self._owned(checkpoint)
         if checkpoint.phase is not CheckpointPhase.CLAIMED or checkpoint.restore_started:
             raise ValueError('No unsubmitted checkpoint import')
-        plan = checkpoint.authority.memory.restore_window(checkpoint.window)
+        memory = checkpoint.authority.memory
+        if pressure:
+            memory._validate_window_checkpoint(checkpoint.window)
+            if memory.history_end != checkpoint.position:
+                raise ValueError('Pressure restore requires the exact saved history prefix')
+            # Native allocation is fresh: neither same-position K nor resident V
+            # from the retired request is still resident in these physical pages.
+            for slot, generation, *_ in memory._store.working_records():
+                memory._store.working_resident(memory._store.handle(slot), False)
+            plan = memory.select({r.handle.slot: float(r.history_begin)
+                for r in checkpoint.authority.records.values()})
+        else:
+            plan = memory.restore_window(checkpoint.window)
+        checkpoint.restore_records = tuple(memory._store.working_records())
         checkpoint.restore_started = True
         return plan
 

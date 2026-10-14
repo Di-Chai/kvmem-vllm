@@ -1,5 +1,12 @@
 # 上下文管理主路径与 qw3 的一致性核对
 
+**后续实现更新：** 下文冻结 `3bc639b` 的审计结论。显式 token-ID Query、
+请求策略、partial-tail/full-Query replay、FP16 index 和原版基础 CUDA scorer
+已补齐有界适配，并新增真实模型跨轮及并发验收。
+当前状态请以[新报告](explicit-query-20261014.md)和
+[实现清单](implementation-status.md)为准；增量 GPU index、mandatory spans、
+完整 qw3/DSH 协议及附加策略仍有缺口。
+
 核对日期：2026-10-14。vLLM 集成基线为 `3bc639b`，参考当前
 `/home/chaidi/qw3` 工作树。重新检查的 10 个 vendored C++ 核心文件均与该工作树
 逐字节相同，且与上次审计的文件哈希相同。该结论不覆盖未迁移的 executor、

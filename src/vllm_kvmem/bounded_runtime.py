@@ -106,7 +106,8 @@ def install_bounded_target(runner):
                 raise ValueError("Scheduler query does not match accepted authority or native input batch")
             extents[request_id] = (i, history, query)
 
-        needs_probe = any(history > cfg.select_budget for _, history, _ in extents.values())
+        needs_probe = any(history > cfg.select_budget and jobs[request_id].command.selection != 'pressure'
+                          for request_id, (_, history, _) in extents.items())
         state_adapter = checkpoints = before = bundle = None
         captured = []
         if needs_probe:
@@ -140,9 +141,18 @@ def install_bounded_target(runner):
             score_query = query
             if history <= cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
+            elif job.command.selection == 'pressure':
+                plan = authority.memory.select({r.handle.slot: float(r.history_begin)
+                    for r in authority.records.values()})
             else:
                 begin, end = batch.query_start_loc_np[i:i+2]
-                if draft_contract is not None:
+                if job.command.query_span is not None:
+                    query_begin, query_end = job.command.query_span
+                    if not history <= query_begin < query_end <= history + query:
+                        raise ValueError('Complete explicit Query is missing from its replay batch')
+                    begin, end = begin + query_begin - history, begin + query_end - history
+                    score_query = query_end - query_begin
+                elif draft_contract is not None:
                     from .speculative_admission import SpeculativeQueryPolicy
                     score_query = SpeculativeQueryPolicy.authoritative_probe_tokens(
                         history, int(batch.prefill_len_np[i]), query)
@@ -160,6 +170,9 @@ def install_bounded_target(runner):
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
             assert authority.memory.commit_selection()
+            sessions = getattr(runner, '_kvmem_sessions', None)
+            if sessions is not None:
+                sessions.selection_committed(request_id, history)
             runner._kvmem_window_adapter.commit(request_id, history, selected)
             job.selected_tokens = selected
             owners.append((assembler, assembly, plan))
@@ -168,6 +181,8 @@ def install_bounded_target(runner):
                 "rebuilt_tokens": assembly.rebuilt_tokens, "skipped_tokens": assembly.skipped_tokens,
                 "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
                 "query_score_tokens": score_query, "draft_groups": list(draft_groups),
+                "selection": job.command.selection, "query_span": job.command.query_span,
+                "replay_span": [history, history + query], "mean_k_backend": runtime.options.mean_k_backend,
                 "assembly_seconds": time.perf_counter() - assembly_start,
                 "assembly_host_prepare_seconds": assembly.host_prepare_seconds,
                 "assembly_uploaded_bytes": assembly.uploaded_bytes,

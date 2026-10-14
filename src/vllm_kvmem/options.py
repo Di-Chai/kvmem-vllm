@@ -29,8 +29,14 @@ class RuntimeOptions:
     async_cpu_scatter: bool = False
     cpu_scatter_min_tokens: int = 128
     batched_cpu_append: bool = False
+    request_planning: bool = False
+    mean_k_backend: str = 'torch_reference'
 
     def __post_init__(self):
+        if type(self.request_planning) is not bool or self.mean_k_backend not in ('torch_reference', 'qw3_cuda'):
+            raise ValueError('Invalid request planning or MeanK backend')
+        if self.request_planning and self.memory.gen_budget < 3 * self.memory.block_tokens:
+            raise ValueError('Explicit planning requires at least three blocks of G replay headroom')
         if type(self.cpu_scatter_min_tokens) is not int or not 1<=self.cpu_scatter_min_tokens<=65536:
             raise ValueError('CPU scatter minimum must be an integer in [1, 65536]')
         if type(self.cpu_gather_workers) is not int or not 1 <= self.cpu_gather_workers <= 16:
@@ -99,6 +105,8 @@ class RuntimeOptions:
         cpu_scatter = payload.pop('async_cpu_scatter', False)
         scatter_min = payload.pop('cpu_scatter_min_tokens',128)
         batched_append = payload.pop('batched_cpu_append', False)
+        planning = payload.pop('request_planning', False)
+        scorer = payload.pop('mean_k_backend', 'torch_reference')
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -107,4 +115,4 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append)
+                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer)

@@ -12,3 +12,4 @@ local-profile.json
 users.json
 *.gguf
 *.safetensors
+src/vllm_kvmem/cuda_sources/

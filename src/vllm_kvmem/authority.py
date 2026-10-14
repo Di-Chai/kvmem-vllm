@@ -31,6 +31,7 @@ class Record:
     submitted: bool = False
     digest: str | None = None
     scatter_views: tuple | None = field(default=None, repr=False)
+    mean_key: torch.Tensor | None = field(default=None, repr=False)
 
 
 def record_key(handle):
@@ -40,7 +41,7 @@ def record_key(handle):
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
                  raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
-                 scoring_layers=None):
+                 scoring_layers=None, mean_k_backend='torch_reference'):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (torch.bfloat16, torch.float16):
             raise ValueError("Invalid authority geometry or staging budget")
         self.memory = RequestMemory(request_id, config)
@@ -50,6 +51,9 @@ class RequestAuthority:
         if type(self.scoring_layers) is not int or not 0 < self.scoring_layers <= layers:
             raise ValueError('MeanK scoring must cover a positive target layer prefix')
         self.raw_dtype = raw_dtype
+        if mean_k_backend not in ('torch_reference','qw3_cuda'):
+            raise ValueError('Invalid MeanK backend')
+        self.mean_k_backend = mean_k_backend
         self.record_bytes = layers * config.block_tokens * heads * head_dim * 3
         if archive.record_bytes != self.record_bytes:
             raise ValueError("Archive record format does not match model geometry")
@@ -230,6 +234,12 @@ class RequestAuthority:
         for key, record, offset, start, n in rows:
             record.count += n
             if record.count == self.shape[1]:
+                if self.mean_k_backend == 'qw3_cuda':
+                    if self.raw_dtype != torch.bfloat16:
+                        raise ValueError('Original content-index finalization requires qualified BF16 raw source')
+                    _native.finalize_mean_bf16(record.raw.view(torch.uint8).numpy(),
+                        record.key_sum.numpy(), record.count)
+                    record.mean_key = (record.key_sum / record.count).to(torch.float16)
                 self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
@@ -275,7 +285,9 @@ class RequestAuthority:
                     ordered.append(record)
             if not ordered:
                 raise ValueError("No accepted tokens in the index")
-            yield ordered, torch.stack([r.key_sum / r.count for r in ordered], dim=1)
+            yield ordered, torch.stack([r.mean_key if r.mean_key is not None else
+                (r.key_sum / r.count).to(torch.float16 if self.mean_k_backend=='qw3_cuda' else torch.float32)
+                for r in ordered], dim=1)
         finally:
             for lease in leases:
                 lease.reset()
@@ -333,6 +345,8 @@ class RequestAuthority:
         """
         self._require_open()
         from .retrieval import mean_key_scores
+        if self.mean_k_backend == 'qw3_cuda':
+            from .cuda_scoring import mean_key_scores
         with self.index_snapshot() as (records, means):
             # MTP records travel with target KV but never alter MeanK scoring.
             means = means[:getattr(self, 'scoring_layers', self.shape[0])]

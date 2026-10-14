@@ -117,7 +117,8 @@ def create_app(config):
             raise HTTPException(408, 'Turn body timed out') from None
         try:
             body = _loads(raw)
-            allowed = {'version', 'append_token_ids', 'max_tokens', 'waiting_for_tool', 'queue_timeout_seconds', 'ignore_eos', 'active_ranges'}
+            from .request_plan import FIELDS
+            allowed = {'version', 'append_token_ids', 'max_tokens', 'waiting_for_tool', 'queue_timeout_seconds', 'ignore_eos', 'active_ranges'} | FIELDS
             if not isinstance(body, dict) or set(body) - allowed:
                 raise ValueError('Unknown turn fields')
             append = body['append_token_ids']; max_output = body.get('max_tokens', 256)
@@ -148,6 +149,14 @@ def create_app(config):
             full_prompt_tokens = len(prompt)
             limit = config.get('active_context_tokens', 0)
             mean_k = config.get('context_mode') == 'meank'
+            fields = {k: body[k] for k in FIELDS if k in body}
+            if fields and not config.get('request_planning'):
+                raise ValueError('Explicit Query planning is not enabled')
+            if config.get('request_planning'):
+                from .request_plan import RequestPlan
+                plan = RequestPlan.parse(fields, len(prompt), 128, config['gen_budget_tokens'])
+                if plan.prefill_window == 'keep_selected' and len(prompt) + max_output > limit + config['gen_budget_tokens'] - 128:
+                    raise ValueError('keep_selected requires verified active headroom; this cold prompt exceeds K+G')
             ranges = body.get('active_ranges')
             if ranges is not None:
                 if mean_k:
@@ -174,6 +183,8 @@ def create_app(config):
                 'ignore_eos': body.get('ignore_eos', False)}
             if mean_k:
                 payload['session_id'] = session_id
+                if config.get('request_planning'):
+                    payload['kv_transfer_params'] = {'kvmem_request_plan': fields}
             def restored():
                 if restore_ticket is not None:
                     restores.release(restore_ticket)

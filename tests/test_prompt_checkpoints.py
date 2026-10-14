@@ -91,6 +91,54 @@ def test_checkpoint_payload_and_slots_remain_reserved_through_fenced_eviction(tm
     assert not pool.entries and pool.payload_bytes == 0 and archive.close()
 
 
+def test_pressure_import_reselects_without_reusing_retired_gpu_pages(tmp_path):
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    assert authority.append(*payload(8, 4), history_begin=8, local_rope_begin=8)
+    drain(authority)
+    adapter.runner.req_states.num_computed_tokens_np[0] = 12
+    adapter.runner.req_states.prefill_len.np[0] = 16
+    checkpoint = pool.capture(old.namespace, 'a', authority, list(range(16)), adapter, replace=True)
+    assert checkpoint.window.window_tokens == 12
+    pool.retire(checkpoint, Event(True)); ready(pool, checkpoint)
+    assert pool.claim(checkpoint.namespace, 'new', list(range(20))) is checkpoint
+    plan = pool.prepare_claim_window(checkpoint, pressure=True)
+    assert plan.total_window_tokens == 8
+    assert all(not r.skip and not r.working_k_resident for r in plan.remaps)
+    assert checkpoint.restore_records != checkpoint.window.records
+    authority.memory.attach_completion(Event(True)); assert authority.memory.commit_selection()
+    assert pool.finish_claim(checkpoint, Event(True)) is authority
+    assert authority.history_end == 12
+    del plan
+    assert authority.close() and archive.close()
+
+
+def test_short_turn_checkpoint_replays_the_committed_query_frame(tmp_path):
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    assert authority.append(*payload(8,4),history_begin=8,local_rope_begin=8)
+    drain(authority)
+    adapter.runner.req_states.num_computed_tokens_np[0]=12
+    adapter.runner.req_states.prefill_len.np[0]=20
+    checkpoint=pool.capture(old.namespace,'a',authority,list(range(20)),adapter,replace=True)
+    model=checkpoint.model;old_bytes=pool.payload_bytes
+    records=list(authority.records.values())
+    plan=authority.memory.select({r.handle.slot:float(i) for i,r in enumerate(records)})
+    authority.memory.attach_completion(Event(True));assert authority.memory.commit_selection()
+    expected=tuple(authority.memory._store.working_records())
+    assert checkpoint.window.records!=expected
+    pool.update_live_window(checkpoint)
+    assert checkpoint.window.records==expected and checkpoint.model is model
+    assert pool.payload_bytes==old_bytes-40
+    assert authority.append(*payload(12,1),history_begin=12,local_rope_begin=8)
+    pool.retire(checkpoint,Event(True));ready(pool,checkpoint)
+    assert pool.claim(checkpoint.namespace,'new',list(range(20))) is checkpoint
+    restored=pool.prepare_claim_window(checkpoint)
+    authority.memory.attach_completion(Event(True));assert authority.memory.commit_selection()
+    assert tuple(authority.memory._store.working_records())==expected
+    assert pool.finish_claim(checkpoint,Event(True)) is authority
+    del restored,plan
+    assert authority.close() and archive.close()
+
+
 def test_checkpoint_admission_never_overallocates_or_closes_live_authority(tmp_path):
     pool = PromptCheckpointPool(2, 600)
     pool, a, authority_a, archive, adapter, _ = saved(tmp_path, pool=pool)

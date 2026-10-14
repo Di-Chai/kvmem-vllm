@@ -2,8 +2,19 @@
 
 **Implementation status, 2026-10-14:** the [implemented / partial / missing checklist](docs/implementation-status.md)
 records the current KV management, qw3 parity gaps, qualification results and next
-steps. Per-turn output stays within G. Explicit Query planning and the original
-FP16 MeanK scoring path are still incomplete.
+steps. Per-turn output stays within G. The explicit token-ID Query profile now
+supports request planning, complete Query/partial-tail replay and the original
+FP16 MeanK CUDA scorer. See the [cross-turn and concurrency qualification](docs/explicit-query-20261014.md)
+and [profile](examples/qwen-nvfp4-meank-explicit-query-elastic.json); remaining
+qw3 protocol and GPU-index gaps are listed separately.
+
+**Explicit Query qualification, 2026-10-14:** real-model C8 cross-turn recovery
+and short-turn replay pass with complete Query spans and CPU GDN byte checks.
+At 32K input + 4K output each, session-enabled steady decode measured **503.22
+tok/s**, including periodic CPU checkpoints, versus 378.21 before pinned
+snapshots. Without session checkpoints, KVMem measured 576.48 tok/s. These are
+single-run observations with different generated token sequences; see the
+[evidence and limits](docs/explicit-query-20261014.md).
 
 **Native compilation and batched history, 2026-10-14:** KVMem capture, MeanK
 probe/replay and native MTP now support native compilation with CUDA Graphs.

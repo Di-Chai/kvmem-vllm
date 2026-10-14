@@ -136,7 +136,17 @@ class PromptStateAdapter:
         tensors = list(recurrent.values()) + [cache[pages, offsets] for cache, pages, offsets in draft.values()]
         # One transfer/synchronization for all GDN layers and draft pages. Each
         # typed view owns a disjoint range of this CPU checkpoint buffer.
-        payload = torch.cat([t.contiguous().view(torch.uint8).flatten() for t in tensors]).to('cpu', copy=True)
+        packed = torch.cat([t.contiguous().view(torch.uint8).flatten() for t in tensors])
+        if packed.device.type == 'cuda':
+            # A persistent checkpoint owns this bounded pinned buffer. Pageable
+            # snapshots otherwise add a host staging copy at every sealed page.
+            payload = torch.empty(packed.numel(),dtype=torch.uint8,device='cpu',pin_memory=True)
+            payload.copy_(packed,non_blocking=True)
+            completed = torch.cuda.Event()
+            completed.record(torch.cuda.current_stream(packed.device))
+            completed.synchronize()
+        else:
+            payload = packed.to('cpu',copy=True)
         copies, offset = [], 0
         for tensor in tensors:
             nbytes = tensor.numel() * tensor.element_size()

@@ -26,6 +26,8 @@ class RefreshCommand:
     request_id: str
     command_id: int
     groups: tuple[tuple[int, RefreshTicket], ...]
+    query_span: tuple[int, int] | None = None
+    selection: str = 'chunk'
 
 
 @dataclass

@@ -4,6 +4,7 @@ Immutable records remain in their file layout:
 [record][all raw-K layers][all FP8-V layers].
 """
 import torch
+import time
 from vllm.triton_utils import tl, triton
 
 
@@ -26,11 +27,23 @@ def read_packed_records(authority, handles, *, destination=None, region=None):
                     destination.ndim != 1 or not destination.is_contiguous()):
                 raise ValueError("Packed read destination must be contiguous CPU bytes")
             kwargs['destination'] = destination.numpy()
-        job = (authority.archive.read(authority.memory.request_id, leases, **kwargs) if region is None else
-               authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
-        if job is None:
-            raise BlockingIOError("Archive read queue is full")
+        deadline = time.monotonic() + 180
+        waited = 0.0
+        while True:
+            job = (authority.archive.read(authority.memory.request_id, leases, **kwargs) if region is None else
+                   authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
+            if job is not None:
+                break
+            # Background seal/writeback can fill the shared queue during a
+            # restore. Drain it with the condition lock released; retain the
+            # exact generation leases and exclusive staging buffer meanwhile.
+            start = time.monotonic()
+            remaining = deadline - start
+            if remaining <= 0 or not authority.archive.wait_for_idle(remaining):
+                raise TimeoutError('Archive read admission did not drain')
+            waited += time.monotonic() - start
         data, stats = job.result()
+        stats['admission_wait_seconds'] = waited
         size = authority.record_bytes if region is None else region[1]
         if len(data) != len(handles) * size:
             raise ValueError("Archive returned an incomplete packed record batch")
