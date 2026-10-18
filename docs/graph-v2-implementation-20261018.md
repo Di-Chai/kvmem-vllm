@@ -421,3 +421,10 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Complete source-bound proofs:
   `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-all-first.json`.
   D and both memory suites/original external scoring remain pending.
+- Formal D64K60 completed:60/60exact,100%coverage,60/60full needle intervals,
+  0cap hits. All60pressure events use original cumulative prefill seed and
+  execute nonidentity graph propagation,with actual selection changes in all
+  cases. C/D profiles differ only in pressure_policy; original inputs/seeds,
+  own scores and prior A/C hashes revalidated. Median request82.36s is not
+  a stable speedup claim. D128K continues; first source-bound proofs:
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-64k-first.json`.
