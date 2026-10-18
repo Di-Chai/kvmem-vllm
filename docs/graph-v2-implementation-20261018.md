@@ -367,3 +367,9 @@ comparison separately measures collection overhead. No tuning using answer gold.
   `artifacts/graph-v2-suite-preflight-20261018/full-niah-A-64k-first.json`.
   Median complete request85.39s is not decode TPS. A128K continues; no C/D
   comparison or complete4194-answer result is claimed.
+- Historical LME output-length audit bound all204 first result hashes:
+  attention/query request cap32768, observed maxima4234/4745, no length
+  finishes or >=16384 outputs. This is only historical nonbinding evidence;
+  the current served-cap difference stays documented and every new result
+  still requires its own cap-hit check. Proof at
+  `artifacts/graph-v2-suite-preflight-20261018/historical-lme-output-caps.json`.

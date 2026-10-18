@@ -125,6 +125,11 @@ MAB 原始长度为 267,553–757,259 token，需要 1M 逻辑上下文；最长
 原始 qw3 `attention_multilayer_prefix_reuse_20261012_r2/plan.json` 也明确使用
 K=36,864/G=16,384/thinking=4,096；保留此上下文管理几何，避免为扩大输出上限
 同时改变 prefill 压缩策略。三臂的请求上限和全部公共参数一致。
+补充核对了历史 attention/query 各 102 个实际结果：最长输出分别为 4,234 /
+4,745 token，均为未达到 length 上限，均低于 16K。这个观察降低了当前 cap
+触顶的预期，但不能证明配置上限相同，也不能替代本轮逐题 cap-hit 审计。
+历史记录校验值保存在
+`artifacts/graph-v2-suite-preflight-20261018/historical-lme-output-caps.json`。
 
 最终报告还需要给出原始评分协议下的质量、prefill/接受输出吞吐、延迟、实际
 native batch、边界覆盖及资源限制。未评分、未观测和不满足比较条件的结果
