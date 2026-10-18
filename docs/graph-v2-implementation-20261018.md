@@ -512,3 +512,12 @@ comparison separately measures collection overhead. No tuning using answer gold.
   bodies/responses and source hashes. Credential entered hidden,memory-only.
   No formal benchmark scores or summary-JSON judge calibration are claimed;
   all original full judging remains pending after inference.
+- Original failing544K MAB prefix exercised successfully in fresh r2 A:
+  group002 q0000/input544132 andq0001/input544141 completed,returned prompt IDs
+  independently match source and common frozen P543744.31pressure refreshes
+  on cold question,0on continuation;prefill sample/graph source/edge counts
+  stable,action history pages0. Original r1 HTTP500 retained. Bound first
+  responses/source/error hashes in `full-mab-A-r2-544k-first.json` in the
+  memory-capacity artifact directory.421.15/6.74s are different-scope request
+  durations,not a speedup. Combined repair works on this prefix;maximum757259
+  input,all1116questions,other arms and original quality scoring remain pending.

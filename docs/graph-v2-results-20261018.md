@@ -199,6 +199,15 @@ r2 A 的首个完整 MAB 历史组（60 题、P=367,616 token）已完成并释�
 `full-mab-A-r2-first-group.json`。实际 CPU 准入顺序会受并发竞争影响；不能
 用“完成题数超过 r1 的 69”代替原 544K 错误路径或 757K 容量验收。
 
+原 544K 错误路径现已实际通过：r2 A 的 group002 首题完整处理 544,132 个
+输入 token，续题为 544,141，均独立核对返回 prompt token IDs 与原始 source
+校验值一致。冻结 P=543,744，两题的 prefill sample、graph source/edge 计数
+一致且 action-history=0；首题 31 次 pressure，续题零次。请求耗时分别为
+421.15/6.74 秒，包含不同工作，不能据此推导修复的速度提升。旧 r1 的同题
+HTTP500 文件保持原样；这是两项容量修复组合后的成功路径，不隔离各自贡献。
+证据为 `artifacts/graph-v2-memory-capacity-20261019/full-mab-A-r2-544k-first.json`。
+最长 757,259-token 样本及完整 MAB/其他策略仍待验收，不扩展该两题的结论。
+
 在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
 校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算
 的两个固定校准例也通过。实际返回模型为 `deepseek-flash`、`deepseek-v4-pro`。
