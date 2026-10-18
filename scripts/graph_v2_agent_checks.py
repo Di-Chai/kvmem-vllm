@@ -1,5 +1,6 @@
 """CPU-checkable contracts and captured evidence for V2 natural agent pairs."""
 from copy import deepcopy
+import ast
 import json
 import math
 from pathlib import Path
@@ -17,6 +18,50 @@ DEFAULT_OFF_SOURCE_EXTENSIONS = frozenset('src/vllm_kvmem/'+name for name in
     ('options.py', 'storage.py', 'elastic_serve.py', 'memory_storage.py'))
 QUALIFICATION_FILES = ('manifest.json', 'profile.json', 'fixture.json', 'status.json', 'cleanup.json',
     'qualification/results.json', 'qualification/manifest.json')
+TRACE_LIMIT_SOURCE = 'src/vllm_kvmem/graph_integration.py'
+
+
+def trace_export_limit_extension(qualified, proposed):
+    """Accept only the known opt-in export cap expansion, never scorer edits."""
+    tree = ast.parse(proposed)
+    expected = {'_MAX_REPLAY_NODES': ast.parse('8192', mode='eval').body,
+                '_MAX_REPLAY_RECORD_BYTES': ast.parse('2 * 1024 * 1024', mode='eval').body}
+    old = {'_MAX_REPLAY_NODES': 2048, '_MAX_REPLAY_RECORD_BYTES': 262144}
+    found = set()
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id in expected:
+            name = node.targets[0].id
+            require(name not in found and ast.dump(node.value) == ast.dump(expected[name]),
+                    'Unexpected opt-in trace limit')
+            found.add(name)
+        else:
+            body.append(node)
+    require(found == expected.keys(), 'Missing explicit opt-in trace limits')
+    tree.body = body
+
+    class RestoreQualifiedLimits(ast.NodeTransformer):
+        tracing = False
+
+        def visit_FunctionDef(self, node):
+            previous = self.tracing
+            self.tracing = node.name in ('record_query_inputs', 'record_pressure_inputs')
+            result = self.generic_visit(node)
+            self.tracing = previous
+            return result
+
+        def visit_Name(self, node):
+            if node.id in old:
+                require(self.tracing and isinstance(node.ctx, ast.Load),
+                        'Opt-in trace limit escaped its guarded recorder')
+                return ast.copy_location(ast.Constant(value=old[node.id]), node)
+            return node
+
+    normalized = RestoreQualifiedLimits().visit(tree)
+    require(ast.dump(normalized) == ast.dump(ast.parse(qualified)),
+            'Graph source changed beyond the guarded trace export limits')
+    return dict(qualified_nodes=2048, proposed_nodes=8192, qualified_record_bytes=262144,
+                proposed_record_bytes=2*1024**2, non_trace_ast_identical=True)
 
 
 def job_order(count):
@@ -46,7 +91,8 @@ def validate_profiles(configs, candidate):
             not kv.get('session_freeze_prompt') and not kv.get('action_profiling'),
             'Agents require retained P/M checkpoints without Action profiling')
         require(kv.get('async_restore') is True and kv.get('cpu_history_coordination') is True and
-            kv.get('async_archive_retirement') is True and not kv.get('active_resident_pressure_only'),
+            kv.get('async_archive_retirement') is True and kv.get('active_resident_pressure_only') is False and
+            kv.get('active_resident_ttl_ms') == 0,
             'Require qualified asynchronous lifecycle without temporal scheduling policies')
         # Reuse the exact single-variable D contract, adapting only the declared
         # agent context/checkpoint retention instead of changing the NIAH gate.
@@ -80,7 +126,7 @@ def host_budget():
         scope='Conservative eight full256K histories plus partial blocks, MeanK index and host reserve; not old FP8 calibration')
 
 
-def qualification_proof(root, baseline, runtime_hashes, synchronous):
+def qualification_proof(root, baseline, runtime_hashes, synchronous, *, runtime_root=None):
     manifest, profile = read(root/'manifest.json'), read(root/'profile.json')
     result, cleanup = read(root/'qualification/results.json'), read(root/'cleanup.json')
     require(manifest.get('synchronous') is synchronous and
@@ -111,8 +157,14 @@ def qualification_proof(root, baseline, runtime_hashes, synchronous):
     after = {k:v for k,v in runtime_hashes.items() if k.startswith('src/')}
     require(before.keys() == after.keys(), 'Qualification production file set differs')
     changed = {k for k in before if before[k] != after[k]}
-    require(changed <= DEFAULT_OFF_SOURCE_EXTENSIONS,
+    require(changed <= DEFAULT_OFF_SOURCE_EXTENSIONS | {TRACE_LIMIT_SOURCE},
             'New lifecycle/native source requires fresh qualification: '+str(sorted(changed)))
+    trace_extension = None
+    if TRACE_LIMIT_SOURCE in changed:
+        require(runtime_root is not None and baseline['kvmem'].get('graph_trace') is False,
+                'Trace-only source extension requires a frozen source and disabled tracing')
+        trace_extension = trace_export_limit_extension((root/'runtime'/TRACE_LIMIT_SOURCE).read_text(),
+                                                       (runtime_root/TRACE_LIMIT_SOURCE).read_text())
     # Normalize only missing default-false candidate flags. The old test did not
     # exercise these enabled paths, nor the new eight-owner profile.
     old, new = deepcopy(profile), deepcopy(baseline)
@@ -137,6 +189,7 @@ def qualification_proof(root, baseline, runtime_hashes, synchronous):
     require(profile['kvmem']['async_restore'] is (not synchronous), 'Qualification async flag differs')
     return dict(passed_prior_lifecycle=True, synchronous=synchronous, tested_owners=2, tested_turns=6,
         exact_source_match=not changed, source_extensions={k:dict(qualified=before[k], proposed=after[k]) for k in sorted(changed)},
+        trace_export_extension=trace_extension,
         profile_deltas=deltas, candidate_prequalified=False, current_profile_prequalified=False,
         baseline_semantics='Missing new boolean options resolve to false; proposed source extensions remain disabled in baseline.',
         scope='Prior sync/async byte-restore and release evidence only. Fresh baseline and candidate runs each require their own history/config/resource checks.')
@@ -189,10 +242,15 @@ def actual_profile(directory, expected):
     require(launch['profile'] == expected['profile'] and launch['vllm_argv'] == expected['vllm_argv'],
             'Actual launched profile or worker payload differs from frozen expectation')
     geometry = read(directory/'server/capture/cache-geometry.json')
+    kv = launch['profile']['kvmem']
+    # Repository capacity includes staging headroom and is distinct from the
+    # serving context ceiling. This profile has a 512K repository / 256K context.
     require((geometry.get('select_budget'),geometry.get('gen_budget'),geometry.get('historical_tokens'),
         geometry.get('cpu_archive_bytes_per_token'),geometry.get('cpu_offload_bytes')) ==
-        (36864,16384,262144,34816,100000000000), 'Actual cache/archive geometry differs')
-    return dict(launch_sha256=sha(directory/'server/launch.json'), geometry=geometry)
+        (kv['select_budget'],kv['gen_budget'],kv['repository_blocks']*kv['block_tokens'],
+         34816,kv['cpu_read_cache_bytes']), 'Actual cache/archive geometry differs')
+    return dict(launch_sha256=sha(directory/'server/launch.json'), geometry=geometry,
+                logical_max_model_len=launch['profile']['max_model_len'])
 
 
 def measured_total(rows, field):

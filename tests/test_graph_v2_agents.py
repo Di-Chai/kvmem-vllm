@@ -71,6 +71,21 @@ def test_pair_order_and_conservative_full_eight_history_budget():
     assert budget['required_available_bytes']==budget['archive_bytes']+8*805306368+32*1024**3
 
 
+def test_guarded_trace_limit_extension_rejects_any_other_graph_semantics():
+    old = ('def record_query_inputs(options, records):\n'
+           '    if not options.graph_trace or len(records) > 2048: return\n'
+           '    return 262144\n'
+           'def record_pressure_inputs(options, records):\n'
+           '    if not options.graph_trace or len(records) > 2048: return\n'
+           '    return 262144\n')
+    new = ('_MAX_REPLAY_NODES = 8192\n_MAX_REPLAY_RECORD_BYTES = 2 * 1024 * 1024\n' +
+           old.replace('2048', '_MAX_REPLAY_NODES').replace('262144', '_MAX_REPLAY_RECORD_BYTES'))
+    assert checks.trace_export_limit_extension(old,new)['non_trace_ast_identical']
+    for changed in (new.replace('8192','16384'),new+'x = _MAX_REPLAY_NODES\n',
+                    new.replace('not options.graph_trace','options.graph_trace'),new+'def score(): return 1\n'):
+        with pytest.raises(ValueError):checks.trace_export_limit_extension(old,changed)
+
+
 def qualification(tmp_path):
     profile=next(iter(checks.profiles(base(),1234,'raw-k-cache').values()))
     old=deepcopy(profile)
@@ -126,11 +141,19 @@ def test_fixture_rejects_changed_original_bytes_before_parsing(tmp_path):
 
 
 def test_actual_worker_payload_is_checked_not_only_requested_configuration(tmp_path):
-    expected=dict(profile={'kvmem':{'cpu_direct_record_seal':False}},vllm_argv=['vllm','serve','model'])
+    profile=checks.profiles(base(),1234,'cpu-direct-record-seal')['seal-copy']
+    expected=dict(profile=profile,vllm_argv=['vllm','serve','model'])
     save(tmp_path/'server/launch.json',expected)
-    save(tmp_path/'server/capture/cache-geometry.json',dict(select_budget=36864,gen_budget=16384,
-        historical_tokens=262144,cpu_archive_bytes_per_token=34816,cpu_offload_bytes=100000000000))
-    assert checks.actual_profile(tmp_path,expected)['geometry']['historical_tokens']==262144
+    path=tmp_path/'server/capture/cache-geometry.json'
+    geometry=dict(select_budget=36864,gen_budget=16384,historical_tokens=524288,
+        cpu_archive_bytes_per_token=34816,cpu_offload_bytes=100000000000)
+    save(path,geometry)
+    proof=checks.actual_profile(tmp_path,expected)
+    assert proof['geometry']['historical_tokens']==524288
+    assert proof['logical_max_model_len']==262144
+    save(path,dict(geometry,historical_tokens=262144))
+    with pytest.raises(ValueError,match='geometry'):checks.actual_profile(tmp_path,expected)
+    save(path,geometry)
     changed=deepcopy(expected); changed['profile']['kvmem']['cpu_direct_record_seal']=True
     save(tmp_path/'server/launch.json',changed)
     with pytest.raises(ValueError,match='Actual launched'): checks.actual_profile(tmp_path,expected)

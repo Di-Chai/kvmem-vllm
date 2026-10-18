@@ -60,7 +60,7 @@ def prepare(args):
                 destination = target/name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source/name, destination)
-            report = checks.qualification_proof(target, baseline, sources, mode == 'sync')
+            report = checks.qualification_proof(target, baseline, sources, mode == 'sync', runtime_root=frozen)
             report['original_path'] = str(source.resolve())
             qualifications[mode] = report
             for name in report['source_extensions']:
@@ -140,7 +140,7 @@ def validate(root):
     checks.validate_profiles(configs, candidate)
     checklist = read(root/'qualification-checklist.json')
     for mode in ('sync','async'):
-        proof = checks.qualification_proof(root/'qualifications'/mode,roles['baseline'],m['source_sha256'], mode=='sync')
+        proof = checks.qualification_proof(root/'qualifications'/mode,roles['baseline'],m['source_sha256'], mode=='sync', runtime_root=root/'frozen')
         require(proof == {k:v for k,v in checklist[mode].items() if k!='original_path'}, 'Qualification coverage changed')
     for group in ('config_sha256','tokenizer_sha256'):
         for name,expected in m['model_identity'][group].items(): require(sha(name)==expected,'Model/tokenizer changed')
@@ -178,7 +178,17 @@ async def monitored_workload(original, client, profile, fixture, directory, valu
         rows = read(directory/'traces.json')
         closes = [r for r in rows if r['kind']=='cleanup']
         require(closes and all(r['explicit_session_release'] for r in closes), 'Epoch cleanup omitted explicit release')
-        proof = await release.wait_release(values.capture_directory,max(r['begin'] for r in closes))
+        # This profile deliberately disables idle active residency. Its absence
+        # in telemetry is not a live lease; verify the actual frozen launch
+        # before permitting that single optional field to be absent.
+        job_directory = directory.parent
+        checks.actual_profile(job_directory,
+            read(job_directory.parent/'expected-launches.json')[job_directory.name])
+        require(profile['kvmem'].get('active_resident_pressure_only') is False and
+            profile['kvmem'].get('active_resident_ttl_ms') == 0,
+            'Missing residency telemetry is allowed only for an explicitly disabled module')
+        proof = await release.wait_release(values.capture_directory,max(r['begin'] for r in closes),
+                                           require_active_residency=False)
         chain.require_terminal_history(proof['archive'])
         save(directory/'explicit-release-proof.json',proof)
         result['explicit_session_release_verified'] = True

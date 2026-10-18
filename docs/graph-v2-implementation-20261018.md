@@ -279,3 +279,54 @@ comparison separately measures collection overhead. No tuning using answer gold.
   across 2,562 calls each, not GPU idle. Selection, output and attention-sample
   drift make the overhead comparison inconclusive. Both cleanup files confirm
   no owned groups or GPU processes. The queue has entered fixed-input ablation.
+- Implementation checkpoint c9a08c6f545265a3667e6b5b305374b01399b3e4 was
+  committed on main and pushed to `Di-Chai/kvmem-vllm`; its documentation
+  explicitly keeps sustained and full-quality evaluation pending.
+- Fixed-input ablation passed all four model arms and its frozen analyzer:
+  eight actual requests / eight full native selection matches, two canonical
+  snapshots, positive normalization and genuine boundary effects in both.
+  Each snapshot covered eight positive-seed cross-boundary pairs. Canonical
+  V1->V2 attention changed 274/277 selected blocks; attention->multi unknown
+  changed 125/130; known boundaries changed scores but not selected pages.
+  No answer/retrieval labels were available. All four cleanup files confirm
+  no owned groups / GPU processes. The queue entered metadata stream r2.
+- Metadata stream r2 baseline passed its genuine warmup/window/drain audit:
+  16 admitted requests all completed/released; individual refill happened
+  before all first-eight owners retired. T1-T0=300 s, public completed prefill
+  delta 1,596,896 (5,322.99/s), conservative completion bounds
+  1,581,632..1,610,112. All 452 measured model steps were prefill; native peak
+  six, model-event prefill 5,687.60/s. Accepted output and completed requests
+  in the window were both zero. NVML mean utilization 88.62%; no pure decode
+  or GPU-idle inference. Cleanup confirmed no owned/GPU processes. Candidate
+  is still running, so no sustained A/B result is established yet.
+- Metadata stream r2 candidate also passed, then the pair completed pending
+  review. Candidate public completed prefill 5,449.49/s (bounds
+  1,619,456..1,644,160 per300s), model-event prefill 5,692.30/s, native peak six,
+  zero window output and zero pure-decode steps. NVML mean91.71%. Raw observed
+  prefill ratio1.02377; comparison is inconclusive due output/selection drift,
+  absent native C8 and no timestamped within-window metadata path proof.
+  Neither flag is promoted. All admitted requests/credits and owned processes
+  were released in both arms. The serial queue started natural-agent metadata
+  r1 baseline after the conservative host-admission guard succeeded.
+- Original reference plan rechecked directly: `attention_multilayer_prefix_reuse_20261012_r2/plan.json`
+  specifies K=36,864, G=16,384 and thinking=4,096. The documented LME request-cap
+  difference remains explicit; increasing G would also change pressure/prefill
+  geometry. All new A/C/D arms retain the same G and served cap, with cap-hit
+  audit required before interpreting comparison to historical scores.
+- Natural-agent metadata r1 baseline finished its window/drain but failed the
+  final release audit. Final snapshots showed no actual CPU history/checkpoints,
+  no leases/reservations, 750/751 native blocks free (one null block), and
+  post-stop GPU empty. `qualify_session_release` had unconditionally required
+  telemetry for idle active residency, which this profile explicitly disables.
+  Its default remains strict; only callers that verify the actual disabled
+  launch may permit that optional field to be absent. Required resource fields
+  still cannot be missing or nonzero. Offline `diagnostic-release-recheck.json`
+  verifies this without reclassifying the failed attempt.
+- Prelaunch audit review also corrected repository capacity vs logical ceiling:
+  16,384 x32 CPU blocks means 524,288 history-token capacity, while the server
+  limits each logical trajectory to262,144. The actual launch is unchanged.
+  Combined agent/release/performance/stream regression:113 passed. New-source
+  qualification permits only the guarded opt-in trace-cap expansion after an
+  AST comparison proves the remaining graph code identical and tracing off.
+  Unrun metadata r2 is superseded, retaining its manifest; metadata r3 was
+  prepared/validated and has started a new complete pair after host admission.

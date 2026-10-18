@@ -74,7 +74,8 @@ def validate_archive(archive):
         'Complete CPU-only history contract changed')
 
 
-def completely_released(state, archive):
+def completely_released(state, archive, *, require_active_residency=True):
+    cap.require(type(require_active_residency) is bool, 'Explicit residency audit mode required')
     validate_archive(archive)
     required = ('session_checkpoints', 'session_checkpoint_payload_bytes', 'cpu_authority_bytes',
                 'retiring_requests', 'session_retiring_requests', 'pending_downloads')
@@ -82,20 +83,27 @@ def completely_released(state, archive):
     if any(type(archive.get(k)) is not int or archive[k] != 0 for k in required):
         return False
     cpu = state.get('cpu_history_admission', {})
-    residency = state.get('active_residency', {})
+    if 'active_residency' not in state:
+        residency_released = not require_active_residency
+    else:
+        residency = state['active_residency']
+        residency_released = (isinstance(residency, dict) and
+            type(residency.get('idle_views')) is int and residency['idle_views'] == 0 and
+            type(residency.get('idle_blocks')) is int and residency['idle_blocks'] == 0)
     return (state.get('session_views') == [] and cpu.get('leases') == 0 and
-        cpu.get('reserved_bytes') == 0 and residency.get('idle_views') == 0 and
-        residency.get('idle_blocks') == 0 and state.get('free_blocks') == state.get('total_blocks', 0)-1)
+        cpu.get('reserved_bytes') == 0 and residency_released and
+        state.get('free_blocks') == state.get('total_blocks', 0)-1)
 
 
-async def wait_release(capture, not_before, timeout=180):
+async def wait_release(capture, not_before, timeout=180, *, require_active_residency=True):
     deadline = time.monotonic()+timeout
     while True:
         state = await work.wait_retirement(capture, timeout=max(.1,deadline-time.monotonic()),
                                            not_before=not_before)
         archive = cap.read(capture/'archive.json')
-        if completely_released(state, archive):
-            return dict(resources=state, archive=archive)
+        if completely_released(state, archive, require_active_residency=require_active_residency):
+            return dict(resources=state, archive=archive,
+                        active_residency_required=require_active_residency)
         if time.monotonic() >= deadline:
             raise TimeoutError('Explicit close retained CPU history, model snapshots or GPU leases')
         await asyncio.sleep(.05)

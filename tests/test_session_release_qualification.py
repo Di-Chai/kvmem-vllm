@@ -47,6 +47,24 @@ def test_release_proof_requires_all_cpu_and_gpu_leases_and_checkpoints_gone():
         assert not qual.completely_released(state,missing)
 
 
+def test_explicitly_disabled_residency_does_not_fabricate_missing_telemetry():
+    state,archive=released()
+    del state['active_residency']
+    assert not qual.completely_released(state,archive)
+    assert qual.completely_released(state,archive,require_active_residency=False)
+    assert 'active_residency' not in state
+    assert not qual.completely_released(dict(state,active_residency=None),archive,
+        require_active_residency=False)
+    assert not qual.completely_released(dict(state,active_residency=dict(idle_views=1,idle_blocks=1)),
+        archive,require_active_residency=False)
+    assert not qual.completely_released(dict(state,cpu_history_admission={}),archive,
+        require_active_residency=False)
+    assert not qual.completely_released(dict(state,free_blocks=98),archive,
+        require_active_residency=False)
+    assert not qual.completely_released(state,dict(archive,cpu_authority_bytes=32),
+        require_active_residency=False)
+
+
 @pytest.mark.parametrize('mutation', [dict(session_checkpoint_deferrals=1),
     dict(session_checkpoint_deferrals=None),dict(session_checkpoint_deferrals=False),
     dict(disk_write_bytes=1),dict(disk_read_bytes=1),dict(repository_gc=True),dict(archive_backend='disk')])
