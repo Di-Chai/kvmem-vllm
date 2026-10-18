@@ -489,3 +489,11 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Old failed session88261 is terminal and must never be restarted. Workflow
   stops on technical failure and retains attempts;external original judging
   is deliberately a separate pending step after inference completion.
+- New-source structured sync/async requalification both passed and cleaned.
+  Each2owners/6turns,6Query/10pressure events,4byte-verified restorations with
+  M2/P2;all17attention layers including1MTP and96recurrent tensors match.
+  Bound all qualification files and verified every shared core/native source
+  hash equals formal r2 in `gpu-structured-requalification.json` under the
+  memory-capacity artifact directory. This is not C8/long-MAB capacity or
+  quality/performance proof. Workflow39878 automatically started formal MAB-A;
+  original r1 remains failed and preserved,all4194 r2 answers/judging pending.
