@@ -1,7 +1,7 @@
 # Graph V2 阶段性验收结果
 
-这是进行中的结果记录。核心实现和跨轮功能验收已经完成；持续性能和完整
-A/C/D 质量矩阵尚未完成，不能据此宣称 Graph V2 提高了准确率或稳定吞吐。
+这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；完整
+A/C/D 质量矩阵正在运行，不能据此宣称 Graph V2 提高了准确率或稳定吞吐。
 
 ## 已实现与已验证
 
@@ -93,13 +93,20 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | --- | --- | --- |
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
-| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | 未开始完整矩阵 |
-| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | 源数据与评分器已预检，未开始完整矩阵 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 源数据与评分器已预检，未开始完整矩阵 |
+| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | 完整矩阵已冻结，NIAH-A 开始运行 |
+| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | 已冻结并校验，排在 NIAH 后运行 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 已冻结并校验，排在 MAB 后运行 |
 
 正式矩阵合计 4,194 个回答。三臂保持相同执行优化、模型、输入、采样、K/G 和
 batch 参数；A 为对齐 Mean-K Query + 旧 attention pressure，C 增加 V2 Query
 传播，D 再增加 graph pressure。完整首次答案及技术失败均保留。
+
+正式目录为 `/data/chaidi/kvmem-vllm-experiments/graph-v2-full-20261018-r1`。
+2026-10-19 01:14（Asia/Shanghai）从干净提交 `5686617` 冻结，完整输入、评分器、
+模型及九个运行时通过校验后启动。各组依次使用同一张 GPU，每组内部八客户端
+持续补位；不是三种策略共享 GPU 同时压测。根目录 `status.json`、各任务
+`controller.log`、`qualification/progress.json` 和资源采样保留实际进度；任务
+尚未完成不代表失败，运行中数据也不是正式完整评分。
 
 MAB 原始长度为 267,553–757,259 token，需要 1M 逻辑上下文；最长八组完整历史
 超过 CPU 预算，因此实际驻留组数会低于八，完整历史排队。独立 LME 为

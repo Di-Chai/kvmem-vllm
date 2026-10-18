@@ -348,3 +348,10 @@ comparison separately measures collection overhead. No tuning using answer gold.
   direct seal false, async action metadata false. Preserve failed r1/r3 and
   all original first answers; do not replace them with this new successful run.
   Metadata r4 retains its own frozen source, complete pair and comparison.
+- Full A/C/D matrix prepared and independently validated from clean commit
+  `5686617279c67468430d891eef3eed71b2a3fed5`: nine jobs,4194 original answers.
+  Root `/data/chaidi/kvmem-vllm-experiments/graph-v2-full-20261018-r1`.
+  Frozen controller started at1792343676 (2026-10-19 01:14 Asia/Shanghai),
+  sequential fresh services with per-arm C8 continuous replacement. NIAH-A
+  is running; memory jobs and original scoring remain pending. This is an
+  in-progress campaign, not a successful full-quality qualification.
