@@ -40,6 +40,9 @@ def validate_profile(profile, arm):
     q.require(arm in ('baseline', 'legacy', 'multi'), 'Unknown NIAH arm')
     q.require(profile['execution_mode'] == 'compiled_graph' and profile['draft_method'] == 'mtp' and
               profile['draft_tokens'] == 4, 'Keep compiled native MTP(k=4)')
+    q.require(profile['max_num_seqs'] == 8 and profile['max_num_batched_tokens'] == 16424 and
+              profile['query_replay_budget'] == 16384 and profile['prefill_chunk_tokens'] == 1024,
+              'Match historical batch 16424 / Query 16384 / chunk 1024 / eight-owner limits')
     q.require(kv['mean_k_backend'] == 'qw3_cuda' and kv['archive_backend'] == 'cpu' and
               kv['request_planning'] and kv['session_capacity'] >= 8, 'Require owned CPU-history MeanK sessions')
     q.require(kv['session_checkpoint_bytes'] == 1 and not kv['session_capture_decode'],
@@ -53,6 +56,37 @@ def validate_profile(profile, arm):
     q.require(not kv.get('graph_trace', False), 'Detailed graph tracing is excluded from this campaign')
     q.require(kv['block_tokens'] == 32 and kv['select_budget'] == 36864 and kv['gen_budget'] == 16384 and
               kv['sink_blocks'] == 41 and kv['recent_blocks'] == 0, 'Frozen K/G/sink/recent changed')
+
+
+def audit_launch(profile, capture):
+    """Reject a silently normalized launch before submitting any model input."""
+    launch = json.loads((capture.parent/'launch.json').read_text())
+    argv, environment = launch['vllm_argv'], launch['environment']
+    expected = {'--max-num-batched-tokens':str(profile['max_num_batched_tokens']),
+                '--max-num-seqs':str(profile['max_num_seqs']),
+                '--kv-cache-dtype':'fp8_e4m3'}
+    observed = {}
+    for name,value in expected.items():
+        q.require(argv.count(name) == 1 and argv.index(name)+1 < len(argv),
+                  'Missing or ambiguous native launch flag: '+name)
+        observed[name] = argv[argv.index(name)+1]
+        q.require(observed[name] == value, 'Effective native launch differs: '+name)
+    q.require(environment.get('KVMEM_PREFILL_CHUNK_TOKENS') == '1024',
+              'Effective per-request prefill chunk differs')
+    plan = json.loads(environment['KVMEM_REQUEST_PLAN_CONFIG'])
+    q.require(plan['query_replay_budget'] == 16384 and plan['gen_budget'] == 16384 and
+              plan['select_budget'] == 36864, 'Effective Query/K/G limits differ')
+    q.require(environment.get('KVMEM_FULL_GRAPH') == '1' and '--enforce-eager' not in argv,
+              'Native compiled/CUDA Graph execution changed')
+    spec_flag = '--speculative-config'
+    q.require(argv.count(spec_flag) == 1 and argv.index(spec_flag)+1 < len(argv),
+              'Missing or ambiguous native speculation configuration')
+    speculative = json.loads(argv[argv.index(spec_flag)+1])
+    q.require(speculative['method'] == 'mtp' and speculative['num_speculative_tokens'] == 4,
+              'Effective native MTP(k=4) differs')
+    return dict(status='passed',scope='Actual saved launch argv/environment before the first case.',
+                expected=expected,observed=observed,query_replay_budget=plan['query_replay_budget'],
+                prefill_chunk_tokens=int(environment['KVMEM_PREFILL_CHUNK_TOKENS']))
 
 
 def stream(profile, session, tokens, query, sampling, timeout):
@@ -261,6 +295,7 @@ def main():
     validate_profile(profile,args.arm)
     q.require(not args.output.exists(),'Use a fresh client directory')
     args.output.mkdir(parents=True)
+    save(args.output/'launch-audit.json',audit_launch(profile,args.capture))
     q.require(sha(Path(profile['tokenizer'])/'tokenizer.json') == fixture['tokenizer_sha256'],'Tokenizer changed')
     tree = ast.parse(fixture['scorer_source'])
     q.require(len(tree.body) == 1 and isinstance(tree.body[0],ast.FunctionDef) and tree.body[0].name == 'score',

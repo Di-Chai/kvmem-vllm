@@ -13,10 +13,10 @@
   running 与 retiring 合计最多 8 条，不等待整波结束；详见 [离线队列策略](offline-inference-queue.md)。
 - 同一 27B NVFP4 权重、FP8 KV、native MTP(k=4)、编译/CUDA Graph。
 - B32、K36,864、G16,384、sink1,312、recent0；普通 prefill chunk1,024。
-- profile 中的 `max_num_batched_tokens=4224` 会被当前启动器归一化为
-  `query_replay_budget + max_num_seqs × (draft_tokens+1) = 1024 + 8×5 = 1064`。
-  当前图评分实例的启动日志已核对，另外两组共享同一归一化逻辑；
-  4224 不能当作本次实际 native token 预算。
+- r5 起显式恢复旧测试的 `query_replay_budget=16384`、`max_num_batched_tokens=16424`，
+  启动器解析后仍为 `16384 + 8×5 = 16424`。每请求 prefill chunk 保持 1024。
+  不仅检查 profile：每个 arm 在发出第一题前，检查实际 `launch.json` 的 native argv、
+  chunk 环境变量、Query/K/G 上限、FP8 KV、MTP(k=4) 和 Graph 执行设置，保存 `launch-audit.json`。
 - temperature1、top_p.95、top_k20、min_p0、presence0、repetition1；逐题原 seed；thinking4,096、最大输出8,192。
 - 完整历史在 CPU；cache 上限 100,000,000,000 bytes；保留 16 GiB 入口 payload 余量，运行保留 8 GiB CPU 和 4 GiB GPU 可用内存。
 - 模型逻辑上限 524,288，容纳完整 256K 原始输入及输出；GPU 实际窗口仍受上述 K/G 限制。
@@ -42,7 +42,7 @@ pressure 行为相同。图评分现阶段的支持边界不允许它与 attenti
 ## 验证和结果口径
 
 测试不向模型发送独立的金标、针位置或证据标签，只发送原始输入与公开 Query 坐标。
-每题检查原输入字节、返回接受 token 数、终态历史长度、唯一 Query 重放、预算、CPU 退休确认和显式释放。
+每题检查原输入字节、返回接受 token 数、终态历史长度、唯一 Query 重放、预算、CPU 退休确认和逐请求释放门禁。
 输出 Attention 行数由独立 accepted-token parser 重放核对；Query replay 不得增加 prefill 观测。
 图组还要求真实 Query 图评分日志、非空来源与边以及正确接受水位；报告实际改变选页的题数。
 
@@ -70,6 +70,17 @@ McNemar exact 双侧 p 值。固定 seed 的一次配对仍不代表多轮稳定
 失败触发自有进程清理并确认无 GPU 残留。参数传递已修复，新增完整输入提交阶段回归；
 重新冻结的新尝试使用 r4 目录，r3 的失败证据保持原样。
 
+r4 沿用旧实验片段的 `query_replay_budget=1024`。启动器据此将 profile 中的 4224
+归一化为实际 native 总预算 1064，而历史完整 Attention 运行的实际值为 16424。
+因此这次性能对比没有对齐总 batch 预算。用户要求恢复相同参数后，r4 在完成 34/60
+时正常停止，保留部分结果、逐秒监控、退出原因和无残留清理证明，不并入新结果。
+
+r5 使用新的独立目录，三组全部从原始 60 题开始。相对 r4，模型／评分／存储／采样／
+连续补位参数保持相同，只把 Query 原子上限和 native 总预算恢复为 16384／16424。
+这里对齐的是历史运行的批处理参数；前述 pressure、历史 raw-K 精度等差异仍不能被称为
+已经与历史 97.08% 高分部署完全对齐。302 项相关回归包含三组 profile 经真实启动器
+归一化后的检查，以及有效 batch、Query、chunk、MTP 或执行模式漂移时的拒绝检查。
+
 ## 运行期利用率检查（非最终性能结论）
 
 r2 首波完成时，8 个客户端并发提交的请求已经全部执行；观察到的模型 decode batch 最大为 2。
@@ -81,8 +92,8 @@ r2 首波完成时，8 个客户端并发提交的请求已经全部执行；观
 实际总 token 预算 1064，以及一波结束后才补齐下一波的质量测试协议，均限制了持续大 batch。
 图状态准备在首波累计约 134 秒主机计时，Attention 捕获累计约 107 秒主机计时；
 这些计时可能与设备工作重叠，不能相加或等同于 GPU idle。
-该采样属于旧波次协议；新三组将统一采用连续补位，保持相同 token 预算与评分参数。
-扩大总 token 预算需另外进行性能实验。
+该采样属于旧波次协议；r4 后续改为连续补位，但仍保持 1064 的实际总预算。
+用户要求纠正批处理参数后的 r5 恢复 16424；这些不同协议的部分结果不合并。
 诊断原始采样及结构化说明保留在 r2 的 `gpu-diagnostic-1792310994.json`、
 `status-diagnostic-20261018.json`。
 

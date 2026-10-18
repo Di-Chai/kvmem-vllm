@@ -36,7 +36,8 @@ def cpu_available():
 def profiles(base,port):
     common = deepcopy(base)
     common.update(port=port, served_model_name='kvmem-graph-niah', verify_session_restore=False,
-                  max_model_len=524288,max_num_seqs=8,max_num_batched_tokens=4224,
+                  max_model_len=524288,max_num_seqs=8,max_num_batched_tokens=16424,
+                  query_replay_budget=16384,
                   long_prefill_token_threshold=1024,gpu_memory_utilization=.72,
                   prefill_chunk_tokens=1024,profiler_config=None)
     common['kvmem'].update(select_budget=36864,gen_budget=16384,repository_blocks=16384,

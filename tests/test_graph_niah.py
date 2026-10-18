@@ -20,7 +20,7 @@ finally:
 def base():
     return dict(model='model',tokenizer='tokenizer',execution_mode='compiled_graph',
         draft_method='mtp',draft_tokens=4,kvmem=dict(mean_k_backend='qw3_cuda',
-        archive_backend='cpu',request_planning=True))
+        archive_backend='cpu',request_planning=True,async_archive_retirement=True))
 
 
 def test_profiles_differ_only_in_two_declared_scoring_fields():
@@ -31,6 +31,43 @@ def test_profiles_differ_only_in_two_declared_scoring_fields():
         assert p['kvmem']['select_budget'] == 36864 and p['kvmem']['gen_budget'] == 16384
         assert not p['kvmem']['action_pressure'] and not p['kvmem']['query_history']
         assert p['kvmem']['guided_query_tokens'] == 0
+        assert p['max_num_batched_tokens'] == 16424 and p['query_replay_budget'] == 16384
+        assert p['prefill_chunk_tokens'] == 1024
+
+
+@pytest.mark.parametrize('arm',controller.ARMS)
+def test_real_launcher_preserves_historical_batch_and_chunk_limits(tmp_path,arm):
+    from vllm_kvmem.serve import build_launch
+    cfg=controller.profiles(base(),1234)[arm]
+    cfg.update(model_format='safetensors',hf_config_path='model')
+    launch=build_launch(cfg,tmp_path,tmp_path/'server',check_paths=False)
+    (tmp_path/'server').mkdir()
+    (tmp_path/'server/launch.json').write_text(json.dumps(launch))
+    audit=client.audit_launch(cfg,tmp_path/'server/capture')
+    assert audit['status']=='passed'
+    assert audit['observed']['--max-num-batched-tokens']=='16424'
+    assert audit['query_replay_budget']==16384 and audit['prefill_chunk_tokens']==1024
+
+
+@pytest.mark.parametrize('mutation',['batch','query','chunk','mtp','eager'])
+def test_effective_launch_drift_is_rejected_before_case_submission(tmp_path,mutation):
+    from vllm_kvmem.serve import build_launch
+    cfg=controller.profiles(base(),1234)['multi']
+    cfg.update(model_format='safetensors',hf_config_path='model')
+    launch=build_launch(cfg,tmp_path,tmp_path/'server',check_paths=False)
+    argv=launch['vllm_argv']
+    env=launch['environment']
+    if mutation=='batch':argv[argv.index('--max-num-batched-tokens')+1]='1064'
+    elif mutation=='query':
+        plan=json.loads(env['KVMEM_REQUEST_PLAN_CONFIG'])
+        plan['query_replay_budget']=1024
+        env['KVMEM_REQUEST_PLAN_CONFIG']=json.dumps(plan)
+    elif mutation=='chunk':env['KVMEM_PREFILL_CHUNK_TOKENS']='2048'
+    elif mutation=='mtp':argv[argv.index('--speculative-config')+1]=json.dumps(dict(method='mtp',num_speculative_tokens=3))
+    else:argv.append('--enforce-eager')
+    (tmp_path/'server').mkdir()
+    (tmp_path/'server/launch.json').write_text(json.dumps(launch))
+    with pytest.raises(ValueError):client.audit_launch(cfg,tmp_path/'server/capture')
 
 
 @pytest.mark.parametrize('key,value',[('gpu_memory_utilization',.8),('draft_tokens',3),('prefill_chunk_tokens',2048)])
