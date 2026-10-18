@@ -78,9 +78,10 @@ r4 真实模型已观察到第 9、10 条分别在首批仍有 7、6 条未完�
 
 ```bash
 python3 -B scripts/monitor_offline_inference.py \
-  --campaign artifacts/graph-niah256k-20261018-r4 \
-  --output artifacts/graph-niah256k-20261018-r4/telemetry-repro
+  --campaign artifacts/graph-niah256k-20261018-r5 \
+  --output artifacts/graph-niah256k-20261018-r5/telemetry-repro
 ```
 
-输出目录必须全新；现有运行正在记录到该测试的 `telemetry-r1/`。
+输出目录必须全新；当前恢复旧版 16424-token 总预算的 r5 正在记录到其 `telemetry-r1/`。
+r4 的部分监控随旧运行停止并完整保留，不与新批次合并。
 监控另有 6 项 CPU 回归，覆盖计数器重置、缺失／过期数据、窗口跨度、模型过滤和增量 JSONL 读取。

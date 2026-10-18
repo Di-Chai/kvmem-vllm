@@ -80,6 +80,9 @@ r5 使用新的独立目录，三组全部从原始 60 题开始。相对 r4，�
 这里对齐的是历史运行的批处理参数；前述 pressure、历史 raw-K 精度等差异仍不能被称为
 已经与历史 97.08% 高分部署完全对齐。302 项相关回归包含三组 profile 经真实启动器
 归一化后的检查，以及有效 batch、Query、chunk、MTP 或执行模式漂移时的拒绝检查。
+r5 图组真实服务的 `launch-audit.json` 已通过，实际 forward 已出现 7 路 prefill、
+单步 7168 token。启动证据见 r5 的 `startup-parameter-proof.json`；这只证明新预算已生效，
+尚不是整轮性能或质量结果。逐秒监控同步记录在 r5 的 `telemetry-r1/`。
 
 ## 运行期利用率检查（非最终性能结论）
 
