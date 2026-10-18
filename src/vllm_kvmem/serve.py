@@ -28,14 +28,33 @@ DEFAULTS = {
     'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
     'long_prefill_token_threshold': 1024, 'gpu_memory_utilization': .72,
     'max_model_len': 262144, 'q8_tensorcore': False,
+    'prefill_chunk_tokens': 0,
+    'query_replay_budget': None,
+    'reasoning_end_str': None,
+    'cuda_allocator_conf': None,
 }
 PATHS = ('model', 'tokenizer', 'hf_config_path', 'draft_model', 'mm_proj')
-# Explicit experiment controls for the two schemes in the NVFP4 checkpoint.
+# Explicit experiment controls for NVFP4 and FP8 checkpoints.
 # Exclude weight-only/emulation backends: they change the activation precision.
 LINEAR_BACKENDS = {
     'nvfp4_w4a4': frozenset(('auto', 'cutlass', 'flashinfer_cutlass', 'flashinfer_b12x', 'b12x')),
     'fp8_w8a8': frozenset(('auto', 'cutlass', 'flashinfer_cutlass', 'b12x', 'torch')),
 }
+
+
+def _validate_cuda_allocator_conf(value):
+    if value is None:
+        return None
+    names = ('garbage_collection_threshold', 'per_process_memory_fraction')
+    if not isinstance(value, dict) or set(value) != set(names):
+        raise ValueError('cuda_allocator_conf requires native GC threshold and process fraction')
+    if any(type(value[name]) not in (int, float) or not math.isfinite(value[name])
+           or not 0 < value[name] < 1 for name in names):
+        raise ValueError('cuda_allocator_conf fractions must be finite numbers strictly between zero and one')
+    # In the qualified Torch allocator, GC is gated by an explicitly bounded
+    # process fraction. A fraction of 1 clears that bound and silently disables
+    # proactive GC, even if garbage_collection_threshold was configured.
+    return {name: float(value[name]) for name in names}
 
 
 def _validate_profiler_config(value, base):
@@ -62,28 +81,20 @@ def _validate_profiler_config(value, base):
     return config
 
 
-def _validate_nvfp4_config(model):
-    """Keep checkpoint quantization metadata authoritative without importing vLLM."""
+def _validate_safetensors_config(model):
+    """Check local config readability; native vLLM owns weight-format support.
+
+    KVMem operates on model-produced state, independently of weight encoding.
+    Do not maintain a second quantization whitelist or rewrite native metadata.
+    Architecture, hardware and quantization-specific validation stays in vLLM;
+    KV layout/scale and recurrent-state checks stay in the KVMem adapters.
+    """
     try:
         config = json.loads((Path(model) / 'config.json').read_text())
     except (OSError, ValueError) as exc:
-        raise ValueError('NVFP4 safetensors model requires a readable config.json') from exc
-    quant = config.get('quantization_config') if isinstance(config, dict) else None
-    if not isinstance(quant, dict) or quant.get('quant_method') not in (
-            'modelopt', 'modelopt_fp4', 'modelopt_mixed'):
-        raise ValueError('Safetensors target requires ModelOpt NVFP4 quantization metadata')
-    settings = quant.get('quantization', quant)
-    if not isinstance(settings, dict):
-        raise ValueError('Invalid ModelOpt quantization metadata')
-    algorithm = settings.get('quant_algo')
-    if algorithm not in ('NVFP4', 'MIXED_PRECISION'):
-        raise ValueError('Safetensors target requires NVFP4 or MIXED_PRECISION quantization')
-    if algorithm == 'MIXED_PRECISION':
-        layers = settings.get('quantized_layers')
-        if (not isinstance(layers, dict) or not layers or
-                any(not isinstance(layer, dict) for layer in layers.values()) or
-                not any(layer.get('quant_algo') == 'NVFP4' for layer in layers.values())):
-            raise ValueError('MIXED_PRECISION target requires a quantized_layers mapping with NVFP4 layers')
+        raise ValueError('Safetensors model requires a readable config.json') from exc
+    if not isinstance(config, dict):
+        raise ValueError('Safetensors config.json must contain an object')
 
 
 def build_launch(profile, base, run_dir, *, check_paths=True):
@@ -91,6 +102,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'kvmem', 'multi_user', 'linear_backend_per_quant'}:
         raise ValueError('Serving profile contains unknown fields or is not an object')
     cfg = {**DEFAULTS, **profile}
+    cfg['cuda_allocator_conf'] = _validate_cuda_allocator_conf(cfg['cuda_allocator_conf'])
     cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
     if cfg['execution_mode'] not in ('eager', 'full_graph', 'compiled_graph'):
         raise ValueError('execution_mode must be eager, full_graph or compiled_graph')
@@ -98,7 +110,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('verify_session_restore must be boolean')
     if cfg['draft_method'] not in ('dflash', 'mtp'):
         raise ValueError('draft_method must be dflash or mtp')
-    allowed_depths = (1, 3, 7) if cfg['draft_method'] == 'dflash' else (1, 2, 3, 7)
+    allowed_depths = (1, 3, 7) if cfg['draft_method'] == 'dflash' else (1, 2, 3, 4, 7)
     if type(cfg['draft_tokens']) is not int or cfg['draft_tokens'] not in allowed_depths:
         raise ValueError(f'draft_tokens must be one of {allowed_depths} for {cfg["draft_method"]}')
     if cfg['draft_quantization'] not in (None, 'fp8'):
@@ -144,11 +156,16 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         if cfg['hf_config_path'] != cfg['model']:
             raise ValueError('Safetensors hf_config_path must match model to preserve checkpoint quantization metadata')
         if check_paths:
-            _validate_nvfp4_config(cfg['model'])
-    for name in ('max_num_seqs', 'max_num_batched_tokens', 'long_prefill_token_threshold', 'max_model_len', 'port'):
+            _validate_safetensors_config(cfg['model'])
+    for name in ('max_num_seqs', 'max_num_batched_tokens', 'max_model_len', 'port'):
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
-    if cfg['port'] > 65535 or cfg['max_model_len'] > 262144 or cfg['max_num_batched_tokens'] < 8:
+    # Explicit Query planning resolves this native threshold to zero. Saved
+    # resolved profiles must remain valid inputs to the launcher.
+    if type(cfg['long_prefill_token_threshold']) is not int or cfg['long_prefill_token_threshold'] < 0:
+        raise ValueError('long_prefill_token_threshold must be a nonnegative integer')
+    if (cfg['port'] > 65535 or cfg['max_model_len'] > (1048576 if cfg['draft_method']=='mtp' else 262144)
+            or cfg['max_num_batched_tokens'] < 8):
         raise ValueError('Port, draft logical-position range or verifier capacity is unsupported')
     utilization = cfg['gpu_memory_utilization']
     if type(utilization) not in (int, float) or not math.isfinite(utilization) or not 0 < utilization < 1:
@@ -166,19 +183,64 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     transfer = {'kv_connector': 'KVMemConnector', 'kv_role': 'kv_both',
                 'kv_connector_module_path': 'vllm_kvmem.connector',
                 'kv_connector_extra_config': {'kvmem': payload}}
+    # This direct launcher is intrinsically the Mean-K backend. RuntimeOptions
+    # validates graph modes here; the unchanged connector payload also carries
+    # every graph setting to the worker (including explicit off/zero ablations).
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
+    if options.graph_mode != 'off' and 'multi_user' in profile:
+        raise ValueError('Block graph does not support the legacy direct multi_user middleware; '
+                         'use elastic-serve or owned sessions on direct serve')
     if not options.memory.speculation:
         raise ValueError('The mainline serving profile requires the DFlash2 transaction contract')
+    if options.prefill_batch_tokens and options.prefill_batch_tokens < options.memory.block_tokens * cfg['max_num_seqs']:
+        raise ValueError('Shared prefill budget must fit one block per active request')
+    if (options.offline_phase_policy and
+            options.phase_prefill_wave_tokens < options.memory.block_tokens * cfg['max_num_seqs']):
+        raise ValueError('Phase prefill wave must fit one block per active request')
+    if options.active_residency_enabled and cfg['draft_method'] != 'mtp':
+        raise ValueError('Idle active residency currently qualifies native Qwen MTP')
+    if options.rolling_active_window and cfg['draft_method'] != 'mtp':
+        raise ValueError('Rolling active window currently requires native MTP')
+    if cfg['max_model_len']>262144 and (not options.request_planning or
+            options.memory.select_budget+options.memory.gen_budget>262144):
+        raise ValueError('Long logical histories require explicit bounded MTP with RoPE window <=256K')
+    if (type(cfg['prefill_chunk_tokens']) is not int or cfg['prefill_chunk_tokens']<0 or
+            cfg['prefill_chunk_tokens']%options.memory.block_tokens or
+            cfg['prefill_chunk_tokens']>options.memory.gen_budget):
+        raise ValueError('Prefill chunk must be block aligned and fit G')
+    if options.prefill_attention:
+        chunk=cfg['prefill_chunk_tokens']
+        if not chunk or (options.prefill_attention_stride and
+                         (chunk+options.prefill_attention_stride-1)//options.prefill_attention_stride>64):
+            raise ValueError('Prefill attention requires an explicit chunk with at most 64 sampled rows')
+    if cfg['reasoning_end_str'] is not None and (not isinstance(cfg['reasoning_end_str'],str)
+            or not cfg['reasoning_end_str'] or '\x00' in cfg['reasoning_end_str']):
+        raise ValueError('Reasoning end string must be nonempty text')
     if options.request_planning:
         if cfg['draft_method'] != 'mtp':
             raise ValueError('Explicit Query planning currently requires native Qwen MTP')
-        if (options.session_capacity and options.session_checkpoint_policy!='pm'
+        if (options.session_capacity and not options.session_freeze_prompt and options.session_checkpoint_policy!='pm'
                 and (options.session_capture_terminal or not options.session_capture_decode)):
             raise ValueError('Explicit Query sessions require sealed decode checkpoints, not terminal checkpoints')
         cfg['long_prefill_token_threshold'] = 0
-        cfg['max_num_batched_tokens'] = options.memory.gen_budget + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)
+        replay = cfg['query_replay_budget']
+        if replay is None:
+            replay = options.memory.gen_budget
+        if type(replay) is not int or not options.memory.block_tokens <= replay <= options.memory.gen_budget:
+            raise ValueError('Query replay budget must fit one block through G')
+        cfg['query_replay_budget'] = replay
+        # Generation is incremental. A large G does not require a single
+        # equally large prefill batch; enforce this separate atomic Query cap
+        # at the HTTP boundary before admitting work to the shared scheduler.
+        cfg['max_num_batched_tokens'] = replay + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)
+    if options.offline_prefill_coalescing:
+        baseline = cfg['prefill_chunk_tokens']
+        maximum = options.offline_prefill_max_tokens
+        if (not baseline or baseline % options.memory.block_tokens or
+                not baseline < maximum <= 2 * baseline or maximum > cfg['max_num_batched_tokens']):
+            raise ValueError('Offline prefill coalescing requires an aligned baseline and at most a twofold native-fit maximum')
     if (cfg['max_model_len'] < options.memory.select_budget + options.memory.gen_budget or
             cfg['long_prefill_token_threshold'] % options.memory.block_tokens):
         raise ValueError('Model context must cover K+G and prefill chunks must align to authority records')
@@ -212,7 +274,30 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    if cfg['cuda_allocator_conf'] is not None:
+        settings = 'backend:native,' + ','.join(
+            f'{name}:{value}' for name, value in cfg['cuda_allocator_conf'].items())
+        # An explicit profile overrides both modern and legacy environment
+        # spellings consistently, before native workers import/init CUDA.
+        env['PYTORCH_ALLOC_CONF'] = env['PYTORCH_CUDA_ALLOC_CONF'] = settings
     env['KVMEM_BOUNDED_MTP' if cfg['draft_method'] == 'mtp' else 'KVMEM_BOUNDED_DFLASH'] = '1'
+    if options.graph_mode != 'off':
+        # Collection also requires durable namespace ownership even when it
+        # accompanies the legacy (unplanned) selector.
+        env['KVMEM_REQUIRE_OWNED_SESSION'] = '1'
+    # Persist explicit ablations in launch.json; ambient KVMEM variables are
+    # deliberately cleared by main, so a saved profile is authoritative.
+    for name in ('split_capture_dma', 'native_prefill_commit', 'async_checkpoint_capture'):
+        env['KVMEM_' + name.upper()] = '1' if getattr(options, name) else '0'
+    if cfg['max_model_len']>262144:
+        # Target AND MTP consume the same dense K+G frame (mtp_runtime.py).
+        # Only scheduler/session logical coordinates grow beyond the HF limit;
+        # do not alter the checkpoint's rotary frequencies or quantization.
+        env['VLLM_ALLOW_LONG_MAX_MODEL_LEN'] = '1'
+    if cfg['prefill_chunk_tokens']:
+        env['KVMEM_PREFILL_CHUNK_TOKENS'] = str(cfg['prefill_chunk_tokens'])
+    if cfg['reasoning_end_str'] is not None:
+        argv += ['--reasoning-config',json.dumps({'reasoning_end_str':cfg['reasoning_end_str']})]
     if cfg['execution_mode'] in ('full_graph', 'compiled_graph'):
         compilation = ({'mode': 3, 'cudagraph_mode': 'FULL_AND_PIECEWISE'}
                        if cfg['execution_mode'] == 'compiled_graph' else
@@ -224,8 +309,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if cfg['verify_session_restore']:
         env['KVMEM_VERIFY_SESSION_RESTORE'] = '1'
     if not is_gguf:
-        # vLLM selects modelopt_fp4 or modelopt_mixed from the checkpoint config.
-        # Forcing one here would discard the mixed checkpoint's per-layer scheme.
+        # Native vLLM resolves weight precision and kernels from the checkpoint.
+        # Preserve all quantization metadata, including an unquantized config.
         argv += ['--load-format', 'safetensors']
     if 'linear_backend_per_quant' in cfg:
         argv += ['--kernel-config', json.dumps({
@@ -255,7 +340,11 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         env['KVMEM_MULTI_USER_CONFIG'] = json.dumps(settings)
     if options.request_planning:
         env['KVMEM_REQUEST_PLAN_CONFIG'] = json.dumps({'block_tokens': options.memory.block_tokens,
-            'gen_budget': options.memory.gen_budget, 'select_budget': options.memory.select_budget})
+            'gen_budget': options.memory.gen_budget, 'select_budget': options.memory.select_budget,
+            'sink_blocks': options.memory.sink_blocks, 'recent_blocks': options.memory.recent_blocks,
+            'guided_reserve':options.guided_reserve,'max_model_len':cfg['max_model_len'],
+            'query_replay_budget':cfg['query_replay_budget'],
+            'rolling_active_window':options.rolling_active_window})
     return {'scope': 'experimental mainline serving; see support matrix for qualification limits',
             'profile': cfg, 'vllm_argv': argv, 'environment': env}
 

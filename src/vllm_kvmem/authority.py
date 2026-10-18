@@ -5,7 +5,7 @@ The caller retries after poll() on backpressure. An incomplete tail is never
 published to the immutable archive; repeated decode appends extend it in memory.
 """
 from dataclasses import dataclass, field
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 
 import torch
@@ -32,6 +32,7 @@ class Record:
     digest: str | None = None
     scatter_views: tuple | None = field(default=None, repr=False)
     mean_key: torch.Tensor | None = field(default=None, repr=False)
+    staging_slot: int | None = field(default=None, repr=False)
 
 
 def record_key(handle):
@@ -42,7 +43,8 @@ class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
                  raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
                  scoring_layers=None, mean_k_backend='torch_reference'):
-        if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (torch.bfloat16, torch.float16):
+        if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (
+                torch.bfloat16, torch.float16, torch.float8_e4m3fn):
             raise ValueError("Invalid authority geometry or staging budget")
         self.memory = RequestMemory(request_id, config)
         self.archive = archive
@@ -54,7 +56,11 @@ class RequestAuthority:
         if mean_k_backend not in ('torch_reference','qw3_cuda'):
             raise ValueError('Invalid MeanK backend')
         self.mean_k_backend = mean_k_backend
-        self.record_bytes = layers * config.block_tokens * heads * head_dim * 3
+        self.raw_element_bytes = raw_dtype.itemsize
+        self.record_elements = layers * config.block_tokens * heads * head_dim
+        self.raw_record_bytes = self.record_elements * self.raw_element_bytes
+        self.value_record_bytes = self.record_elements
+        self.record_bytes = self.raw_record_bytes + self.value_record_bytes
         if archive.record_bytes != self.record_bytes:
             raise ValueError("Archive record format does not match model geometry")
         self.resident_records = resident_records
@@ -64,6 +70,13 @@ class RequestAuthority:
         # remove archived records; rewind explicitly removes its live suffix.
         self._unsubmitted: dict[tuple[int, int], Record] = {}
         self._resident_count = 0
+        # Reuse only temporary raw/V staging. Immutable archive bytes and each
+        # record's MeanK state remain independently owned. Repeatedly freeing
+        # large raw/V tensors between persistent small index allocations can
+        # leave many GiB of resident-but-free allocator holes during prefill.
+        self._record_buffers = []
+        self._free_record_buffers = []
+        self._busy_record_buffers = set()
         self.writes = []
         self.closing = False
         self.discarded_records: dict[tuple[int, int], Record] = {}
@@ -78,9 +91,20 @@ class RequestAuthority:
     def history_end(self):
         return self.memory.history_end
 
+    def _drain_gc(self):
+        # A rewound unpublished tail can be retired by the background worker.
+        # Its generation-bound tombstone, rather than foreground reclaim(),
+        # proves that the temporary buffer no longer has any readers.
+        staged = [(key, record) for key, record in self.discarded_records.items()
+                  if record.staging_slot is not None]
+        self.gc.drain(self.records, self.discarded_records)
+        for key, record in staged:
+            if key not in self.discarded_records:
+                self._return_record_buffers(record)
+
     def poll(self):
         if self.gc is not None:
-            self.gc.drain(self.records, self.discarded_records)
+            self._drain_gc()
         remaining = []
         completed = 0
         for job, keys in self.writes:
@@ -97,6 +121,7 @@ class RequestAuthority:
                     record.digest = digests[index]
                 if not record.archived:
                     self._resident_count -= 1
+                    self._return_record_buffers(record)
                 record.archived = True
                 # Publish only after durable write completion, never on CPU
                 # cache admission or asynchronous I/O submission.
@@ -108,13 +133,43 @@ class RequestAuthority:
             result = self.memory.repository.reclaim(record.handle,
                 lambda entry: self.archive.reclaim(self.memory.request_id, entry))
             if result == _native.ReclaimResult.RECLAIMED:
+                self._return_record_buffers(record)
                 del self.discarded_records[key]
         if self.gc is not None:
             # The background reclaimer may have finished a discarded generation
             # between our first drain and reclaim attempt. Its tombstone owns
             # index removal; neither worker fabricates a second release.
-            self.gc.drain(self.records, self.discarded_records)
+            self._drain_gc()
         return completed
+
+    def _borrow_record_buffers(self):
+        if self._free_record_buffers:
+            slot = self._free_record_buffers.pop()
+        else:
+            if len(self._record_buffers) >= self.resident_records:
+                raise RuntimeError('Record staging exceeded its resident credit')
+            buffers = (torch.empty(self.shape, dtype=self.raw_dtype),
+                       torch.empty(self.shape, dtype=torch.uint8))
+            slot = len(self._record_buffers)
+            self._record_buffers.append(buffers)
+        if slot in self._busy_record_buffers:
+            raise RuntimeError('Record staging slot is still owned by publication')
+        self._busy_record_buffers.add(slot)
+        return (*self._record_buffers[slot], slot)
+
+    def _return_record_buffers(self, record):
+        slot = record.staging_slot
+        if slot is None:
+            return
+        if slot not in self._busy_record_buffers:
+            raise RuntimeError('Record staging ownership was released twice')
+        self._busy_record_buffers.remove(slot)
+        self._free_record_buffers.append(slot)
+        record.staging_slot = None
+
+    @property
+    def record_staging_bytes(self):
+        return len(self._record_buffers) * self.record_bytes
 
     def _require_open(self):
         if self.closing:
@@ -197,7 +252,7 @@ class RequestAuthority:
         if self.gc is not None:
             # Recycled reservations become ready after their release callback
             # queued the old generation. Drop it before installing a new index.
-            self.gc.drain(self.records, self.discarded_records)
+            self._drain_gc()
         # Validate the complete write map before mutating any existing tail.
         for span in spans:
             key = record_key(span.handle)
@@ -218,11 +273,16 @@ class RequestAuthority:
                 # value handle, otherwise an index entry pins the entire store
                 # and prevents request cancellation from reclaiming any record.
                 handle = _native.Handle(span.handle.slot, span.handle.generation)
-                record = Record(handle, span.history_begin, 0,
-                    torch.empty(self.shape, dtype=self.raw_dtype),
-                    torch.empty(self.shape, dtype=torch.uint8),
-                    torch.zeros((self.scoring_layers, self.shape[2], self.shape[3]), dtype=torch.float32))
-                self.records[key] = record
+                sums = torch.zeros((self.scoring_layers, self.shape[2], self.shape[3]), dtype=torch.float32)
+                record_raw, record_values, slot = self._borrow_record_buffers()
+                try:
+                    record = Record(handle, span.history_begin, 0,
+                        record_raw, record_values, sums, staging_slot=slot)
+                    self.records[key] = record
+                except BaseException:
+                    self._busy_record_buffers.remove(slot)
+                    self._free_record_buffers.append(slot)
+                    raise
                 self._resident_count += 1
             rows.append((key, record, offset, start, n))
         return raw, values, count, rows
@@ -235,10 +295,11 @@ class RequestAuthority:
             record.count += n
             if record.count == self.shape[1]:
                 if self.mean_k_backend == 'qw3_cuda':
-                    if self.raw_dtype != torch.bfloat16:
-                        raise ValueError('Original content-index finalization requires qualified BF16 raw source')
-                    _native.finalize_mean_bf16(record.raw.view(torch.uint8).numpy(),
-                        record.key_sum.numpy(), record.count)
+                    if self.raw_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+                        raise ValueError('Original content-index finalization requires a qualified raw source')
+                    finalize = (_native.finalize_mean_fp8 if self.raw_dtype == torch.float8_e4m3fn
+                                else _native.finalize_mean_bf16)
+                    finalize(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(), record.count)
                     record.mean_key = (record.key_sum / record.count).to(torch.float16)
                 self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
@@ -324,12 +385,12 @@ class RequestAuthority:
             if job is None:
                 raise BlockingIOError("Archive read queue is full")
             data, _ = job.result()
-            elements = self.record_bytes // 3
+            elements = self.record_elements
             for packet_index, i in enumerate(disk_indices):
                 offset = packet_index * self.record_bytes
                 raw = torch.frombuffer(data, dtype=self.raw_dtype, count=elements, offset=offset).reshape(self.shape)
                 values = torch.frombuffer(data, dtype=torch.uint8, count=elements,
-                                          offset=offset + elements * 2).reshape(self.shape)
+                                          offset=offset + self.raw_record_bytes).reshape(self.shape)
                 count = records[i].count
                 result[i] = (raw[:, :count].clone(), values[:, :count].clone())
             return result
@@ -337,7 +398,7 @@ class RequestAuthority:
             for lease in leases:
                 lease.reset()
 
-    def select_for_queries(self, queries, mandatory_handles=()):
+    def select_for_queries(self, queries, mandatory_handles=(), *, observe_only=False, max_tokens=None):
         """Reference MeanK-to-native-selection bridge over accepted history only.
 
         The returned plan still needs fenced GPU assembly and commit_selection.
@@ -347,7 +408,9 @@ class RequestAuthority:
         from .retrieval import mean_key_scores
         if self.mean_k_backend == 'qw3_cuda':
             from .cuda_scoring import mean_key_scores
-        with self.index_snapshot() as (records, means):
+        from .graph_integration import query_snapshot, score_and_select
+        with self.index_snapshot() as (records, means), (
+                nullcontext(None) if observe_only else query_snapshot(self)) as graph_snapshot:
             # MTP records travel with target KV but never alter MeanK scoring.
             means = means[:getattr(self, 'scoring_layers', self.shape[0])]
             handles = [r.handle for r in records]
@@ -362,8 +425,47 @@ class RequestAuthority:
                 for i, (key, record) in enumerate(zip(keys, records))],
                 dtype=torch.bool, device=queries.device)
             scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
-            return self.memory.select({h.slot: score for h, score in zip(handles, scores)},
-                                      tuple(slot for slot, _ in mandatory))
+            history = getattr(self, 'query_history', None)
+            if history is not None and history.policy.open:
+                scores_by_start = history.preview({r.history_begin: score
+                    for r, score in zip(records, scores)})
+                scores = [scores_by_start.get(r.history_begin, 0.0) for r in records]
+            if observe_only:
+                return
+            graph_options = getattr(self, 'graph_options', None)
+            if graph_snapshot is not None:
+                from .graph_integration import record_query_inputs
+                record_query_inputs(self, records, scores, eligible.cpu().tolist(),
+                    graph_snapshot, tuple(slot for slot, _ in mandatory), max_tokens)
+            if graph_snapshot is not None and graph_options.graph_mode in ('locality', 'attention', 'multi'):
+                return score_and_select(self, records, scores, eligible.cpu().tolist(),
+                    graph_snapshot, tuple(slot for slot, _ in mandatory), max_tokens)
+            action = getattr(self,'action_history',None)
+            if action is not None:
+                # A verified M-prefix continuation may replay from an older P.
+                # Apply saved logical scores to pages that have now reappeared.
+                self.memory.set_action_scores(action.scores)
+            prefill = getattr(action,'prefill',None)
+            plan = self.memory.select({h.slot: score for h, score in zip(handles, scores)},
+                                      tuple(slot for slot, _ in mandatory),
+                                      prefill_scores=prefill.scores() if prefill is not None and not action.samples else None,
+                                      max_tokens=max_tokens)
+            if graph_snapshot is not None:
+                from .graph_integration import emit_graph_report
+                graph = self.block_graph
+                report = dict(mode='collect', revision=graph_snapshot.revision,
+                    accepted_through=graph_snapshot.accepted_through,
+                    observed_sources=len(graph_snapshot.rows),
+                    edges=sum(len(row.targets) for row in graph_snapshot.rows),
+                    graph_bytes=graph.bytes, graph_live_bytes=graph.live_bytes,
+                    snapshot_bytes=graph_snapshot.bytes, graph_global_bytes=graph.budget.used,
+                    selected_tokens=plan.total_window_tokens, selection_unchanged=True)
+                if graph_options.graph_trace:
+                    selected = {row.block_id for row in plan.remaps}
+                    report['selected_starts'] = [r.history_begin for r in records if r.handle.slot in selected][:256]
+                self.graph_selection_report = report
+                emit_graph_report(self, report)
+            return plan
 
     def begin_rewind(self, checkpoint):
         """Quiesce publication and prepare a block-aligned branch rollback.
@@ -380,6 +482,9 @@ class RequestAuthority:
         if not self.flush() or self.writes:
             return None
         spans = self.memory.begin_rewind(checkpoint)
+        graph = getattr(self, 'block_graph', None)
+        if graph is not None:
+            graph.invalidate()
         self._rewind_position = checkpoint.position
         self._rewind_committed = False
         return spans
@@ -418,6 +523,9 @@ class RequestAuthority:
 
     def close(self):
         self.closing = True
+        graph = getattr(self, 'block_graph', None)
+        if graph is not None:
+            graph.close()
         self.stop_gc()
         self.poll()
         if self.writes or not self.memory.close():
@@ -428,6 +536,7 @@ class RequestAuthority:
                 result = self.memory.repository.reclaim(record.handle,
                     lambda entry: self.archive.reclaim(self.memory.request_id, entry))
                 if result == _native.ReclaimResult.RECLAIMED:
+                    self._return_record_buffers(record)
                     del records[key]
                     if records is self.records:
                         self._unsubmitted.pop(key, None)
@@ -435,13 +544,18 @@ class RequestAuthority:
                             self._resident_count -= 1
                 else:
                     all_reclaimed = False
+        if all_reclaimed:
+            if self._busy_record_buffers:
+                raise RuntimeError('Authority closed with live record staging')
+            self._record_buffers.clear()
+            self._free_record_buffers.clear()
         return all_reclaimed
 
     def stop_gc(self):
         """Freeze the live index before final checksum iteration and teardown."""
         if self.gc is not None:
             self.gc.stop()
-            self.gc.drain(self.records, self.discarded_records)
+            self._drain_gc()
 
     @property
     def gc_reclaimed_records(self):
@@ -459,9 +573,11 @@ def append_authority_batch(entries):
 
     Each entry is (authority, raw, values, append keyword arguments). The caller
     has already clipped rejected/EOS/cancelled rows and observed the DMA fence.
-    Small qualified BF16 decode reductions use the same FP32 addition order;
-    other geometries and larger prefixes retain the reference Torch reduction. No prefix is published before
-    all admitted copies complete. Backpressure consumes only the returned prefix.
+    Completed original-MeanK pages are copied without an incremental reduction;
+    their finalizer recomputes the sum in token order before publication. Small
+    qualified BF16/FP8 decode reductions use the same FP32 addition order; other
+    geometries retain the reference Torch reduction. No prefix is published
+    before all admitted copies complete. Backpressure consumes only the returned prefix.
     """
     if len({id(entry[0]) for entry in entries}) != len(entries):
         raise ValueError('A history batch must contain distinct authority owners')
@@ -480,16 +596,23 @@ def append_authority_batch(entries):
         source_raw = raw.view(torch.uint8).numpy()
         source_values = values.numpy()
         for key, record, offset, start, n in prepared[3]:
-            fused = (raw.dtype == torch.bfloat16 and n <= 4 and
+            # The original MeanK finalizer recomputes every completed page in
+            # token order. Its result does not use the incremental sum, so do
+            # not widen/reduce a prefix that is about to be overwritten.
+            copy_only = (authority.mean_k_backend == 'qw3_cuda' and
+                         raw.dtype in (torch.bfloat16, torch.float8_e4m3fn) and
+                         offset + n == authority.shape[1])
+            fused = (raw.dtype in (torch.bfloat16, torch.float8_e4m3fn) and n <= 4 and
                      raw.shape[2] * raw.shape[3] % 64 == 0 and _FUSED_DECODE_SUM)
-            delta = (None if fused else
+            delta = (None if copy_only or fused else
                      raw[:record.key_sum.shape[0], start:start+n].float().sum(dim=1).numpy())
             if record.scatter_views is None:
                 record.scatter_views = (record.raw.view(torch.uint8).numpy(),
                                         record.values.numpy(), record.key_sum.numpy())
             destination_raw, destination_values, sums = record.scatter_views
-            jobs.append((source_raw, source_values, destination_raw,
-                         destination_values, delta, sums, start, offset, n))
+            job = (source_raw, source_values, destination_raw,
+                   destination_values, delta, sums, start, offset, n)
+            jobs.append((*job, True) if copy_only else job)
     _native.scatter_history_batch(jobs)
     for authority, prepared in plans:
         authority._commit_prepared_append(prepared)

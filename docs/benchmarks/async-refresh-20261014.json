@@ -1,0 +1,157 @@
+{
+  "date": "2026-10-14",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "gpu_memory_mib": 97887,
+  "driver": "580.159.03",
+  "vllm": "0.30.0",
+  "source_base_commit": "96d5a48f25bf5251c6022a425fc1499ee2f99cf0",
+  "configuration": {
+    "model": "Qwen 27B NVFP4",
+    "kv_cache_dtype": "fp8_e4m3",
+    "draft_method": "mtp",
+    "draft_tokens": 4,
+    "execution": "compiled_graph",
+    "K": 32768,
+    "G": 16384,
+    "archive_backend": "cpu",
+    "archive_bytes": 107374182400,
+    "action_scope": "non-thinking",
+    "guided_query_max_tokens": 512,
+    "quantum_tokens": 256,
+    "raw_k_cache_total_bytes": 4294967296
+  },
+  "synchronous": {
+    "concurrency": 8,
+    "peer_input_tokens": 8192,
+    "peer_output_tokens": 8192,
+    "target_input_tokens": 50006,
+    "target_ttft_seconds": 8.868793204426765,
+    "wall_seconds": 89.17876230739057,
+    "end_to_end_output_tokens_per_second": 644.4695857282267,
+    "refreshes": [
+      {
+        "selection": "pressure",
+        "seconds": 0.41697438806295395,
+        "guided_query_tokens": 0,
+        "peer_tokens": 0,
+        "peer_tokens_per_second": 0.0,
+        "max_peer_gap_seconds": 0.4878069534897804,
+        "min_peer_tokens": 0
+      },
+      {
+        "selection": "query",
+        "seconds": 1.0749298492446542,
+        "guided_query_tokens": 1,
+        "peer_tokens": 0,
+        "peer_tokens_per_second": 0.0,
+        "max_peer_gap_seconds": 1.211959800682962,
+        "min_peer_tokens": 0
+      }
+    ]
+  },
+  "asynchronous": {
+    "concurrency": 8,
+    "peer_input_tokens": 8192,
+    "peer_output_tokens": 8192,
+    "target_input_tokens": 50006,
+    "target_ttft_seconds": 10.578536944463849,
+    "wall_seconds": 104.82825262844563,
+    "end_to_end_output_tokens_per_second": 548.258685601752,
+    "refreshes": [
+      {
+        "selection": "pressure",
+        "seconds": 0.5742495656013489,
+        "guided_query_tokens": 0,
+        "peer_tokens": 292,
+        "peer_tokens_per_second": 508.4897185672579,
+        "max_peer_gap_seconds": 0.08557505812495947,
+        "min_peer_tokens": 39
+      },
+      {
+        "selection": "query",
+        "seconds": 2.2525264341384172,
+        "guided_query_tokens": 1,
+        "peer_tokens": 492,
+        "peer_tokens_per_second": 218.42141008577693,
+        "max_peer_gap_seconds": 0.19061757624149323,
+        "min_peer_tokens": 67
+      }
+    ]
+  },
+  "cancellation": {
+    "status": "passed",
+    "results": [
+      {
+        "stage": "query",
+        "request_id": "cmpl-b57b6df3002a5697-0-b69f359f",
+        "cancel_at": 4537385.325088581,
+        "fenced_at": 4537385.475356428,
+        "cleanup_seconds": 0.824477887712419,
+        "owned_blocks_after_cancel": 0,
+        "followup_tokens": 32
+      },
+      {
+        "stage": "assembly_started",
+        "request_id": "cmpl-9a52ce5d7b490750-0-84c5ad50",
+        "cancel_at": 4537394.541978237,
+        "fenced_at": 4537394.920233294,
+        "cleanup_seconds": 0.8780817147344351,
+        "owned_blocks_after_cancel": 0,
+        "followup_tokens": 32
+      }
+    ]
+  },
+  "cpu_tests": {
+    "passed": 697,
+    "skipped": 77
+  },
+  "accepted_history_extents": {
+    "verified_requests": 8,
+    "rule": "prompt_tokens + output_tokens - 1; private Query tokens excluded"
+  },
+  "limits": [
+    "One paired run, fixed input token IDs and output lengths, not a repeated statistical throughput study.",
+    "Decode token sequences differed across runs; MTP acceptance and batch shape can affect whole-run throughput.",
+    "Private Query splitting changes floating-point operation grouping; bitwise output parity and NIAH180 quality were not established.",
+    "Mixed timings precede the stateless Action binding fix; both timed workloads used session bindings.",
+    "No hard SLO guarantee; GPU/PCIe, atomic public Query replay, foreground session restore and CPU scatter barriers remain shared."
+  ],
+  "artifact_root": "artifacts/async-refresh-20261014",
+  "final_source_sha256": {
+    "src/vllm_kvmem/async_refresh.py": "9609ef4bf3746a939f24c297f579f510697e6a1421fea11bce563c9109646804",
+    "src/vllm_kvmem/scheduler.py": "c1c31ca5016c6338aa20f1c89f76ac9a909811e5a082ec61cc0fadbde9a3262d",
+    "src/vllm_kvmem/runner.py": "89250c7cab0ca36d7da28064ebb140d8cdd762b156eef5bd568d11a419ba79ee",
+    "src/vllm_kvmem/bounded_runtime.py": "c65cafdfcdbf4427cbd342f52abb9e63b3e479717d439f353b5639603f66878c",
+    "src/vllm_kvmem/window_assembly.py": "19548008b7a11674324fe1b096b3eca1947b96e12e20228649c6c5b066d35bcb",
+    "src/vllm_kvmem/capture_runtime.py": "a4b362afbd49ebed95c7f1150c1fa16d679acb19e0693092d6e7e9e4a9e2b7be",
+    "src/vllm_kvmem/options.py": "981acf80f1fabf0e246cb6b809f68223a7928d5b3d32fab5869f7dc5ea8b4f26",
+    "src/vllm_kvmem/action_attention.py": "37f47e071dca964b2114bc730fc6c80e7677f1f367d0875a5d7dbfae82846bc6"
+  },
+  "crossround_final": {
+    "status": "passed",
+    "concurrency": 8,
+    "requests": 16,
+    "seconds": 201.303402364254,
+    "samples_each_round": [
+      16,
+      8
+    ],
+    "restored_action_pages_per_session": 1094,
+    "exact_history_extents_checked": 16
+  },
+  "final_resources": {
+    "requests": 0,
+    "owned_blocks": 0,
+    "refresh_pending": 0,
+    "connector_pending": 0,
+    "free_blocks": 750,
+    "total_blocks": 751
+  },
+  "native_full_graph_decode_calls": 466,
+  "archive_disk_bytes": {
+    "read": 0,
+    "write": 0
+  },
+  "native_preemptions_total": 0,
+  "final_service_health": 200
+}

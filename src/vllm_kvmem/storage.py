@@ -50,6 +50,16 @@ class ArchiveJob:
 def make_shared_archive(options, directory, record_bytes, max_requests, *, max_query_tokens=0):
     """One process-wide arena; each admitted authority has a lifetime partition."""
     capacity = options.memory.repository_blocks * (max_requests + options.session_capacity)
+    if options.archive_backend == 'cpu':
+        # Immutable authority, not an evictable read cache. No file or mmap is
+        # opened. Callers must admit full histories within this byte budget.
+        from .memory_storage import MemoryArchive
+        capacity = min(capacity, options.cpu_read_cache_bytes // record_bytes)
+        archive = MemoryArchive(str(directory), record_bytes, capacity,
+                               io_max_bytes=options.archive_io_max_bytes,
+                               gather_workers=options.cpu_gather_workers)
+        archive.async_seal = options.async_seal
+        return archive
     if options.archive_io_max_bytes:
         block = options.memory.block_tokens
         # Refuse an impossible serving configuration before opening the arena.
@@ -80,7 +90,7 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
 class AsyncArchive:
     def __init__(self, directory: str, record_bytes: int, capacity: int,
                  workers: int = 2, max_pending: int = 4, *, preallocate: bool = False,
-                 max_bytes: int = 0, io_max_bytes: int = 0):
+                 max_bytes: int = 0, io_max_bytes: int = 0, memory_only: bool = False):
         if min(record_bytes, capacity, workers, max_pending) <= 0:
             raise ValueError("Archive capacities must be positive")
         self.record_bytes = record_bytes
@@ -94,8 +104,15 @@ class AsyncArchive:
         self.io_max_bytes = io_max_bytes
         self._io_bytes = self._io_peak_bytes = self._io_deferrals = 0
         self.preallocated = preallocate
-        self.tier = (_native.NvmeTier(directory, self.capacity_bytes, record_bytes, True)
-                     if preallocate else _native.NvmeTier(directory, self.capacity_bytes, record_bytes))
+        self.memory_only = memory_only
+        self.span = _native.IoSpan
+        if memory_only:
+            from .memory_storage import MemoryTier, MemorySpan
+            self.tier = MemoryTier(record_bytes, capacity)
+            self.span = MemorySpan
+        else:
+            self.tier = (_native.NvmeTier(directory, self.capacity_bytes, record_bytes, True)
+                         if preallocate else _native.NvmeTier(directory, self.capacity_bytes, record_bytes))
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kvmem-io")
         self.max_pending = max_pending
         self._pending = 0
@@ -230,7 +247,7 @@ class AsyncArchive:
                     self._release(key)
                 self._complete(admitted_bytes)
                 raise
-        spans = [_native.IoSpan(e.allocation.slot, i * self.record_bytes, self.record_bytes)
+        spans = [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
                  for i, e in enumerate(entries)]
 
         def work():
@@ -296,7 +313,7 @@ class AsyncArchive:
             except BaseException:
                 self._complete(size)
                 raise
-        spans = [_native.IoSpan(e.allocation.slot, i * self.record_bytes, self.record_bytes)
+        spans = [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
                  for i, e in enumerate(entries)]
 
         def work():
@@ -362,7 +379,7 @@ class AsyncArchive:
             except BaseException:
                 self._complete(admitted_bytes)
                 raise
-        spans = [_native.IoSpan(entries[i].allocation.slot, j*self.record_bytes, self.record_bytes)
+        spans = [self.span(entries[i].allocation.slot, j*self.record_bytes, self.record_bytes)
                  for j, i in enumerate(misses)]
         submitted_at = time.perf_counter()
 

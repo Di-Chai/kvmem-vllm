@@ -115,3 +115,67 @@ def test_serving_arms_at_first_native_metadata_before_the_forward(tmp_path):
     batch.kv_connector_metadata = ControlMetadata()
     assert runner.execute_model(batch) == 'native'
     assert armed_at_forward == [False, True] and len(received) == 1
+
+
+def test_terminal_clipping_precedes_both_deferrals_and_only_ready_owners_retire(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.connector import ControlMetadata
+    import vllm.distributed.kv_transfer as transfer
+
+    calls = []
+    original_prefix, resumed_prefix = object(), object()
+    original = SimpleNamespace(total_num_scheduled_tokens=1,
+        num_scheduled_tokens={'a': 1}, finished_req_ids={'b'},
+        kv_connector_metadata=ControlMetadata(terminal_prefixes={'b': original_prefix}))
+
+    def changed(output, finished, prefixes):
+        return SimpleNamespace(**{**vars(output), 'finished_req_ids': finished,
+            'kv_connector_metadata': replace(output.kv_connector_metadata, terminal_prefixes=prefixes)})
+
+    def confirm(finished, prefixes):
+        assert finished == {'b'} and prefixes == {'b': original_prefix}
+        calls.append('confirm-original')
+
+    def refresh_defer(output):
+        assert output is original and calls == ['confirm-original']
+        calls.append('refresh-defer')
+        return changed(output, set(), {})
+
+    def capture_defer(output):
+        assert not output.finished_req_ids
+        calls.append('capture-defer')
+        # A previously deferred owner is now ready; b must stay allocated.
+        return changed(output, {'old'}, {'old': resumed_prefix})
+
+    def finish(finished, prefixes):
+        assert finished == {'old'} and prefixes == {'old': resumed_prefix}
+        calls.append('finish-ready')
+
+    class Base:
+        def execute_model(self, output, **kwargs):
+            assert output.num_scheduled_tokens == {'a': 1}
+            assert output.finished_req_ids == {'old'}
+            calls.append('native-forward')
+            return 'native'
+
+    runner = make_probe_runner(Base)()
+    runner._kvmem_bounded_target = True
+    runner._kvmem_probe_output = tmp_path
+    runner._kvmem_probe_done = True
+    runner._kvmem_continuous = False
+    runner._kvmem_query_refresh = lambda command: command
+    runner._kvmem_capture_runtime = SimpleNamespace(begin_step=confirm,
+        defer_terminals=capture_defer, finish=finish,
+        advance_publication=lambda *_: calls.append('advance'),
+        retirement_done=lambda _: False, publication_blocked_requests=lambda: {'b'})
+    runner._kvmem_async_refresh = SimpleNamespace(defer_terminals=refresh_defer, maintenance=None)
+    runner._kvmem_sessions = SimpleNamespace(receive=lambda _: calls.append('sessions'))
+    runner._kvmem_window_adapter = SimpleNamespace(free=lambda rid: calls.append(('free', rid)))
+    connector = SimpleNamespace()
+    monkeypatch.setattr(transfer, 'get_kv_transfer_group', lambda: connector)
+    (tmp_path/'armed').touch()
+    assert runner.execute_model(original) == 'native'
+    assert calls == ['confirm-original', 'refresh-defer', 'capture-defer', 'sessions',
+                     'finish-ready', 'advance', ('free', 'old'), 'native-forward']
+    assert connector.publication_snapshot() == {'b'}

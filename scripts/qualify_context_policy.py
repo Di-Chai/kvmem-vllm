@@ -20,12 +20,13 @@ def main():
     parser.add_argument('--output-tokens',type=int,default=17)
     parser.add_argument('--pressure-tool-tokens',type=int,default=0)
     parser.add_argument('--oversized-file',action='store_true')
+    parser.add_argument('--recheck-existing',action='store_true',help='Re-audit saved clients and worker events without issuing requests')
     args=parser.parse_args()
     assert 0<=args.pressure_tool_tokens<=32768
     cfg=json.loads(args.config.read_text())
     assert cfg.get('verify_session_restore') and cfg.get('session_checkpoint_policy')=='pm'
     assert 1<=args.concurrency<=cfg['max_num_seqs'] and 1<=args.output_tokens<=cfg['gen_budget_tokens']
-    args.output.mkdir(parents=True,exist_ok=False)
+    args.output.mkdir(parents=True,exist_ok=args.recheck_existing)
     fixture=json.loads(args.prompt_token_file.read_text());first=fixture['input_ids'];query=fixture['query_span']
     assert len(first)>cfg['active_context_tokens'] and query[0]//128*128>cfg['active_context_tokens']
     def path(key):
@@ -117,9 +118,15 @@ def main():
         call('/v1/kvmem/sessions/'+sid,key,method='DELETE')
         print(json.dumps({'client':index,'seconds':result['seconds'],'history':result['histories'][-1]}),flush=True)
         return result
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:clients=list(pool.map(run,range(args.concurrency)))
-    refresh=events('bounded_refresh.jsonl')[refresh_start:]
-    states=events('verified_state_restores.jsonl')[state_start:]
+    if args.recheck_existing:
+        clients=[json.loads((args.output/f'client-{i}.json').read_text()) for i in range(args.concurrency)]
+        ids=tuple(n+'-' for c in clients for n in c['native_ids'])
+        refresh=[r for r in events('bounded_refresh.jsonl') if r['request_id'].startswith(ids)]
+        states=[r for r in events('verified_state_restores.jsonl') if r['request_id'].startswith(ids)]
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:clients=list(pool.map(run,range(args.concurrency)))
+        refresh=events('bounded_refresh.jsonl')[refresh_start:]
+        states=events('verified_state_restores.jsonl')[state_start:]
     queries=[r for r in refresh if r['selection']=='query']
     assert len(queries)==3*args.concurrency and len(states)==(3+bool(args.pressure_tool_tokens))*args.concurrency
     for client in clients:
@@ -133,7 +140,15 @@ def main():
             assert r['recurrent_tensors']==96 and r['recurrent_byte_equal'] and not r['pressure_restore']
         for i,q in ((0,query),(2,query),(3,client['fresh_query'])):
             r,=own(queries,i)
-            assert r['query_span']==q and r['query_score_tokens']==q[1]-q[0]
+            assert r['query_span']==q
+            if cfg.get('guided_query_tokens'):
+                assert 0 <= r['guided_query_tokens'] <= cfg['guided_query_tokens']
+                assert r['query_score_tokens']==(r['guided_query_tokens'] or q[1]-q[0])
+                assert r['guided_prompt_tokens'] > 0 or r.get('guided_fallback')=='capacity'
+            else:
+                assert r['query_score_tokens']==q[1]-q[0]
+            if cfg.get('query_history'):
+                assert r['query_history_enabled'] and r['query_history_pages'] > 0
             selected={b//128 for b,n in r['selected_history_ranges']}
             assert set(r['mandatory_fit']['hard_blocks']).issubset(selected)
             assert set(range(100,104)).issubset(selected),'Required file evidence was evicted'
@@ -150,12 +165,26 @@ def main():
                 assert r['mandatory_fit']['retrieval_reserve_blocks']==32
                 selected={b//128 for b,n in r['selected_history_ranges']}
                 assert set(range(371,375)).issubset(selected)
+    history=[]
+    if cfg.get('guided_query_tokens'):
+        assert any(r['guided_query_tokens']>0 for r in queries),'No generated guided Query was exercised'
+    if cfg.get('query_history'):
+        all_history=events('query_history.jsonl')
+        for client in clients:
+            expected_observed=[True,False,True,True]+([False] if args.pressure_tool_tokens else [])
+            for i,native_id in enumerate(client['native_ids']):
+                r,=[r for r in all_history if r['request_id'].startswith(native_id+'-')]
+                assert r['round']==i+1 and r['observed']==expected_observed[i], 'Duplicate/missing relevance observation'
+                assert r['scored_pages']>0
+                if not expected_observed[i]:
+                    assert r['score_sha256']==history[-1]['score_sha256'], 'No-Query turn aged old evidence'
+                history.append(r)
     resource=json.loads((args.capture/'scheduler_resources.json').read_text())
     assert resource['requests']==resource['owned_blocks']==0
     report={'status':'passed','concurrency':args.concurrency,'input_tokens':len(first),
         'outputs_per_turn':args.output_tokens,'successful_turns':(4+bool(args.pressure_tool_tokens))*args.concurrency,
         'pressure_tool_tokens':args.pressure_tool_tokens,'oversized_file':args.oversized_file,'refreshes':refresh,
-        'query_replays':queries,'state_restores':states,'resources':resource,
+        'query_replays':queries,'state_restores':states,'resources':resource,'query_history':history,
         'clients':[{k:v for k,v in r.items() if k not in ('sid','native_ids')} for r in clients]}
     (args.output/'results.json').write_text(json.dumps(report,indent=2))
     print(json.dumps({'status':'passed','turns':report['successful_turns'],'restores':len(states),'owned_blocks':resource['owned_blocks']}),flush=True)

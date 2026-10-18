@@ -1,7 +1,7 @@
 {
   "repository": "git@github.com:Di-Chai/qw3.git",
   "head": "1410cfe284726edb4161381546fe3915110331c9",
-  "note": "Imported from the qw3 working tree on 2026-10-13; per-file hashes identify source including uncommitted changes. Files preserved without modification.",
+  "note": "Imported from the qw3 working tree on 2026-10-13; files contains original source hashes. Local adaptations and their resulting hashes are listed separately.",
   "files": {
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
     "include/qw3/kvmem_store.hpp": "4690a044f201b639edf3e10a8e58ea89eb517dd916e8cc63eeba07914a6cb90c",
@@ -23,7 +23,9 @@
     "include/qw3/kvmem_mandatory.hpp": "64df2f9682d21c2e773c886f2b5e579583e9cbf3713eec5003039ad5ca6778fc",
     "src/kvmem_request_plan.hpp": "1dd6c7eaefa44f367e07f0382780206e930a9be6db56dff2e16a488d5a70fe08",
     "src/kvmem_refresh_policy.hpp": "57f2a13f4c82c9dade2387a51b349e5042c53e28349336e4f06be44c887afeb0",
-    "src/kvmem_prefix_reuse_policy.hpp": "cca8913d451ee7da61cc51e75248e641cb2b2f7d32fd443841e9ad07c2f80e1e"
+    "src/kvmem_prefix_reuse_policy.hpp": "cca8913d451ee7da61cc51e75248e641cb2b2f7d32fd443841e9ad07c2f80e1e",
+    "src/kvmem_query_history.hpp": "d06e3bebbb45ec36e241f4af0c110411765514c8f1f3938ac2471c3d121dadf5",
+    "src/kvmem_action_attention.hpp": "156664e9a2c1394cab4f18da7dd236ad056fb5169cffefad3f48a0dd5498b015"
   },
   "cuda_reference": {
     "source": "src/kernels_cuda.cu",
@@ -32,5 +34,17 @@
     "file": "cuda/mean_k_reference.cuh",
     "sha256": "ef1dd4c1bc6ebddc3995bcf1b87655b81a652665fe0df1954e396e753d580b7b"
   },
-  "context_policy_import": "2026-10-14; original request capacity-fit, refresh and replay-boundary helpers, unchanged"
+  "context_policy_import": "2026-10-14; original request capacity-fit, refresh and replay-boundary helpers, unchanged",
+  "query_history_import": "2026-10-14; unchanged logical-round score normalization, decay and branch semantics",
+  "action_attention_import": "2026-10-14; unchanged transactional scope parser; Store fusion already imported",
+  "local_adaptations": {
+    "include/qw3/kvmem_store.hpp": {
+      "sha256": "1284d1847333ecbf7bf7cb356222a9b4904de5333ed304f49cca7e92813968e4",
+      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged. 2026-10-16: add only a const repository_transaction_pending() accessor for host restore-frame preflight; original selector and mutation algorithms remain unchanged."
+    },
+    "src/kvmem_store.cpp": {
+      "sha256": "40b1150d5db8d326f34d62ee5c44bafd20ddb008d7568261a4a56126eeddf457",
+      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged."
+    }
+  }
 }

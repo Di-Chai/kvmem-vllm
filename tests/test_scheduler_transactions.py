@@ -20,7 +20,7 @@ def setup_scheduler():
     scheduler.window_managers = {0: manager, 1: second}
     scheduler.kv_cache_manager = SimpleNamespace(coordinator=SimpleNamespace(
         single_type_managers=(manager, second)))
-    request = SimpleNamespace(request_id="a", num_in_flight_tokens=0,
+    request = SimpleNamespace(request_id="a", num_in_flight_tokens=0, num_prompt_tokens=64,
                               num_computed_tokens=64, next_decode_eligible_step=7,
                               is_finished=lambda: False)
     scheduler.requests = {"a": request}
@@ -54,6 +54,9 @@ def test_native_prefill_cadence_releases_regularly_and_never_waits_on_unavailabl
     scheduler.transactions['a'] = object()
     assert not scheduler._throttle_mixed_prefill()
     scheduler.transactions.clear()
+    scheduler.connector.publication_blocked = {'a'}
+    assert not scheduler._throttle_mixed_prefill()
+    scheduler.connector.publication_blocked.clear()
     scheduler.prefill_capacity_bound = True
     assert not scheduler._throttle_mixed_prefill()
     scheduler.prefill_capacity_bound = False
@@ -79,6 +82,21 @@ def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatc
     assert tokens==32 and 32+tokens+7<=scheduler.query_policy.capacity
     scheduler.query_policy = SpeculativeQueryPolicy(16,32,256,4)
     assert scheduler._reserve_prefill_lookahead(request,32,272)==128
+
+
+@pytest.mark.parametrize('history',[0,48])
+@pytest.mark.parametrize('planned',[False,True])
+def test_native_padded_one_token_tail_retains_full_verification_shape(monkeypatch,history,planned):
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    scheduler,request,_=setup_scheduler()
+    scheduler._bounded_target=True;scheduler.num_spec_tokens=4
+    scheduler.query_policy=SpeculativeQueryPolicy(16,32,48,5)
+    request.num_prompt_tokens=history+1;request.max_tokens=1
+    request.kv_transfer_params={'kvmem_request_plan':{'kvmem_reselect':'off'}} if planned else {}
+    monkeypatch.setattr(Scheduler,'_reserve_prefill_lookahead',lambda self,r,h,n:n)
+    assert scheduler._reserve_prefill_lookahead(request,history,5)==5
+    assert scheduler._reserve_prefill_lookahead(request,history,1)==1
 
 
 def test_suspended_refresh_commits_all_group_tables_and_resumes_request():

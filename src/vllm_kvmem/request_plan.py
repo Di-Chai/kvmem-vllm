@@ -14,6 +14,10 @@ PARTS = {'system', 'root', 'query', 'policy', 'tool-call', 'tool-result'}
 KINDS = PARTS | {'file', 'explicit'}
 
 
+class RequestCapacityError(ValueError):
+    """A supported plan whose combined reservations cannot fit this engine."""
+
+
 def _parts(value):
     selected = {'system', 'root', 'query', 'policy'}
     if value is None or value == 'default':
@@ -46,6 +50,78 @@ class RequestPlan:
     replay: tuple[int, int] | None = None
     mandatory: tuple[tuple[int, int, str], ...] = ()
     explicit_mandatory: bool = False
+    probe_tokens: int = 0
+    output_tokens: int = 0
+    rolling_active_window: bool = False
+    # Original message coordinates, never dense-window positions. Append to
+    # preserve positional callers of the pre-existing request-plan contract.
+    message_spans: tuple[tuple[int, int, str], ...] = ()
+
+    @property
+    def output_reserve(self):
+        # The public generation limit stays intact. Rolling mode instead visits
+        # an accepted-prefix pressure boundary when the active view fills.
+        return 0 if self.rolling_active_window else self.output_tokens
+
+    def generation_checkpoint(self, prompt_tokens):
+        # Visit a sealed point while public input still remains. If the final
+        # block belongs to an atomic Query, reserve its entire replay instead.
+        point = (prompt_tokens - 1) // self.block_tokens * self.block_tokens
+        if self.query is not None and point < self.replay_end:
+            point = self.replay_begin
+        return point
+
+    def generation_pressure(self, history, prompt_tokens, offset, capacity):
+        return (self.output_reserve > 0 and history < prompt_tokens and
+                history == self.generation_checkpoint(prompt_tokens) and
+                prompt_tokens - offset + self.output_reserve > capacity - self.block_tokens)
+
+    def selection_budget(self, history, prompt_tokens, capacity):
+        # K counts the final prompt view, including the replay suffix. Leave
+        # another block for native speculation; G is never shortened here.
+        budget = capacity - self.gen_budget
+        if history == 0 and prompt_tokens + self.output_reserve <= capacity - self.block_tokens:
+            return budget  # Dense cold Query needs no selected historical prefix.
+        if self.output_reserve and history == self.generation_checkpoint(prompt_tokens):
+            budget = min(budget, (capacity - self.output_reserve - (prompt_tokens - history)
+                                 - self.block_tokens) // self.block_tokens * self.block_tokens)
+        if budget <= 0:
+            raise RequestCapacityError('Complete Query and output reserve exceed active capacity')
+        return budget
+
+    def validate_capacity(self, prompt_tokens, select_budget, *, output_tokens=None,
+                          sink_blocks=0, recent_blocks=0, rolling=None,
+                          resume_history=0, resume_window=0):
+        """Validate a finalized plan before allocation or checkpoint mutation.
+
+        The API can call this for cold/forced requests. Session owners must first
+        suppress an unchanged auto Query using their exact-prefix proof: an old
+        Query which is not replayed consumes no new replay reservation. Preserve
+        the same generation checkpoint and fixed keep bands as the real picker.
+        """
+        plan = replace(self,
+            output_tokens=self.output_tokens if output_tokens is None else output_tokens,
+            rolling_active_window=self.rolling_active_window if rolling is None else rolling)
+        capacity = select_budget + self.gen_budget
+        minimum = max(1, sink_blocks + recent_blocks) * self.block_tokens
+        checkpoint = plan.generation_checkpoint(prompt_tokens)
+        # A restored terminal tail may lie beyond the final sealed input point.
+        # SessionLedger then pressure-compacts at that exact import position.
+        if (resume_history > checkpoint and plan.query is None and
+                resume_window + prompt_tokens - resume_history + plan.output_reserve >
+                capacity - self.block_tokens):
+            budget = min(select_budget,
+                (capacity - plan.output_reserve - (prompt_tokens - resume_history) -
+                 self.block_tokens) // self.block_tokens * self.block_tokens)
+            needs_selection = True
+        else:
+            budget = plan.selection_budget(checkpoint, prompt_tokens, capacity)
+            needs_selection = checkpoint >= budget
+        if needs_selection and budget < minimum:
+            raise RequestCapacityError(
+                'Complete Query, output reserve and fixed sink/recent bands exceed '
+                f'active capacity (selected budget {budget}, required {minimum})')
+        return budget
 
     @property
     def replay_begin(self):
@@ -66,6 +142,13 @@ class RequestPlan:
             out['kvmem_query_span'] = list(self.query)
         if self.replay is not None:
             out['kvmem_replay_span'] = list(self.replay)
+        if self.message_spans:
+            out['kvmem_message_spans'] = [{'begin': b, 'end': e, 'role': role}
+                                        for b, e, role in self.message_spans]
+            # Mandatory policy is already resolved in self.mandatory. Message
+            # boundaries are independent evidence, so reparsing this transport
+            # must not silently re-enable default root/system/query pins.
+            out['kvmem_mandatory_parts'] = 'none'
         return out
 
     def continuation(self, prompt_tokens, output_tokens, history, window, capacity,
@@ -79,7 +162,8 @@ class RequestPlan:
             inherited = tuple(s for s in previous_mandatory if query is None or s[2] != 'query')
             mandatory = tuple(dict.fromkeys(inherited + mandatory))
         changed = any(s[0] < history and s not in previous_mandatory for s in mandatory)
-        fits = window + prompt_tokens - history + output_tokens <= capacity - self.block_tokens
+        reserve = 0 if self.rolling_active_window else output_tokens
+        fits = window + prompt_tokens - history + reserve <= capacity - self.block_tokens
         policy = self.prefill_window
         if query is None and policy != 'semantic_chunk':
             policy = 'keep_selected' if fits and not changed else 'pressure'
@@ -110,12 +194,12 @@ class RequestPlan:
         # must be visited before allocation; a filled old view cannot be probed.
         boundary = capacity - (1 if self.prefill_window == 'keep_selected' else 2) * self.block_tokens
         if self.query is not None and history < self.replay_begin:
-            query_boundary = (capacity - (self.replay_end - self.replay_begin) - self.block_tokens) // self.block_tokens * self.block_tokens
+            query_boundary = (capacity - (self.replay_end - self.replay_begin) - self.block_tokens - self.probe_tokens) // self.block_tokens * self.block_tokens
             boundary = min(boundary, query_boundary)
         return boundary
 
     @classmethod
-    def parse(cls, payload, prompt_tokens, block_tokens, gen_budget):
+    def parse(cls, payload, prompt_tokens, block_tokens, gen_budget, probe_tokens=0):
         if not isinstance(payload, dict) or set(payload) - FIELDS:
             raise ValueError('Unknown KVMem request-plan fields')
         mode = payload.get('kvmem_reselect', 'auto')
@@ -139,8 +223,9 @@ class RequestPlan:
             if query is not None:
                 raise ValueError('Specify Query token span or message range, not both')
             lo, hi = _range(payload['kvmem_query_message_range'], len(spans), 'Query message range')
-            if any(s['role'] != 'user' for s in spans[lo:hi]):
-                raise ValueError('Query message range must contain user messages')
+            # Explicit whole-round Queries preserve all supplied role/token
+            # boundaries, including intervening assistant and tool messages.
+            # The caller owns tokenization; this does not infer a chat Query.
             query = [spans[lo]['begin'], spans[hi-1]['end']]
         if query is not None:
             query = _range(query, prompt_tokens, 'Query span')
@@ -174,10 +259,11 @@ class RequestPlan:
             begin,end = _range([span['begin'],span['end']],prompt_tokens,'mandatory span')
             mandatory.append((begin,end,span['kind']))
         plan = cls(query, mode, window, block_tokens, gen_budget, replay,
-                   tuple(dict.fromkeys(mandatory)), bool(set(payload)&{'kvmem_mandatory_spans','kvmem_message_spans','kvmem_mandatory_parts'}))
+                   tuple(dict.fromkeys(mandatory)), bool(set(payload)&{'kvmem_mandatory_spans','kvmem_message_spans','kvmem_mandatory_parts'}),probe_tokens,
+                   message_spans=tuple((s['begin'], s['end'], s['role']) for s in spans))
         if query is not None and plan.replay_end - plan.replay_begin > gen_budget:
             raise ValueError('Complete partial tail + Query exceeds G replay capacity')
-        if query is not None and plan.replay_end - plan.replay_begin > gen_budget - block_tokens:
+        if query is not None and plan.replay_end - plan.replay_begin > gen_budget - block_tokens - probe_tokens:
             raise ValueError('Query replay must leave one block of pressure headroom')
         return plan
 
@@ -190,6 +276,10 @@ class RequestPlan:
         checkpoint=self.prefill_checkpoint(prompt_tokens)
         if checkpoint is not None and history<checkpoint:
             desired=min(desired,checkpoint-history)
+        generation = self.generation_checkpoint(prompt_tokens)
+        if (self.output_reserve and history < generation and
+                prompt_tokens - offset + self.output_reserve > capacity - self.block_tokens):
+            desired = min(desired, generation - history)
         if self.query is not None:
             begin, end = self.replay_begin, self.replay_end
             if history < begin:
@@ -214,17 +304,30 @@ class RequestPlan:
             return 'query'
         if history % self.block_tokens:
             return None
+        if self.generation_pressure(history, prompt_tokens, offset, capacity):
+            return 'pressure'
         if self.prefill_window == 'semantic_chunk' and history < prompt_tokens:
             return 'chunk'
         boundary = (self.prefill_boundary(history, capacity) if history < prompt_tokens
                     else capacity - self.block_tokens)
         if history - offset >= boundary:
-            return 'pressure' if self.prefill_window != 'keep_selected' else 'exhausted'
+            rolling_decode = self.rolling_active_window and history >= prompt_tokens
+            return 'pressure' if rolling_decode or self.prefill_window != 'keep_selected' else 'exhausted'
         return None
 
 
 def request_plan(request, block_tokens, gen_budget):
+    import os, json
+    config = json.loads(os.getenv('KVMEM_REQUEST_PLAN_CONFIG','{}'))
+    reserve = config.get('guided_reserve',0)
+    rolling = config.get('rolling_active_window',False)
+    if type(rolling) is not bool:
+        raise ValueError('rolling_active_window must be a server boolean')
     params = getattr(request, 'kv_transfer_params', None) or {}
     payload = params.get('kvmem_request_plan')
-    return None if payload is None else RequestPlan.parse(payload, request.num_prompt_tokens,
-                                                         block_tokens, gen_budget)
+    if payload is None:
+        return None
+    plan = RequestPlan.parse(payload, request.num_prompt_tokens, block_tokens, gen_budget,reserve)
+    from .session_control import SessionLedger
+    return replace(plan, output_tokens=SessionLedger.output_tokens(request),
+                   rolling_active_window=rolling)

@@ -25,6 +25,7 @@ class LayerWindow:
     cos_sin: torch.Tensor
     key_scale: torch.Tensor
     kernel_page_table: torch.Tensor
+    restore_group: int | None = None
 
 
 @dataclass
@@ -41,6 +42,8 @@ class AssemblyResult:
     resident_v_reused_tokens: int = 0
     raw_cache_capacity_bytes: int = 0
     device_temp_bytes: int = 0
+    split_tokens: int = 0
+    partial_tokens: int = 0
 
     def query(self):
         return self.event.query()
@@ -67,6 +70,7 @@ class _AssemblyStaging:
         self.value_buffer=None
         self.value_ready=None
         self._lock = RLock()
+        self.bandwidth_limiter = None
 
     def claim(self, owner):
         with self._lock:
@@ -79,6 +83,7 @@ class _AssemblyStaging:
             raise ValueError("Assembly destination requires an owned bounded slot")
         if self.transfers is None:
             self.transfers = PackedTransfers(self.slot_bytes, self.slots, self.device)
+        self.transfers.bandwidth_limiter = self.bandwidth_limiter
         if not self.buffers:
             self.buffers = [torch.empty(self.slot_bytes, dtype=torch.uint8, device=self.device)
                             for _ in range(self.slots)]
@@ -133,11 +138,13 @@ class _AssemblyStaging:
 class NativeWindowAssembler:
     def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
                  direct_pinned_reads=False, *, staging=None, raw_cache=None, reuse_resident_v=False,
-                 value_capacity_bytes=None):
+                 value_capacity_bytes=None, lease=None, raw_dtype=torch.bfloat16):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
         heads, dim = layers[0].key.shape[-2:]
+        if lease is not None:
+            lease.validate(lease.runner)
         checked_tables = set()
         for layer in layers:
             if (layer.key.device != device or layer.key.shape != layer.value.shape or
@@ -148,8 +155,14 @@ class NativeWindowAssembler:
                 raise ValueError("Native assembly requires FP8 e4m3 cache views")
             signature = (layer.kernel_page_table.data_ptr(), layer.key.shape[0])
             if signature not in checked_tables:
-                if (not layer.kernel_page_table.numel() or
-                        torch.any((layer.kernel_page_table <= 0) | (layer.kernel_page_table >= layer.key.shape[0])).item()):
+                if lease is not None:
+                    if layer.restore_group is None:
+                        raise ValueError('Restore assembly omitted its native allocation group')
+                    rows = lease.group_rows(layer.restore_group, page_count=layer.key.shape[0])
+                    if len(rows) != layer.kernel_page_table.numel():
+                        raise ValueError('Restore assembly table differs from its allocation extent')
+                elif (not layer.kernel_page_table.numel() or
+                      torch.any((layer.kernel_page_table <= 0) | (layer.kernel_page_table >= layer.key.shape[0])).item()):
                     raise ValueError("Native page table contains null or out-of-arena pages")
                 checked_tables.add(signature)
         self.layers = layers
@@ -164,7 +177,9 @@ class NativeWindowAssembler:
         self.raw_cache, self.reuse_resident_v = raw_cache, reuse_resident_v
         self.device = device
         self.heads, self.dim = heads, dim
-        slot_bytes = len(layers) * heads * dim * block_tokens * chunk_blocks * 3
+        self.raw_dtype = raw_dtype
+        raw_element_bytes = raw_dtype.itemsize
+        slot_bytes = len(layers) * heads * dim * block_tokens * chunk_blocks * (raw_element_bytes + 1)
         if staging is not None and (staging.slot_bytes != slot_bytes or staging.device != device):
             raise ValueError("Shared assembly staging geometry changed")
         self._shared_staging = staging is not None
@@ -177,10 +192,17 @@ class NativeWindowAssembler:
         self._metadata_owners = []
         self._completion = None
         self.closed = False
+        self._restore_lease = lease
 
     @classmethod
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=32, packed=False,
-                    direct_pinned_reads=False):
+                    direct_pinned_reads=False, *, arena='main', lease=None):
+        if arena not in ('main', 'refresh'):
+            raise ValueError('Unknown assembly arena')
+        if lease is not None:
+            lease.validate(runner)
+            if lease.request_id != request_id:
+                raise ValueError('Assembly restore lease belongs to another request')
         modules = dict(runner.model.named_modules())
         modules.update(getattr(runner, '_kvmem_mtp_modules', {}))
         groups = {name: group_id for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups)
@@ -199,26 +221,33 @@ class NativeWindowAssembler:
                 tables[group_id] = runner.block_tables.block_tables[group_id].gpu[index, :count].clone()
             key, value = native_vllm_fp8_views(attn.kv_cache, module.num_kv_heads, module.head_dim)
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
-                                      attn._k_scale, tables[group_id]))
-        staging = getattr(runner, "_kvmem_assembly_staging", None)
+                                      attn._k_scale, tables[group_id], group_id if lease is not None else None))
+        staging_name = '_kvmem_assembly_staging' if arena == 'main' else '_kvmem_refresh_assembly_staging'
+        cache_name = '_kvmem_gpu_raw_cache' if arena == 'main' else '_kvmem_refresh_gpu_raw_cache'
+        staging = getattr(runner, staging_name, None)
         options = getattr(getattr(runner, '_kvmem_capture_runtime', None), 'options', None)
-        raw_cache = getattr(runner, '_kvmem_gpu_raw_cache', None)
+        raw_cache = getattr(runner, cache_name, None)
         if direct_pinned_reads and options is not None and options.gpu_raw_k_cache_bytes and raw_cache is None:
             from .gpu_raw_cache import GpuRawCache
-            raw_cache = GpuRawCache(options.gpu_raw_k_cache_bytes,
+            # CPU background assembly and foreground checkpoint import have
+            # separate scratch/index ownership, within the same raw-K budget.
+            budget = options.gpu_raw_k_cache_bytes // (2 if getattr(options,'async_refresh',False) else 1)
+            raw_cache = GpuRawCache(budget,
                 (len(layers),block_tokens,module.num_kv_heads,module.head_dim), key.device,
-                runner.max_num_reqs, options.memory.select_budget//block_tokens)
-            runner._kvmem_gpu_raw_cache = raw_cache
+                runner.max_num_reqs, options.memory.select_budget//block_tokens,
+                dtype=torch.float8_e4m3fn)
+            setattr(runner, cache_name, raw_cache)
         assembler = cls(tuple(layers), block_tokens, chunk_blocks, packed=packed,
                         direct_pinned_reads=direct_pinned_reads, staging=staging,
                         raw_cache=raw_cache if direct_pinned_reads else None,
                         reuse_resident_v=bool(direct_pinned_reads and options is not None and options.reuse_resident_v),
                         value_capacity_bytes=(len(layers)*module.num_kv_heads*module.head_dim*options.memory.select_budget
-                            if options is not None and options.reuse_resident_v else 0))
+                            if options is not None and options.reuse_resident_v else 0), lease=lease,
+                        raw_dtype=torch.float8_e4m3fn)
         if staging is None:
             # Publish shared scratch only after all geometry/ownership checks
             # pass; an invalid first request must not poison the runner pool.
-            runner._kvmem_assembly_staging = assembler.staging
+            setattr(runner, staging_name, assembler.staging)
             assembler._shared_staging = True
         return assembler
 
@@ -229,7 +258,10 @@ class NativeWindowAssembler:
     def assemble(self, authority, plan):
         if self.closed:
             raise RuntimeError("Native assembler is closed")
+        if self._restore_lease is not None:
+            self._restore_lease.validate(self._restore_lease.runner)
         self.staging.claim(self)
+        self.staging.bandwidth_limiter = getattr(self, 'bandwidth_limiter', None)
         failed = None
         try:
             result = self._assemble(authority, plan)
@@ -271,6 +303,9 @@ class NativeWindowAssembler:
             raise ValueError("Native assembly requires an active original-core selection")
         if authority.shape != (len(self.layers), self.block_tokens, self.heads, self.dim):
             raise ValueError("Authority codec does not match native working pages")
+        if (authority.raw_dtype != self.raw_dtype or
+                (self.raw_cache is not None and self.raw_cache.dtype != authority.raw_dtype)):
+            raise ValueError('Immutable raw-K codec differs from assembly/cache storage')
         by_slot = {record.handle.slot: record for record in authority.records.values()}
         remaps = list(plan.remaps)
         # Validate the entire destination before changing any GPU cache bytes.
@@ -285,8 +320,33 @@ class NativeWindowAssembler:
                     raise ValueError("Selected position exceeds the model RoPE table")
         pending = [remap for remap in remaps if not remap.skip]
         if (pending and (self.raw_cache is not None or self.reuse_resident_v) and
-                authority.raw_dtype == torch.bfloat16 and all(r.n_tokens == self.block_tokens for r in pending)):
-            return self._assemble_split(authority,plan,remaps,pending,by_slot)
+                authority.raw_dtype in (torch.bfloat16, torch.float16, torch.float8_e4m3fn)):
+            complete = [r for r in pending if r.n_tokens == self.block_tokens]
+            partial = [r for r in pending if r.n_tokens != self.block_tokens]
+            if complete:
+                # Snapshot every resident full-page V source before any writes.
+                # Partial records read CPU authority, so they can safely follow
+                # full-page moves even if destinations overlap old sources.
+                full = self._assemble_split(authority,plan,remaps,complete,by_slot)
+                if not partial:
+                    return full
+                tail = self._assemble_generic(authority,plan,[],partial,by_slot)
+                stats = dict(full.read_stats)
+                for key, value in tail.read_stats.items():
+                    stats[key] = stats.get(key, 0) + value
+                # The final fence/owners cover BOTH subpaths. Do not publish a
+                # checkpoint or recycle metadata after only the full-page DMA.
+                return AssemblyResult(tail.event, (full, tail, *full.owners, *tail.owners),
+                    full.rebuilt_tokens + tail.rebuilt_tokens, full.skipped_tokens,
+                    full.chunks + tail.chunks,
+                    full.host_prepare_seconds + tail.host_prepare_seconds,
+                    full.uploaded_bytes + tail.uploaded_bytes, stats,
+                    full.raw_cache_hit_tokens, full.resident_v_reused_tokens,
+                    full.raw_cache_capacity_bytes, full.device_temp_bytes,
+                    full.split_tokens, tail.rebuilt_tokens)
+        return self._assemble_generic(authority,plan,remaps,pending,by_slot)
+
+    def _assemble_generic(self, authority, plan, remaps, pending, by_slot):
         rebuilt, chunks, owners = 0, 0, [self, plan, authority]
         host_prepare_seconds, uploaded_bytes = 0.0, 0
         read_stats = {}
@@ -355,8 +415,9 @@ class NativeWindowAssembler:
                                           block_tokens=self.block_tokens, raw_dtype=authority.raw_dtype)
             else:
                 elements = raw.numel()
-                raw_gpu = gpu[:elements*2].view(authority.raw_dtype).reshape(raw.shape)
-                values_gpu = gpu[elements*2:].view(torch.float8_e4m3fn).reshape(values.shape)
+                raw_size = elements * authority.raw_element_bytes
+                raw_gpu = gpu[:raw_size].view(authority.raw_dtype).reshape(raw.shape)
+                values_gpu = gpu[raw_size:].view(torch.float8_e4m3fn).reshape(values.shape)
                 chunk_positions = positions[position_begin:position_begin+count]
                 for i, layer in enumerate(self.layers):
                     page_tokens = layer.key.shape[1]
@@ -371,14 +432,15 @@ class NativeWindowAssembler:
         done.record(torch.cuda.current_stream(self.device))
         return AssemblyResult(done, tuple(owners), rebuilt,
                               sum(remap.n_tokens for remap in remaps if remap.skip), chunks,
-                              host_prepare_seconds, uploaded_bytes, read_stats)
+                              host_prepare_seconds, uploaded_bytes, read_stats,
+                              partial_tokens=sum(r.n_tokens for r in pending if r.n_tokens != self.block_tokens))
 
     def _assemble_split(self,authority,plan,remaps,pending,by_slot):
         from .packed_assembly import read_packed_records
         from .split_assembly import gather_resident_values, assemble_split_layer, store_raw_records
         layers=len(self.layers)
-        raw_bytes=authority.record_bytes*2//3
-        value_bytes=authority.record_bytes//3
+        raw_bytes=authority.raw_record_bytes
+        value_bytes=authority.value_record_bytes
         owners=[self,plan,authority]
         started=time.perf_counter()
         namespace=authority.memory.request_id
@@ -457,7 +519,8 @@ class NativeWindowAssembler:
                 for i,layer in enumerate(self.layers):
                     assemble_split_layer(raw_source,raw_indices,values_source,value_indices,bases,layer,
                         layer_index=i,layers=layers,block_tokens=self.block_tokens,
-                        raw_record_bytes=raw_stride,value_record_bytes=value_stride,value_offset=value_offset)
+                        raw_record_bytes=raw_stride,value_record_bytes=value_stride,value_offset=value_offset,
+                        raw_dtype=authority.raw_dtype)
                 if slot is not None:
                     self.staging.consumed(slot)
                 host_seconds+=time.perf_counter()-clock
@@ -474,7 +537,7 @@ class NativeWindowAssembler:
             sum(r.n_tokens for r in remaps if r.skip),chunks,host_seconds,uploaded,stats,
             sum(hit is not None for hit in hits)*self.block_tokens,len(resident)*self.block_tokens,
             self.raw_cache.capacity_bytes if self.raw_cache is not None else 0,
-            resident_values.numel() if resident_values is not None else 0)
+            resident_values.numel() if resident_values is not None else 0, rebuilt)
 
     def close(self):
         if self.staging.owner is self:

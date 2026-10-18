@@ -23,10 +23,10 @@ def _assemble(raw, values, positions, slots, trig, kcache, vcache, kscale,
         position = tl.load(positions + token).to(tl.int64)
         d = tl.arange(0, BLOCK)
         mask = d < DIM
-        x = tl.load(raw + token*r0 + head*r1 + d, mask=mask, other=0).to(tl.float32)
+        x = tl.load(raw + token*r0 + head*r1 + d, mask=mask, other=0.0).to(tl.float32)
         other_d = tl.where(d < HALF, d + HALF, d - HALF)
         mate = tl.load(raw + token*r0 + head*r1 + other_d,
-                       mask=d < 2*HALF, other=0).to(tl.float32)
+                       mask=d < 2*HALF, other=0.0).to(tl.float32)
         freq = d % HALF
         cos = tl.load(trig + position*trig_stride + freq).to(tl.float32)
         sin = tl.load(trig + position*trig_stride + HALF + freq).to(tl.float32)
@@ -52,8 +52,8 @@ def assemble_fp8(raw_k, values, positions, slots, cos_sin_cache, key_cache, valu
     if raw_k.ndim != 3 or key_cache.ndim != 4 or value_cache.shape != key_cache.shape:
         raise ValueError("Expected NHD raw K and PTHD page views")
     tokens, heads, dim = raw_k.shape
-    if raw_k.dtype not in (torch.bfloat16, torch.float16):
-        raise ValueError("Raw K must have model activation dtype before RoPE")
+    if raw_k.dtype not in (torch.bfloat16, torch.float16, torch.float8_e4m3fn):
+        raise ValueError("Unsupported immutable raw K dtype")
     if key_cache.dtype != torch.float8_e4m3fn or value_cache.dtype != key_cache.dtype:
         raise ValueError("This assembly kernel is qualified for FP8 e4m3 only")
     if tuple(key_cache.shape[2:]) != (heads, dim):
@@ -84,6 +84,7 @@ def assemble_fp8(raw_k, values, positions, slots, cos_sin_cache, key_cache, valu
         *key_cache.stride()[:3], *value_cache.stride()[:3], cos_sin_cache.stride(0),
         key_cache.shape[1], dim, cos_sin_cache.shape[1] // 2,
         triton.next_power_of_2(dim), values is not None,
-        tl.bfloat16 if raw_k.dtype == torch.bfloat16 else tl.float16,
-        num_warps=4,
+        (tl.float32 if raw_k.dtype == torch.float8_e4m3fn else
+         tl.bfloat16 if raw_k.dtype == torch.bfloat16 else tl.float16),
+        num_warps=4, enable_fp_fusion=raw_k.dtype != torch.float8_e4m3fn,
     )

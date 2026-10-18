@@ -168,7 +168,10 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
 
 @pytest.mark.parametrize('packed,direct', [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize('chunk_blocks', [1, 2])
-def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed, direct, chunk_blocks):
+@pytest.mark.parametrize('optimized', [False, True])
+def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed, direct, chunk_blocks, optimized):
+    if optimized and not direct:
+        pytest.skip('Split assembly requires direct packed reads')
     from vllm import _custom_ops as ops
     from vllm_kvmem.authority import RequestAuthority
     from vllm_kvmem.config import KVMemConfig
@@ -204,15 +207,33 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
         rotated = neox_rope(raw[i].cuda(), trig[positions, :16], trig[positions, 16:])
         ops.reshape_and_cache_flash(rotated, values[i].cuda(), rk, rv, slots, 'fp8_e4m3', scale, scale)
         native.append(LayerWindow(k, v, trig, scale, table)); expected.append((rk, rv))
-    assembler = NativeWindowAssembler(tuple(native), 16, chunk_blocks=chunk_blocks, packed=packed,
-                                      direct_pinned_reads=direct)
-    result = assembler.assemble(authority, plan); result.event.synchronize()
-    assert result.rebuilt_tokens == 35 and result.skipped_tokens == 0
-    for actual, (key, value) in zip(native, expected):
-        assert torch.equal(actual.key.view(torch.uint8), key.view(torch.uint8))
-        assert torch.equal(actual.value.view(torch.uint8), value.view(torch.uint8))
-    authority.memory.attach_completion(result); assert authority.memory.commit_selection()
-    assert assembler.close()
+    extra = {}
+    if optimized:
+        from vllm_kvmem.gpu_raw_cache import GpuRawCache
+        extra = dict(raw_cache=GpuRawCache(2*layers*16*heads*dim*2,
+            (layers,16,heads,dim),torch.device('cuda:0'),1,2), reuse_resident_v=True)
+    for attempt in range(2 if optimized else 1):
+        if attempt:
+            # Fresh native allocations cannot reuse V, but immutable full-page
+            # raw K must still hit even though the checkpoint has a 3-token tail.
+            plan = authority.memory.restore_window(checkpoint)
+            for layer in native:
+                layer.key.view(torch.uint8).zero_(); layer.value.view(torch.uint8).zero_()
+        assembler = NativeWindowAssembler(tuple(native), 16, chunk_blocks=chunk_blocks, packed=packed,
+                                          direct_pinned_reads=direct, **extra)
+        result = assembler.assemble(authority, plan); result.event.synchronize()
+        assert result.rebuilt_tokens == 35 and result.skipped_tokens == 0
+        assert result.partial_tokens == 3
+        if optimized:
+            assert result.split_tokens == 32
+            assert result.raw_cache_hit_tokens == (32 if attempt else 0)
+            expected_upload = (layers*heads*dim*(32+3*3) if attempt else layers*heads*dim*35*3)
+            assert result.uploaded_bytes == expected_upload
+        for actual, (key, value) in zip(native, expected):
+            assert torch.equal(actual.key.view(torch.uint8), key.view(torch.uint8))
+            assert torch.equal(actual.value.view(torch.uint8), value.view(torch.uint8))
+        authority.memory.attach_completion(result); assert authority.memory.commit_selection()
+        assert assembler.close()
     del plan, checkpoint, result
     assert authority.close() and archive.close()
 

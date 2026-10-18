@@ -1,0 +1,506 @@
+"""Local Claude Code benchmark adapter, with qw3's frozen protocol helpers.
+
+Only the model transport changes. Exact accepted output IDs survive tool round
+trips; a changed transcript falls back to a separately audited canonical render.
+This endpoint is intended for the owned, isolated benchmark Docker network.
+"""
+import argparse
+import asyncio
+from bisect import bisect_right
+import ctypes
+from dataclasses import dataclass, field
+from decimal import Decimal
+import hashlib
+import json
+from pathlib import Path
+import time
+import uuid
+import os
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def backend_request(*, model, tokens, session, max_tokens, plan, backend_kind):
+    """Keep token and sampling transport identical across the two engines."""
+    if backend_kind not in ('native', 'kvmem'):
+        raise ValueError('Unknown inference backend')
+    data = dict(model=model, prompt=tokens, cache_salt=session, max_tokens=max_tokens,
+        thinking_token_budget=4096, temperature=.6, top_p=.95, top_k=20, min_p=0,
+        presence_penalty=0, repetition_penalty=1, seed=1000,
+        return_token_ids=True, skip_special_tokens=False)
+    if backend_kind == 'kvmem':
+        data.update(session_id=session, **plan)
+    return data
+
+
+class Protocol:
+    def __init__(self, library):
+        self.lib = ctypes.CDLL(str(library))
+        self.lib.qw3_protocol.argtypes = [ctypes.c_char_p]
+        self.lib.qw3_protocol.restype = ctypes.c_void_p
+        self.lib.qw3_protocol_free.argtypes = [ctypes.c_void_p]
+
+    def __call__(self, **payload):
+        pointer = self.lib.qw3_protocol(canonical(payload).encode())
+        try:
+            value = json.loads(ctypes.string_at(pointer))
+        finally:
+            self.lib.qw3_protocol_free(pointer)
+        if 'error' in value:
+            raise ValueError(value['error'])
+        return value
+
+
+def _argument_identity(text, tool):
+    """Compare transported JSON values without changing accepted model tokens.
+
+    Claude Code's Edit adds its documented replace_all=False default on tool
+    round trips. No other tool defaults, string escapes, or content edits are
+    inferred. Duplicate keys/non-finite numbers remain exact-string matches.
+    Decimal parsing avoids equating distinct large numbers through float rounding.
+    """
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('Duplicate tool argument key')
+            result[key] = value
+        return result
+
+    def invalid(value):
+        raise ValueError('Non-finite tool argument')
+
+    def identity(value):
+        if value is None or isinstance(value, (bool, str)):
+            return [type(value).__name__, value]
+        if isinstance(value, (int, Decimal)):
+            number = Decimal(value)
+            sign, digits, exponent = number.as_tuple()
+            digits = list(digits)
+            if not any(digits):
+                return ['number', 0, [0], 0]
+            while digits[-1] == 0:
+                digits.pop()
+                exponent += 1
+            return ['number', sign, digits, exponent]
+        if isinstance(value, list):
+            return ['array', [identity(v) for v in value]]
+        return ['object', [[k, identity(v)] for k, v in sorted(value.items())]]
+
+    if not isinstance(text, str):
+        return ['unparsed', text]
+    try:
+        value = json.loads(text, parse_float=Decimal, parse_constant=invalid,
+                           object_pairs_hook=pairs)
+        if tool == 'Edit' and isinstance(value, dict):
+            value.setdefault('replace_all', False)
+        return ['parsed', identity(value)]
+    except (ValueError, ArithmeticError):
+        return ['unparsed', text]
+
+
+def message_identity(message):
+    message = dict(message)
+    for key in ('content', 'reasoning_content'):
+        if isinstance(message.get(key), str):
+            message[key] = message[key].strip(' \n\r\t')
+    if isinstance(message.get('tool_calls'), list):
+        calls = []
+        for call in message['tool_calls']:
+            call = dict(call)
+            function = dict(call.get('function', {}))
+            if 'arguments' in function:
+                function['arguments'] = _argument_identity(function['arguments'], function.get('name'))
+            call['function'] = function
+            calls.append(call)
+        message['tool_calls'] = calls
+    return canonical(message)
+
+
+@dataclass
+class Trajectory:
+    messages: list = field(default_factory=list)
+    control: str = ''
+    tokens: list = field(default_factory=list)
+    plan: dict = field(default_factory=dict)
+    assistant: str = ''
+    output: list = field(default_factory=list)
+    turns: int = 0
+    locations: dict = field(default_factory=dict)
+
+
+class PrefixTokens:
+    """Exact prefix lengths anchored at complete Qwen message delimiters.
+
+    Ordinary token offsets do not prove prefix stability: BPE may tokenize a
+    truncated word differently. A complete non-stripping added token is a hard
+    tokenizer boundary. Re-encode only the suffix after that boundary, retaining
+    the full encoding's preceding count. A fallback still encodes exact prefixes.
+    """
+    def __init__(self, tokenizer, text):
+        self.tokenizer, self.data = tokenizer, text.encode()
+        self.positions, self.counts = [0], [0]
+        backend = getattr(tokenizer, 'backend_tokenizer', None)
+        markers = {}
+        # Qwen uses NFC. Non-normalized delimiters are extracted before that
+        # normalizer, so normalization cannot compose characters across them.
+        normalizer = getattr(backend, 'normalizer', None)
+        normalized = json.loads(normalizer.__getstate__()) if normalizer is not None else None
+        if getattr(tokenizer, 'is_fast', False) and backend is not None and normalized in (None, {'type':'NFC'}):
+            markers = {token_id:str(token) for token_id,token in tokenizer.added_tokens_decoder.items()
+                if str(token) in ('<|im_start|>', '<|im_end|>') and token.special
+                and not (token.lstrip or token.rstrip or token.normalized or token.single_word)}
+        if markers:
+            encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+            self.ids = encoded['input_ids']
+            previous, byte_end = 0, 0
+            for index,(token_id,(begin,end)) in enumerate(zip(self.ids,encoded['offset_mapping'])):
+                if token_id not in markers:continue
+                if text[begin:end] != markers[token_id] or end <= previous:
+                    raise ValueError('Added-token boundary differs from original Qwen message delimiter')
+                byte_end += len(text[previous:end].encode())
+                self.positions.append(byte_end);self.counts.append(index+1)
+                previous=end
+        else:
+            self.ids = tokenizer.encode(text, add_special_tokens=False)
+        self.cache = {0:0, len(self.data):len(self.ids)}
+
+    def count(self, point):
+        if not 0 <= point <= len(self.data):raise ValueError('Prefix coordinate outside rendered input')
+        if point not in self.cache:
+            anchor=bisect_right(self.positions,point)-1
+            suffix=self.data[self.positions[anchor]:point].decode()
+            self.cache[point]=self.counts[anchor]+len(self.tokenizer.encode(suffix,add_special_tokens=False))
+        return self.cache[point]
+
+
+class Planner:
+    def __init__(self, protocol, tokenizer, gen_budget=16384):
+        self.protocol, self.tokenizer = protocol, tokenizer
+        self.gen_budget = gen_budget
+        self.end = tokenizer.convert_tokens_to_ids('<|im_end|>')
+
+    def encode(self, text):
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def prepare(self, payload, state):
+        rendered = self.protocol(request=payload)
+        text = rendered['prompt'].encode()
+        messages = [message_identity(m) for m in rendered['messages']]
+        control = canonical({'prefix':text[:rendered['control_end']].decode(), 'tools':rendered['tools']})
+        n = len(state.messages)
+        reused = bool(state.output and control == state.control and len(messages) > n+1
+                      and messages[:n] == state.messages and messages[n] == state.assistant
+                      and state.output[-1] == self.end)
+        def location(point):
+            if point <= rendered['control_end']:return (-1,point)
+            for span in rendered['spans']:
+                if span['begin'] <= point <= span['end']:
+                    return (span['index'],point-span['begin'])
+            raise ValueError('Semantic boundary is outside rendered messages')
+        locations = dict(state.locations) if reused else {}
+        if reused:
+            first = next(s for s in rendered['spans'] if s['index'] == n+1)
+            boundary = first['begin']
+            prefix = state.tokens + state.output
+            # The next message begins after the prior EOS and its newline.
+            suffix = '\n' + text[boundary:].decode()
+            encoded = PrefixTokens(self.tokenizer, suffix)
+            tokens = prefix + encoded.ids
+            def coordinate(point):
+                if point < boundary:
+                    return locations[location(point)]
+                value=len(prefix) + encoded.count(1+point-boundary)
+                locations[location(point)]=value
+                return value
+        else:
+            boundary = 0
+            encoded = PrefixTokens(self.tokenizer, text.decode())
+            tokens = encoded.ids
+            def coordinate(point):
+                value=encoded.count(point)
+                locations[location(point)]=value
+                return value
+        plan = {'kvmem_mandatory_spans': [], 'kvmem_reselect':'auto'}
+        for span in rendered['spans']:
+            if span['role'] != 'assistant' and (not reused or span['begin']>=boundary):
+                for point in (span['begin'],span['end'],span['content_begin'],span['content_end']):
+                    coordinate(point)
+        query_index = rendered['query_index']
+        q = next((s for s in rendered['spans'] if s['index'] == query_index), None)
+        if q is not None:
+            plan['kvmem_query_span'] = [coordinate(q['content_begin']), coordinate(q['content_end'])]
+        kinds = {0:'system', 1:'query', 2:'tool-result', 3:'policy', 4:'root', 5:'tool-call', 6:'tool-result'}
+        pins = []
+        for pin in rendered['pins']:
+            if pin['end'] <= pin['begin']:
+                continue
+            kind = kinds[pin['reason']]
+            if kind in ('tool-call','tool-result'):
+                continue  # Match qw3 default lifetimes: tools remain selectable.
+            pins.append({'begin':coordinate(pin['begin']), 'end':coordinate(pin['end']), 'kind':kind})
+        plan['kvmem_mandatory_spans'] = list({canonical(p):p for p in pins}.values())
+        # Validate against the public API before launching model work.
+        from vllm_kvmem.request_plan import RequestPlan
+        RequestPlan.parse(plan, len(tokens), 32, self.gen_budget)
+        return tokens, plan, rendered, messages, control, reused, locations
+
+    def response(self, raw, tools, model, usage, finish):
+        clean = raw.removesuffix('<|im_end|>').removesuffix('<|endoftext|>')
+        parsed = self.protocol(op='parse', text=clean, tools=tools)
+        content = []
+        if parsed['reasoning']:
+            content.append({'type':'thinking','thinking':parsed['reasoning'], 'signature':uuid.uuid4().hex})
+        if parsed['content']:
+            content.append({'type':'text','text':parsed['content']})
+        for call in parsed['tool_calls']:
+            content.append({'type':'tool_use','id':'toolu_'+uuid.uuid4().hex,
+                            'name':call['function']['name'],'input':json.loads(call['function']['arguments'])})
+        if not content:
+            content = [{'type':'text','text':''}]
+        return {'id':'msg_'+uuid.uuid4().hex,'type':'message','role':'assistant','model':model,
+                'content':content,'stop_reason':'tool_use' if parsed['tool_calls'] else 'max_tokens' if finish=='length' else 'end_turn',
+                'stop_sequence':None,'usage':{'input_tokens':usage['prompt_tokens'], 'output_tokens':usage['completion_tokens']}}
+
+    def commit(self, state, prepared, payload, response, output):
+        tokens, plan, rendered, messages, control, reused, locations = prepared
+        assistant = {'role':'assistant','content':response['content']}
+        converted = self.protocol(request={**payload,'messages':payload['messages']+[assistant]})
+        state.messages, state.control, state.tokens = messages, control, tokens
+        state.plan, state.output = plan, output
+        state.locations = locations
+        state.assistant = message_identity(converted['messages'][-1])
+        state.turns += 1
+
+
+def event(kind, **payload):
+    return 'event: '+kind+'\ndata: '+json.dumps({'type':kind,**payload},ensure_ascii=False)+'\n\n'
+
+
+def response_events(response):
+    for index, block in enumerate(response['content']):
+        kind = block['type']
+        if kind == 'thinking':
+            yield event('content_block_start',index=index,content_block={'type':'thinking','thinking':''})
+            yield event('content_block_delta',index=index,delta={'type':'thinking_delta','thinking':block['thinking']})
+            yield event('content_block_delta',index=index,delta={'type':'signature_delta','signature':block['signature']})
+        elif kind == 'tool_use':
+            yield event('content_block_start',index=index,content_block={**block,'input':{}})
+            yield event('content_block_delta',index=index,delta={'type':'input_json_delta','partial_json':json.dumps(block['input'],ensure_ascii=False)})
+        else:
+            yield event('content_block_start',index=index,content_block={'type':'text','text':''})
+            yield event('content_block_delta',index=index,delta={'type':'text_delta','text':block['text']})
+        yield event('content_block_stop',index=index)
+    yield event('message_delta',delta={'stop_reason':response['stop_reason'],'stop_sequence':None},usage=response['usage'])
+    yield event('message_stop')
+
+
+def create_app(args, tokenizer):
+    app = FastAPI()
+    backend_kind = getattr(args, 'backend_kind', 'kvmem')
+    if backend_kind not in ('native', 'kvmem'):
+        raise ValueError('Unknown inference backend')
+    gen_budget = getattr(args, 'gen_budget', 16384)
+    if type(gen_budget) is not int or gen_budget <= 0:
+        raise ValueError('Generation budget must be positive')
+    planner = Planner(Protocol(args.protocol), tokenizer, gen_budget)
+    allowed = set(args.tasks.read_text().splitlines()) | {'preflight'}
+    locks = {task:asyncio.Lock() for task in allowed}
+    states = {task:Trajectory() for task in allowed}
+    client = httpx.AsyncClient(trust_env=False,timeout=max(3600, gen_budget / 10))
+    inflight = 0
+    credits = {}
+    capacity = getattr(args, 'cpu_admission_bytes', None) or int(args.cpu_admission_gib*1024**3)
+    changed = asyncio.Condition()
+    long_owner = None
+    short_limit = 49152*17*4*256*3
+    admission_policy = getattr(args, 'cpu_admission_policy', 'legacy')
+    engine_admission_verified = False
+    args.output.mkdir(parents=True,exist_ok=True)
+    def log(row):
+        with (args.output/'requests.jsonl').open('a') as stream:
+            stream.write(json.dumps(row,ensure_ascii=False)+'\n')
+
+    async def reserve(task, amount):
+        nonlocal long_owner, engine_admission_verified
+        if backend_kind == 'native':
+            return 0.  # Native vLLM owns GPU admission and prefix-cache eviction.
+        if admission_policy == 'engine':
+            if not engine_admission_verified:
+                geometry = json.loads(args.cache_geometry.read_text())
+                if (not geometry.get('cpu_history_coordination') or
+                        not geometry.get('cpu_progress_reserve') or
+                        geometry['cpu_offload_bytes'] != capacity):
+                    raise ValueError('Engine CPU admission/geometry does not match bridge budget')
+                engine_admission_verified = True
+            return 0.  # Engine defers only requests which cannot acquire credits.
+        begin=time.monotonic()
+        async with changed:
+            reported=False
+            while ((amount > short_limit and long_owner not in (None,task)) or
+                   sum(credits.values())-credits.get(task,0)+amount > capacity):
+                if not reported:
+                    log({'event':'cpu_admission_wait','task':task,'at':time.time(),
+                         'required_bytes':amount,'used_bytes':sum(credits.values()),'capacity_bytes':capacity,
+                         'long_trajectory_owner':long_owner})
+                    reported=True
+                await changed.wait()
+            if amount > short_limit and long_owner is None:
+                long_owner=task
+                log({'event':'long_trajectory_admitted','task':task,'at':time.time(),
+                     'policy':'Reserve one full 1M CPU history plus seven 48K histories; never evict or recompute a parked task'})
+            credits[task]=amount
+            return time.monotonic()-begin
+
+    @app.post('/control/{task}/finish')
+    async def finish(task:str,request:Request):
+        nonlocal long_owner
+        if request.headers.get('x-control-token') != os.environ.get('DEEPSWE_CONTROL_TOKEN','invalid'):
+            return JSONResponse({'error':'unauthorized'},status_code=401)
+        if task not in allowed:return JSONResponse({'error':'unknown task'},status_code=404)
+        async with locks[task]:
+            # Explicit release waits for fenced eviction and must not replace
+            # the old history with another model checkpoint for the EOS marker.
+            # This cleanup completion is never scored.
+            session=args.run_id+'-'+task
+            cleanup_id = None
+            if backend_kind == 'kvmem':
+                result=await client.post(args.backend+'/v1/completions',json={'model':args.model,
+                    'prompt':[planner.end], 'session_id':session,'cache_salt':session,
+                    'max_tokens':1,'temperature':0,'kvmem_reselect':'off',
+                    'kvmem_mandatory_spans':[],
+                    'kv_transfer_params':{'kvmem_release_session':True}})
+                result.raise_for_status()
+                cleanup_id = result.json()['id']
+            states[task]=Trajectory()
+            async with changed:
+                credits.pop(task,None)
+                if long_owner==task:long_owner=None
+                changed.notify_all()
+            log({'event':'history_released','task':task,'at':time.time(),
+                 'cleanup_request_id':cleanup_id, 'backend_kind':backend_kind,
+                 'native_prefix_cache':'evictable' if backend_kind == 'native' else None})
+        return {'released':True}
+
+    @app.get('/task/{task}/health')
+    @app.get('/health')
+    async def health(task='preflight'):
+        result = await client.get(args.backend+'/health')
+        return JSONResponse({'ok':result.status_code==200},status_code=result.status_code)
+
+    @app.post('/task/{task}/v1/messages/count_tokens')
+    async def count_tokens(task:str, request:Request):
+        if task not in allowed:return JSONResponse({'error':'unknown task'},status_code=404)
+        payload = await request.json()
+        value = await asyncio.to_thread(planner.protocol,request=payload)
+        return {'input_tokens':len(await asyncio.to_thread(planner.encode,value['prompt']))}
+
+    @app.post('/task/{task}/v1/messages')
+    async def messages(task:str, request:Request):
+        if task not in allowed:return JSONResponse({'error':'unknown task'},status_code=404)
+        payload = await request.json()
+        async def generate():
+            nonlocal inflight
+            async with locks[task]:
+                state = states[task]
+                started=time.time(); prepared=await asyncio.to_thread(planner.prepare,payload,state)
+                tokens, plan, rendered, _, _, reused, _=prepared
+                directory=args.output/task/f'{state.turns+1:05d}'
+                directory.mkdir(parents=True,exist_ok=True)
+                (directory/'request.json').write_text(json.dumps(payload,ensure_ascii=False))
+                max_tokens = min(payload.get('max_tokens', gen_budget), gen_budget)
+                if len(tokens)+max_tokens>args.max_model_len:
+                    log({'event':'context_limit','task':task,'turn':state.turns+1,'at':time.time(),
+                         'prompt_tokens':len(tokens),'requested_output_tokens':max_tokens,
+                         'max_model_len':args.max_model_len})
+                    raise ValueError('Complete trajectory exceeds configured logical context; no truncation/compaction applied')
+                session=args.run_id+'-'+task
+                data=backend_request(model=args.model, tokens=tokens, session=session,
+                    max_tokens=max_tokens, plan=plan, backend_kind=backend_kind)
+                previous_tokens = len(state.tokens) + len(state.output) if reused else 0
+                amount=((len(tokens)+data['max_tokens']+31)//32)*32*17*4*256*3
+                cpu_queue_seconds=await reserve(task,amount)
+                (directory/'plan.json').write_text(json.dumps({k:v for k,v in data.items() if k!='prompt'}|
+                    {'prompt_tokens':len(tokens),'exact_output_prefix_reused':reused,
+                     'token_sha256':hashlib.sha256(canonical(tokens).encode()).hexdigest()}))
+                inflight+=1
+                admitted=time.time()
+                log({'event':'start','task':task,'turn':state.turns+1,'at':admitted,
+                     'request_started_at':started,'cpu_queue_seconds':cpu_queue_seconds,'prompt_tokens':len(tokens),
+                     'inflight':inflight,'exact_output_prefix_reused':reused,
+                     'new_input_tokens':len(tokens)-previous_tokens,
+                     'prepare_seconds':admitted-started-cpu_queue_seconds, 'backend_kind':backend_kind})
+                try:
+                    result=await client.post(args.backend+'/v1/completions',json=data)
+                    result.raise_for_status(); native=result.json()
+                    choice=native['choices'][0]
+                    response=planner.response(choice['text'],rendered['tools'],payload['model'],native['usage'],choice['finish_reason'])
+                    output=choice['token_ids']
+                    await asyncio.to_thread(planner.commit,state,prepared,payload,response,output)
+                    if backend_kind == 'kvmem':
+                        async with changed:
+                            credits[task]=((len(tokens)+len(output)+31)//32)*32*17*4*256*3
+                            changed.notify_all()
+                    (directory/'response.json').write_text(json.dumps(response,ensure_ascii=False))
+                    (directory/'native.json').write_text(json.dumps({**native,'choices':[{k:v for k,v in choice.items() if k!='prompt_token_ids'}]},ensure_ascii=False))
+                    log({'event':'finish','task':task,'turn':state.turns,'at':time.time(),'seconds':time.time()-started,
+                         'cpu_queue_seconds':cpu_queue_seconds,'native_seconds':time.time()-admitted,
+                         'prompt_tokens':len(tokens),'new_input_tokens':len(tokens)-previous_tokens,
+                         'usage':native['usage'],'metrics':native.get('metrics'),'request_id':native['id'],
+                         'finish_reason':choice['finish_reason'],'tool_calls':sum(b['type']=='tool_use' for b in response['content']),
+                         'inflight':inflight})
+                    return response
+                except BaseException as error:
+                    log({'event':'cancelled' if isinstance(error,asyncio.CancelledError) else 'error',
+                         'error_type':type(error).__name__,'task':task,'turn':state.turns+1,'at':time.time(),'error':str(error)})
+                    raise
+                finally:inflight-=1
+        if not payload.get('stream'):
+            try:return await generate()
+            except (ValueError,httpx.HTTPError) as error:
+                return JSONResponse({'type':'error','error':{'type':'api_error','message':str(error)}},status_code=500)
+        async def stream():
+            job=asyncio.create_task(generate())
+            yield event('message_start',message={'id':'msg_'+uuid.uuid4().hex,'type':'message','role':'assistant',
+                'model':payload['model'],'content':[],'stop_reason':None,'stop_sequence':None,
+                'usage':{'input_tokens':0,'output_tokens':0}})
+            try:
+                while not job.done():
+                    done,_=await asyncio.wait({job},timeout=10)
+                    if not done:yield event('ping')
+                for item in response_events(job.result()):yield item
+            except (ValueError,httpx.HTTPError) as error:
+                yield event('error',error={'type':'api_error','message':str(error)})
+            finally:
+                if not job.done():job.cancel()
+                await asyncio.gather(job,return_exceptions=True)
+        return StreamingResponse(stream(),media_type='text/event-stream')
+    return app
+
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser(description=__doc__)
+    for name in ('protocol','tasks','output'):p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--tokenizer',required=True);p.add_argument('--backend',required=True)
+    p.add_argument('--model',required=True);p.add_argument('--run-id',required=True)
+    p.add_argument('--host',required=True);p.add_argument('--port',type=int,default=18483)
+    p.add_argument('--max-model-len',type=int,default=1048576)
+    p.add_argument('--gen-budget',type=int,default=16384)
+    p.add_argument('--backend-kind',choices=('native','kvmem'),default='kvmem')
+    p.add_argument('--cpu-admission-gib',type=int,default=72)
+    p.add_argument('--cpu-admission-bytes',type=int)
+    p.add_argument('--cpu-admission-policy',choices=('legacy','engine'),default='legacy')
+    p.add_argument('--cache-geometry',type=Path)
+    args=p.parse_args()
+    if args.backend_kind == 'kvmem' and args.cpu_admission_policy == 'engine' and args.cache_geometry is None:
+        p.error('Engine admission requires --cache-geometry')
+    from transformers import AutoTokenizer
+    import uvicorn
+    tokenizer=AutoTokenizer.from_pretrained(args.tokenizer,local_files_only=True)
+    uvicorn.run(create_app(args,tokenizer),host=args.host,port=args.port,log_level='warning')

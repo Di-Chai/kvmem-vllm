@@ -6,7 +6,7 @@ streaming/disconnect handling belong to Starlette's native HTTP middleware.
 import json
 import os
 
-from .session_control import session_namespace
+from .session_control import session_namespace, session_release_intent
 
 
 def validate_session_payload(payload, header):
@@ -20,6 +20,12 @@ def validate_session_payload(payload, header):
         if isinstance(extras, dict) and isinstance(extras.get('session_id'), str):
             session = extras['session_id']
     session_namespace(session, payload.get('cache_salt'))
+    if os.getenv('KVMEM_REQUIRE_OWNED_SESSION') == '1' and not session:
+        raise ValueError('Block graph requests require an owned session namespace')
+    release = session_release_intent(payload.get('kv_transfer_params'), session,
+        payload.get('prompt'), payload.get('max_tokens'))
+    if release and payload.get('kvmem_query_span') is not None:
+        raise ValueError('Session release cannot execute a Query')
 
 
 def normalize_query_plan(payload, session_header=None):
@@ -39,10 +45,18 @@ def normalize_query_plan(payload, session_header=None):
     cfg = json.loads(config)
     prompt = payload.get('prompt')
     if not isinstance(prompt, list) or any(type(x) is not int or x < 0 for x in prompt):
+        if cfg.get('rolling_active_window', False):
+            raise ValueError('Rolling active window requires a token-ID completion prompt')
         if fields:
             raise ValueError('Explicit Query coordinates require a token-ID completion prompt')
         return False  # Native chat remains an independent legacy entry.
-    plan = RequestPlan.parse(fields or {}, len(prompt), cfg['block_tokens'], cfg['gen_budget'])
+    reserve = cfg.get('guided_reserve',0)
+    plan = RequestPlan.parse(fields or {}, len(prompt), cfg['block_tokens'], cfg['gen_budget'],reserve)
+    if (plan.query is not None and
+            plan.replay_end - plan.replay_begin > cfg.get('query_replay_budget', cfg['gen_budget'])):
+        raise ValueError('Atomic Query exceeds the configured Query replay budget')
+    if plan.query is not None and reserve and plan.replay_end + reserve > cfg['max_model_len']:
+        raise ValueError('Guided Query scratch exceeds the model position limit')
     max_tokens = payload.get('max_tokens')
     if max_tokens is None:
         max_tokens = 16
@@ -53,8 +67,15 @@ def normalize_query_plan(payload, session_header=None):
         raise ValueError('Single-turn output must remain within G')
     extras = payload.get('vllm_xargs')
     session = payload.get('session_id') or session_header or (extras.get('session_id') if isinstance(extras,dict) else None)
+    if not session or plan.reselect == 'force':
+        plan.validate_capacity(len(prompt), cfg['select_budget'], output_tokens=max_tokens,
+            sink_blocks=cfg.get('sink_blocks', 0), recent_blocks=cfg.get('recent_blocks', 0),
+            rolling=cfg.get('rolling_active_window', False))
+    # A session auto Query can disappear after exact-prefix validation. Its
+    # combined capacity check belongs to that owner before any import/allocation.
+    output_reserve = 0 if cfg.get('rolling_active_window', False) else max_tokens
     if (plan.prefill_window == 'keep_selected' and not session
-            and len(prompt) + max_tokens > cfg['select_budget'] + cfg['gen_budget'] - cfg['block_tokens']):
+            and len(prompt) + output_reserve > cfg['select_budget'] + cfg['gen_budget'] - cfg['block_tokens']):
         raise ValueError('keep_selected requires verified active headroom; this cold prompt exceeds K+G')
     params['kvmem_request_plan'] = fields or {}
     for key in FIELDS:

@@ -66,6 +66,10 @@ def test_pinned_snapshot_fences_gpu_copy_before_source_reuse():
     snapshot=adapter.capture('a',8,max_bytes=4096)
     assert all(t.is_pinned() for t in snapshot.recurrent.values())
     conv[1].fill_(-11);ssm[1].fill_(-11)
+    # Serving polls this event through pool retirement; this GPU gate waits
+    # explicitly so it can inspect CPU bytes and submit the next restoration.
+    snapshot.completion.synchronize()
+    assert snapshot.query() and not snapshot.source_owners
     adapter.runner.req_states.req_id_to_index['new']=2
     adapter.runner._kvmem_request_generations['new']=3
     completed=adapter.restore(snapshot,'new');completed.synchronize()
@@ -118,6 +122,23 @@ def test_decode_snapshot_uses_accepted_gdn_row_and_keeps_neighbour_state():
     assert adapter.runner.model_state.num_accepted_tokens_gpu.tolist() == [1, 1, 7]
 
 
+@pytest.mark.parametrize('history',[0,7])
+def test_terminal_padded_prefill_tail_preserves_first_accepted_state(history):
+    adapter,conv,ssm,cache,_=fixture()
+    adapter.contract=SimpleNamespace(method='mtp',validate_native_groups=lambda _:())
+    adapter.runner.req_states.prefill_len.np[0]=history+1
+    adapter.runner._kvmem_capture_runtime=SimpleNamespace(
+        last_steps={'a':[{'history_begin':history,'accepted':1,'scheduled':2}]},
+        authorities={'a':SimpleNamespace(history_end=history+1)})
+    adapter.recurrent.conv_dim_first=False;adapter.recurrent.conv_widths={'gdn':4}
+    before_conv,before_ssm,before_cache=conv.clone(),ssm.clone(),cache.clone()
+    snapshot=adapter.capture('a',history+1,max_bytes=4096,terminal=True)
+    assert torch.equal(snapshot.recurrent['gdn','ssm'],before_ssm[1])
+    assert torch.equal(snapshot.recurrent['gdn','conv'],before_conv[1])
+    assert torch.equal(conv,before_conv) and torch.equal(ssm,before_ssm)
+    assert torch.equal(cache,before_cache)
+
+
 def test_clipped_continuation_keeps_accepted_state_and_repeated_metadata_is_idempotent(monkeypatch):
     from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
     adapter, conv, ssm, _, _ = fixture()
@@ -125,6 +146,7 @@ def test_clipped_continuation_keeps_accepted_state_and_repeated_metadata_is_idem
     runner.speculative_config = object()
     runner.model_state.num_accepted_tokens_gpu[0] = 2
     runner._kvmem_capture_runtime = SimpleNamespace(drain=lambda **_: None,
+        drain_requests=lambda *a, **kw: True,
         last_steps={'a': [{'history_begin': 6, 'accepted': 2, 'scheduled': 2}]})
     adapter.recurrent.conv_dim_first = False
     adapter.recurrent.conv_widths = {'gdn': 4}
@@ -152,3 +174,180 @@ def test_snapshot_uses_exact_visible_logical_tail_without_guessing_physical_page
     table[0, 2] = table[0, 1]
     with pytest.raises(ValueError, match='aliased'):
         adapter.capture('a', 9, max_bytes=4096)
+
+
+def test_prepared_restore_reuses_owned_packed_payload_without_another_host_gather(monkeypatch):
+    import vllm_kvmem.session_state as state_module
+    adapter, conv, ssm, cache, _ = fixture()
+    snapshot = adapter.capture('a', 8, max_bytes=4096)
+    expected = conv.clone(), ssm.clone(), cache.clone()
+    offset = 0
+    for tensor in (*snapshot.recurrent.values(), *snapshot.draft.values()):
+        assert tensor.data_ptr() == snapshot.payload.data_ptr() + offset
+        offset += tensor.numel() * tensor.element_size()
+    assert offset == snapshot.bytes == snapshot.payload.numel()
+    prepared = adapter.prepare_restore(snapshot, 'b')
+    adapter.runner.model_state.num_accepted_tokens_gpu[1] = 7
+
+    # Replace only this module's torch reference: unrelated PyTorch operations
+    # and CPU tests remain untouched, and any redundant gather fails the test.
+    class PackedOnlyTorch:
+        def __getattr__(self, name):
+            return getattr(torch, name)
+
+        def cat(self, *args, **kwargs):
+            pytest.fail('An owned packed checkpoint must not be gathered again')
+
+    monkeypatch.setattr(state_module, 'torch', PackedOnlyTorch())
+    assert adapter.submit_restore(prepared) is None
+    adapter.validate_restore(prepared)
+    assert torch.equal(conv[3], expected[0][1])
+    assert torch.equal(ssm[3], expected[1][1])
+    assert torch.equal(cache[2], expected[2][1])
+    assert torch.equal(conv[5:], expected[0][5:])
+    assert adapter.runner.model_state.num_accepted_tokens_gpu.tolist() == [1, 1, 7]
+
+
+@pytest.mark.parametrize('mutation', ['generation', 'index', 'removed'])
+def test_prepared_restore_rejects_recycled_native_destination_before_commit(mutation):
+    adapter, conv, ssm, cache, _ = fixture()
+    snapshot = adapter.capture('a', 8, max_bytes=4096)
+    prepared = adapter.prepare_restore(snapshot, 'b')
+    before = conv.clone(), ssm.clone(), cache.clone()
+    if mutation == 'generation':
+        adapter.runner._kvmem_request_generations['b'] += 1
+    elif mutation == 'index':
+        adapter.runner.req_states.req_id_to_index['b'] = 2
+    else:
+        del adapter.runner.req_states.req_id_to_index['b']
+        del adapter.runner._kvmem_request_generations['b']
+    with pytest.raises(ValueError, match='recycled'):
+        adapter.validate_restore(prepared)
+    assert all(torch.equal(actual, old) for actual, old in zip((conv, ssm, cache), before))
+
+
+def test_legacy_unpacked_snapshot_still_restores_exact_model_state():
+    adapter, conv, ssm, cache, _ = fixture()
+    snapshot = adapter.capture('a', 8, max_bytes=4096)
+    # Older snapshots have no retained packed owner and can contain individual
+    # CPU allocations; the fallback must preserve the same typed layout.
+    snapshot = replace(snapshot, payload=None,
+        recurrent={key: tensor.clone() for key, tensor in snapshot.recurrent.items()},
+        draft={key: tensor.clone() for key, tensor in snapshot.draft.items()})
+    before = conv.clone(), ssm.clone(), cache.clone()
+    assert adapter.restore(snapshot, 'b') is None
+    assert torch.equal(conv[3], before[0][1])
+    assert torch.equal(ssm[3], before[1][1])
+    assert torch.equal(cache[2], before[2][1])
+
+
+def test_pending_snapshot_keeps_source_and_rejects_cpu_consumers_until_its_fence():
+    from test_core import Event
+    adapter, conv, ssm, cache, _ = fixture()
+    snapshot = adapter.capture('a', 8, max_bytes=4096)
+    prepared = adapter.prepare_restore(snapshot, 'b')
+    fence, owner = Event(), object()
+    pending = replace(snapshot, completion=fence, source_owners=(owner,))
+    before = conv.clone(), ssm.clone(), cache.clone()
+    assert not pending.query() and pending.source_owners == (owner,)
+    with pytest.raises(RuntimeError, match='payload is not ready'):
+        adapter.prepare_restore(pending, 'b')
+    prepared.snapshot = pending
+    with pytest.raises(RuntimeError, match='payload is not ready'):
+        adapter.submit_restore(prepared)
+    assert all(torch.equal(actual, old) for actual, old in zip((conv, ssm, cache), before))
+    fence.done = True
+    assert pending.query() and not pending.source_owners and pending.completion is None
+    fence.query = lambda: pytest.fail('Ready snapshots must not query CUDA on every engine step')
+    assert pending.query()
+    assert adapter.submit_restore(prepared) is None
+    assert torch.equal(conv[3], before[0][1]) and torch.equal(ssm[3], before[1][1])
+
+
+@pytest.mark.parametrize('record_fails', [False, True])
+def test_capture_submission_returns_without_host_wait_and_fences_failed_submission(monkeypatch, record_fails):
+    """Exercise the CUDA submission branch with CPU-backed tensor storage."""
+    from test_core import Event
+    import vllm_kvmem.session_state as state_module
+    adapter, _, _, _, _ = fixture(draft=False)
+    copied, synchronized = [], []
+
+    class DeviceSnapshot(torch.Tensor):
+        @property
+        def device(self):
+            # Storage and copy dispatch remain CPU-only; only capture's device
+            # choice is simulated. No CUDA allocator/driver is initialized.
+            return torch.device('cuda:0')
+
+    class Completion(Event):
+        def record(self, stream):
+            copied.append(stream)
+            if record_fails:
+                raise OSError('injected event recording failure')
+
+        def synchronize(self):
+            pytest.fail('Successful capture must not synchronously wait on its event')
+
+    completion = Completion()
+    stream = SimpleNamespace(synchronize=lambda: synchronized.append(True))
+
+    class SubmissionTorch:
+        cuda = SimpleNamespace(Event=lambda: completion, current_stream=lambda _: stream)
+
+        def __getattr__(self, name):
+            return getattr(torch, name)
+
+        def cat(self, values):
+            return torch.Tensor._make_subclass(DeviceSnapshot, torch.cat(values), False)
+
+        def empty(self, *args, **kwargs):
+            assert kwargs.pop('pin_memory') is True
+            return torch.empty(*args, **kwargs)
+
+    monkeypatch.setattr(state_module, 'torch', SubmissionTorch())
+    if record_fails:
+        with pytest.raises(OSError, match='event recording failure'):
+            adapter.capture('a', 8, max_bytes=4096)
+        assert synchronized == [True]
+    else:
+        snapshot = adapter.capture('a', 8, max_bytes=4096)
+        assert copied == [stream] and not synchronized
+        assert not snapshot.query() and len(snapshot.source_owners) == 1
+        assert snapshot.payload.numel() == snapshot.bytes
+        completion.done = True
+        assert snapshot.query() and not snapshot.source_owners and snapshot.completion is None
+
+
+@pytest.mark.parametrize('optimized', [False, True])
+def test_checkpoint_canonicalization_host_wait_ablation_preserves_exact_bytes(monkeypatch, tmp_path, optimized):
+    import json
+    adapter, conv, ssm, _, _ = fixture(draft=False)
+    adapter.runner._kvmem_probe_output = tmp_path
+    adapter.runner._kvmem_capture_runtime = SimpleNamespace(
+        last_steps={'a': [{'history_begin': 6, 'accepted': 2, 'scheduled': 2}]},
+        authorities={'a': SimpleNamespace(history_end=8)})
+    adapter.recurrent.conv_dim_first = False
+    adapter.recurrent.conv_widths = {'gdn': 4}
+    adapter.runner.req_states.prefill_len.np[0] = 5
+    adapter.runner.model_state.num_accepted_tokens_gpu[0] = 2
+    before_conv, before_ssm = conv.clone(), ssm.clone()
+    waits = []
+    canonicalize = adapter.recurrent.canonicalize_accepted
+
+    def with_event(*args, **kwargs):
+        canonicalize(*args, **kwargs)
+        return SimpleNamespace(synchronize=lambda: waits.append(True))
+
+    monkeypatch.setattr(adapter.recurrent, 'canonicalize_accepted', with_event)
+    monkeypatch.setenv('KVMEM_ASYNC_CHECKPOINT_CAPTURE', str(int(optimized)))
+    snapshot = adapter.capture('a', 8, max_bytes=4096, terminal=True)
+    assert waits == ([] if optimized else [True])
+    assert torch.equal(snapshot.recurrent['gdn', 'ssm'], before_ssm[2])
+    assert torch.equal(snapshot.recurrent['gdn', 'conv'][:3], before_conv[1, 1:4])
+    assert torch.equal(conv[3:], before_conv[3:]) and torch.equal(ssm[3:], before_ssm[3:])
+    trace = json.loads((tmp_path/'checkpoint_timing.jsonl').read_text())
+    assert trace['optimized'] is optimized and trace['status'] == 'submitted'
+    assert trace['snapshot_bytes'] == snapshot.bytes
+    assert ('canonicalize_wait' in trace['host_stage_seconds']) is (not optimized)
+    assert 'accepted_counter_read' not in trace['host_stage_seconds']
+    assert trace['host_sync_wait_seconds'] <= trace['host_total_seconds']

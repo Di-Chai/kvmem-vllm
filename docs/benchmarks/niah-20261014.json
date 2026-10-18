@@ -1,0 +1,566 @@
+{
+  "date": "2026-10-14",
+  "scope": "Frozen qw3 NIAH180, pure CPU immutable historical KV, no recomputation; independent fixed-output decode and three single-request diagnostic cases.",
+  "identity": {
+    "source_cohort_sha256": "12ad8dca4f4315bcab8dfd8bf1ef7fe75f1bab9f747f6389a049d7d58eb4e230",
+    "source_scorer_sha256": "2cea28665646631aa20dc027817707f183586604d581d8bac34e8ec50f090105",
+    "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+    "server_profile_sha256": "c73f7c89adc1330495ee22caa553de61b070f4d02edec5eaec12e120f8cd9244",
+    "max_output": 8192,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "thinking_token_budget": 4096,
+    "thinking": "original open think prefix; original forced transition plus close at 4096",
+    "query_history": true,
+    "guided_query_tokens": 512,
+    "active_budget": 32768,
+    "gen_budget": 16384,
+    "draft_method": "mtp",
+    "draft_tokens": 4,
+    "workers": 8,
+    "cases": 180,
+    "cpu_headroom_gib": 8,
+    "protocol": "single request; chronological pressure prefill then explicit Query replay",
+    "selection_uses_gold": false
+  },
+  "runtime_frozen_files_verified": 81,
+  "niah": {
+    "completed": 180,
+    "errors": 0,
+    "accuracy": [
+      {
+        "nominal_input_tokens": 65536,
+        "task": "all",
+        "cases": 60,
+        "actual_input_tokens": [
+          65493,
+          65494,
+          65495
+        ],
+        "coverage": 100.0,
+        "exact": 60,
+        "all_needles_selected": 60,
+        "thinking_closed": 60
+      },
+      {
+        "nominal_input_tokens": 65536,
+        "task": "niah_single_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          65493
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 15,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 65536,
+        "task": "niah_multikey_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          65493
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 15,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 65536,
+        "task": "niah_multivalue",
+        "cases": 15,
+        "actual_input_tokens": [
+          65494
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 15,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 65536,
+        "task": "niah_multiquery",
+        "cases": 15,
+        "actual_input_tokens": [
+          65495
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 15,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 131072,
+        "task": "all",
+        "cases": 60,
+        "actual_input_tokens": [
+          131029,
+          131030,
+          131031
+        ],
+        "coverage": 92.5,
+        "exact": 45,
+        "all_needles_selected": 32,
+        "thinking_closed": 60
+      },
+      {
+        "nominal_input_tokens": 131072,
+        "task": "niah_single_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          131029
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 12,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 131072,
+        "task": "niah_multikey_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          131029
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 14,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 131072,
+        "task": "niah_multivalue",
+        "cases": 15,
+        "actual_input_tokens": [
+          131030
+        ],
+        "coverage": 80.0,
+        "exact": 6,
+        "all_needles_selected": 3,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 131072,
+        "task": "niah_multiquery",
+        "cases": 15,
+        "actual_input_tokens": [
+          131031
+        ],
+        "coverage": 90.0,
+        "exact": 9,
+        "all_needles_selected": 3,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 262144,
+        "task": "all",
+        "cases": 60,
+        "actual_input_tokens": [
+          262101,
+          262102,
+          262103
+        ],
+        "coverage": 65.41666666666667,
+        "exact": 30,
+        "all_needles_selected": 31,
+        "thinking_closed": 60
+      },
+      {
+        "nominal_input_tokens": 262144,
+        "task": "niah_single_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          262101
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 12,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 262144,
+        "task": "niah_multikey_2",
+        "cases": 15,
+        "actual_input_tokens": [
+          262101
+        ],
+        "coverage": 100.0,
+        "exact": 15,
+        "all_needles_selected": 13,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 262144,
+        "task": "niah_multivalue",
+        "cases": 15,
+        "actual_input_tokens": [
+          262102
+        ],
+        "coverage": 21.666666666666668,
+        "exact": 0,
+        "all_needles_selected": 3,
+        "thinking_closed": 15
+      },
+      {
+        "nominal_input_tokens": 262144,
+        "task": "niah_multiquery",
+        "cases": 15,
+        "actual_input_tokens": [
+          262103
+        ],
+        "coverage": 40.0,
+        "exact": 0,
+        "all_needles_selected": 3,
+        "thinking_closed": 15
+      }
+    ],
+    "latency_and_evidence": [
+      {
+        "length": 65536,
+        "matched_cases": 60,
+        "peak_admitted_concurrency": 8,
+        "old_mean_seconds": 25.575416174841425,
+        "new_mean_seconds": 99.09055614921574,
+        "new_mean_with_cpu_admission_seconds": 99.1094328246545,
+        "old_mean_output_tokens": 229.48333333333332,
+        "new_mean_output_tokens": 216.23333333333332,
+        "new_mean_ttft_seconds": 62.05109248488831,
+        "new_mean_generation_seconds": 36.37798457404909,
+        "new_median_itl_seconds": 0.18295206403436123,
+        "cpu_queue_max_seconds": 0.09352829679846764,
+        "mean_pressure_refreshes": 2,
+        "assembly_seconds_sum": 61.50971889961511,
+        "assembly_host_prepare_seconds_sum": 57.293791668489575,
+        "guided_seconds_sum": 73.47553189191967,
+        "old_serial_request_seconds": 1534.5249704904854,
+        "current_phase_span_seconds": 843.3997097015381,
+        "new_faster_cases": 0,
+        "old_coverage": 100.0,
+        "new_coverage": 100.0,
+        "old_exact": 60,
+        "new_exact": 60,
+        "needle_count": 150,
+        "sentence_selected": 150,
+        "key_selected": 150,
+        "value_selected": 150,
+        "missing_numbers": 0,
+        "missing_with_key_and_value_selected": 0,
+        "missing_with_value_selected_only": 0,
+        "missing_value_unselected": 0,
+        "numeric_exact_but_explicit_key_binding_mismatch": 0
+      },
+      {
+        "length": 131072,
+        "matched_cases": 60,
+        "peak_admitted_concurrency": 8,
+        "old_mean_seconds": 46.935179511255896,
+        "new_mean_seconds": 199.18618994252756,
+        "new_mean_with_cpu_admission_seconds": 199.19546178518794,
+        "old_mean_output_tokens": 256.21666666666664,
+        "new_mean_output_tokens": 243.66666666666666,
+        "new_mean_ttft_seconds": 125.2354619198634,
+        "new_mean_generation_seconds": 73.18440414833215,
+        "new_median_itl_seconds": 0.2805676203187868,
+        "cpu_queue_max_seconds": 0.061196114867925644,
+        "mean_pressure_refreshes": 6,
+        "assembly_seconds_sum": 137.03660333901644,
+        "assembly_host_prepare_seconds_sum": 126.23924423288554,
+        "guided_seconds_sum": 108.26649077050388,
+        "old_serial_request_seconds": 2816.1107706753537,
+        "current_phase_span_seconds": 1625.3962709903717,
+        "new_faster_cases": 0,
+        "old_coverage": 99.58333333333333,
+        "new_coverage": 92.5,
+        "old_exact": 59,
+        "new_exact": 45,
+        "needle_count": 150,
+        "sentence_selected": 120,
+        "key_selected": 148,
+        "value_selected": 150,
+        "missing_numbers": 18,
+        "missing_with_key_and_value_selected": 18,
+        "missing_with_value_selected_only": 0,
+        "missing_value_unselected": 0,
+        "numeric_exact_but_explicit_key_binding_mismatch": 1
+      },
+      {
+        "length": 262144,
+        "matched_cases": 60,
+        "peak_admitted_concurrency": 6,
+        "old_mean_seconds": 89.85596265955829,
+        "new_mean_seconds": 290.32196368595277,
+        "new_mean_with_cpu_admission_seconds": 381.69892048764353,
+        "old_mean_output_tokens": 333.73333333333335,
+        "new_mean_output_tokens": 237.88333333333333,
+        "new_mean_ttft_seconds": 228.57310909835311,
+        "new_mean_generation_seconds": 60.921182922335966,
+        "new_median_itl_seconds": 0.2798100004389006,
+        "cpu_queue_max_seconds": 2767.925160081126,
+        "mean_pressure_refreshes": 14,
+        "assembly_seconds_sum": 278.69884642679244,
+        "assembly_host_prepare_seconds_sum": 250.90515243913978,
+        "guided_seconds_sum": 109.26432265155017,
+        "old_serial_request_seconds": 5391.357759573497,
+        "current_phase_span_seconds": 3027.918003320694,
+        "new_faster_cases": 0,
+        "old_coverage": 97.91666666666667,
+        "new_coverage": 65.41666666666667,
+        "old_exact": 58,
+        "new_exact": 30,
+        "needle_count": 150,
+        "sentence_selected": 118,
+        "key_selected": 148,
+        "value_selected": 150,
+        "missing_numbers": 83,
+        "missing_with_key_and_value_selected": 81,
+        "missing_with_value_selected_only": 2,
+        "missing_value_unselected": 0,
+        "numeric_exact_but_explicit_key_binding_mismatch": 0
+      }
+    ],
+    "wall_seconds": 5222.297421455383,
+    "output_tokens": 41867,
+    "terminal_histories_verified": 180,
+    "storage": {
+      "samples": 511,
+      "all_cpu": true,
+      "max_disk_read_bytes": 0,
+      "max_disk_write_bytes": 0,
+      "max_nvme_capacity_bytes": 0,
+      "minimum_available_memory_bytes": 10284453888,
+      "max_live_accepted_history_tokens": 1499266,
+      "max_observed_histories_at_least_262101_tokens": 4,
+      "max_observed_archive_used_slots": 46850,
+      "any_swap": false,
+      "any_archive_file_descriptors": false
+    },
+    "comparison_limits": [
+      "Old Q8 + CacheBlend 10%, new NVFP4 without recomputation.",
+      "Old ingest+answer latency excludes startup/reset; new server already running.",
+      "New request time excludes CPU admission; both timings provided, neither includes executor backlog.",
+      "Phase spans include adjacent-length overlap and the 64K preflight/main pause."
+    ],
+    "binding_mismatches": [
+      {
+        "id": "niah_multiquery_n131072_p90_s1000",
+        "length": 131072,
+        "mismatches": [
+          {
+            "key": "thinkable-literate",
+            "expected": "8850189",
+            "found": [
+              "3780976"
+            ]
+          },
+          {
+            "key": "secretive-tower",
+            "expected": "3780976",
+            "found": [
+              "8850189"
+            ]
+          }
+        ],
+        "unverified": []
+      }
+    ],
+    "failed_numeric_set_cases": [
+      "niah_multivalue_n131072_p50_s1000",
+      "niah_multivalue_n131072_p50_s2000",
+      "niah_multivalue_n131072_p50_s3000",
+      "niah_multiquery_n131072_p50_s1000",
+      "niah_multiquery_n131072_p50_s2000",
+      "niah_multiquery_n131072_p50_s3000",
+      "niah_multivalue_n131072_p70_s1000",
+      "niah_multivalue_n131072_p70_s2000",
+      "niah_multivalue_n131072_p70_s3000",
+      "niah_multiquery_n131072_p70_s1000",
+      "niah_multiquery_n131072_p70_s2000",
+      "niah_multiquery_n131072_p70_s3000",
+      "niah_multivalue_n131072_p90_s1000",
+      "niah_multivalue_n131072_p90_s2000",
+      "niah_multivalue_n131072_p90_s3000",
+      "niah_multivalue_n262144_p10_s1000",
+      "niah_multivalue_n262144_p10_s2000",
+      "niah_multivalue_n262144_p10_s3000",
+      "niah_multiquery_n262144_p10_s1000",
+      "niah_multiquery_n262144_p10_s2000",
+      "niah_multiquery_n262144_p10_s3000",
+      "niah_multivalue_n262144_p30_s1000",
+      "niah_multivalue_n262144_p30_s2000",
+      "niah_multivalue_n262144_p30_s3000",
+      "niah_multiquery_n262144_p30_s1000",
+      "niah_multiquery_n262144_p30_s2000",
+      "niah_multiquery_n262144_p30_s3000",
+      "niah_multivalue_n262144_p50_s1000",
+      "niah_multivalue_n262144_p50_s2000",
+      "niah_multivalue_n262144_p50_s3000",
+      "niah_multiquery_n262144_p50_s1000",
+      "niah_multiquery_n262144_p50_s2000",
+      "niah_multiquery_n262144_p50_s3000",
+      "niah_multivalue_n262144_p70_s1000",
+      "niah_multivalue_n262144_p70_s2000",
+      "niah_multivalue_n262144_p70_s3000",
+      "niah_multiquery_n262144_p70_s1000",
+      "niah_multiquery_n262144_p70_s2000",
+      "niah_multiquery_n262144_p70_s3000",
+      "niah_multivalue_n262144_p90_s1000",
+      "niah_multivalue_n262144_p90_s2000",
+      "niah_multivalue_n262144_p90_s3000",
+      "niah_multiquery_n262144_p90_s1000",
+      "niah_multiquery_n262144_p90_s2000",
+      "niah_multiquery_n262144_p90_s3000"
+    ]
+  },
+  "decode": {
+    "status": "passed",
+    "input": {
+      "kind": "token_ids",
+      "input_tokens": 50006,
+      "input_file_sha256": "378734f67321a53af233af2986c4e55a2f9dc4f7ab45575a3cc844d15d94d55b",
+      "token_ids_sha256": "d52aaf0aaab8cbaf30dd875fd504d705b11bed759d7b81f8d74cc603cb997513",
+      "query_span": [
+        48033,
+        49997
+      ],
+      "frozen_file": "input.json"
+    },
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 104.52535945456475,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 313.4933012523496,
+      "successful_requests_per_second": 0.07653645050106192,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 65.00949775939807,
+        "p95": 65.02866911869496,
+        "max": 65.03452984429896
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 103.10236568236724,
+        "p95": 104.0085000407882,
+        "max": 104.49367186799645
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.009301712367256083,
+        "p95": 0.009701211753031819,
+        "max": 0.009914030170156843
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "steady_window": {
+      "status": "passed",
+      "start": 65.76004888489842,
+      "end": 102.22656765393913,
+      "seconds": 36.466518769040704,
+      "trim_tokens_each_end": 64,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "output_tokens": 31387,
+      "output_tokens_per_second": 860.7073298876802
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "actual_stable_owner_count": 8,
+      "interval_count": 144,
+      "seconds": 36.19622142892331,
+      "sse_window_coverage_fraction": 0.9925877942495879,
+      "required_coverage_fraction": 0.9,
+      "violations": [],
+      "boundary_observations": [],
+      "accepted_input_tokens": 31272,
+      "accepted_input_tokens_per_second": 863.9575835673137,
+      "sample_count": 417,
+      "sample_errors": 0,
+      "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+    },
+    "effective_input_tokens_per_second_to_last_first_token": 6146.270676898206,
+    "last_first_token_at_seconds": 65.08792421128601,
+    "guided_tokens": [
+      42,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "runtime_config_changed_since_prior_729_tps_baseline": true,
+    "no_authenticated_gateway_in_this_test": true
+  },
+  "single_request_diagnostic": [
+    {
+      "id": "niah_single_2_n65536_p10_s1000",
+      "single_seconds": 11.85223785135895,
+      "concurrent_seconds": 100.65399370342493,
+      "single_output_tokens": 99,
+      "concurrent_output_tokens": 102,
+      "single_coverage": 100.0,
+      "concurrent_coverage": 100.0,
+      "single_predicted": [
+        "2663286"
+      ],
+      "concurrent_predicted": [
+        "2663286"
+      ]
+    },
+    {
+      "id": "niah_multivalue_n131072_p50_s1000",
+      "single_seconds": 25.45355240534991,
+      "concurrent_seconds": 238.53280959371477,
+      "single_output_tokens": 276,
+      "concurrent_output_tokens": 262,
+      "single_coverage": 75.0,
+      "concurrent_coverage": 75.0,
+      "single_predicted": [
+        "2055956",
+        "6921862",
+        "7603660"
+      ],
+      "concurrent_predicted": [
+        "2663286",
+        "6921862",
+        "7603660"
+      ]
+    },
+    {
+      "id": "niah_multiquery_n131072_p50_s1000",
+      "single_seconds": 32.063832801766694,
+      "concurrent_seconds": 437.5566360838711,
+      "single_output_tokens": 1210,
+      "concurrent_output_tokens": 845,
+      "single_coverage": 75.0,
+      "concurrent_coverage": 75.0,
+      "single_predicted": [
+        "3780976",
+        "8850189",
+        "9970504"
+      ],
+      "concurrent_predicted": [
+        "3780976",
+        "8850189",
+        "9970504"
+      ]
+    }
+  ],
+  "final_resources": {
+    "completed_requests": 191,
+    "retiring_requests": 0,
+    "session_checkpoints": 0,
+    "active_requests": 0,
+    "archive_used_slots": 0,
+    "nvme_capacity_bytes": 0,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "cpu_authority_bytes": 0
+  }
+}

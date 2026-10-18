@@ -29,3 +29,15 @@ def test_context_projection_uses_codec_forward_instead_of_transposed_weight_stor
     assert calls == [0, 1]
     torch.testing.assert_close(keys, torch.stack([x[:, 4:6].reshape(3, 1, 2) for x in independent]))
     torch.testing.assert_close(values, torch.stack([x[:, 6:8].reshape(3, 1, 2) for x in independent]))
+def test_mtp_inherited_fp8_does_not_enter_dflash_patch(monkeypatch):
+    from types import SimpleNamespace
+    from vllm_kvmem.draft_quantization import install_quantized_context
+    import vllm_kvmem.draft_contract as contract
+
+    def forbidden():
+        raise AssertionError('Native MTP must not run DFlash verification')
+
+    monkeypatch.setattr(contract, 'verify_draft_sources', forbidden)
+    # No DFlash model is provided: it must not even be accessed.
+    runner = SimpleNamespace(speculative_config=SimpleNamespace(method='mtp', quantization='fp8'))
+    install_quantized_context(runner)

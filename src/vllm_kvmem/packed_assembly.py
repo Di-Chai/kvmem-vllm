@@ -63,7 +63,8 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
                      TRIG_STRIDE: tl.constexpr, RECORD_TOKENS: tl.constexpr,
                      LAYERS: tl.constexpr, LAYER: tl.constexpr, HEADS: tl.constexpr,
                      DIM: tl.constexpr, HALF: tl.constexpr, PAGE: tl.constexpr,
-                     BLOCK: tl.constexpr, RAW_TYPE: tl.constexpr):
+                     BLOCK: tl.constexpr, RAW_TYPE: tl.constexpr,
+                     RAW_BYTES: tl.constexpr, ROPE_TYPE: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     record, offset = token // RECORD_TOKENS, token % RECORD_TOKENS
     position = tl.load(bases + record).to(tl.int64) + offset
@@ -74,18 +75,18 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     d = tl.arange(0, BLOCK)
     mask = d < DIM
     raw = payload.to(tl.pointer_type(RAW_TYPE))
-    raw_base = record * (raw_elements * 3 // 2) + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
-    x = tl.load(raw + raw_base + d, mask=mask, other=0).to(tl.float32)
+    raw_base = record * (raw_elements * (RAW_BYTES + 1) // RAW_BYTES) + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
+    x = tl.load(raw + raw_base + d, mask=mask, other=0.0).to(tl.float32)
     other_d = tl.where(d < HALF, d + HALF, d - HALF)
-    mate = tl.load(raw + raw_base + other_d, mask=d < 2*HALF, other=0).to(tl.float32)
+    mate = tl.load(raw + raw_base + other_d, mask=d < 2*HALF, other=0.0).to(tl.float32)
     freq = d % HALF
     cos = tl.load(trig + position * TRIG_STRIDE + freq).to(tl.float32)
     sin = tl.load(trig + position * TRIG_STRIDE + HALF + freq).to(tl.float32)
     rotated = tl.where(d < HALF, x*cos - mate*sin, x*cos + mate*sin)
-    rotated = tl.where(d < 2*HALF, rotated, x).to(RAW_TYPE).to(tl.float32)
+    rotated = tl.where(d < 2*HALF, rotated, x).to(ROPE_TYPE).to(tl.float32)
     quantized = tl.minimum(tl.maximum(rotated / tl.load(scale), -448.0), 448.0)
     tl.store(kcache + page*k0 + cache_offset*k1 + head*k2 + d, quantized, mask=mask)
-    value_base = record * raw_elements * 3 + raw_elements * 2 + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
+    value_base = record * raw_elements * (RAW_BYTES + 1) + raw_elements * RAW_BYTES + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
     value = tl.load(payload + value_base + d, mask=mask, other=0)
     dst = vcache.to(tl.pointer_type(tl.uint8))
     tl.store(dst + page*v0 + cache_offset*v1 + head*v2 + d, value, mask=mask)
@@ -99,11 +100,12 @@ def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_t
     heads, dim = key.shape[-2:]
     if (min(layers, block_tokens) <= 0 or (layers * block_tokens * heads * dim) % 2 or
             not 0 <= layer_index < layers or
-            raw_dtype not in (torch.bfloat16, torch.float16)):
+            raw_dtype not in (torch.bfloat16, torch.float16, torch.float8_e4m3fn)):
         raise ValueError("Invalid packed source geometry")
     if (bases.ndim != 1 or bases.dtype not in (torch.int32, torch.int64) or not bases.is_contiguous() or
             payload.ndim != 1 or payload.dtype != torch.uint8 or not payload.is_contiguous() or
-            payload.numel() != bases.numel() * layers * block_tokens * heads * dim * 3):
+            payload.numel() != bases.numel() * layers * block_tokens * heads * dim *
+                (raw_dtype.itemsize+1)):
         raise ValueError("Packed record extent does not match destination bases")
     tensors = (payload, bases, key, value, layer.kernel_page_table, layer.cos_sin, layer.key_scale)
     if payload.device.type != 'cuda' or any(t.device != payload.device for t in tensors):
@@ -118,5 +120,10 @@ def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_t
         payload, bases, layer.kernel_page_table, layer.cos_sin, key, value, layer.key_scale,
         *key.stride()[:3], *value.stride()[:3], layer.cos_sin.stride(0), block_tokens,
         layers, layer_index, heads, dim, layer.cos_sin.shape[1] // 2, key.shape[1],
-        triton.next_power_of_2(dim), tl.bfloat16 if raw_dtype == torch.bfloat16 else tl.float16,
-        num_warps=4)
+        triton.next_power_of_2(dim),
+        (tl.float8e4nv if raw_dtype == torch.float8_e4m3fn else
+         tl.bfloat16 if raw_dtype == torch.bfloat16 else tl.float16),
+        raw_dtype.itemsize,
+        (tl.float32 if raw_dtype == torch.float8_e4m3fn else
+         tl.bfloat16 if raw_dtype == torch.bfloat16 else tl.float16),
+        num_warps=4, enable_fp_fusion=raw_dtype != torch.float8_e4m3fn)

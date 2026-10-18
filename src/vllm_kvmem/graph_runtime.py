@@ -46,4 +46,4 @@ def initialize_graph_window(runner):
 def needs_refresh_batch(scheduler_output):
     from .connector import ControlMetadata
     control = scheduler_output.kv_connector_metadata
-    return isinstance(control, ControlMetadata) and bool(control.commands)
+    return isinstance(control, ControlMetadata) and any(not c.asynchronous for c in control.commands)

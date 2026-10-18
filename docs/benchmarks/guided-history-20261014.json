@@ -1,0 +1,2752 @@
+{
+  "date": "2026-10-14",
+  "scope": "Explicit-boundary guided Query + logical-input relevance history; combined semantics extend qw3",
+  "configuration": {
+    "model": "Qwen 27B NVFP4",
+    "kv_dtype": "fp8_e4m3",
+    "mtp_k": 3,
+    "select_budget": 32768,
+    "gen_budget": 16384,
+    "guided_query_tokens": 32,
+    "query_history_decay": 0.5,
+    "native_compilation": true,
+    "verify_session_restore": true
+  },
+  "five_turn_gate": {
+    "source": "artifacts/guided-history-20261014/policy-c8-fixed/results.json",
+    "status": "passed",
+    "concurrency": 8,
+    "successful_turns": 40,
+    "state_restores": 32,
+    "query_replays": 24,
+    "nonempty_guided": 21,
+    "empty_guided_public_query_fallback": 3,
+    "history_commits": 40,
+    "owned_blocks_after": 0,
+    "history_tokens_per_user": 73447,
+    "pressure_tool_tokens": 20000,
+    "notes": "Replay audited against saved per-request events after accommodating the documented empty-guided fallback; later allocation/regeneration guards are tested in the final-build gates."
+  },
+  "not_claimed": [
+    "qw3 full feature equivalence",
+    "agent quality improvement",
+    "long-running SLO qualification",
+    "durable Q tensor cache"
+  ],
+  "cpu_regression": {
+    "passed": 663,
+    "skipped": 73,
+    "source": "artifacts/guided-history-20261014/cpu-final-03.log"
+  },
+  "original_cpp_regression": "passed; unmodified vendored header and provenance hash verified",
+  "final_below_budget": {
+    "status": "passed",
+    "prompt_tokens": 13055,
+    "rounds": [
+      1,
+      1,
+      2
+    ],
+    "observed": [
+      true,
+      true,
+      false
+    ],
+    "unchanged_no_query_scores": true
+  },
+  "final_explicit_query_gate": {
+    "status": "passed",
+    "concurrency": 8,
+    "input_tokens": 50006,
+    "successful_turns": 16,
+    "query_replays": 16,
+    "state_restores": 8,
+    "owned_blocks_after": 0,
+    "nonempty_guided": 16,
+    "fallback": 0,
+    "guided_seconds_median": 3.977690808940679,
+    "guided_seconds_max": 5.436828477308154
+  },
+  "decode50k_c8": {
+    "status": "passed",
+    "concurrency": 8,
+    "distinct_users": 8,
+    "wall_seconds": 164.51627117674798,
+    "end_to_end": {
+      "status": "passed",
+      "attempted": 8,
+      "success": 8,
+      "rejected": 0,
+      "failure": 0,
+      "wall_seconds": 164.51627117674798,
+      "successful_output_tokens": 32768,
+      "successful_output_tokens_per_second": 199.17786712291647,
+      "successful_requests_per_second": 0.04862740896555578,
+      "ttft_seconds": {
+        "count": 8,
+        "p50": 75.48055178392678,
+        "p95": 108.27187685663812,
+        "max": 108.74581735860556
+      },
+      "request_latency_seconds": {
+        "count": 8,
+        "p50": 155.16452916851267,
+        "p95": 163.99581998419018,
+        "max": 164.4756998512894
+      },
+      "tpot_seconds": {
+        "count": 8,
+        "p50": 0.01945868970005249,
+        "p95": 0.028787458083184118,
+        "max": 0.02936031845840597
+      },
+      "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+    },
+    "steady_decode_window": {
+      "status": "passed",
+      "start": 109.67545559071004,
+      "end": 147.34477512724698,
+      "seconds": 37.66931953653693,
+      "trim_tokens_each_end": 64,
+      "active_streams": 8,
+      "end_inclusive": true,
+      "per_request": [
+        {
+          "client_index": 0,
+          "start_tokens": 138,
+          "end_tokens": 4032,
+          "tokens": 3894,
+          "token_events": 1064
+        },
+        {
+          "client_index": 1,
+          "start_tokens": 130,
+          "end_tokens": 3645,
+          "tokens": 3515,
+          "token_events": 1063
+        },
+        {
+          "client_index": 2,
+          "start_tokens": 124,
+          "end_tokens": 3165,
+          "tokens": 3041,
+          "token_events": 1063
+        },
+        {
+          "client_index": 3,
+          "start_tokens": 113,
+          "end_tokens": 3640,
+          "tokens": 3527,
+          "token_events": 1063
+        },
+        {
+          "client_index": 4,
+          "start_tokens": 94,
+          "end_tokens": 3594,
+          "tokens": 3500,
+          "token_events": 1063
+        },
+        {
+          "client_index": 5,
+          "start_tokens": 90,
+          "end_tokens": 3191,
+          "tokens": 3101,
+          "token_events": 1063
+        },
+        {
+          "client_index": 6,
+          "start_tokens": 88,
+          "end_tokens": 3149,
+          "tokens": 3061,
+          "token_events": 1063
+        },
+        {
+          "client_index": 7,
+          "start_tokens": 67,
+          "end_tokens": 3903,
+          "tokens": 3836,
+          "token_events": 1063
+        }
+      ],
+      "output_tokens": 27475,
+      "output_tokens_per_second": 729.3734088652951
+    },
+    "native_confirmation": {
+      "status": "passed",
+      "actual_stable_owner_count": 8,
+      "interval_count": 149,
+      "seconds": 37.442717930302024,
+      "sse_window_coverage_fraction": 0.9939844518291572,
+      "required_coverage_fraction": 0.9,
+      "violations": [],
+      "boundary_observations": [],
+      "accepted_input_tokens": 27266,
+      "accepted_input_tokens_per_second": 728.2056834323422,
+      "sample_count": 655,
+      "sample_errors": 0,
+      "intervals": [
+        {
+          "start": 109.69338885042816,
+          "end": 109.94480339251459,
+          "seconds": 0.25141454208642244,
+          "accepted_input_tokens": 161,
+          "per_request_tokens": {
+            "client_0": 22,
+            "client_1": 19,
+            "client_2": 17,
+            "client_3": 19,
+            "client_4": 21,
+            "client_5": 20,
+            "client_6": 17,
+            "client_7": 26
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 109.94480339251459,
+          "end": 110.19613903667778,
+          "seconds": 0.2513356441631913,
+          "accepted_input_tokens": 155,
+          "per_request_tokens": {
+            "client_0": 17,
+            "client_1": 18,
+            "client_2": 29,
+            "client_3": 19,
+            "client_4": 18,
+            "client_5": 18,
+            "client_6": 17,
+            "client_7": 19
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 110.19613903667778,
+          "end": 110.44829494692385,
+          "seconds": 0.2521559102460742,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 110.44829494692385,
+          "end": 110.69923250284046,
+          "seconds": 0.2509375559166074,
+          "accepted_input_tokens": 164,
+          "per_request_tokens": {
+            "client_0": 22,
+            "client_1": 13,
+            "client_2": 27,
+            "client_3": 27,
+            "client_4": 13,
+            "client_5": 20,
+            "client_6": 15,
+            "client_7": 27
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 110.69923250284046,
+          "end": 110.95059698168188,
+          "seconds": 0.251364478841424,
+          "accepted_input_tokens": 166,
+          "per_request_tokens": {
+            "client_0": 22,
+            "client_1": 28,
+            "client_2": 17,
+            "client_3": 20,
+            "client_4": 15,
+            "client_5": 21,
+            "client_6": 15,
+            "client_7": 28
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 110.95059698168188,
+          "end": 111.20134840067476,
+          "seconds": 0.250751418992877,
+          "accepted_input_tokens": 174,
+          "per_request_tokens": {
+            "client_0": 24,
+            "client_1": 21,
+            "client_2": 16,
+            "client_3": 28,
+            "client_4": 28,
+            "client_5": 21,
+            "client_6": 14,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 111.20134840067476,
+          "end": 111.45300357975066,
+          "seconds": 0.25165517907589674,
+          "accepted_input_tokens": 202,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 28,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 14,
+            "client_6": 24,
+            "client_7": 30
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 111.45300357975066,
+          "end": 111.70402599591762,
+          "seconds": 0.2510224161669612,
+          "accepted_input_tokens": 154,
+          "per_request_tokens": {
+            "client_0": 25,
+            "client_1": 22,
+            "client_2": 15,
+            "client_3": 19,
+            "client_4": 12,
+            "client_5": 18,
+            "client_6": 27,
+            "client_7": 16
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 111.70402599591762,
+          "end": 111.95515710674226,
+          "seconds": 0.25113111082464457,
+          "accepted_input_tokens": 184,
+          "per_request_tokens": {
+            "client_0": 20,
+            "client_1": 20,
+            "client_2": 25,
+            "client_3": 19,
+            "client_4": 21,
+            "client_5": 28,
+            "client_6": 27,
+            "client_7": 24
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 111.95515710674226,
+          "end": 112.20664550829679,
+          "seconds": 0.2514884015545249,
+          "accepted_input_tokens": 172,
+          "per_request_tokens": {
+            "client_0": 24,
+            "client_1": 21,
+            "client_2": 27,
+            "client_3": 21,
+            "client_4": 27,
+            "client_5": 18,
+            "client_6": 13,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 112.20664550829679,
+          "end": 112.45812152978033,
+          "seconds": 0.25147602148354053,
+          "accepted_input_tokens": 178,
+          "per_request_tokens": {
+            "client_0": 17,
+            "client_1": 29,
+            "client_2": 21,
+            "client_3": 22,
+            "client_4": 24,
+            "client_5": 26,
+            "client_6": 19,
+            "client_7": 20
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 112.45812152978033,
+          "end": 112.70905973296613,
+          "seconds": 0.25093820318579674,
+          "accepted_input_tokens": 178,
+          "per_request_tokens": {
+            "client_0": 18,
+            "client_1": 24,
+            "client_2": 19,
+            "client_3": 21,
+            "client_4": 27,
+            "client_5": 28,
+            "client_6": 18,
+            "client_7": 23
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 112.70905973296613,
+          "end": 112.96026263479143,
+          "seconds": 0.2512029018253088,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 112.96026263479143,
+          "end": 113.2112415516749,
+          "seconds": 0.25097891688346863,
+          "accepted_input_tokens": 167,
+          "per_request_tokens": {
+            "client_0": 27,
+            "client_1": 21,
+            "client_2": 19,
+            "client_3": 20,
+            "client_4": 19,
+            "client_5": 21,
+            "client_6": 19,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 113.2112415516749,
+          "end": 113.46201974712312,
+          "seconds": 0.2507781954482198,
+          "accepted_input_tokens": 169,
+          "per_request_tokens": {
+            "client_0": 24,
+            "client_1": 22,
+            "client_2": 24,
+            "client_3": 19,
+            "client_4": 12,
+            "client_5": 23,
+            "client_6": 25,
+            "client_7": 20
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 113.46201974712312,
+          "end": 113.71304090786725,
+          "seconds": 0.2510211607441306,
+          "accepted_input_tokens": 173,
+          "per_request_tokens": {
+            "client_0": 21,
+            "client_1": 19,
+            "client_2": 22,
+            "client_3": 25,
+            "client_4": 27,
+            "client_5": 16,
+            "client_6": 22,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 113.71304090786725,
+          "end": 113.96469910815358,
+          "seconds": 0.2516582002863288,
+          "accepted_input_tokens": 177,
+          "per_request_tokens": {
+            "client_0": 24,
+            "client_1": 23,
+            "client_2": 19,
+            "client_3": 21,
+            "client_4": 23,
+            "client_5": 23,
+            "client_6": 25,
+            "client_7": 19
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 113.96469910815358,
+          "end": 114.2160942144692,
+          "seconds": 0.2513951063156128,
+          "accepted_input_tokens": 175,
+          "per_request_tokens": {
+            "client_0": 27,
+            "client_1": 23,
+            "client_2": 23,
+            "client_3": 17,
+            "client_4": 23,
+            "client_5": 17,
+            "client_6": 24,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 114.2160942144692,
+          "end": 114.46758769825101,
+          "seconds": 0.2514934837818146,
+          "accepted_input_tokens": 170,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 17,
+            "client_2": 22,
+            "client_3": 24,
+            "client_4": 19,
+            "client_5": 26,
+            "client_6": 19,
+            "client_7": 20
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 114.46758769825101,
+          "end": 114.71907211933285,
+          "seconds": 0.251484421081841,
+          "accepted_input_tokens": 165,
+          "per_request_tokens": {
+            "client_0": 19,
+            "client_1": 20,
+            "client_2": 22,
+            "client_3": 19,
+            "client_4": 26,
+            "client_5": 21,
+            "client_6": 23,
+            "client_7": 15
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 114.71907211933285,
+          "end": 114.96976691205055,
+          "seconds": 0.25069479271769524,
+          "accepted_input_tokens": 179,
+          "per_request_tokens": {
+            "client_0": 27,
+            "client_1": 21,
+            "client_2": 20,
+            "client_3": 28,
+            "client_4": 18,
+            "client_5": 20,
+            "client_6": 21,
+            "client_7": 24
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 114.96976691205055,
+          "end": 115.22084179986268,
+          "seconds": 0.2510748878121376,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 115.22084179986268,
+          "end": 115.47174740210176,
+          "seconds": 0.2509056022390723,
+          "accepted_input_tokens": 191,
+          "per_request_tokens": {
+            "client_0": 20,
+            "client_1": 26,
+            "client_2": 31,
+            "client_3": 22,
+            "client_4": 21,
+            "client_5": 26,
+            "client_6": 25,
+            "client_7": 20
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 115.47174740210176,
+          "end": 115.7229449544102,
+          "seconds": 0.2511975523084402,
+          "accepted_input_tokens": 188,
+          "per_request_tokens": {
+            "client_0": 21,
+            "client_1": 28,
+            "client_2": 24,
+            "client_3": 23,
+            "client_4": 24,
+            "client_5": 26,
+            "client_6": 21,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 115.7229449544102,
+          "end": 115.97430610191077,
+          "seconds": 0.2513611475005746,
+          "accepted_input_tokens": 171,
+          "per_request_tokens": {
+            "client_0": 22,
+            "client_1": 24,
+            "client_2": 25,
+            "client_3": 18,
+            "client_4": 18,
+            "client_5": 17,
+            "client_6": 25,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 115.97430610191077,
+          "end": 116.22693311795592,
+          "seconds": 0.25262701604515314,
+          "accepted_input_tokens": 188,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 24,
+            "client_2": 23,
+            "client_3": 28,
+            "client_4": 23,
+            "client_5": 24,
+            "client_6": 27,
+            "client_7": 16
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 116.22693311795592,
+          "end": 116.47815422900021,
+          "seconds": 0.2512211110442877,
+          "accepted_input_tokens": 161,
+          "per_request_tokens": {
+            "client_0": 21,
+            "client_1": 20,
+            "client_2": 19,
+            "client_3": 15,
+            "client_4": 17,
+            "client_5": 27,
+            "client_6": 19,
+            "client_7": 23
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 116.47815422900021,
+          "end": 116.72889946307987,
+          "seconds": 0.250745234079659,
+          "accepted_input_tokens": 164,
+          "per_request_tokens": {
+            "client_0": 19,
+            "client_1": 24,
+            "client_2": 20,
+            "client_3": 20,
+            "client_4": 13,
+            "client_5": 17,
+            "client_6": 24,
+            "client_7": 27
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 116.72889946307987,
+          "end": 116.97962154168636,
+          "seconds": 0.2507220786064863,
+          "accepted_input_tokens": 177,
+          "per_request_tokens": {
+            "client_0": 20,
+            "client_1": 20,
+            "client_2": 20,
+            "client_3": 26,
+            "client_4": 22,
+            "client_5": 21,
+            "client_6": 27,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 116.97962154168636,
+          "end": 117.230235632509,
+          "seconds": 0.2506140908226371,
+          "accepted_input_tokens": 173,
+          "per_request_tokens": {
+            "client_0": 18,
+            "client_1": 29,
+            "client_2": 22,
+            "client_3": 26,
+            "client_4": 20,
+            "client_5": 19,
+            "client_6": 21,
+            "client_7": 18
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 117.230235632509,
+          "end": 117.48132634907961,
+          "seconds": 0.25109071657061577,
+          "accepted_input_tokens": 182,
+          "per_request_tokens": {
+            "client_0": 16,
+            "client_1": 23,
+            "client_2": 30,
+            "client_3": 23,
+            "client_4": 19,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 24
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 117.48132634907961,
+          "end": 117.73270648065954,
+          "seconds": 0.25138013157993555,
+          "accepted_input_tokens": 192,
+          "per_request_tokens": {
+            "client_0": 22,
+            "client_1": 21,
+            "client_2": 30,
+            "client_3": 18,
+            "client_4": 29,
+            "client_5": 23,
+            "client_6": 26,
+            "client_7": 23
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 117.73270648065954,
+          "end": 117.98490024823695,
+          "seconds": 0.25219376757740974,
+          "accepted_input_tokens": 193,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 30,
+            "client_2": 27,
+            "client_3": 25,
+            "client_4": 23,
+            "client_5": 19,
+            "client_6": 24,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 117.98490024823695,
+          "end": 118.2358195502311,
+          "seconds": 0.2509193019941449,
+          "accepted_input_tokens": 185,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 20,
+            "client_2": 20,
+            "client_3": 26,
+            "client_4": 20,
+            "client_5": 20,
+            "client_6": 27,
+            "client_7": 29
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 118.2358195502311,
+          "end": 118.48661625664681,
+          "seconds": 0.25079670641571283,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 118.48661625664681,
+          "end": 118.7379425112158,
+          "seconds": 0.25132625456899405,
+          "accepted_input_tokens": 187,
+          "per_request_tokens": {
+            "client_0": 26,
+            "client_1": 24,
+            "client_2": 22,
+            "client_3": 26,
+            "client_4": 21,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 118.7379425112158,
+          "end": 118.99014432448894,
+          "seconds": 0.25220181327313185,
+          "accepted_input_tokens": 192,
+          "per_request_tokens": {
+            "client_0": 26,
+            "client_1": 20,
+            "client_2": 24,
+            "client_3": 21,
+            "client_4": 28,
+            "client_5": 27,
+            "client_6": 22,
+            "client_7": 24
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 118.99014432448894,
+          "end": 119.24166982993484,
+          "seconds": 0.2515255054458976,
+          "accepted_input_tokens": 204,
+          "per_request_tokens": {
+            "client_0": 20,
+            "client_1": 30,
+            "client_2": 26,
+            "client_3": 29,
+            "client_4": 31,
+            "client_5": 16,
+            "client_6": 27,
+            "client_7": 25
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 119.24166982993484,
+          "end": 119.49276122450829,
+          "seconds": 0.2510913945734501,
+          "accepted_input_tokens": 197,
+          "per_request_tokens": {
+            "client_0": 23,
+            "client_1": 20,
+            "client_2": 23,
+            "client_3": 27,
+            "client_4": 26,
+            "client_5": 23,
+            "client_6": 32,
+            "client_7": 23
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 119.49276122450829,
+          "end": 119.74353750329465,
+          "seconds": 0.2507762787863612,
+          "accepted_input_tokens": 188,
+          "per_request_tokens": {
+            "client_0": 27,
+            "client_1": 19,
+            "client_2": 21,
+            "client_3": 23,
+            "client_4": 22,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 20
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 119.74353750329465,
+          "end": 119.99447439517826,
+          "seconds": 0.2509368918836117,
+          "accepted_input_tokens": 218,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 28,
+            "client_2": 27,
+            "client_3": 28,
+            "client_4": 27,
+            "client_5": 24,
+            "client_6": 29,
+            "client_7": 23
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 119.99447439517826,
+          "end": 120.24578652344644,
+          "seconds": 0.2513121282681823,
+          "accepted_input_tokens": 193,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 28,
+            "client_2": 21,
+            "client_3": 24,
+            "client_4": 19,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 120.24578652344644,
+          "end": 120.49666417762637,
+          "seconds": 0.2508776541799307,
+          "accepted_input_tokens": 193,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 16,
+            "client_3": 25,
+            "client_4": 27,
+            "client_5": 24,
+            "client_6": 24,
+            "client_7": 22
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 120.49666417762637,
+          "end": 120.74824739433825,
+          "seconds": 0.2515832167118788,
+          "accepted_input_tokens": 192,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 16,
+            "client_3": 19,
+            "client_4": 28,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 29
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 120.74824739433825,
+          "end": 120.99985832348466,
+          "seconds": 0.25161092914640903,
+          "accepted_input_tokens": 199,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 18,
+            "client_2": 18,
+            "client_3": 23,
+            "client_4": 26,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 120.99985832348466,
+          "end": 121.25105633307248,
+          "seconds": 0.25119800958782434,
+          "accepted_input_tokens": 214,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 26,
+            "client_2": 29,
+            "client_3": 21,
+            "client_4": 24,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 121.25105633307248,
+          "end": 121.50186649803072,
+          "seconds": 0.2508101649582386,
+          "accepted_input_tokens": 210,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 21,
+            "client_2": 28,
+            "client_3": 24,
+            "client_4": 26,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 121.50186649803072,
+          "end": 121.75326717272401,
+          "seconds": 0.2514006746932864,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 121.75326717272401,
+          "end": 122.00412233732641,
+          "seconds": 0.2508551646023989,
+          "accepted_input_tokens": 182,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 18,
+            "client_2": 20,
+            "client_3": 12,
+            "client_4": 19,
+            "client_5": 24,
+            "client_6": 25,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 122.00412233732641,
+          "end": 122.25575899984688,
+          "seconds": 0.25163666252046824,
+          "accepted_input_tokens": 192,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 22,
+            "client_2": 23,
+            "client_3": 16,
+            "client_4": 18,
+            "client_5": 24,
+            "client_6": 25,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 122.25575899984688,
+          "end": 122.5080201216042,
+          "seconds": 0.2522611217573285,
+          "accepted_input_tokens": 201,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 22,
+            "client_3": 25,
+            "client_4": 24,
+            "client_5": 24,
+            "client_6": 19,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 122.5080201216042,
+          "end": 122.75910127907991,
+          "seconds": 0.2510811574757099,
+          "accepted_input_tokens": 198,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 25,
+            "client_2": 17,
+            "client_3": 26,
+            "client_4": 24,
+            "client_5": 24,
+            "client_6": 18,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 122.75910127907991,
+          "end": 123.01073915418237,
+          "seconds": 0.2516378751024604,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 123.01073915418237,
+          "end": 123.2614633757621,
+          "seconds": 0.2507242215797305,
+          "accepted_input_tokens": 213,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 21,
+            "client_2": 27,
+            "client_3": 26,
+            "client_4": 23,
+            "client_5": 24,
+            "client_6": 28,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 123.2614633757621,
+          "end": 123.51223681215197,
+          "seconds": 0.2507734363898635,
+          "accepted_input_tokens": 210,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 25,
+            "client_3": 31,
+            "client_4": 24,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 30
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 123.51223681215197,
+          "end": 123.76315729878843,
+          "seconds": 0.2509204866364598,
+          "accepted_input_tokens": 218,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 27,
+            "client_2": 23,
+            "client_3": 26,
+            "client_4": 28,
+            "client_5": 24,
+            "client_6": 27,
+            "client_7": 31
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 123.76315729878843,
+          "end": 124.01449285261333,
+          "seconds": 0.2513355538249016,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 124.01449285261333,
+          "end": 124.26550568174571,
+          "seconds": 0.2510128291323781,
+          "accepted_input_tokens": 181,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 25,
+            "client_3": 26,
+            "client_4": 18,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 17
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 124.26550568174571,
+          "end": 124.51684273872524,
+          "seconds": 0.251337056979537,
+          "accepted_input_tokens": 187,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 22,
+            "client_2": 15,
+            "client_3": 24,
+            "client_4": 25,
+            "client_5": 24,
+            "client_6": 24,
+            "client_7": 21
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 124.51684273872524,
+          "end": 124.76804176904261,
+          "seconds": 0.2511990303173661,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 124.76804176904261,
+          "end": 125.02032224740833,
+          "seconds": 0.2522804783657193,
+          "accepted_input_tokens": 193,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 18,
+            "client_2": 25,
+            "client_3": 21,
+            "client_4": 21,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 32
+        },
+        {
+          "start": 125.02032224740833,
+          "end": 125.27156808041036,
+          "seconds": 0.25124583300203085,
+          "accepted_input_tokens": 201,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 24,
+            "client_2": 20,
+            "client_3": 24,
+            "client_4": 23,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 125.27156808041036,
+          "end": 125.52365285530686,
+          "seconds": 0.2520847748965025,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 125.52365285530686,
+          "end": 125.7748071597889,
+          "seconds": 0.2511543044820428,
+          "accepted_input_tokens": 204,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 27,
+            "client_2": 22,
+            "client_3": 23,
+            "client_4": 21,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 40
+        },
+        {
+          "start": 125.7748071597889,
+          "end": 126.02643981575966,
+          "seconds": 0.25163265597075224,
+          "accepted_input_tokens": 192,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 22,
+            "client_2": 20,
+            "client_3": 20,
+            "client_4": 25,
+            "client_5": 24,
+            "client_6": 17,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 126.02643981575966,
+          "end": 126.27738473843783,
+          "seconds": 0.2509449226781726,
+          "accepted_input_tokens": 201,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 24,
+            "client_2": 28,
+            "client_3": 19,
+            "client_4": 21,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 126.27738473843783,
+          "end": 126.52896767109632,
+          "seconds": 0.2515829326584935,
+          "accepted_input_tokens": 187,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 25,
+            "client_2": 19,
+            "client_3": 19,
+            "client_4": 19,
+            "client_5": 24,
+            "client_6": 17,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 126.52896767109632,
+          "end": 126.77999325469136,
+          "seconds": 0.25102558359503746,
+          "accepted_input_tokens": 194,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 21,
+            "client_2": 19,
+            "client_3": 23,
+            "client_4": 21,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 126.77999325469136,
+          "end": 127.03207668289542,
+          "seconds": 0.2520834282040596,
+          "accepted_input_tokens": 194,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 22,
+            "client_2": 26,
+            "client_3": 22,
+            "client_4": 20,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 127.03207668289542,
+          "end": 127.28420439828187,
+          "seconds": 0.2521277153864503,
+          "accepted_input_tokens": 198,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 26,
+            "client_2": 20,
+            "client_3": 23,
+            "client_4": 25,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 127.28420439828187,
+          "end": 127.53568404912949,
+          "seconds": 0.2514796508476138,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 127.53568404912949,
+          "end": 127.78813671320677,
+          "seconds": 0.25245266407728195,
+          "accepted_input_tokens": 200,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 23,
+            "client_2": 26,
+            "client_3": 23,
+            "client_4": 20,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 127.78813671320677,
+          "end": 128.03945207688957,
+          "seconds": 0.2513153636828065,
+          "accepted_input_tokens": 213,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 28,
+            "client_2": 26,
+            "client_3": 29,
+            "client_4": 22,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 128.03945207688957,
+          "end": 128.29027723520994,
+          "seconds": 0.25082515832036734,
+          "accepted_input_tokens": 207,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 27,
+            "client_2": 12,
+            "client_3": 28,
+            "client_4": 26,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 128.29027723520994,
+          "end": 128.54245652072132,
+          "seconds": 0.2521792855113745,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 31,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 128.54245652072132,
+          "end": 128.79394274391234,
+          "seconds": 0.2514862231910229,
+          "accepted_input_tokens": 206,
+          "per_request_tokens": {
+            "client_0": 29,
+            "client_1": 22,
+            "client_2": 19,
+            "client_3": 28,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 128.79394274391234,
+          "end": 129.04527582786977,
+          "seconds": 0.2513330839574337,
+          "accepted_input_tokens": 223,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 129.04527582786977,
+          "end": 129.29654939379543,
+          "seconds": 0.25127356592565775,
+          "accepted_input_tokens": 221,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 20,
+            "client_3": 32,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 129.29654939379543,
+          "end": 129.54728813376278,
+          "seconds": 0.2507387399673462,
+          "accepted_input_tokens": 220,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 15,
+            "client_3": 28,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 28,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 129.54728813376278,
+          "end": 129.79820708651096,
+          "seconds": 0.25091895274817944,
+          "accepted_input_tokens": 223,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 20,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 27,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 129.79820708651096,
+          "end": 130.04945211019367,
+          "seconds": 0.2512450236827135,
+          "accepted_input_tokens": 207,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 27,
+            "client_2": 10,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 130.04945211019367,
+          "end": 130.30035731382668,
+          "seconds": 0.2509052036330104,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 130.30035731382668,
+          "end": 130.55125913303345,
+          "seconds": 0.25090181920677423,
+          "accepted_input_tokens": 219,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 20,
+            "client_3": 31,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 130.55125913303345,
+          "end": 130.80262060370296,
+          "seconds": 0.251361470669508,
+          "accepted_input_tokens": 214,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 26,
+            "client_2": 19,
+            "client_3": 30,
+            "client_4": 31,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 130.80262060370296,
+          "end": 131.05355050601065,
+          "seconds": 0.2509299023076892,
+          "accepted_input_tokens": 211,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 18,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 15,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 131.05355050601065,
+          "end": 131.30445985868573,
+          "seconds": 0.2509093526750803,
+          "accepted_input_tokens": 217,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 21,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 131.30445985868573,
+          "end": 131.55578580871224,
+          "seconds": 0.25132595002651215,
+          "accepted_input_tokens": 213,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 18,
+            "client_3": 31,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 14,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 131.55578580871224,
+          "end": 131.80707115773112,
+          "seconds": 0.2512853490188718,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 25,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 131.80707115773112,
+          "end": 132.0579870324582,
+          "seconds": 0.25091587472707033,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 132.0579870324582,
+          "end": 132.3102220436558,
+          "seconds": 0.2522350111976266,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 132.3102220436558,
+          "end": 132.5616482468322,
+          "seconds": 0.2514262031763792,
+          "accepted_input_tokens": 219,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 19,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 132.5616482468322,
+          "end": 132.81309027504176,
+          "seconds": 0.25144202820956707,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 132.81309027504176,
+          "end": 133.06395074911416,
+          "seconds": 0.25086047407239676,
+          "accepted_input_tokens": 222,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 133.06395074911416,
+          "end": 133.3157032057643,
+          "seconds": 0.2517524566501379,
+          "accepted_input_tokens": 222,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 133.3157032057643,
+          "end": 133.56639835238457,
+          "seconds": 0.2506951466202736,
+          "accepted_input_tokens": 226,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 133.56639835238457,
+          "end": 133.817884799093,
+          "seconds": 0.2514864467084408,
+          "accepted_input_tokens": 218,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 133.817884799093,
+          "end": 134.06907318904996,
+          "seconds": 0.25118838995695114,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 134.06907318904996,
+          "end": 134.32039707433432,
+          "seconds": 0.2513238852843642,
+          "accepted_input_tokens": 219,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 134.32039707433432,
+          "end": 134.57120185811073,
+          "seconds": 0.2508047837764025,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 134.57120185811073,
+          "end": 134.82276518363506,
+          "seconds": 0.25156332552433014,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 134.82276518363506,
+          "end": 135.07339855097234,
+          "seconds": 0.2506333673372865,
+          "accepted_input_tokens": 216,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 14,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 135.07339855097234,
+          "end": 135.32425660826266,
+          "seconds": 0.25085805729031563,
+          "accepted_input_tokens": 222,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 135.32425660826266,
+          "end": 135.57568506337702,
+          "seconds": 0.2514284551143646,
+          "accepted_input_tokens": 223,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 135.57568506337702,
+          "end": 135.82659274432808,
+          "seconds": 0.25090768095105886,
+          "accepted_input_tokens": 220,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 18,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 135.82659274432808,
+          "end": 136.07816962525249,
+          "seconds": 0.25157688092440367,
+          "accepted_input_tokens": 224,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 22,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 136.07816962525249,
+          "end": 136.32893787883222,
+          "seconds": 0.25076825357973576,
+          "accepted_input_tokens": 220,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 18,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 136.32893787883222,
+          "end": 136.58052968326956,
+          "seconds": 0.2515918044373393,
+          "accepted_input_tokens": 216,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 15,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 136.58052968326956,
+          "end": 136.83173208124936,
+          "seconds": 0.25120239797979593,
+          "accepted_input_tokens": 217,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 14,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 136.83173208124936,
+          "end": 137.08333909977227,
+          "seconds": 0.2516070185229182,
+          "accepted_input_tokens": 224,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 137.08333909977227,
+          "end": 137.33464483637363,
+          "seconds": 0.2513057366013527,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 48
+        },
+        {
+          "start": 137.33464483637363,
+          "end": 137.58576708566397,
+          "seconds": 0.2511222492903471,
+          "accepted_input_tokens": 229,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 137.58576708566397,
+          "end": 137.83782708738,
+          "seconds": 0.2520600017160177,
+          "accepted_input_tokens": 229,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 137.83782708738,
+          "end": 138.0887209046632,
+          "seconds": 0.25089381728321314,
+          "accepted_input_tokens": 217,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 14,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 138.0887209046632,
+          "end": 138.34022395126522,
+          "seconds": 0.2515030466020107,
+          "accepted_input_tokens": 220,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 19,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 138.34022395126522,
+          "end": 138.59119122009724,
+          "seconds": 0.2509672688320279,
+          "accepted_input_tokens": 229,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 23,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 138.59119122009724,
+          "end": 138.84230228606611,
+          "seconds": 0.2511110659688711,
+          "accepted_input_tokens": 228,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 138.84230228606611,
+          "end": 139.09332163631916,
+          "seconds": 0.25101935025304556,
+          "accepted_input_tokens": 222,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 27,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 16,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 139.09332163631916,
+          "end": 139.34464272018522,
+          "seconds": 0.2513210838660598,
+          "accepted_input_tokens": 220,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 28,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 139.34464272018522,
+          "end": 139.595945186913,
+          "seconds": 0.2513024667277932,
+          "accepted_input_tokens": 219,
+          "per_request_tokens": {
+            "client_0": 29,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 21,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 139.595945186913,
+          "end": 139.8484181864187,
+          "seconds": 0.2524729995056987,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 139.8484181864187,
+          "end": 140.10085921827704,
+          "seconds": 0.252441031858325,
+          "accepted_input_tokens": 230,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 140.10085921827704,
+          "end": 140.35161105822772,
+          "seconds": 0.25075183995068073,
+          "accepted_input_tokens": 228,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 29,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 140.35161105822772,
+          "end": 140.60247169341892,
+          "seconds": 0.25086063519120216,
+          "accepted_input_tokens": 225,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 24,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 140.60247169341892,
+          "end": 140.85377487260848,
+          "seconds": 0.2513031791895628,
+          "accepted_input_tokens": 226,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 25,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 140.85377487260848,
+          "end": 141.1045133350417,
+          "seconds": 0.25073846243321896,
+          "accepted_input_tokens": 229,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 24,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 141.1045133350417,
+          "end": 141.3558308603242,
+          "seconds": 0.2513175252825022,
+          "accepted_input_tokens": 231,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 31,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 141.3558308603242,
+          "end": 141.60731106903404,
+          "seconds": 0.251480208709836,
+          "accepted_input_tokens": 221,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 20,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 141.60731106903404,
+          "end": 141.86038110218942,
+          "seconds": 0.2530700331553817,
+          "accepted_input_tokens": 232,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 30,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 141.86038110218942,
+          "end": 142.1117674317211,
+          "seconds": 0.2513863295316696,
+          "accepted_input_tokens": 227,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 24,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 142.1117674317211,
+          "end": 142.36331279296428,
+          "seconds": 0.2515453612431884,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 142.36331279296428,
+          "end": 142.61393611505628,
+          "seconds": 0.25062332209199667,
+          "accepted_input_tokens": 232,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 142.61393611505628,
+          "end": 142.86538387928158,
+          "seconds": 0.2514477642253041,
+          "accepted_input_tokens": 229,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 27,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 142.86538387928158,
+          "end": 143.1167297307402,
+          "seconds": 0.2513458514586091,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 29,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 143.1167297307402,
+          "end": 143.36738471407443,
+          "seconds": 0.2506549833342433,
+          "accepted_input_tokens": 227,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 27,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 143.36738471407443,
+          "end": 143.61885081697255,
+          "seconds": 0.2514661028981209,
+          "accepted_input_tokens": 231,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 27,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 143.61885081697255,
+          "end": 143.8702491093427,
+          "seconds": 0.25139829237014055,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 143.8702491093427,
+          "end": 144.12156443763524,
+          "seconds": 0.25131532829254866,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 31,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 144.12156443763524,
+          "end": 144.3727340279147,
+          "seconds": 0.25116959027945995,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 31,
+            "client_5": 24,
+            "client_6": 31,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 144.3727340279147,
+          "end": 144.62521061580628,
+          "seconds": 0.2524765878915787,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 27,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 144.62521061580628,
+          "end": 144.87593115027994,
+          "seconds": 0.2507205344736576,
+          "accepted_input_tokens": 232,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 31,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 144.87593115027994,
+          "end": 145.12663540244102,
+          "seconds": 0.2507042521610856,
+          "accepted_input_tokens": 0,
+          "per_request_tokens": {
+            "client_0": 0,
+            "client_1": 0,
+            "client_2": 0,
+            "client_3": 0,
+            "client_4": 0,
+            "client_5": 0,
+            "client_6": 0,
+            "client_7": 0
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 145.12663540244102,
+          "end": 145.37816721014678,
+          "seconds": 0.25153180770576,
+          "accepted_input_tokens": 236,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 145.37816721014678,
+          "end": 145.62964390497655,
+          "seconds": 0.251476694829762,
+          "accepted_input_tokens": 233,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 145.62964390497655,
+          "end": 145.88127699494362,
+          "seconds": 0.251633089967072,
+          "accepted_input_tokens": 237,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 27,
+            "client_3": 29,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 145.88127699494362,
+          "end": 146.1319721462205,
+          "seconds": 0.25069515127688646,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 31,
+            "client_4": 30,
+            "client_5": 24,
+            "client_6": 31,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 146.1319721462205,
+          "end": 146.38263314589858,
+          "seconds": 0.2506609996780753,
+          "accepted_input_tokens": 231,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 31,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 32,
+            "client_5": 24,
+            "client_6": 26,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 146.38263314589858,
+          "end": 146.63353729248047,
+          "seconds": 0.2509041465818882,
+          "accepted_input_tokens": 233,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 30,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        },
+        {
+          "start": 146.63353729248047,
+          "end": 146.88481817487627,
+          "seconds": 0.25128088239580393,
+          "accepted_input_tokens": 232,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 24,
+            "client_3": 30,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 64
+        },
+        {
+          "start": 146.88481817487627,
+          "end": 147.1361067807302,
+          "seconds": 0.2512886058539152,
+          "accepted_input_tokens": 234,
+          "per_request_tokens": {
+            "client_0": 32,
+            "client_1": 29,
+            "client_2": 27,
+            "client_3": 29,
+            "client_4": 29,
+            "client_5": 24,
+            "client_6": 32,
+            "client_7": 32
+          },
+          "scheduled_verifier_queries": 56
+        }
+      ],
+      "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+    },
+    "guided_query_replays": 8,
+    "nonempty_guided": 8,
+    "history_enabled_for_every_query": true,
+    "input_tokens_per_request": 50006,
+    "output_tokens_per_request": 4096
+  },
+  "final_service_smoke": {
+    "status": "passed",
+    "concurrency": 1,
+    "successful_turns": 2,
+    "output_tokens_per_turn": 1,
+    "query_replays": 2,
+    "restores": 1,
+    "owned_blocks_after": 0,
+    "run_directory": "artifacts/guided-history-20261014/server-06"
+  },
+  "final_headroom_regression": {
+    "passed": 36,
+    "source": "artifacts/guided-history-20261014/headroom-final.log"
+  },
+  "source_sha256": {
+    "src/vllm_kvmem/query_history.py": "96d4197b2355c2da6e09b914ab9c3fd116f057084065f81c0904c2ebba299e57",
+    "src/vllm_kvmem/guided_query.py": "27cff876a5f5fe7a25a9aae120ec60f18dbd3da1e4c643e43b24d6ebe8af4db5",
+    "src/vllm_kvmem/bounded_runtime.py": "c5bae2500b4a7dea87881ea7740fab24c5e42b099432a56f50fd04a481dbd5f1",
+    "src/vllm_kvmem/capture_runtime.py": "f55ac45336152375ab3ceb0b7167ce7852dfd0c82f8c5524f8110cf6e416116e",
+    "src/vllm_kvmem/capacity.py": "1db976dadd7b378acac729b4299696dc3bb50ba42a9e54f61ba9184f4dc6665c",
+    "src/vllm_kvmem/session_worker.py": "f8a39c9f73bcefd7d9e57bfec82008dcf7e4905177269c4295e0c0ef5e7822bb"
+  }
+}

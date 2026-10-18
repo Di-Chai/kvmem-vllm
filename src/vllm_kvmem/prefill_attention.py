@@ -1,0 +1,151 @@
+"""qw3 prefill mass/exposure policy, keyed by logical history, never GPU slots."""
+import math
+import os
+
+
+class PrefillHistory:
+    def __init__(self, options):
+        self.options = options
+        self.values = {}
+        self.end = self.samples = self.chunks = 0
+        flag = os.getenv('KVMEM_NATIVE_PREFILL_COMMIT',
+                         '1' if getattr(options, 'native_prefill_commit', True) else '0')
+        if flag not in ('0', '1'):
+            raise ValueError('KVMEM_NATIVE_PREFILL_COMMIT must be 0 or 1')
+        self.native_commit = flag == '1'
+
+    def rows(self, begin, count, local_begin, *, replay=False):
+        if replay or begin + count <= self.end or not count:
+            return []
+        capacity = self.options.memory.select_budget + self.options.memory.gen_budget
+        near_capacity = capacity - local_begin - count <= count + self.options.memory.block_tokens
+        if self.end and begin + count - self.end < self.options.prefill_attention_interval and not near_capacity:
+            return []
+        stride = self.options.prefill_attention_stride or count
+        rows = list(reversed(range(count - 1, -1, -stride)))
+        # Explicit Query probes are atomic and may exceed the ordinary prefill
+        # chunk. Preserve the original stride; page_attention bounds scratch
+        # by evaluating these independent query rows in groups of at most 64.
+        return rows
+
+    def accept(self, end, count, accepted, rows, starts, history, local_begin, masses):
+        self.last_commit_backend = None
+        # qw3 commits a prefill transaction only when its whole chunk is accepted.
+        if accepted != count or end <= self.end or not rows:
+            return False
+        decay = math.exp2(-(end - self.end) / self.options.prefill_attention_half_life)
+        if self.native_commit:
+            from . import _native
+            # CPU tensor.numpy() shares its storage; the production path never
+            # materializes hundreds of thousands of Python scalar objects.
+            if hasattr(masses, 'numpy'):
+                buffer = masses.numpy()
+            else:
+                import numpy as np
+                try:
+                    buffer = np.asarray(masses)
+                except (TypeError, ValueError):
+                    # Retain legacy malformed-sequence validation/rollback.
+                    return self._accept_python(end, rows, starts, history, local_begin, masses, decay)
+                if buffer.dtype.kind != 'f':
+                    buffer = buffer.astype('float64')
+            if buffer.ndim != 2:
+                return self._accept_python(end, rows, starts, history, local_begin, masses, decay)
+            self.last_commit_backend = 'native'
+            updated = _native.commit_prefill_attention(self.values, decay, rows,
+                starts, history, local_begin, buffer)
+            self._publish(end, rows, updated)
+            return True
+        if hasattr(masses, 'tolist'):
+            masses = masses.tolist()
+        return self._accept_python(end, rows, starts, history, local_begin, masses, decay)
+
+    def _accept_python(self, end, rows, starts, history, local_begin, masses, decay):
+        self.last_commit_backend = 'python'
+        updated = {key: [decay * v for v in self.values.get(key, (0., 0.))] for key in history}
+        inv = 1. / len(rows)
+        for row, values in zip(rows, masses):
+            if len(values) != len(history) or any(not math.isfinite(v) or v < 0 for v in values) or abs(sum(values)-1) > .005:
+                raise RuntimeError('Invalid prefill attention mass')
+            exposed = set()
+            for start, key, value in zip(starts, history, values):
+                if start > local_begin + row:
+                    continue
+                updated[key][0] += inv * value
+                if key not in exposed:
+                    updated[key][1] += inv
+                    exposed.add(key)
+        if len(rows) != len(masses):
+            raise RuntimeError('Missing prefill attention rows')
+        self._publish(end, rows, updated)
+        return True
+
+    def _publish(self, end, rows, updated):
+        self.values = updated
+        self.end = end
+        self.samples += len(rows)
+        self.chunks += 1
+
+    def scores(self):
+        return {key: mass / exposure for key, (mass, exposure) in self.values.items() if exposure > 0}
+
+    def snapshot(self):
+        return {key: tuple(v) for key, v in self.values.items()}, self.end, self.samples, self.chunks
+
+    def restore(self, snapshot, position):
+        values, end, samples, chunks = snapshot
+        if end > position:
+            self.values = {}; self.end = self.samples = self.chunks = 0
+        else:
+            self.values = {key: list(v) for key, v in values.items()}
+            self.end, self.samples, self.chunks = end, samples, chunks
+
+
+def selection_report(authority):
+    state = getattr(authority, 'action_history', None)
+    prefill = getattr(state, 'prefill', None)
+    scores = prefill.scores() if prefill else {}
+    live = {r.history_begin for r in authority.records.values()}
+    output = state is not None and any(v > 0 and key in live for key, v in state.scores.items())
+    source = 'output' if output else 'prefill' if any(v > 0 and key in live for key,v in scores.items()) else 'none'
+    return {'attention_source': source, 'prefill_attention_samples': prefill.samples if prefill else 0,
+            'prefill_attention_chunks': prefill.chunks if prefill else 0,
+            'prefill_attention_pages': sum(v > 0 and key in live for key,v in scores.items())}
+
+
+def exclude_query_replay(runner, authority, request_id, begin, end, explicit):
+    state = getattr(authority, 'action_history', None)
+    if state is None:
+        return
+    if explicit:
+        # qw3 replays the public Query AND its assistant/template suffix. The
+        # latter may be a separate native prefill batch; it is not new input.
+        states = runner.req_states
+        end = int(states.prompt_len.np[states.req_id_to_index[request_id]])
+    state.prefill_replay = (begin, end)
+
+
+def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
+    state = getattr(authority, 'action_history', None)
+    if state is None or not getattr(state.options, 'action_pressure', False):
+        return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
+                                       tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
+    # A checkpoint restore has fresh GPU pages. Its old logical active view
+    # still defines pressure candidates after physical residency is cleared.
+    records = (authority.memory._store.working_records() if candidate_records is None
+               else candidate_records)
+    scores = []
+    for slot, generation, begin, _, _ in records:
+        handle = authority.memory._store.handle(slot)
+        if handle.generation != generation:
+            raise RuntimeError('Stale resident identity in pressure attention')
+        score = state.scores.get(begin, 0.)
+        if state.samples:
+            score = state.options.action_decay * score + state.mass.get(begin, 0.) / state.samples
+        scores.append((slot, score))
+    if state.prefill is not None and not any(score > 0 for _, score in scores):
+        prefill = state.prefill.scores()
+        scores = [(slot, prefill.get(begin, 0.)) for slot, _, begin, _, _ in records]
+    if not scores and authority.history_end:
+        raise RuntimeError('Attention pressure has no resident history')
+    return authority.memory.select({}, tuple(h.slot for h in mandatory), action=False, pressure_scores=scores, max_tokens=max_tokens)

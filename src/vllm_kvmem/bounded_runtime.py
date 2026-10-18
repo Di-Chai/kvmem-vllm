@@ -33,6 +33,8 @@ class QueryJob:
 
 
 def install_bounded_target(runner):
+    from .options import RuntimeOptions
+    options = RuntimeOptions.from_vllm(runner.vllm_config)
     draft_contract = None
     if runner.speculative_config is not None:
         if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1":
@@ -45,6 +47,13 @@ def install_bounded_target(runner):
             runner.vllm_config.cache_config.mamba_cache_mode != "none" or
             os.getenv("KVMEM_WINDOW_METADATA") != "1" or not runner._kvmem_continuous):
         raise ValueError("Bounded execution requires synchronous APC-off archive/window execution")
+    if options.async_refresh:
+        if getattr(runner.speculative_config, 'method', None) != 'mtp':
+            raise ValueError('Asynchronous refresh currently qualifies native Qwen MTP')
+        from .async_refresh import AsyncRefresh
+        runner._kvmem_async_refresh = AsyncRefresh(runner, options)
+        runner._kvmem_query_refresh = runner._kvmem_async_refresh.enqueue
+        return
     jobs = {}
     original = runner.model.forward
 
@@ -76,8 +85,8 @@ def install_bounded_target(runner):
         if runtime is None or not set(jobs).issubset(batch.req_ids):
             raise ValueError("Scheduled refresh is missing its archived history or query batch")
         draft_groups = draft_contract.validate_native_groups(runner) if draft_contract is not None else ()
-        runtime.join_cpu_scatter()
-        runtime.drain(wait=True)
+        if not runtime.drain_requests(jobs, wait=True):
+            raise RuntimeError('Query replay preceded scheduler publication confirmation')
         cfg = runtime.config
         extents = {}
         for request_id, job in jobs.items():
@@ -100,13 +109,16 @@ def install_bounded_target(runner):
                 raise ValueError("Refresh groups disagree on query extent")
             history, selected_cap, query = values.pop()
             authority = runtime.authorities[request_id]
+            if getattr(authority,'query_history',None) is not None:
+                from .query_history import begin_round
+                begin_round(runner, authority, request_id)
             if (history != authority.history_end or history != int(batch.num_computed_tokens_np[i]) or
-                    selected_cap != cfg.select_budget or
+                    not 0 < selected_cap <= cfg.select_budget or
                     query != int(batch.num_scheduled_tokens[i])):
                 raise ValueError("Scheduler query does not match accepted authority or native input batch")
             extents[request_id] = (i, history, query)
 
-        needs_probe = any(history > cfg.select_budget and jobs[request_id].command.selection != 'pressure'
+        needs_probe = any(history > jobs[request_id].command.groups[0][1].window_tokens and jobs[request_id].command.selection != 'pressure'
                           for request_id, (_, history, _) in extents.items())
         state_adapter = checkpoints = before = bundle = None
         captured = []
@@ -135,37 +147,78 @@ def install_bounded_target(runner):
             groups = full_attention_groups(runner.kv_cache_config)
             runner._kvmem_window_adapter = WindowBatchAdapter(groups, cfg.select_budget + cfg.gen_budget)
         owners, reports = [], []
+        public_queries = {}
+        for request_id, (i, history, query) in extents.items():
+            command = jobs[request_id].command
+            if history <= command.groups[0][1].window_tokens or command.selection == 'pressure':
+                continue
+            begin, end = batch.query_start_loc_np[i:i+2]
+            if command.query_span is not None:
+                qb, qe = command.query_span
+                if not history <= qb < qe <= history + query:
+                    raise ValueError('Complete explicit Query is missing from its replay batch')
+                begin, end = begin + qb - history, begin + qe - history
+            elif draft_contract is not None:
+                from .speculative_admission import SpeculativeQueryPolicy
+                end = begin + SpeculativeQueryPolicy.authoritative_probe_tokens(
+                    history,int(batch.prefill_len_np[i]),query)
+            # Private forwards overwrite the persistent capture buffers.
+            public_queries[request_id] = torch.stack([c.query[begin:end] for c in captured]).clone()
         for request_id, job in jobs.items():
             i, history, query = extents[request_id]
             authority = runtime.authorities[request_id]
             score_query = query
+            guided_tokens = guided_prompt_tokens = 0
+            guided_seconds = 0.0
+            guided_fallback = None
+            guided_diagnostics = {}
             from .request_plan import RequestPlan
+            from dataclasses import replace
+            selected_cfg = replace(cfg,select_budget=job.command.groups[0][1].window_tokens)
             mandatory_fit = RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
-                mandatory=getattr(job.command,'mandatory_spans',())).mandatory_fit(history,cfg)
+                mandatory=getattr(job.command,'mandatory_spans',())).mandatory_fit(history,selected_cfg)
             required = set(mandatory_fit['hard_blocks'])
             mandatory = [r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory} != required:
                 raise ValueError('Required historical blocks are missing from the durable source')
-            if history <= cfg.select_budget:
+            if history <= selected_cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
             elif job.command.selection == 'pressure':
-                plan = authority.memory.select({r.handle.slot: float(r.history_begin)
-                    for r in authority.records.values()},tuple(h.slot for h in mandatory))
+                from .prefill_attention import select_pressure
+                plan = select_pressure(authority,mandatory,max_tokens=selected_cfg.select_budget)
             else:
-                begin, end = batch.query_start_loc_np[i:i+2]
-                if job.command.query_span is not None:
-                    query_begin, query_end = job.command.query_span
-                    if not history <= query_begin < query_end <= history + query:
-                        raise ValueError('Complete explicit Query is missing from its replay batch')
-                    begin, end = begin + query_begin - history, begin + query_end - history
-                    score_query = query_end - query_begin
-                elif draft_contract is not None:
-                    from .speculative_admission import SpeculativeQueryPolicy
-                    score_query = SpeculativeQueryPolicy.authoritative_probe_tokens(
-                        history, int(batch.prefill_len_np[i]), query)
-                    end = begin + score_query
-                queries = torch.stack([c.query[begin:end] for c in captured])
-                plan = authority.select_for_queries(queries,mandatory)
+                queries = public_queries[request_id]
+                if runtime.options.guided_query_tokens and job.command.query_span is not None:
+                    reserve = runtime.options.guided_reserve
+                    local_end = history + query - runner._kvmem_window_adapter.offsets.get(request_id,0)
+                    available = local_end+reserve <= cfg.select_budget+cfg.gen_budget
+                    for group_id, ticket in job.command.groups:
+                        spec = runner.kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
+                        available &= local_end+reserve <= len(ticket.original_block_ids)*spec.block_size
+                    if not available:
+                        # A warm M can land exactly at the new Query boundary.
+                        # Keep the public Query valid without exceeding K+G for
+                        # a private rewrite; record this fallback explicitly.
+                        guided_fallback = 'capacity'
+                    else:
+                        from .guided_query import guided_query
+                        guided_started = time.perf_counter()
+                        try:
+                            guided = guided_query(
+                                runner,original,batch,i,history+query,reserve,runtime.options.guided_query_tokens)
+                        except BaseException:
+                            state_adapter.validate(bundle)
+                            checkpoints.restore(before,bundle.tensors)
+                            raise
+                        guided_diagnostics = guided.diagnostics
+                        guided_tokens = guided_diagnostics['guided_query_tokens']
+                        guided_prompt_tokens = guided.prompt_tokens
+                        guided_fallback = guided_diagnostics['guided_fallback']
+                        if guided.queries is not None:
+                            queries = guided.queries
+                        guided_seconds = time.perf_counter() - guided_started
+                score_query = queries.shape[1]
+                plan = authority.select_for_queries(queries,mandatory,max_tokens=selected_cfg.select_budget)
             selected = plan.total_window_tokens
             if not 0 < selected <= cfg.select_budget:
                 raise RuntimeError("Original selector exceeded its reserved prefix")
@@ -181,6 +234,10 @@ def install_bounded_target(runner):
             if sessions is not None:
                 sessions.selection_committed(request_id, history)
             runner._kvmem_window_adapter.commit(request_id, history, selected)
+            if job.command.selection!='pressure':
+                from .prefill_attention import exclude_query_replay
+                exclude_query_replay(runner,authority,request_id,history,history+query,job.command.query_span is not None)
+            from .prefill_attention import selection_report
             job.selected_tokens = selected
             owners.append((assembler, assembly, plan))
             reports.append({"request_id": request_id, "command_id": job.command.command_id,
@@ -188,6 +245,17 @@ def install_bounded_target(runner):
                 "rebuilt_tokens": assembly.rebuilt_tokens, "skipped_tokens": assembly.skipped_tokens,
                 "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
                 "query_score_tokens": score_query, "draft_groups": list(draft_groups),
+                "guided_query_tokens":guided_tokens,"guided_prompt_tokens":guided_prompt_tokens,
+                "guided_seconds":guided_seconds,
+                "guided_fallback":guided_fallback,
+                **guided_diagnostics,
+                "query_history_enabled":getattr(authority,'query_history',None) is not None,
+                "action_attention_enabled":cfg.action_attention,
+                **selection_report(authority),
+                "action_history_pages":sum(v>0 for v in getattr(getattr(authority,'action_history',None),'scores',{}).values()),
+                "action_fraction":cfg.action_fraction if cfg.action_attention else 0.0,
+                "action_combine":cfg.action_combine,
+                "query_history_pages":len(authority.query_history.policy.scores) if getattr(authority,'query_history',None) is not None else 0,
                 "selection": job.command.selection, "query_span": job.command.query_span,
                 "mandatory_fit":mandatory_fit,
                 "selected_history_ranges":[[r[2],r[3]] for r in authority.memory._store.working_records()],

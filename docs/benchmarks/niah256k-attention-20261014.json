@@ -1,0 +1,289 @@
+{
+  "date": "2026-10-14",
+  "cohort": "256K, original 60 frozen inputs, 8 client workers, peak 6 CPU-admitted requests",
+  "configuration": "NVFP4 + FP8 KV + MTP(k=4), compiled graphs, CPU-only history, no recomputation, output Action attention only",
+  "completed": 60,
+  "coverage": 68.33333333333333,
+  "exact": 30,
+  "quality_by_task": [
+    {
+      "task": "all",
+      "cases": 60,
+      "old_coverage": 65.41666666666667,
+      "new_coverage": 68.33333333333333,
+      "old_exact": 30,
+      "new_exact": 30,
+      "sampled_cases": 60,
+      "accepted_action_samples": 188
+    },
+    {
+      "task": "niah_single_2",
+      "cases": 15,
+      "old_coverage": 100.0,
+      "new_coverage": 100.0,
+      "old_exact": 15,
+      "new_exact": 15,
+      "sampled_cases": 15,
+      "accepted_action_samples": 30
+    },
+    {
+      "task": "niah_multikey_2",
+      "cases": 15,
+      "old_coverage": 100.0,
+      "new_coverage": 100.0,
+      "old_exact": 15,
+      "new_exact": 15,
+      "sampled_cases": 15,
+      "accepted_action_samples": 30
+    },
+    {
+      "task": "niah_multivalue",
+      "cases": 15,
+      "old_coverage": 21.666666666666668,
+      "new_coverage": 23.333333333333332,
+      "old_exact": 0,
+      "new_exact": 0,
+      "sampled_cases": 15,
+      "accepted_action_samples": 40
+    },
+    {
+      "task": "niah_multiquery",
+      "cases": 15,
+      "old_coverage": 40.0,
+      "new_coverage": 50.0,
+      "old_exact": 0,
+      "new_exact": 0,
+      "sampled_cases": 15,
+      "accepted_action_samples": 88
+    }
+  ],
+  "qw3_attention_reference": {
+    "reference": "/home/chaidi/qw3/benchmark/attention_multilayer_qa_20261011",
+    "matched_inputs_and_sampling": 60,
+    "groups": [
+      {
+        "task": "all",
+        "cases": 60,
+        "query": {
+          "coverage": 68.33333333333333,
+          "exact": 30,
+          "prefill_query_samples": 0,
+          "prefill_pressure_events": 0,
+          "guided_events": 0
+        },
+        "attention": {
+          "coverage": 98.75,
+          "exact": 57,
+          "prefill_query_samples": 489600,
+          "prefill_pressure_events": 780,
+          "guided_events": 0
+        }
+      },
+      {
+        "task": "niah_multikey_2",
+        "cases": 15,
+        "query": {
+          "coverage": 100.0,
+          "exact": 15,
+          "prefill_query_samples": 0,
+          "prefill_pressure_events": 0,
+          "guided_events": 0
+        },
+        "attention": {
+          "coverage": 100.0,
+          "exact": 15,
+          "prefill_query_samples": 122400,
+          "prefill_pressure_events": 195,
+          "guided_events": 0
+        }
+      },
+      {
+        "task": "niah_multiquery",
+        "cases": 15,
+        "query": {
+          "coverage": 48.333333333333336,
+          "exact": 0,
+          "prefill_query_samples": 0,
+          "prefill_pressure_events": 0,
+          "guided_events": 0
+        },
+        "attention": {
+          "coverage": 100.0,
+          "exact": 15,
+          "prefill_query_samples": 122400,
+          "prefill_pressure_events": 195,
+          "guided_events": 0
+        }
+      },
+      {
+        "task": "niah_multivalue",
+        "cases": 15,
+        "query": {
+          "coverage": 25.0,
+          "exact": 0,
+          "prefill_query_samples": 0,
+          "prefill_pressure_events": 0,
+          "guided_events": 0
+        },
+        "attention": {
+          "coverage": 95.0,
+          "exact": 12,
+          "prefill_query_samples": 122400,
+          "prefill_pressure_events": 195,
+          "guided_events": 0
+        }
+      },
+      {
+        "task": "niah_single_2",
+        "cases": 15,
+        "query": {
+          "coverage": 100.0,
+          "exact": 15,
+          "prefill_query_samples": 0,
+          "prefill_pressure_events": 0,
+          "guided_events": 0
+        },
+        "attention": {
+          "coverage": 100.0,
+          "exact": 15,
+          "prefill_query_samples": 122400,
+          "prefill_pressure_events": 195,
+          "guided_events": 0
+        }
+      }
+    ],
+    "scope": "qw3 paired attention versus Query on identical Q8 model/settings; vLLM shares all 60 frozen inputs and request sampling but differs in policy/model/runtime.",
+    "reference_file_sha256": {
+      "cohort.json": "ce15b30ca798880a919c4d086e9d2c758be1be50e3573e27df49fb59e94507e1",
+      "launches.json": "755ce66fec129159272e10bf84119ec5201fd21c15c768cade9854eec0561657",
+      "comparison.json": "3b158758cf3f49eba526b110edb550bfc3ddf8184bc4ae56053f13a7c3dbfc40",
+      "plan.json": "f25d01abc67232382b9580a4f108efbd27207de8d581bc64db15cb9ed9fbe02f"
+    }
+  },
+  "audit": {
+    "completed": 60,
+    "expected": 60,
+    "action_sample_counts_verified": 60,
+    "cold_query_zero_action_history_verified": 60,
+    "accepted_action_samples": 188,
+    "wall_seconds": 3393.010467529297,
+    "input_tokens": 15726105,
+    "output_tokens": 15574,
+    "end_to_end_input_tokens_per_second": 4634.8530753137775,
+    "end_to_end_output_tokens_per_second": 4.590024153783583,
+    "throughput_scope": "Whole campaign mixed prefill/guided replay/assembly/decode; not isolated phase throughput.",
+    "comparison_scope": "Same frozen inputs and sampling; Action plus async refresh and GPU allocation differ from old baseline.",
+    "selection_scope": "Cold single-turn requests: Action scores committed after Query selection, cannot improve that selection."
+  },
+  "terminal_histories_verified": 60,
+  "retrieval_audit": {
+    "length": 262144,
+    "matched_cases": 60,
+    "peak_admitted_concurrency": 6,
+    "old_mean_seconds": 89.85596265955829,
+    "new_mean_seconds": 286.72687344071454,
+    "new_mean_with_cpu_admission_seconds": 307.3113408389191,
+    "old_mean_output_tokens": 333.73333333333335,
+    "new_mean_output_tokens": 259.56666666666666,
+    "new_mean_ttft_seconds": 250.26361706051975,
+    "new_mean_generation_seconds": 34.94750081622042,
+    "new_median_itl_seconds": 0.14370371624840234,
+    "cpu_queue_max_seconds": 700.2291158949956,
+    "mean_pressure_refreshes": 14,
+    "assembly_seconds_sum": 340.9524662634358,
+    "assembly_host_prepare_seconds_sum": 301.90177232027054,
+    "guided_seconds_sum": 179.37416119594127,
+    "old_serial_request_seconds": 5391.357759573497,
+    "current_phase_span_seconds": 3393.010467529297,
+    "new_faster_cases": 0,
+    "old_coverage": 97.91666666666667,
+    "new_coverage": 68.33333333333333,
+    "old_exact": 58,
+    "new_exact": 30,
+    "needle_count": 150,
+    "sentence_selected": 118,
+    "key_selected": 147,
+    "value_selected": 150,
+    "missing_numbers": 76,
+    "missing_with_key_and_value_selected": 74,
+    "missing_with_value_selected_only": 2,
+    "missing_value_unselected": 0,
+    "numeric_exact_but_explicit_key_binding_mismatch": 0
+  },
+  "storage_audit": {
+    "samples": 253,
+    "all_cpu": true,
+    "max_disk_read_bytes": 0,
+    "max_disk_write_bytes": 0,
+    "max_nvme_capacity_bytes": 0,
+    "minimum_available_memory_bytes": 323022848,
+    "max_live_accepted_history_tokens": 1572394,
+    "max_observed_histories_at_least_262101_tokens": 4,
+    "max_observed_archive_used_slots": 49137,
+    "any_swap": false,
+    "any_archive_file_descriptors": true
+  },
+  "storage_fd_note": "The sole matched archive filename was capture/archive.tmp, diagnostic JSON metadata rather than KV payload. All history disk byte counters and NVMe capacity were zero.",
+  "weighted_per_request_decode_tokens_per_second": 7.398716950502406,
+  "decode_scope": "sum(output_tokens - 1) / sum(successful request generation seconds), includes mixed-load stalls; not aggregate steady-state decode.",
+  "recovery": {
+    "segments": [
+      {
+        "segment": 1,
+        "successful_cases": 45,
+        "attempt_seconds": 2291.696234703064,
+        "successful_input_tokens_per_second": 5146.658104767636,
+        "successful_output_tokens_per_second": 4.78815640303296,
+        "peak_admitted_clients": 6,
+        "driver_exit_code": 1,
+        "scope": "Successful outputs / whole segment time; first segment includes unfinished work and shutdown."
+      },
+      {
+        "segment": 2,
+        "successful_cases": 15,
+        "attempt_seconds": 799.3728499412537,
+        "successful_input_tokens_per_second": 4918.265613210318,
+        "successful_output_tokens_per_second": 5.7557621582195715,
+        "peak_admitted_clients": 6,
+        "driver_exit_code": 0,
+        "scope": "Successful outputs / whole segment time; first segment includes unfinished work and shutdown."
+      }
+    ],
+    "interruption": {
+      "recorded_at": 1791987883.8812182,
+      "completed_first_attempt": 45,
+      "failed_case_ids": [
+        "niah_multiquery_n262144_p90_s2000",
+        "niah_multivalue_n262144_p10_s2000",
+        "niah_single_2_n262144_p90_s3000",
+        "niah_multivalue_n262144_p90_s1000",
+        "niah_multivalue_n262144_p10_s1000",
+        "niah_multiquery_n262144_p90_s3000",
+        "niah_multikey_2_n262144_p90_s1000",
+        "niah_single_2_n262144_p90_s2000",
+        "niah_multivalue_n262144_p90_s2000",
+        "niah_multivalue_n262144_p90_s3000",
+        "niah_multikey_2_n262144_p90_s3000",
+        "niah_multikey_2_n262144_p90_s2000",
+        "niah_multiquery_n262144_p70_s3000",
+        "niah_multiquery_n262144_p90_s1000",
+        "niah_single_2_n262144_p90_s1000"
+      ],
+      "server_exit_code": 0,
+      "observed_shutdown": "API process manager sent SIGTERM to EngineCore, followed by API graceful shutdown; signal origin unknown",
+      "kernel_logs_accessible": false,
+      "model_exception_before_shutdown": false,
+      "recovery": "Resume 15 incomplete cases with unchanged profile, samples and sampling; preserve first-attempt outputs and report segments separately."
+    },
+    "continuous_clean_60_case_run": false,
+    "quality_covers_all_60_cases": true,
+    "latency_scope": "Per-case latency is the successful attempt only; interrupted attempt costs and earlier failed CPU queue waits are excluded from those per-case latencies. Whole-campaign wall time includes restart and failed work."
+  },
+  "remaining_functional_gaps": [
+    "Prefill attention sampling with mass/exposure and token-distance decay",
+    "Attention-based resident pressure selection",
+    "Cold semantic selection fallback to prefill attention"
+  ],
+  "causality_limit": "No matched NVFP4 attention-policy ablation yet. Missing cold-input policy is verified; cannot assign the entire score gap to it or quantization.",
+  "artifact_root": "artifacts/niah256k-attention-20261014"
+}

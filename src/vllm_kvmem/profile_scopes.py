@@ -34,6 +34,7 @@ def _owned_stages():
     from .authority import RequestAuthority
     from . import authority as authority_module
     from .capture_runtime import CaptureRuntime
+    from .action_attention import ActionRuntime
     from .cached_storage import CachedArchive
     from .native_state import NativeRecurrentState
     from .session_state import PromptStateAdapter
@@ -42,12 +43,34 @@ def _owned_stages():
     from .transfer import PackedDownloads, PackedTransfers
     from .window_assembly import NativeWindowAssembler
     from .window_batch import WindowBatchAdapter
+    from .async_refresh import AsyncRefresh
+    from . import async_restore
+    from .maintenance import MaintenancePolicy
+    from .prompt_checkpoints import PromptCheckpointPool
+    from . import _native
     return (
+        (AsyncRefresh, 'step', 'refresh.step'),
+        (async_restore, '_step_restore', 'restore.step'),
+        (MaintenancePolicy, 'pump', 'maintenance.pump'),
+        (PromptCheckpointPool, 'prepare_claim_window', 'session.prepare_claim_window'),
+        (_native, 'finalize_mean_fp8', 'append.seal_finalize_fp8'),
+        (_native, 'finalize_mean_bf16', 'append.seal_finalize_bf16'),
+        (_native, 'scatter_history_batch', 'append.scatter'),
         (CaptureRuntime, 'submit', 'capture.submit'),
+        (CaptureRuntime, '_capture_payload', 'capture.pack_fp8'),
+        (CaptureRuntime, 'ensure_download_slot', 'capture.download_slot'),
+        (CaptureRuntime, 'advance_publication', 'capture.advance_publication'),
         (CaptureRuntime, 'drain', 'capture.drain'),
+        (CaptureRuntime, 'drain_requests', 'capture.drain_requests'),
+        (CaptureRuntime, '_publish_claim', 'capture.publish_claim'),
+        (CaptureRuntime, '_copy_source_owners', 'capture.copy_source_owners'),
+        (CaptureRuntime, '_accept_query_input', 'capture.query_history'),
         (CaptureRuntime, 'finish', 'capture.finish'),
         (CaptureRuntime, 'join_cpu_scatter', 'capture.join_cpu_scatter'),
         (CaptureRuntime, '_write_progress', 'capture.progress'),
+        (ActionRuntime, 'prepare', 'action.prepare'),
+        (ActionRuntime, 'capture', 'action.capture'),
+        (ActionRuntime, 'accept', 'action.accept'),
         (RequestAuthority, 'append', 'authority.append'),
         (authority_module, 'append_authority_batch', 'authority.append_batch'),
         (RequestAuthority, '_prepare_append', 'authority.prepare_append'),

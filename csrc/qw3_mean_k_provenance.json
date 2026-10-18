@@ -4,7 +4,14 @@
   "kernel": "block_attn_score_softmax_pages_kernel",
   "kernel_source_sha256": "cc32e353308b731703ec3fcdaae9376eb0ed7e9aeecf95162c8c5073169760db",
   "kernel_body_unchanged": true,
-  "host_adapter": "FP16 tensors, current Torch CUDA stream; layer strides measured in tokens/pages",
-  "qualified_path": "one MeanK per sealed block; at most 8192 eligible pages",
-  "license": "third_party/qw3/LICENSE"
+  "host_adapter": "FP16 tensors, current Torch CUDA stream; original tiled batching with 64 MiB logits workspace allocated by Torch",
+  "qualified_path": "one MeanK per sealed block; fused at <=8192 eligible pages, original tiled-one-dot above, up to 32768 pages",
+  "license": "third_party/qw3/LICENSE",
+  "scalable_upstream_file_sha256": "017898aaea1261624f017d92dae9392c0150de1476db6610d6c30b4c6116a821",
+  "scalable_kernel_source_sha256": {
+    "block_attn_softmax_pages_logits_kernel": "eff410062cbd7b08ff0efbbb7d74effa5e7c581be03fe10d05f9fd998af4151c",
+    "block_attn_softmax_pages_norm_kernel": "9ff084b3ac19aa05e68e8ff944ee4b2b62a0b324df45172cd5412cb3dd71c858",
+    "block_attn_softmax_pages_accumulate_logits_kernel": "df8c637f3c6096d9e7b323d34eb4b543859bd810559b349bb1fc92ef5463576c"
+  },
+  "scalable_kernel_bodies_unchanged": true
 }

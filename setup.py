@@ -6,7 +6,7 @@ from shutil import copyfile
 # CUDA JIT sources travel with the wheel as well as the sdist.
 gpu_sources = Path('src/vllm_kvmem/cuda_sources')
 gpu_sources.mkdir(exist_ok=True)
-for name in ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_provenance.json'):
+for name in ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_tiled.cuh', 'qw3_mean_k_provenance.json'):
     copyfile(Path('csrc') / name, gpu_sources / name)
 
 setup(

@@ -3,6 +3,24 @@ import json
 from pathlib import Path
 
 
+def archive_bytes_per_token(kv_cache_config):
+    """Unit-scale FP8 raw K + FP8 V, including native MTP attention."""
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, UniformTypeKVCacheSpecs
+    rows = []
+    for group in kv_cache_config.kv_cache_groups:
+        spec = group.kv_cache_spec
+        specs = (list(spec.kv_cache_specs.values()) if isinstance(spec, UniformTypeKVCacheSpecs)
+                 else [spec] * len(group.layer_names))
+        for item in specs:
+            if type(item) is FullAttentionSpec:
+                if item.sliding_window is not None or item.head_size_v != item.head_size:
+                    raise ValueError('Unqualified CPU archive geometry')
+                rows.append((item.num_kv_heads, item.head_size))
+    if not rows or len(set(rows)) != 1:
+        raise ValueError('CPU history admission requires uniform full-attention layers')
+    return sum(heads * dim * 2 for heads, dim in rows)
+
+
 def write_mean_k_geometry(config, kv_cache_config, directory):
     from vllm.v1.kv_cache_interface import MambaSpec, UniformTypeKVCacheSpecs
     from .options import RuntimeOptions
@@ -27,10 +45,15 @@ def write_mean_k_geometry(config, kv_cache_config, directory):
             'payload_page_bytes': page_bytes,
             'layers': list(group.layer_names), 'recurrent': isinstance(representative, MambaSpec),
             'speculative_blocks': getattr(representative, 'num_speculative_blocks', 0)})
-    manifest = {'schema': 1, 'groups': groups,
+    manifest = {'schema': 2, 'groups': groups,
+        'archive_codec': 'raw_fp8_e4m3fn_v_fp8_e4m3fn_v1',
+        'raw_k_scale': 1.0,
         'capacity_bytes': capacity_bytes,
         'native_blocks': kv_cache_config.num_blocks,
         'cpu_offload_bytes': options.cpu_read_cache_bytes,
+        'cpu_archive_bytes_per_token': archive_bytes_per_token(kv_cache_config),
+        'cpu_history_coordination': options.cpu_history_coordination,
+        'cpu_progress_reserve': options.cpu_progress_reserve,
         'semantic_mode': 'original_mean_k_raw_key_dense_rope',
         'select_budget': options.memory.select_budget, 'gen_budget': options.memory.gen_budget,
         'historical_tokens': options.memory.repository_blocks * options.memory.block_tokens,

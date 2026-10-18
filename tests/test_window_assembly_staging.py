@@ -163,7 +163,7 @@ def test_all_skipped_window_does_not_allocate_staging_or_metadata(cuda_oracle, m
     plan = SimpleNamespace(remaps=[SimpleNamespace(block_id=1, n_tokens=4, to_base=0, skip=True)])
     memory = SimpleNamespace(phase=Phase.ASSEMBLING, _plan=plan)
     record = SimpleNamespace(handle=SimpleNamespace(slot=1), count=4)
-    authority = SimpleNamespace(memory=memory, shape=(1, 4, 1, 4), records={1: record})
+    authority = SimpleNamespace(memory=memory, shape=(1, 4, 1, 4), records={1: record},raw_dtype=torch.bfloat16)
     monkeypatch.setattr(assembler, "_upload_metadata", lambda _: pytest.fail("all-skip metadata"))
     result = assembler.assemble(authority, plan)
     assert (result.rebuilt_tokens, result.skipped_tokens, result.chunks) == (0, 4, 0)
@@ -200,6 +200,49 @@ def test_assembly_failure_retains_partial_dma_and_kernel_owners(cuda_oracle, mon
     assert not assembler.close()  # The transfer pool must also finish its DMA.
     dma.complete = True
     assert assembler.close()
+
+
+@pytest.mark.parametrize('fail_tail', [False, True])
+def test_hybrid_tail_uses_final_fence_and_invalidates_cache_after_failure(cuda_oracle, monkeypatch, fail_tail):
+    cache_events, dropped = [], []
+    cache = SimpleNamespace(finish=cache_events.append, drop_namespace=dropped.append,dtype=torch.bfloat16)
+    assembler = window.NativeWindowAssembler((cpu_layer(),), 4, packed=True,
+        direct_pinned_reads=True, raw_cache=cache)
+    remaps = [SimpleNamespace(block_id=i, n_tokens=n, to_base=i*4, skip=False)
+              for i,n in enumerate((4,3))]
+    plan = SimpleNamespace(remaps=remaps)
+    memory = SimpleNamespace(phase=Phase.ASSEMBLING, _plan=plan, request_id='owner')
+    memory.fail_transaction = lambda fence:setattr(memory, 'failed', fence)
+    authority = SimpleNamespace(memory=memory, shape=(1,4,1,4), raw_dtype=torch.bfloat16,
+        records={i:SimpleNamespace(handle=SimpleNamespace(slot=i),count=r.n_tokens)
+                 for i,r in enumerate(remaps)})
+    full_event, tail_event = Event(), Event()
+    full_event.complete = True
+    def full(a,p,rs,pending,records):
+        assert pending == [remaps[0]]
+        return window.AssemblyResult(full_event, (cache,), 4, 0, 1,
+            uploaded_bytes=16, raw_cache_hit_tokens=4, split_tokens=4)
+    def tail(a,p,rs,pending,records):
+        assert not rs and pending == [remaps[1]]
+        if fail_tail:
+            raise OSError('tail read failed after full-page writes')
+        return window.AssemblyResult(tail_event, (authority,), 3, 0, 1,
+            uploaded_bytes=36, partial_tokens=3)
+    monkeypatch.setattr(assembler, '_assemble_split', full)
+    monkeypatch.setattr(assembler, '_assemble_generic', tail)
+    if fail_tail:
+        with pytest.raises(OSError, match='tail read'):
+            assembler.assemble(authority,plan)
+        assert dropped == ['owner'] and cache_events == [memory.failed.event]
+        assert not assembler.close()
+    else:
+        result = assembler.assemble(authority,plan)
+        assert result.event is tail_event and not result.query() and not assembler.close()
+        assert (result.rebuilt_tokens,result.uploaded_bytes,result.split_tokens,result.partial_tokens)==(7,52,4,3)
+        assert result.raw_cache_hit_tokens == 4 and authority in result.owners and cache in result.owners
+        tail_event.complete = True
+        assert assembler.close()
+    assert assembler.staging.owner is None
 
 
 def test_runner_reuses_fixed_staging_across_request_views(cuda_oracle, monkeypatch):
@@ -243,7 +286,7 @@ def test_read_only_oracle_views_do_not_activate_split_assembly(cuda_oracle,monke
     options=SimpleNamespace(gpu_raw_k_cache_bytes=4096,reuse_resident_v=True,
                              memory=SimpleNamespace(select_budget=8))
     raw_cache=object()
-    staging=window._AssemblyStaging(1*1*4*4*32*3,torch.device('cpu'),value_capacity_bytes=32)
+    staging=window._AssemblyStaging(1*1*4*4*32*2,torch.device('cpu'),value_capacity_bytes=32)
     runner=SimpleNamespace(model=SimpleNamespace(named_modules=lambda:[('module',module)]),
         _kvmem_capture_runtime=SimpleNamespace(options=options),_kvmem_gpu_raw_cache=raw_cache,
         _kvmem_assembly_staging=staging,
@@ -273,7 +316,7 @@ def test_metadata_is_submitted_once_before_chunks_and_partial_tail_keeps_dense_p
     records = {i: SimpleNamespace(handle=SimpleNamespace(slot=i), count=remap.n_tokens)
                for i, remap in enumerate(remaps)}
     authority = SimpleNamespace(memory=SimpleNamespace(phase=Phase.ASSEMBLING, _plan=plan),
-        shape=(1, 4, 1, 4), records=records, record_bytes=48, raw_dtype=torch.bfloat16,
+        shape=(1, 4, 1, 4), records=records, record_bytes=48, raw_dtype=torch.bfloat16,raw_element_bytes=2,
         read_records=lambda _: [(torch.zeros(1, 3, 1, 4, dtype=torch.bfloat16),
                                   torch.zeros(1, 3, 1, 4, dtype=torch.uint8))])
     operations, packed_positions, tail_positions = [], [], []

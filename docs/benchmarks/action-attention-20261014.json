@@ -1,0 +1,337 @@
+{
+  "date": "2026-10-14",
+  "scope": "Action feedback implementation and single-pair fixed-output overhead; not a new NIAH quality evaluation",
+  "hardware": "single NVIDIA RTX PRO 6000 Blackwell, 96 GB",
+  "profile": {
+    "quantization": "NVFP4",
+    "kv": "FP8",
+    "draft": "native MTP",
+    "draft_tokens": 4,
+    "execution": "compiled_graph",
+    "concurrency": 8,
+    "input_tokens": 50006,
+    "output_tokens_per_request": 4096,
+    "select_budget": 32768,
+    "gen_budget": 16384,
+    "guided_query_tokens": 512,
+    "query_history": true,
+    "archive_backend": "cpu",
+    "cpu_archive_bytes": 107374182400,
+    "session_checkpoint_bytes": 4294967296,
+    "gpu_memory_utilization": 0.72,
+    "action_scope": "non-thinking",
+    "action_interval": 16,
+    "action_layers": [
+      3,
+      31,
+      63
+    ],
+    "action_fraction": 0.25,
+    "action_combine": "quota",
+    "action_decay": 0.5
+  },
+  "regression": {
+    "cpu_passed": 688,
+    "cpu_skipped": 77,
+    "gpu_numeric_passed": 4,
+    "launcher_after_cpu_backend_forwarding_passed": 90
+  },
+  "cross_turn": {
+    "status": "passed",
+    "concurrency": 8,
+    "responses": 16,
+    "seconds": 152.05022513959557,
+    "first_samples": [
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16,
+      16
+    ],
+    "second_samples": [
+      8,
+      8,
+      8,
+      8,
+      8,
+      8,
+      8,
+      8
+    ],
+    "second_score_rounds": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "restored_positive_pages": [
+      1094,
+      1094,
+      1094,
+      1094,
+      1094,
+      1094,
+      1094,
+      1094
+    ]
+  },
+  "decode": {
+    "on": {
+      "status": "passed",
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 50006,
+        "input_file_sha256": "378734f67321a53af233af2986c4e55a2f9dc4f7ab45575a3cc844d15d94d55b",
+        "token_ids_sha256": "d52aaf0aaab8cbaf30dd875fd504d705b11bed759d7b81f8d74cc603cb997513",
+        "query_span": [
+          48033,
+          49997
+        ],
+        "frozen_file": "input.json"
+      },
+      "steady": {
+        "status": "passed",
+        "start": 113.26500053144991,
+        "end": 156.05438351165503,
+        "seconds": 42.78938298020512,
+        "trim_tokens_each_end": 64,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "output_tokens": 31080,
+        "output_tokens_per_second": 726.3484031629524
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "actual_stable_owner_count": 8,
+        "interval_count": 169,
+        "seconds": 42.47125318553299,
+        "sse_window_coverage_fraction": 0.9925652165907767,
+        "required_coverage_fraction": 0.9,
+        "accepted_input_tokens": 30803,
+        "accepted_input_tokens_per_second": 725.2670380466298,
+        "sample_count": 636,
+        "sample_errors": 0,
+        "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 159.68600589316338,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 205.20270274605755,
+        "successful_requests_per_second": 0.05009831610011171,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 112.0132122845389,
+          "p95": 112.01362944487482,
+          "max": 112.01364426314831
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 156.93622388411313,
+          "p95": 158.71055241357536,
+          "max": 159.6622636700049
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.010968430345066083,
+          "p95": 0.01149443925606253,
+          "max": 0.011776744201551937
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "outcomes": {
+        "success": 8
+      },
+      "final_resources": {
+        "requests": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "owned_blocks": 0
+      },
+      "full_graph_calls_service_total": 1279,
+      "output_token_hash_counts": {
+        "b1470318d6fd54d86ea450fb1ce30035448f42ee50402455e61b32a092ebad0a": 1,
+        "edf34b6fddfcbe3680c79dca2d4c6266b4e602a63a5abc58c04353865ee41796": 7
+      }
+    },
+    "off": {
+      "status": "passed",
+      "input": {
+        "kind": "token_ids",
+        "input_tokens": 50006,
+        "input_file_sha256": "378734f67321a53af233af2986c4e55a2f9dc4f7ab45575a3cc844d15d94d55b",
+        "token_ids_sha256": "d52aaf0aaab8cbaf30dd875fd504d705b11bed759d7b81f8d74cc603cb997513",
+        "query_span": [
+          48033,
+          49997
+        ],
+        "frozen_file": "input.json"
+      },
+      "steady": {
+        "status": "passed",
+        "start": 119.20431998558342,
+        "end": 155.78172435238957,
+        "seconds": 36.57740436680615,
+        "trim_tokens_each_end": 64,
+        "active_streams": 8,
+        "end_inclusive": true,
+        "output_tokens": 31065,
+        "output_tokens_per_second": 849.2948184205046
+      },
+      "native_confirmation": {
+        "status": "passed",
+        "actual_stable_owner_count": 8,
+        "interval_count": 144,
+        "seconds": 36.17018846049905,
+        "sse_window_coverage_fraction": 0.9888670091999024,
+        "required_coverage_fraction": 0.9,
+        "accepted_input_tokens": 30761,
+        "accepted_input_tokens_per_second": 850.4517479524237,
+        "sample_count": 638,
+        "sample_errors": 8,
+        "scope": "Approximate archive-commit rate in qualified subintervals of the SSE window; snapshot lag and gaps prevent treating it as exact arrival throughput."
+      },
+      "end_to_end": {
+        "status": "passed",
+        "attempted": 8,
+        "success": 8,
+        "rejected": 0,
+        "failure": 0,
+        "wall_seconds": 159.9647384090349,
+        "successful_output_tokens": 32768,
+        "successful_output_tokens_per_second": 204.84514478566635,
+        "successful_requests_per_second": 0.050011021676188074,
+        "ttft_seconds": {
+          "count": 8,
+          "p50": 118.01590697607026,
+          "p95": 118.02641198365018,
+          "max": 118.0271171880886
+        },
+        "request_latency_seconds": {
+          "count": 8,
+          "p50": 156.70019040768966,
+          "p95": 158.81026676725597,
+          "max": 159.9434689125046
+        },
+        "tpot_seconds": {
+          "count": 8,
+          "p50": 0.009445080981090648,
+          "p95": 0.010133251093682788,
+          "max": 0.0105015217050255
+        },
+        "scope": "HTTP service throughput over the whole batch, including prefill, queuing and response drain."
+      },
+      "outcomes": {
+        "success": 8
+      },
+      "final_resources": {
+        "requests": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "owned_blocks": 0
+      },
+      "full_graph_calls_service_total": 1147,
+      "output_token_hash_counts": {
+        "b1470318d6fd54d86ea450fb1ce30035448f42ee50402455e61b32a092ebad0a": 1,
+        "edf34b6fddfcbe3680c79dca2d4c6266b4e602a63a5abc58c04353865ee41796": 7
+      }
+    },
+    "output_multisets_identical": true,
+    "steady_throughput_decrease_percent": 14.476294049009342
+  },
+  "niah_utilization": {
+    "scope": "10-second nvidia-smi samples while test CPU admission reports active requests; timing alignment uses current epoch-minus-monotonic offset; not a kernel trace",
+    "clock_offset": 1787444242.5874014,
+    "active": {
+      "samples": 517,
+      "min": 0,
+      "median": 100,
+      "mean": 78.52611218568666,
+      "below20": 104,
+      "at_least90": 382
+    },
+    "during_refresh_window": {
+      "samples": 224,
+      "min": 0,
+      "median": 68.0,
+      "mean": 55.294642857142854,
+      "below20": 97,
+      "at_least90": 105
+    },
+    "outside_refresh_window": {
+      "samples": 293,
+      "min": 0,
+      "median": 100,
+      "mean": 96.28668941979522,
+      "below20": 7,
+      "at_least90": 277
+    },
+    "refresh_events": 1500,
+    "refresh_window_union_seconds": 2260.8536117076874,
+    "assembly_seconds": 477.245168665424,
+    "assembly_host_prepare_seconds": 434.4381883405149,
+    "guided_seconds": 291.0063453139737,
+    "request_interval_seconds": 5222.297421455383,
+    "prefill_pressure_events": 1320,
+    "query_events": 180,
+    "low_utilization_samples_in_refresh_fraction": 0.9326923076923077,
+    "assembly_host_fraction": 0.9103040048689959
+  },
+  "limitations": [
+    "One pair of sequential measurements, no confidence interval. Enabled server first ran the cross-turn qualification; disabled server was fresh. TTFT/end-to-end differences include warmup and allocation history.",
+    "Tool-call and non-thinking scopes are distinct. Fixed-output overhead uses non-thinking; tool-call sampling depends on actual tool content.",
+    "Cold first Query has no previous output attention. No claim of NIAH accuracy improvement.",
+    "Refresh still blocks the whole current batch; per-request background scheduling is not implemented.",
+    "Initial 0.82 GPU pool fraction passed cross-turn testing but OOMed during a subsequent compiled Query replay. Both compared profiles use 0.72; active/gen budgets unchanged."
+  ],
+  "artifacts": {
+    "root": "artifacts/action-attention-20261014",
+    "cross_turn": "cross-turn-c8-05/results.json",
+    "enabled": "decode-on-c8-05/results.json",
+    "disabled": "decode-off-c8/results.json",
+    "source_identity": "source-identity-qualified.json"
+  },
+  "profile_hashes": {
+    "on": "ce2c5dcf4337ddbe8af9dac192bfedeb329b0e563cb4ab4fe85df2be9cbb872c",
+    "off": "df42044abb7f8bb0a92228fbc3556e1e946816e59bf0b1f808858fc3f093d548"
+  },
+  "action_samples_fixed_output": [
+    234,
+    234,
+    234,
+    234,
+    234,
+    234,
+    234,
+    208
+  ],
+  "tool_call_smoke": {
+    "status": "passed",
+    "scope": "tool-call",
+    "prompt_tokens": 397,
+    "output_tokens": 127,
+    "expected_samples": 8,
+    "action": {
+      "samples": 8,
+      "rounds": 1,
+      "positive_pages": 16,
+      "score_sum": 1.0000000604777597,
+      "scope": "tool-call",
+      "request_id": "cmpl-8c8596efa9966ae4-0-86285f82",
+      "candidate_samples_total": 8,
+      "capture_host_seconds_total": 0.8218420846387744
+    },
+    "tool_executed": false
+  }
+}

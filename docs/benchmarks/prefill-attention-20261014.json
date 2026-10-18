@@ -1,0 +1,560 @@
+{
+  "status": "inference_and_scoring_complete",
+  "niah": {
+    "completed": 60,
+    "expected": 60,
+    "groups": [
+      {
+        "task": "all",
+        "cases": 60,
+        "old_coverage": 68.33333333333333,
+        "new_coverage": 97.08333333333333,
+        "old_exact": 30,
+        "new_exact": 53,
+        "sampled_cases": 60,
+        "accepted_action_samples": 207
+      },
+      {
+        "task": "niah_single_2",
+        "cases": 15,
+        "old_coverage": 100.0,
+        "new_coverage": 100.0,
+        "old_exact": 15,
+        "new_exact": 15,
+        "sampled_cases": 15,
+        "accepted_action_samples": 30
+      },
+      {
+        "task": "niah_multikey_2",
+        "cases": 15,
+        "old_coverage": 100.0,
+        "new_coverage": 100.0,
+        "old_exact": 15,
+        "new_exact": 15,
+        "sampled_cases": 15,
+        "accepted_action_samples": 30
+      },
+      {
+        "task": "niah_multivalue",
+        "cases": 15,
+        "old_coverage": 23.333333333333332,
+        "new_coverage": 90.0,
+        "old_exact": 0,
+        "new_exact": 9,
+        "sampled_cases": 15,
+        "accepted_action_samples": 67
+      },
+      {
+        "task": "niah_multiquery",
+        "cases": 15,
+        "old_coverage": 50.0,
+        "new_coverage": 98.33333333333333,
+        "old_exact": 0,
+        "new_exact": 14,
+        "sampled_cases": 15,
+        "accepted_action_samples": 80
+      }
+    ],
+    "action_sample_counts_verified": 60,
+    "cold_query_zero_action_history_verified": 60,
+    "accepted_action_samples": 207,
+    "wall_seconds": 2905.3856778144836,
+    "input_tokens": 15726105,
+    "output_tokens": 13351,
+    "end_to_end_input_tokens_per_second": 5412.742659291154,
+    "end_to_end_output_tokens_per_second": 4.595259108609296,
+    "throughput_scope": "Whole campaign mixed prefill/guided replay/assembly/decode; not isolated phase throughput.",
+    "comparison_scope": "Same frozen inputs and sampling. Complete input-attention policy and K/G/sink/recent/guided settings differ from the prior output-only vLLM campaign.",
+    "selection_scope": "Cold input attention contributes to pressure and first Query selection; output attention is independently verified.",
+    "cold_prefill_attention_verified": 60
+  },
+  "qw3_same_60_inputs": [
+    {
+      "task": "all",
+      "cases": 60,
+      "query": {
+        "coverage": 68.33333333333333,
+        "exact": 30,
+        "prefill_query_samples": 0,
+        "prefill_pressure_events": 0,
+        "guided_events": 0
+      },
+      "attention": {
+        "coverage": 98.75,
+        "exact": 57,
+        "prefill_query_samples": 489600,
+        "prefill_pressure_events": 780,
+        "guided_events": 0
+      }
+    },
+    {
+      "task": "niah_multikey_2",
+      "cases": 15,
+      "query": {
+        "coverage": 100.0,
+        "exact": 15,
+        "prefill_query_samples": 0,
+        "prefill_pressure_events": 0,
+        "guided_events": 0
+      },
+      "attention": {
+        "coverage": 100.0,
+        "exact": 15,
+        "prefill_query_samples": 122400,
+        "prefill_pressure_events": 195,
+        "guided_events": 0
+      }
+    },
+    {
+      "task": "niah_multiquery",
+      "cases": 15,
+      "query": {
+        "coverage": 48.333333333333336,
+        "exact": 0,
+        "prefill_query_samples": 0,
+        "prefill_pressure_events": 0,
+        "guided_events": 0
+      },
+      "attention": {
+        "coverage": 100.0,
+        "exact": 15,
+        "prefill_query_samples": 122400,
+        "prefill_pressure_events": 195,
+        "guided_events": 0
+      }
+    },
+    {
+      "task": "niah_multivalue",
+      "cases": 15,
+      "query": {
+        "coverage": 25.0,
+        "exact": 0,
+        "prefill_query_samples": 0,
+        "prefill_pressure_events": 0,
+        "guided_events": 0
+      },
+      "attention": {
+        "coverage": 95.0,
+        "exact": 12,
+        "prefill_query_samples": 122400,
+        "prefill_pressure_events": 195,
+        "guided_events": 0
+      }
+    },
+    {
+      "task": "niah_single_2",
+      "cases": 15,
+      "query": {
+        "coverage": 100.0,
+        "exact": 15,
+        "prefill_query_samples": 0,
+        "prefill_pressure_events": 0,
+        "guided_events": 0
+      },
+      "attention": {
+        "coverage": 100.0,
+        "exact": 15,
+        "prefill_query_samples": 122400,
+        "prefill_pressure_events": 195,
+        "guided_events": 0
+      }
+    }
+  ],
+  "niah_retrieval": {
+    "needle_count": 150,
+    "key_selected": 150,
+    "value_selected": 150,
+    "sentence_selected": 118,
+    "missing_numbers": 7,
+    "missing_with_key_and_value_selected": 7,
+    "numeric_exact_but_explicit_key_binding_mismatch": 0,
+    "peak_admitted_concurrency": 5,
+    "new_mean_seconds": 240.62943405616096,
+    "new_mean_ttft_seconds": 222.2617568439028,
+    "new_mean_generation_seconds": 17.55801955385444,
+    "cpu_queue_max_seconds": 2714.418451204896
+  },
+  "storage": {
+    "samples": 264,
+    "all_cpu": true,
+    "max_disk_read_bytes": 0,
+    "max_disk_write_bytes": 0,
+    "max_nvme_capacity_bytes": 0,
+    "minimum_available_memory_bytes": 12724781056,
+    "max_live_accepted_history_tokens": 1311218,
+    "max_observed_histories_at_least_262101_tokens": 5,
+    "max_observed_archive_used_slots": 40973,
+    "any_swap": false,
+    "any_archive_file_descriptors": false
+  },
+  "validation": {
+    "full_suite": "725 passed, 69 skipped",
+    "gpu_numerical": "6 passed",
+    "real_model_c8": "16 requests passed, including pressure and score restoration",
+    "suite_elapsed_seconds": 27.88,
+    "suite_finished_at": 1791992674.0042727,
+    "performance_note": "The short regression suite overlapped early NIAH campaign execution. Campaign wall throughput includes that interference; it is not an isolated model throughput benchmark.",
+    "gateway_configuration_tests": "100 passed after chunk/page/keep-band forwarding fix",
+    "gateway_example": "examples/qwen-nvfp4-prefill-attention-elastic.json; resolved against the real model configuration",
+    "large_history_meank_gpu": "9 passed including eligible-page boundary, bounded multi-batch, 32768 pages and actual Qwen head geometry on a non-default CUDA stream",
+    "logical_history_and_freeze_launcher": "104 passed"
+  },
+  "memory_expected": 1116,
+  "memory_preflight": {
+    "passed": true,
+    "prefill_samples": 13761,
+    "restored_recurrent_states_verified": 2,
+    "identical_question": "001_Accurate_Retrieval_r001_ruler_qa2_421K_q0001",
+    "cold_warm_selected_pages_identical": true,
+    "cold_warm_output_identical": true
+  },
+  "memory": {
+    "expected": 1116,
+    "completed": 1116,
+    "scored": 1116,
+    "unscored_judgments": 0,
+    "exact_answer_judgments_reused": 140,
+    "complete": true,
+    "by_source": {
+      "eventqa_full": {
+        "completed": 500,
+        "scored": 500,
+        "expected": 500,
+        "complete": true,
+        "score": 0.878,
+        "metric": "substring_exact_match"
+      },
+      "longmemeval_s*": {
+        "completed": 300,
+        "scored": 300,
+        "expected": 300,
+        "complete": true,
+        "score": 0.51,
+        "metric": "llm_judge_correct"
+      },
+      "factconsolidation_mh_262k": {
+        "completed": 100,
+        "scored": 100,
+        "expected": 100,
+        "complete": true,
+        "score": 0.03,
+        "metric": "substring_exact_match"
+      },
+      "factconsolidation_sh_262k": {
+        "completed": 100,
+        "scored": 100,
+        "expected": 100,
+        "complete": true,
+        "score": 0.43,
+        "metric": "substring_exact_match"
+      },
+      "ruler_qa2_421K": {
+        "completed": 100,
+        "scored": 100,
+        "expected": 100,
+        "complete": true,
+        "score": 0.51,
+        "metric": "substring_exact_match"
+      },
+      "infbench_sum_eng_shots2": {
+        "completed": 16,
+        "scored": 16,
+        "expected": 16,
+        "complete": true,
+        "score": 0.20002092254968776,
+        "metric": "gpt4_summary_f1"
+      }
+    },
+    "by_category": {
+      "Accurate_Retrieval": 0.6326666666666667,
+      "Conflict_Resolution": 0.22999999999999998,
+      "Long_Range_Understanding": 0.20002092254968776
+    },
+    "three_category_macro": 0.35422919640545153,
+    "reference": {
+      "attention": {
+        "completed": 1116,
+        "expected": 1116,
+        "scored": 1116,
+        "actual_input_range": [
+          267553,
+          757259
+        ],
+        "mean_wall_s": 21.64796365212272,
+        "attention_prefill_query_samples": 1586894,
+        "attention_prefill_samples": 49748,
+        "selections_with_prefill_attention": 1116,
+        "by_source": {
+          "eventqa_full": {
+            "scored": 500,
+            "score": 0.86,
+            "metric": "substring_exact_match"
+          },
+          "longmemeval_s*": {
+            "scored": 300,
+            "score": 0.5633333333333334,
+            "metric": "llm_judge_correct"
+          },
+          "factconsolidation_mh_262k": {
+            "scored": 100,
+            "score": 0.01,
+            "metric": "substring_exact_match"
+          },
+          "factconsolidation_sh_262k": {
+            "scored": 100,
+            "score": 0.48,
+            "metric": "substring_exact_match"
+          },
+          "ruler_qa2_421K": {
+            "scored": 100,
+            "score": 0.54,
+            "metric": "substring_exact_match"
+          },
+          "infbench_sum_eng_shots2": {
+            "scored": 16,
+            "score": 0.1996049995252147,
+            "metric": "gpt4_summary_f1"
+          }
+        },
+        "by_category": {
+          "Accurate_Retrieval": 0.6544444444444445,
+          "Conflict_Resolution": 0.245,
+          "Long_Range_Understanding": 0.1996049995252147
+        },
+        "question_weighted_mixed_metric": 0.6318939784878167,
+        "score": 0.3663498146565531,
+        "macro_note": "equal source means within each of the three categories, then equal category mean; partial until all 1116 scored",
+        "by_execution_identity": {
+          "b399b1c113ef5a43379e61b75d1e55f6c8265412633b559188e19c8cc5e2dc64": {
+            "completed": 1009,
+            "expected": 1009,
+            "scored": 1009,
+            "actual_input_range": [
+              267553,
+              757259
+            ],
+            "mean_wall_s": 5.440709130533918,
+            "attention_prefill_query_samples": 2238,
+            "attention_prefill_samples": 171,
+            "selections_with_prefill_attention": 1009,
+            "by_source": {
+              "eventqa_full": {
+                "scored": 493,
+                "score": 0.8580121703853956,
+                "metric": "substring_exact_match"
+              },
+              "longmemeval_s*": {
+                "scored": 300,
+                "score": 0.5633333333333334,
+                "metric": "llm_judge_correct"
+              },
+              "factconsolidation_mh_262k": {
+                "scored": 100,
+                "score": 0.01,
+                "metric": "substring_exact_match"
+              },
+              "factconsolidation_sh_262k": {
+                "scored": 100,
+                "score": 0.48,
+                "metric": "substring_exact_match"
+              },
+              "infbench_sum_eng_shots2": {
+                "scored": 16,
+                "score": 0.1996049995252147,
+                "metric": "gpt4_summary_f1"
+              }
+            },
+            "by_category": {
+              "Accurate_Retrieval": 0.7106727518593645,
+              "Conflict_Resolution": 0.245,
+              "Long_Range_Understanding": 0.1996049995252147
+            },
+            "question_weighted_mixed_metric": 0.6384476511322135,
+            "score": 0.3850925837948598,
+            "macro_note": "equal source means within each of the three categories, then equal category mean; partial until all 1116 scored"
+          },
+          "880595d275d5c10ad097305c984fd8f2bf5f2bb0e2de54a0cf33407b88a48a26": {
+            "completed": 107,
+            "expected": 107,
+            "scored": 107,
+            "actual_input_range": [
+              470005,
+              544189
+            ],
+            "mean_wall_s": 174.48085909402084,
+            "attention_prefill_query_samples": 1584656,
+            "attention_prefill_samples": 49577,
+            "selections_with_prefill_attention": 107,
+            "by_source": {
+              "eventqa_full": {
+                "scored": 7,
+                "score": 1.0,
+                "metric": "substring_exact_match"
+              },
+              "ruler_qa2_421K": {
+                "scored": 100,
+                "score": 0.54,
+                "metric": "substring_exact_match"
+              }
+            },
+            "by_category": {
+              "Accurate_Retrieval": 0.77
+            },
+            "question_weighted_mixed_metric": 0.5700934579439252,
+            "score": null,
+            "macro_note": "equal source means within each of the three categories, then equal category mean; partial until all 1116 scored"
+          }
+        }
+      },
+      "query": {
+        "completed": 1116,
+        "expected": 1116,
+        "scored": 1116,
+        "actual_input_range": [
+          267553,
+          757259
+        ],
+        "mean_wall_s": 6.620587012792293,
+        "attention_prefill_query_samples": 0,
+        "attention_prefill_samples": 0,
+        "selections_with_prefill_attention": 0,
+        "by_source": {
+          "eventqa_full": {
+            "scored": 500,
+            "score": 0.892,
+            "metric": "substring_exact_match"
+          },
+          "longmemeval_s*": {
+            "scored": 300,
+            "score": 0.5433333333333333,
+            "metric": "llm_judge_correct"
+          },
+          "factconsolidation_mh_262k": {
+            "scored": 100,
+            "score": 0.02,
+            "metric": "substring_exact_match"
+          },
+          "factconsolidation_sh_262k": {
+            "scored": 100,
+            "score": 0.54,
+            "metric": "substring_exact_match"
+          },
+          "ruler_qa2_421K": {
+            "scored": 100,
+            "score": 0.56,
+            "metric": "substring_exact_match"
+          },
+          "infbench_sum_eng_shots2": {
+            "scored": 16,
+            "score": 0.24359422512773987,
+            "metric": "gpt4_summary_f1"
+          }
+        },
+        "by_category": {
+          "Accurate_Retrieval": 0.6651111111111111,
+          "Conflict_Resolution": 0.28,
+          "Long_Range_Understanding": 0.24359422512773987
+        },
+        "question_weighted_mixed_metric": 0.6495497379946629,
+        "score": 0.39623511207961704,
+        "macro_note": "equal source means within each of the three categories, then equal category mean; partial until all 1116 scored",
+        "by_execution_identity": {
+          "b399b1c113ef5a43379e61b75d1e55f6c8265412633b559188e19c8cc5e2dc64": {
+            "completed": 1116,
+            "expected": 1116,
+            "scored": 1116,
+            "actual_input_range": [
+              267553,
+              757259
+            ],
+            "mean_wall_s": 6.620587012792293,
+            "attention_prefill_query_samples": 0,
+            "attention_prefill_samples": 0,
+            "selections_with_prefill_attention": 0,
+            "by_source": {
+              "eventqa_full": {
+                "scored": 500,
+                "score": 0.892,
+                "metric": "substring_exact_match"
+              },
+              "longmemeval_s*": {
+                "scored": 300,
+                "score": 0.5433333333333333,
+                "metric": "llm_judge_correct"
+              },
+              "factconsolidation_mh_262k": {
+                "scored": 100,
+                "score": 0.02,
+                "metric": "substring_exact_match"
+              },
+              "factconsolidation_sh_262k": {
+                "scored": 100,
+                "score": 0.54,
+                "metric": "substring_exact_match"
+              },
+              "ruler_qa2_421K": {
+                "scored": 100,
+                "score": 0.56,
+                "metric": "substring_exact_match"
+              },
+              "infbench_sum_eng_shots2": {
+                "scored": 16,
+                "score": 0.24359422512773987,
+                "metric": "gpt4_summary_f1"
+              }
+            },
+            "by_category": {
+              "Accurate_Retrieval": 0.6651111111111111,
+              "Conflict_Resolution": 0.28,
+              "Long_Range_Understanding": 0.24359422512773987
+            },
+            "question_weighted_mixed_metric": 0.6495497379946629,
+            "score": 0.39623511207961704,
+            "macro_note": "equal source means within each of the three categories, then equal category mean; partial until all 1116 scored"
+          }
+        }
+      }
+    },
+    "note": "Complete means the frozen qw3 1116-question cohort, not the 3671-question full benchmark. Missing API judgments are unscored, never incorrect. A reused-judgment subset is selected by exact answer identity and is not an unbiased source accuracy estimate. Reference combines cold and frozen-prefix execution; model quantization/runtime differ.",
+    "scorer_sha256": {
+      "score_memoryagentbench_official_local.py": "f91464e0d051ca0a6dec115e84c8c8b5f0a0affaffec783236364d203d09f003",
+      "judge_memoryagentbench_special.py": "b82750f1b5d5821c3e733f35ff4e0d9ad5239c856c8d64df9029ee6e50cafd65"
+    },
+    "answer_bindings_checked": 1116,
+    "performance": {
+      "wall_seconds": 6120.658107995987,
+      "peak_admitted_groups": 2,
+      "client_workers": 8,
+      "new_input_tokens": 12808723,
+      "logical_prompt_tokens": 512230931,
+      "output_tokens": 28938,
+      "new_input_tokens_per_second": 2092.703558015562,
+      "output_tokens_per_second": 4.727922960146326,
+      "cold_mean_seconds": 197.06620898605163,
+      "warm_mean_seconds": 4.639482934634512,
+      "scope": "End-to-end mixed workload. Restored prefix tokens are excluded from new-input throughput; neither number is isolated GPU prefill/decode speed."
+    },
+    "restore_audit": {
+      "history_groups": 29,
+      "cold_requests": 29,
+      "restored_requests": 1087,
+      "identical_prefix_and_prefill_sample_count_per_group": true,
+      "zero_output_history_at_every_query": true
+    },
+    "resources": {
+      "samples": 608,
+      "minimum_available_host_bytes": 19589791744,
+      "maximum_swap_used_bytes": 0,
+      "maximum_cpu_authority_bytes": 69711101952,
+      "maximum_history_disk_read_bytes": 0,
+      "maximum_history_disk_write_bytes": 0,
+      "maximum_nvme_capacity_bytes": 0,
+      "maximum_preemption_counter": 0.0,
+      "archive_backends": [
+        "cpu"
+      ]
+    },
+    "scoring_completed_on": "2026-10-15",
+    "external_judgments_new": 176
+  }
+}

@@ -48,6 +48,7 @@ class WorkingSetManager:
         self.offsets: dict[str, int] = {}
         self.pending: dict[str, RefreshTicket] = {}
         self.imports: dict[str, tuple[int, int]] = {}
+        self.resident_imports: dict[str, tuple] = {}
 
     def __getattr__(self, name):
         return getattr(self.native, name)
@@ -77,7 +78,7 @@ class WorkingSetManager:
         local_computed = (0 if external else
                           self._local(request_id, num_local_computed_tokens,
                                       admission=apply_admission_cap))
-        return self.native.get_num_blocks_to_allocate(
+        required = self.native.get_num_blocks_to_allocate(
             request_id, self._local(request_id, num_tokens, admission=apply_admission_cap),
             new_computed_blocks,
             self._local(request_id, total_computed_tokens, admission=apply_admission_cap),
@@ -85,6 +86,15 @@ class WorkingSetManager:
             self._local(request_id, num_tokens_main_model, admission=apply_admission_cap),
             apply_admission_cap=apply_admission_cap,
         )
+        return max(0, required - len(self.resident_imports.get(request_id, ())))
+
+    def stage_resident_import(self, request_id, history, window, blocks):
+        if (self.imports.get(request_id) != (history, window) or
+                self.req_to_blocks.get(request_id) or request_id in self.resident_imports or
+                len(blocks) != (window + self.block_size - 1) // self.block_size or
+                any(b.is_null or b.ref_cnt != 1 for b in blocks)):
+            raise ValueError('Resident import requires an exact exclusive idle view')
+        self.resident_imports[request_id] = tuple(blocks)
 
     def prepare_import(self, request_id, history_end, window_tokens):
         """Reserve the exact checkpoint frame before connector allocation.
@@ -121,8 +131,14 @@ class WorkingSetManager:
         external = (self._external_extent(request_id, num_local_computed_tokens,
                                          num_external_computed_tokens)
                     if num_external_computed_tokens else 0)
-        return self.native.add_local_computed_blocks(request_id, new_computed_blocks,
-                                                     num_local_computed_tokens, external)
+        result = self.native.add_local_computed_blocks(request_id, new_computed_blocks,
+                                                       num_local_computed_tokens, external)
+        resident = self.resident_imports.pop(request_id, ())
+        if resident:
+            # Transfer the idle lease's reference. These pages are not newly
+            # allocated and must not enter the native block-zeroing list.
+            self.native.req_to_blocks[request_id].extend(resident)
+        return result
 
     def allocate_external_computed_blocks(self, request_id, num_local_computed_tokens,
                                           num_external_computed_tokens):

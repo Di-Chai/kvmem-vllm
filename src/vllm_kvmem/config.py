@@ -11,8 +11,17 @@ class KVMemConfig:
     recent_blocks: int | None = None
     kv_dtype: str = "fp8_e4m3"
     speculation: bool = True
+    action_attention: bool = False
+    action_fraction: float = 0.25
+    action_combine: str = 'quota'
 
     def __post_init__(self) -> None:
+        import math
+        if (type(self.action_attention) is not bool or
+                type(self.action_fraction) not in (int, float) or
+                not math.isfinite(self.action_fraction) or not 0 <= self.action_fraction <= 1 or
+                self.action_combine not in ('quota', 'score')):
+            raise ValueError('Invalid action attention enable/fraction/combine')
         for key in ("block_tokens", "select_budget", "gen_budget", "repository_blocks"):
             value = getattr(self, key)
             if type(value) is not int or not 0 < value <= 2**32 - 1:
@@ -50,4 +59,6 @@ class KVMemConfig:
         cfg.immutable_source_k = True
         cfg.immutable_refresh_abs_delta_tokens = 1 if self.kv_dtype.startswith("fp8") else 262144
         cfg.mtp_enabled = self.speculation
+        cfg.action_fraction = self.action_fraction if self.action_attention else 0.0
+        cfg.action_combine = self.action_combine
         return cfg

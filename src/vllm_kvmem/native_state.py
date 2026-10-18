@@ -11,6 +11,8 @@ from importlib.metadata import distribution
 
 import torch
 
+from .checkpoint_timing import async_checkpoint_capture, checkpoint_stage
+
 
 STATE_SOURCES = {
     'model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py': 'b80f8e6f3fff442fb880aebb3209c52f814f66490009f4ac4003de603576d10a',
@@ -88,8 +90,18 @@ class NativeRecurrentState:
         count = int(self.runner.block_tables.num_blocks.np[group_id, index])
         if count <= 0:
             raise ValueError("Request has no allocated native recurrent state")
-        # Called only at a quiescent model boundary, after native staged table writes.
-        rows = tuple(self.runner.block_tables.block_tables[group_id].gpu[index, :count].cpu().tolist())
+        # The CPU witness is populated from the actual pinned native writes,
+        # never from num_blocks or an assumed persistent CPU table mirror.
+        journal = getattr(self.runner, '_kvmem_recurrent_table_journal', None)
+        rows = journal.rows(request_id, group_id) if journal is not None and async_checkpoint_capture(self.runner) else None
+        if rows is None:
+            # Called only at a quiescent boundary, after native staged writes.
+            with checkpoint_stage(self.runner, 'page_table_gpu_read', sync=True):
+                rows = tuple(self.runner.block_tables.block_tables[group_id].gpu[index, :count].cpu().tolist())
+        else:
+            trace = getattr(self.runner, '_kvmem_checkpoint_trace', None)
+            if trace is not None:
+                trace['cpu_page_table_reads'] = trace.get('cpu_page_table_reads', 0) + 1
         if any(row <= 0 for row in rows) or len(set(rows)) != count:
             raise ValueError("Null or duplicate recurrent state page")
         return index, rows
@@ -173,6 +185,27 @@ class NativeRecurrentState:
         return None
 
 
+def initialize_cold_single_token_state(runner, batch):
+    """A fresh one-token prompt uses native decode kernels, including SD.
+
+    Those kernels consume recurrent state unconditionally. Recycled pages must
+    have the same zero initial state that the multi-token prefill path supplies.
+    Never clear an imported or continuing prefix, or another request's pages.
+    """
+    ids=[rid for i,rid in enumerate(batch.req_ids)
+         if batch.num_computed_tokens_np[i]==0 and batch.prefill_len_np[i]==1]
+    if not ids:
+        return
+    adapter=NativeRecurrentState(runner)
+    bundle=adapter.borrow(ids)
+    adapter.validate(bundle)
+    for name,tensor in bundle.tensors.items():
+        if name.endswith('/num_accepted'):
+            tensor.fill_(1)
+        else:
+            tensor.zero_()
+
+
 def canonicalize_before_non_speculative_batch(runner, batch):
     """Preserve accepted SD rows before a clipped batch uses native base rows."""
     runtime = getattr(runner, '_kvmem_capture_runtime', None)
@@ -184,7 +217,8 @@ def canonicalize_before_non_speculative_batch(runner, batch):
                   and batch.num_computed_tokens_np[i] > 0]
     if not candidates:
         return
-    runtime.drain(wait=True)
+    if not runtime.drain_requests((batch.req_ids[i] for i in candidates), wait=True):
+        raise RuntimeError('Native continuation preceded scheduler publication confirmation')
     adapter = None
     for i in candidates:
         request_id = batch.req_ids[i]

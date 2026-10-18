@@ -22,6 +22,18 @@ RETIREMENT_CONNECTOR_SHA256 = 'b89a4333f1e552d86e1815674b59e9f1335f0f49c0a7b4608
 
 
 @dataclass(frozen=True)
+class RestoreCommand:
+    request_id: str
+    command_id: int
+    generation: int
+    history_end: int
+    window_tokens: int
+    block_ids: tuple[tuple[int, ...], ...]
+    asynchronous: bool = True
+    resident: bool = False
+
+
+@dataclass(frozen=True)
 class RefreshCommand:
     request_id: str
     command_id: int
@@ -29,14 +41,20 @@ class RefreshCommand:
     query_span: tuple[int, int] | None = None
     selection: str = 'chunk'
     mandatory_spans: tuple = ()
+    input_tokens: tuple[int, ...] = ()
+    asynchronous: bool = False
+    speculative_padding: int = 0
+    message_spans: tuple = ()
 
 
 @dataclass
 class ControlMetadata(KVConnectorMetadata):
-    commands: list[RefreshCommand] = field(default_factory=list)
+    commands: list[RefreshCommand | RestoreCommand] = field(default_factory=list)
     cancelled: set[str] = field(default_factory=set)
     terminal_prefixes: dict[str, TerminalPrefix] = field(default_factory=dict)
     sessions: SessionCommands = field(default_factory=SessionCommands)
+    maintenance_costs: dict[str, float | None] = field(default_factory=dict)
+    cost_classification: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -46,6 +64,11 @@ class ControlCompletions(KVConnectorWorkerMetadata):
     archive_sequence: int | None = None
     archive_capacity: dict[str, ArchiveCapacity] = field(default_factory=dict)
     sessions: list = field(default_factory=list)
+    cpu_archive_bytes: int | None = None
+    step_timings: list = field(default_factory=list)
+    restore_timings: list = field(default_factory=list)
+    publication_sequence: int | None = None
+    publication_blocked: set[str] = field(default_factory=set)
 
     def aggregate(self, other):
         raise RuntimeError("Working-set control currently requires a single worker rank")
@@ -83,7 +106,21 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.scheduler_archive_update = None
         self.archive_sequence = 0
         self.sessions = None  # Scheduler ledger; worker lifecycle is separate.
+        self.request_plan_memory = None
+        self.capacity_rejections = {}
+        self.history_admission = None
+        self.history_usage = None
         self.session_worker = None
+        self.step_timings = None
+        self.scheduler_step_feedback = None
+        self.restore_timings = None
+        self.scheduler_restore_feedback = None
+        self.active_residency = None
+        self.restore_admission = None
+        self.publication_snapshot = None
+        self.publication_sequence = 0
+        self.publication_blocked = set()
+        self.publication_live = None
         if (self.bounded_target and role == KVConnectorRole.SCHEDULER
                 and kv_cache_config is not None and os.getenv('KVMEM_RUNNER_PROBE_DIR')):
             from .cache_manifest import write_mean_k_geometry
@@ -142,10 +179,23 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
     def build_connector_worker_meta(self):
         capacity = self.archive_snapshot() if self.archive_snapshot is not None else None
         notices = self.session_worker.notices() if self.session_worker is not None else []
-        if not self.worker_completions and capacity is None and not notices:
+        timings = self.step_timings() if self.step_timings is not None else []
+        restores = self.restore_timings() if self.restore_timings is not None else []
+        publication = self.publication_snapshot() if self.publication_snapshot is not None else None
+        if publication is not None:
+            self.publication_sequence += 1
+            self.publication_blocked = set(publication)
+        if not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
         result.sessions = notices
+        result.step_timings = timings
+        result.restore_timings = restores
+        if publication is not None:
+            result.publication_sequence = self.publication_sequence
+            result.publication_blocked = set(self.publication_blocked)
+        if notices and self.history_usage is not None:
+            result.cpu_archive_bytes = self.history_usage()
         if capacity is not None:
             self.archive_sequence += 1
             result.archive_sequence = self.archive_sequence
@@ -159,10 +209,24 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         if metadata is not None:
             if not isinstance(metadata, ControlCompletions):
                 raise TypeError("Unexpected worker completion metadata")
+            if metadata.publication_sequence is not None:
+                if metadata.publication_sequence <= self.publication_sequence:
+                    raise ValueError('Stale publication readiness feedback')
+                self.publication_sequence = metadata.publication_sequence
+                live = self.publication_live() if self.publication_live is not None else metadata.publication_blocked
+                self.publication_blocked = set(metadata.publication_blocked).intersection(live)
+            if metadata.step_timings and self.scheduler_step_feedback is not None:
+                self.scheduler_step_feedback(metadata.step_timings)
+            if metadata.restore_timings and self.scheduler_restore_feedback is not None:
+                self.scheduler_restore_feedback(metadata.restore_timings)
             for notice in metadata.sessions:
                 if self.sessions is None:
                     raise RuntimeError('Unexpected session worker completion')
                 self.sessions.consume(notice)
+                if self.history_admission is not None:
+                    self.history_admission.consume(notice)
+                if self.active_residency is not None:
+                    self.active_residency.consume(notice)
             if metadata.archive_sequence is not None:
                 if self.scheduler_archive_update is None:
                     raise RuntimeError('Unexpected archive capacity feedback')
@@ -178,9 +242,22 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                 else:
                     self.scheduler_completion(request_id, command_id)
                 del self.pending[request_id]
+        if self.history_admission is not None:
+            for rid in connector_output.finished_sending or ():
+                self.history_admission.released(rid)
+            if metadata is not None and metadata.cpu_archive_bytes is not None:
+                self.history_admission.observe(metadata.cpu_archive_bytes)
         self.cancelled.difference_update(connector_output.finished_sending or ())
 
     def request_finished_all_groups(self, request, block_ids):
+        self.capacity_rejections.pop(request.request_id, None)
+        self.publication_blocked.discard(request.request_id)
+        if self.restore_admission is not None:
+            # Return a provisional hot view before SessionLedger aborts import
+            # preparation. Allocated permits survive cancellation until ACK.
+            self.restore_admission.cancel(request)
+        if self.history_admission is not None:
+            self.history_admission.finished(request)
         if self.sessions is not None:
             self.sessions.finished(request)
         if self.bounded_target:
@@ -194,11 +271,40 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         return True, None
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        from .request_plan import RequestCapacityError
+        if request.request_id in self.capacity_rejections:
+            return None, False
+        try:
+            return self._get_matched_tokens(request, num_computed_tokens)
+        except RequestCapacityError as error:
+            # Leave the native waiting queues intact during iteration. The
+            # scheduler publishes a request-local error through native finish
+            # handling, including when this step has zero model tokens.
+            self.capacity_rejections[request.request_id] = str(error)
+            return None, False
+
+    def _get_matched_tokens(self, request, num_computed_tokens):
+        if self.history_admission is not None and not self.history_admission.allows(request):
+            return None, False  # Native waiting loop skips only this request.
         if self.sessions is not None:
-            return self.sessions.lookup(request, num_computed_tokens), False
+            tokens = self.sessions.lookup(request, num_computed_tokens)
+            if tokens and self.restore_admission is not None and not self.restore_admission.lookup(
+                    request, self.sessions.requests[request.request_id]):
+                return None, False
+            return tokens, False
+        if self.request_plan_memory is not None:
+            from .request_plan import request_plan
+            config = self.request_plan_memory
+            plan = request_plan(request, config.block_tokens, config.gen_budget)
+            if plan is not None:
+                plan.validate_capacity(request.num_prompt_tokens, config.select_budget,
+                    sink_blocks=config.sink_blocks, recent_blocks=config.recent_blocks)
         return 0, False
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):
+        if self.history_admission is not None:
+            entry = self.sessions.requests.get(request.request_id) if self.sessions is not None else None
+            self.history_admission.allocated(request, entry.generation if entry else 0)
         if self.sessions is not None:
             self.sessions.allocated(request, num_external_tokens)
             return
@@ -215,5 +321,5 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         pass
 
     def has_pending_push_work(self):
-        return bool(self.pending or self.cancelled or
+        return bool(self.pending or self.cancelled or self.publication_blocked or
                     (self.sessions is not None and self.sessions.has_pending_work()))

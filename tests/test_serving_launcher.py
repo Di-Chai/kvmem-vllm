@@ -20,6 +20,96 @@ def profile(tmp_path):
                       'session_checkpoint_bytes': 1024**3}}
 
 
+def test_cuda_cache_policy_is_opt_in_and_explicit_profile_survives_relaunch(tmp_path):
+    cfg = profile(tmp_path)
+    inherited = build_launch(cfg, tmp_path, tmp_path/'inherit')
+    assert inherited['profile']['cuda_allocator_conf'] is None
+    assert not any(k.startswith('PYTORCH_') for k in inherited['environment'])
+    policy = dict(garbage_collection_threshold=.9, per_process_memory_fraction=.99)
+    cfg['cuda_allocator_conf'] = policy
+    plan = build_launch(cfg, tmp_path, tmp_path/'policy')
+    settings = 'backend:native,garbage_collection_threshold:0.9,per_process_memory_fraction:0.99'
+    assert plan['environment']['PYTORCH_ALLOC_CONF'] == settings
+    assert plan['environment']['PYTORCH_CUDA_ALLOC_CONF'] == settings
+    assert plan['profile']['cuda_allocator_conf'] == policy
+    policy['garbage_collection_threshold'] = .5
+    assert plan['profile']['cuda_allocator_conf']['garbage_collection_threshold'] == .9
+    replay = build_launch(plan['profile'], tmp_path, tmp_path/'replay')
+    assert replay['environment']['PYTORCH_ALLOC_CONF'] == settings
+
+
+@pytest.mark.parametrize('value', [False, 'garbage_collection_threshold:0.9', {},
+    {'garbage_collection_threshold':.9},
+    {'garbage_collection_threshold':.9,'per_process_memory_fraction':1.},
+    {'garbage_collection_threshold':float('nan'),'per_process_memory_fraction':.99},
+    {'garbage_collection_threshold':.9,'per_process_memory_fraction':True},
+    {'garbage_collection_threshold':.9,'per_process_memory_fraction':.99,'backend':'cudaMallocAsync'}])
+def test_cuda_cache_policy_rejects_ambiguous_or_ineffective_configuration(tmp_path,value):
+    cfg = profile(tmp_path); cfg['cuda_allocator_conf'] = value
+    with pytest.raises(ValueError, match='cuda_allocator_conf'):
+        build_launch(cfg,tmp_path,tmp_path/'run')
+
+
+@pytest.mark.parametrize('name', ['split_capture_dma', 'native_prefill_commit', 'async_checkpoint_capture'])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_host_optimization_ablation_survives_profile_and_environment_reset(tmp_path, name, enabled):
+    cfg = profile(tmp_path)
+    cfg['kvmem'][name] = enabled
+    plan = build_launch(cfg, tmp_path, tmp_path/'run')
+    assert plan['environment']['KVMEM_' + name.upper()] == str(int(enabled))
+    transfer = json.loads(plan['vllm_argv'][plan['vllm_argv'].index('--kv-transfer-config') + 1])
+    assert transfer['kv_connector_extra_config']['kvmem'][name] is enabled
+    replay = build_launch(plan['profile'], tmp_path, tmp_path/'replay')
+    assert replay['environment']['KVMEM_' + name.upper()] == str(int(enabled))
+
+
+@pytest.mark.parametrize('name', ['split_capture_dma', 'native_prefill_commit', 'async_checkpoint_capture',
+                                 'restore_stage_timing', 'native_restore_frame', 'native_action_metadata'])
+@pytest.mark.parametrize('invalid', [0, 'false', None])
+def test_host_optimization_ablation_rejects_non_boolean(tmp_path, name, invalid):
+    cfg = profile(tmp_path)
+    cfg['kvmem'][name] = invalid
+    with pytest.raises(ValueError, match=name + ' must be boolean'):
+        build_launch(cfg, tmp_path, tmp_path/'run')
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_restore_stage_timing_is_explicit_and_preserved_in_native_profile(tmp_path, enabled):
+    cfg = profile(tmp_path)
+    cfg['kvmem']['restore_stage_timing'] = enabled
+    plan = build_launch(cfg, tmp_path, tmp_path/'run')
+    argv = plan['vllm_argv']
+    transfer = json.loads(argv[argv.index('--kv-transfer-config') + 1])
+    assert transfer['kv_connector_extra_config']['kvmem']['restore_stage_timing'] is enabled
+    assert plan['profile']['kvmem']['restore_stage_timing'] is enabled
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_native_restore_frame_is_explicit_in_saved_profile_and_worker_connector(tmp_path, enabled):
+    cfg = profile(tmp_path)
+    cfg['kvmem']['native_restore_frame'] = enabled
+    plan = build_launch(cfg, tmp_path, tmp_path/'run')
+    argv = plan['vllm_argv']
+    transfer = json.loads(argv[argv.index('--kv-transfer-config') + 1])
+    assert transfer['kv_connector_extra_config']['kvmem']['native_restore_frame'] is enabled
+    assert plan['profile']['kvmem']['native_restore_frame'] is enabled
+    replay = build_launch(plan['profile'], tmp_path, tmp_path/'replay')
+    assert replay['profile']['kvmem']['native_restore_frame'] is enabled
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_native_action_metadata_is_explicit_in_saved_profile_and_worker_connector(tmp_path, enabled):
+    cfg = profile(tmp_path)
+    cfg['kvmem']['native_action_metadata'] = enabled
+    plan = build_launch(cfg, tmp_path, tmp_path/'run')
+    argv = plan['vllm_argv']
+    transfer = json.loads(argv[argv.index('--kv-transfer-config')+1])
+    assert transfer['kv_connector_extra_config']['kvmem']['native_action_metadata'] is enabled
+    assert plan['profile']['kvmem']['native_action_metadata'] is enabled
+    replay = build_launch(plan['profile'], tmp_path, tmp_path/'replay')
+    assert replay['profile']['kvmem']['native_action_metadata'] is enabled
+
+
 def test_launcher_preserves_mainline_precisions_and_native_execution(tmp_path):
     plan = build_launch(profile(tmp_path), tmp_path, tmp_path/'run')
     argv, env = plan['vllm_argv'], plan['environment']
@@ -66,7 +156,7 @@ def test_fp8_draft_weights_preserve_target_and_draft_kv_precisions(tmp_path):
     assert '--quantization' not in argv  # keep target checkpoint metadata authoritative
 
 
-@pytest.mark.parametrize('depth', [2, 3])
+@pytest.mark.parametrize('depth', [2, 3, 4])
 def test_meank_mtp_launch_uses_checkpoint_head_and_fp8_without_external_draft(tmp_path, depth):
     cfg = nvfp4_profile(tmp_path)
     cfg.pop('draft_model')
@@ -78,6 +168,54 @@ def test_meank_mtp_launch_uses_checkpoint_head_and_fp8_without_external_draft(tm
     assert argv[argv.index('--kv-cache-dtype')+1] == 'fp8_e4m3'
     assert env['KVMEM_BOUNDED_MTP'] == '1' and 'KVMEM_BOUNDED_DFLASH' not in env
     assert '--kv-transfer-config' in argv and '--no-enable-prefix-caching' in argv
+
+
+@pytest.mark.parametrize('history',[524288,1048576])
+def test_niah_full_history_preserves_bounded_rotary_and_original_controls(tmp_path,history):
+    cfg=nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp',draft_tokens=4,max_model_len=history,
+               prefill_chunk_tokens=2048,reasoning_end_str='Budget exhausted.\n</think>')
+    cfg['kvmem'].update(block_tokens=32,select_budget=32768,gen_budget=16384,
+        repository_blocks=16384,request_planning=True,guided_query_tokens=512,
+        session_checkpoint_policy='pm',session_capture_terminal=True)
+    plan=build_launch(cfg,tmp_path,tmp_path/'niah')
+    assert plan['environment']['VLLM_ALLOW_LONG_MAX_MODEL_LEN']=='1'
+    assert plan['environment']['KVMEM_PREFILL_CHUNK_TOKENS']=='2048'
+    assert json.loads(plan['environment']['KVMEM_REQUEST_PLAN_CONFIG'])['guided_reserve']==768
+    argv=plan['vllm_argv']
+    assert json.loads(argv[argv.index('--reasoning-config')+1])['reasoning_end_str']==cfg['reasoning_end_str']
+    cfg['kvmem'].update(select_budget=262144,repository_blocks=32768)
+    with pytest.raises(ValueError,match='RoPE window'):
+        build_launch(cfg,tmp_path,tmp_path/'invalid')
+
+
+def test_large_generation_budget_does_not_require_large_atomic_batch(tmp_path):
+    cfg = nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp', draft_tokens=4, max_num_seqs=4,
+               max_model_len=1048576, query_replay_budget=16384)
+    cfg['kvmem'].update(block_tokens=32, select_budget=131072, gen_budget=131072,
+        repository_blocks=32768, request_planning=True,
+        session_checkpoint_policy='pm', session_capture_terminal=True)
+    launch = build_launch(cfg, tmp_path, tmp_path/'large-generation')
+    assert launch['profile']['max_num_batched_tokens'] == 16404
+    limits = json.loads(launch['environment']['KVMEM_REQUEST_PLAN_CONFIG'])
+    assert limits['gen_budget'] == 131072 and limits['query_replay_budget'] == 16384
+    cfg['query_replay_budget'] = 131073
+    with pytest.raises(ValueError, match='Query replay budget'):
+        build_launch(cfg, tmp_path, tmp_path/'invalid-replay')
+
+
+def test_frozen_independent_questions_allow_p_only_explicit_sessions(tmp_path):
+    cfg=nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp',draft_tokens=4,max_model_len=1048576)
+    cfg['kvmem'].update(block_tokens=32,select_budget=36864,gen_budget=16384,
+        repository_blocks=32768,request_planning=True,session_checkpoint_policy='sealed',
+        session_capture_terminal=False,session_capture_decode=False,session_freeze_prompt=True)
+    plan=build_launch(cfg,tmp_path,tmp_path/'frozen')
+    assert plan['environment']['VLLM_ALLOW_LONG_MAX_MODEL_LEN']=='1'
+    cfg['kvmem']['session_freeze_prompt']=False
+    with pytest.raises(ValueError,match='sealed decode checkpoints'):
+        build_launch(cfg,tmp_path,tmp_path/'ordinary-p-only')
 
 
 @pytest.mark.parametrize('changes', [
@@ -183,6 +321,22 @@ def test_nvfp4_launch_preserves_checkpoint_quantization_and_bf16_draft(tmp_path,
     assert spec['kv_cache_dtype'] == 'bfloat16' and 'quantization' not in spec
 
 
+def test_fp8_weights_keep_native_compiled_mtp_and_independent_fp8_kv(tmp_path):
+    quant = dict(quant_method='fp8', activation_scheme='dynamic', fmt='e4m3',
+        weight_block_size=[128, 128], modules_to_not_convert=['model.visual'])
+    cfg = nvfp4_profile(tmp_path, quant)
+    cfg.update(draft_method='mtp', draft_tokens=4, execution_mode='compiled_graph',
+        linear_backend_per_quant={'fp8_w8a8': 'auto'})
+    plan = build_launch(cfg, tmp_path, tmp_path/'run')
+    argv = plan['vllm_argv']
+    assert json.loads(argv[argv.index('--speculative-config')+1]) == dict(method='mtp',num_speculative_tokens=4)
+    assert argv[argv.index('--kv-cache-dtype')+1] == 'fp8_e4m3'
+    assert argv[argv.index('--load-format')+1] == 'safetensors'
+    assert json.loads(argv[argv.index('--compilation-config')+1])['mode'] == 3
+    assert '--quantization' not in argv and '--enforce-eager' not in argv
+    assert json.loads((tmp_path/'nvfp4/config.json').read_text())['quantization_config'] == quant
+
+
 @pytest.mark.parametrize('changes,match', [
     ({'model_format': 'auto'}, 'model_format'),
     ({'q8_tensorcore': True}, 'q8_tensorcore'),
@@ -197,19 +351,29 @@ def test_nvfp4_launch_rejects_mixed_format_and_bf16_config(tmp_path, changes, ma
         build_launch({**cfg, **changes}, tmp_path, tmp_path/'run')
 
 
-@pytest.mark.parametrize('quant', [
-    {}, {'quant_method': 'fp8'}, {'quant_method': 'modelopt', 'quant_algo': 'FP8'},
-    {'quant_method': 'modelopt', 'quant_algo': 'MIXED_PRECISION'},
-    {'quant_method': 'modelopt', 'quant_algo': 'MIXED_PRECISION', 'quantized_layers': []},
-    {'quant_method': 'modelopt', 'quant_algo': 'MIXED_PRECISION',
-     'quantized_layers': {'model.layers.0.mlp': {'quant_algo': 'FP8'}}},
-    {'quant_method': 'modelopt', 'quant_algo': 'MIXED_PRECISION',
-     'quantized_layers': {'model.layers.0.mlp': None}},
-    {'quant_method': 'modelopt', 'quantization': []},
+@pytest.mark.parametrize('config', [
+    {'torch_dtype': 'bfloat16'},
+    {'torch_dtype': 'float16', 'quantization_config': None},
+    {'quantization_config': {'quant_method': 'fp8', 'activation_scheme': 'dynamic',
+        'fmt': 'e4m3', 'weight_block_size': [128,128]}},
+    {'quantization_config': {'quant_method': 'modelopt', 'quant_algo': 'FP8'}},
+    {'quantization_config': {'quant_method': 'awq', 'bits': 4, 'group_size': 128}},
+    {'quantization_config': {'quant_method': 'compressed-tensors', 'config_groups': {'custom': {}}}},
+    # Native validation also owns errors and future formats. Passing this dry
+    # launch is deliberately NOT a claim that this metadata can load on a GPU.
+    {'quantization_config': {'quant_method': 'future_native_method'}},
+    {'quantization_config': {'quant_method': 'fp8', 'activation_scheme': 'invalid'}},
 ])
-def test_nvfp4_launch_refuses_missing_or_wrong_quantization_metadata(tmp_path, quant):
-    with pytest.raises(ValueError):
-        build_launch(nvfp4_profile(tmp_path, quant), tmp_path, tmp_path/'run')
+def test_weight_format_and_validation_are_delegated_to_native_vllm(tmp_path, config):
+    cfg = nvfp4_profile(tmp_path)
+    path = tmp_path/'nvfp4/config.json'
+    original = json.dumps(config)
+    path.write_text(original)
+    argv = build_launch(cfg, tmp_path, tmp_path/'run')['vllm_argv']
+    assert argv[argv.index('--hf-config-path')+1] == str(path.parent)
+    assert '--quantization' not in argv
+    assert argv[argv.index('--kv-cache-dtype')+1] == 'fp8_e4m3'
+    assert path.read_text() == original
 
 
 @pytest.mark.parametrize('config_text', [None, '{invalid json', '[]'])
@@ -393,3 +557,69 @@ def test_pm_launch_budgets_both_snapshots_and_honors_explicit_quota(tmp_path, qu
     options = resolved['mean_k_backend_profile']['kvmem']
     assert options['session_checkpoint_policy']=='pm'
     assert options['session_capture_terminal'] and not options['session_capture_decode']
+
+
+def test_elastic_action_switch_reaches_native_selector_and_runtime(tmp_path):
+    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    model = nvfp4_profile(tmp_path)
+    users = tmp_path/'users.json'
+    users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
+    cfg = {key:model[key] for key in ('model','tokenizer')}
+    cfg.update(users_file=users.name,context_mode='meank',draft_method='mtp',
+               active_context_tokens=32768,request_planning=True,
+               action_attention=True,action_scope='non-thinking',action_combine='score',
+               action_fraction=.4,action_layers='last',action_decay=.75,action_interval=8,
+               archive_backend='cpu')
+    resolved, _ = build_elastic_launch(cfg,tmp_path,tmp_path/'run')
+    native=resolved['mean_k_backend_profile']['kvmem']
+    assert native['archive_backend']=='cpu'
+    for key in cfg:
+        if key.startswith('action_'):assert native[key]==cfg[key]
+    cfg['context_mode']='full'
+    with pytest.raises(ValueError,match='Action attention requires'):
+        build_elastic_launch(cfg,tmp_path,tmp_path/'invalid')
+
+
+def test_elastic_async_refresh_preserves_native_single_inflight_and_compiled_model(tmp_path):
+    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    model=nvfp4_profile(tmp_path)
+    users=tmp_path/'users.json'
+    users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
+    cfg={key:model[key] for key in ('model','tokenizer')}
+    cfg.update(users_file=users.name,context_mode='meank',draft_method='mtp',
+        execution_mode='compiled_graph',active_context_tokens=32768,request_planning=True,
+        async_refresh=True,refresh_quantum_tokens=128,archive_backend='cpu')
+    resolved,_=build_elastic_launch(cfg,tmp_path,tmp_path/'run')
+    backend=resolved['mean_k_backend_profile']
+    assert backend['kvmem']['async_refresh'] and backend['kvmem']['refresh_quantum_tokens']==128
+    argv=build_launch(backend,tmp_path,tmp_path/'native')['vllm_argv']
+    assert '--no-async-scheduling' in argv and '--enforce-eager' not in argv
+
+
+def test_elastic_prefill_attention_requires_and_forwards_bounded_chunk(tmp_path):
+    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    model=nvfp4_profile(tmp_path)
+    users=tmp_path/'users.json'
+    users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
+    cfg={key:model[key] for key in ('model','tokenizer')}
+    cfg.update(users_file=users.name,context_mode='meank',draft_method='mtp',
+        execution_mode='compiled_graph',active_context_tokens=32768,request_planning=True,
+        action_attention=True,prefill_attention=True,action_pressure=True)
+    with pytest.raises(ValueError,match='Prefill attention'):
+        build_elastic_launch(cfg,tmp_path,tmp_path/'missing-chunk')
+    cfg['prefill_chunk_tokens']=1024
+    cfg.update(block_tokens=32,sink_blocks=41,recent_blocks=0)
+    resolved,_=build_elastic_launch(cfg,tmp_path,tmp_path/'run')
+    backend=resolved['mean_k_backend_profile']
+    plan=build_launch(backend,tmp_path,tmp_path/'native')
+    assert plan['environment']['KVMEM_PREFILL_CHUNK_TOKENS']=='1024'
+    assert backend['kvmem']['prefill_attention'] and backend['kvmem']['action_pressure']
+    assert backend['kvmem']['block_tokens']==32 and backend['kvmem']['recent_blocks']==0
+    assert backend['kvmem']['sink_blocks']==41
+    assert backend['kvmem']['repository_blocks']==cfg.get('max_model_len',262144)//32
+    cfg['prefill_chunk_tokens']=4096
+    with pytest.raises(ValueError,match='64'):
+        build_elastic_launch(cfg,tmp_path,tmp_path/'too-many-samples')
+    cfg['refresh_quantum_tokens']=4096
+    with pytest.raises(ValueError,match='asynchronous refresh'):
+        build_elastic_launch(cfg,tmp_path,tmp_path/'invalid')

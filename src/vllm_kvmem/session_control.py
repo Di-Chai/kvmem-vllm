@@ -20,6 +20,32 @@ def session_namespace(session, salt):
     return salt, session
 
 
+def session_release_intent(params, session, prompt, max_tokens):
+    """Explicit close via a tiny ordinary request after fenced eviction.
+
+    This request must never import or retain a model checkpoint. Absence of
+    the flag preserves normal one-token session requests and their history.
+    """
+    if params is None:
+        return False
+    if not isinstance(params, dict):
+        raise ValueError('Session transfer parameters must be an object')
+    release = params.get('kvmem_release_session', False)
+    if type(release) is not bool:
+        raise ValueError('kvmem_release_session must be boolean')
+    if not release:
+        return False
+    if (not isinstance(session, str) or not session or
+            not isinstance(prompt, (list, tuple)) or len(prompt) != 1 or
+            type(prompt[0]) is not int or prompt[0] < 0 or
+            type(max_tokens) is not int or max_tokens != 1):
+        raise ValueError('Session release requires a namespace, one input token and max_tokens=1')
+    plan = params.get('kvmem_request_plan') or {}
+    if not isinstance(plan, dict) or plan.get('kvmem_query_span') is not None:
+        raise ValueError('Session release cannot execute a Query')
+    return True
+
+
 @dataclass(frozen=True)
 class SessionBinding:
     namespace: tuple[str, str]
@@ -29,6 +55,9 @@ class SessionBinding:
     history: int = 0
     window: int = 0
     pressure_restore: bool = False
+    query_span: tuple | None = None
+    mandatory_spans: tuple = ()
+    message_spans: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -58,6 +87,8 @@ class SessionNotice:
     prompt_window: int = 0
     prompt_tokens: bytes = b''
     active_records: tuple = ()
+    retained: bool = False
+    resident_ready: bool = False
 
 
 @dataclass
@@ -66,6 +97,10 @@ class SessionCommands:
     captures: list[SessionCapture] = field(default_factory=list)
     evictions: list[SessionEviction] = field(default_factory=list)
     terminals: list[SessionCapture] = field(default_factory=list)
+    # Explicit close requests have already evicted their old owned session and
+    # intentionally create no replacement binding/checkpoint. Carry a narrow
+    # allowlist so the worker does not confuse them with unowned graph traffic.
+    release_requests: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -86,17 +121,29 @@ class _Entry:
     retained_position: int = 0
     retained_tokens: bytes = b''
     pressure_restore: bool = False
+    restore_window: int = 0
     prompt_history: int = 0
     prompt_window: int = 0
     prompt_tokens: bytes = b''
     query: tuple | None = None
     mandatory: tuple = ()
     active_records: tuple = ()
+    _fingerprint_tokens: bytes | None = field(default=None, repr=False, compare=False)
+    _fingerprint: str = field(default='', repr=False, compare=False)
+
+    def prefix_fingerprint(self):
+        # Tokens are immutable bytes. Retaining the object avoids both repeated
+        # hashing and id reuse; a replaced prefix is never mistaken for a hit.
+        if self._fingerprint_tokens is not self.tokens:
+            self._fingerprint = hashlib.sha256(self.tokens).hexdigest()
+            self._fingerprint_tokens = self.tokens
+        return self._fingerprint
 
 
 class SessionLedger:
     def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
-                 select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None):
+                 select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None,
+                 preserve_history=False, require_owned=False):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -115,6 +162,10 @@ class SessionLedger:
         self.memory_config = memory_config
         self.select_budget, self.gen_budget = select_budget, gen_budget
         self.hits = self.misses = self.waits = 0
+        self.preserve_history = preserve_history
+        if type(require_owned) is not bool:
+            raise ValueError('Owned-session requirement must be boolean')
+        self.require_owned = require_owned
 
     @staticmethod
     def namespace(request):
@@ -129,7 +180,11 @@ class SessionLedger:
 
     def lookup(self, request, local_tokens):
         namespace = self.namespace(request)
+        release = session_release_intent(getattr(request, 'kv_transfer_params', None),
+            getattr(request, 'session_id', None), request.prompt_token_ids, self.output_tokens(request))
         if namespace is None:
+            if self.require_owned:
+                raise ValueError('Block graph requests require an owned session namespace')
             self.cold_plan(request)
             return 0
         if local_tokens:
@@ -148,26 +203,54 @@ class SessionLedger:
         if entry is not None and entry.phase != 'idle':
             self.waits += 1
             return None
+        if release:
+            if entry is not None:
+                # Wait for the existing generation's history, model snapshot
+                # and resident GPU leases to retire through the normal path.
+                self._evict(entry)
+                self.waits += 1
+                return None
+            # Keep namespace serialization through the tiny close request,
+            # but create no binding/capture and no replacement cache entry.
+            # This also works when all checkpoint slots are already occupied.
+            self.cold_plan(request)
+            self.uncached_sessions[namespace] = request.request_id
+            self.uncached_requests[request.request_id] = namespace
+            return 0
         if entry is not None:
+            # Finalize against a private ledger copy. A failed combined budget
+            # check must retain the original M/P lineage, pins and idle owner.
+            from dataclasses import replace
+            saved_entry = entry
+            entry = replace(entry)
             prompt = request.prompt_token_ids
             from .request_plan import request_plan
             plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
             matches = len(prompt)>entry.history and token_bytes(prompt,entry.history)==entry.tokens
             output = self.output_tokens(request)
             effective, changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
-                self.select_budget+self.gen_budget,entry.query if matches else None,entry.mandatory) if plan is not None else (None,False))
+                self.select_budget+self.gen_budget,entry.query if matches else None,
+                entry.mandatory if matches else ()) if plan is not None else (None,False))
             needs_p = not matches or (effective is not None and effective.query is not None and entry.history>effective.replay_begin)
             if needs_p:
                 ceiling = effective.replay_begin if effective is not None and effective.query is not None else len(prompt)-1
                 if (entry.prompt_history and entry.prompt_history<=ceiling and len(prompt)>entry.prompt_history
                         and token_bytes(prompt,entry.prompt_history)==entry.prompt_tokens):
                     entry.history,entry.window,entry.tokens = entry.prompt_history,entry.prompt_window,entry.prompt_tokens
+                    if not matches:
+                        # Only the verified P prefix survives a changed branch.
+                        # Old Query/pin coordinates may point into replaced or
+                        # truncated text and must not enter the new request.
+                        entry.mandatory = tuple(s for s in entry.mandatory if s[1] <= entry.history)
+                        if entry.query is not None and entry.query[1] > entry.history:
+                            entry.query = None
                     effective,changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
                         self.select_budget+self.gen_budget,entry.query,entry.mandatory) if plan is not None else (None,False))
                 else:
                     if effective is not None:
+                        self.validate_plan_capacity(request, effective)
                         self.set_plan(request,effective)
-                    self._evict(entry)
+                    self._evict(saved_entry)
                     self.waits += 1
                     return None
             if changed:
@@ -178,29 +261,64 @@ class SessionLedger:
             if changed:
                 # A new historical hard pin must be applied before using a
                 # cached view which may omit it. Rebuild from durable tokens.
+                self.validate_plan_capacity(request, effective)
                 self.set_plan(request,effective)
-                self._evict(entry)
+                self._evict(saved_entry)
                 self.waits += 1
                 return None
+            self.validate_plan_capacity(request, effective, history=entry.history, window=entry.window)
+            for name in ('history', 'window', 'tokens', 'query', 'mandatory'):
+                setattr(saved_entry, name, getattr(entry, name))
+            entry = saved_entry
             if effective is not None:
                 self.set_plan(request,effective)
                 entry.query = plan.query or entry.query
                 entry.mandatory = effective.mandatory
-            entry.pressure_restore = False  # A checkpoint is storage, not a selection trigger.
+            entry.pressure_restore = False  # Storage alone never triggers selection.
+            entry.restore_window = 0
+            if (effective is not None and effective.query is None and
+                    entry.history > effective.generation_checkpoint(len(prompt)) and
+                    entry.window + len(prompt) - entry.history + effective.output_reserve >
+                    self.select_budget + self.gen_budget - self.block_tokens):
+                # A partial terminal M prefix can already lie past the last
+                # sealed public prefill boundary. Compact it during restore,
+                # before decoding, rather than rewinding/recomputing history.
+                # Rolling mode only reserves the new input and native lookahead;
+                # subsequent accepted output can trigger its own pressure refresh.
+                budget = min(self.select_budget,
+                    (self.select_budget + self.gen_budget - effective.output_reserve -
+                     (len(prompt) - entry.history) - self.block_tokens)
+                    // self.block_tokens * self.block_tokens)
+                if budget <= 0:
+                    raise ValueError('Continuation output reserve exceeds active capacity')
+                entry.pressure_restore = True
+                entry.restore_window = min(entry.history, budget -
+                    (-entry.history % self.block_tokens))
             entry.phase, entry.request_id = 'lookup', request.request_id
             self.requests[request.request_id] = entry
             try:
-                self.prepare_import(request.request_id, entry.history, entry.window)
+                self.prepare_import(request.request_id, entry.history, entry.restore_window or entry.window)
             except Exception:
                 entry.phase, entry.request_id = 'idle', None
+                entry.pressure_restore, entry.restore_window = False, 0
                 del self.requests[request.request_id]
                 raise
             return entry.history
         self.cold_plan(request)
         if len(self.entries) >= self.capacity:
+            if self.preserve_history:
+                # The caller must explicitly finish/release a session. Neither
+                # LRU eviction nor uncached execution preserves its history.
+                self.waits += 1
+                return None
             idle = next((e for e in self.entries.values() if e.phase == 'idle'), None)
             if idle is not None:
                 self._evict(idle)
+                self.waits += 1
+                return None
+            if self.require_owned:
+                # Graph identities cannot degrade to temporary request IDs
+                # when all owned checkpoint slots are currently leased.
                 self.waits += 1
                 return None
             # All cache slots are in use. A new session may still run normally;
@@ -216,7 +334,7 @@ class SessionLedger:
         if plan is not None:
             from dataclasses import replace
             if (plan.prefill_window=='keep_selected' and
-                    request.num_prompt_tokens+self.output_tokens(request)>self.select_budget+self.gen_budget-self.block_tokens):
+                    request.num_prompt_tokens+plan.output_reserve>self.select_budget+self.gen_budget-self.block_tokens):
                 plan = replace(plan,prefill_window='pressure')  # Original cold checkpoint-hole fallback.
             self.set_plan(request,plan)
             entry.query,entry.mandatory = plan.query,plan.mandatory
@@ -234,9 +352,19 @@ class SessionLedger:
         from .request_plan import request_plan
         from dataclasses import replace
         plan=request_plan(request,self.block_tokens,self.gen_budget)
+        self.validate_plan_capacity(request, plan)
         if (plan is not None and plan.prefill_window=='keep_selected' and
-                request.num_prompt_tokens+self.output_tokens(request)>self.select_budget+self.gen_budget-self.block_tokens):
+                request.num_prompt_tokens+plan.output_reserve>self.select_budget+self.gen_budget-self.block_tokens):
             self.set_plan(request,replace(plan,prefill_window='pressure'))
+
+    def validate_plan_capacity(self, request, plan, *, history=0, window=0):
+        if plan is None:
+            return
+        config = self.memory_config
+        plan.validate_capacity(request.num_prompt_tokens, self.select_budget,
+            sink_blocks=getattr(config, 'sink_blocks', 0),
+            recent_blocks=getattr(config, 'recent_blocks', 0),
+            resume_history=history, resume_window=window)
 
     @staticmethod
     def set_plan(request, plan):
@@ -245,7 +373,7 @@ class SessionLedger:
 
     def snapshot(self):
         return [{'namespace':list(e.namespace),'history':e.history,'window':e.window,
-                 'prefix_sha256':hashlib.sha256(e.tokens).hexdigest(),'query':e.query,
+                 'prefix_sha256':e.prefix_fingerprint(),'query':e.query,
                  'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records}
                 for e in self.entries.values() if e.phase=='idle']
 
@@ -254,12 +382,22 @@ class SessionLedger:
         if entry is None:
             if external_tokens:
                 raise ValueError('Unowned external prompt checkpoint')
+            if (request.request_id in self.uncached_requests and session_release_intent(
+                    getattr(request, 'kv_transfer_params', None),
+                    getattr(request, 'session_id', None), request.prompt_token_ids,
+                    self.output_tokens(request))):
+                self.commands.release_requests.add(request.request_id)
             return
         if entry.phase != 'lookup' or entry.allocated or external_tokens != entry.history:
             raise ValueError('Session allocation differs from its exact prefix lease')
         entry.phase, entry.allocated = 'active', True
+        from .request_plan import request_plan
+        plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
         self.commands.bindings.append(SessionBinding(entry.namespace, entry.generation,
-            request.request_id, tuple(request.prompt_token_ids), entry.history, entry.window,entry.pressure_restore))
+            request.request_id, tuple(request.prompt_token_ids), entry.history,
+            entry.restore_window or entry.window,entry.pressure_restore,
+            plan.query if plan is not None else None,plan.mandatory if plan is not None else (),
+            plan.message_spans if plan is not None else ()))
         self.hits += int(bool(external_tokens))
         self.misses += int(not external_tokens)
 
@@ -306,6 +444,7 @@ class SessionLedger:
             if entry.history:
                 self.abort_import(request.request_id)
                 entry.phase, entry.request_id = 'idle', None
+                entry.pressure_restore, entry.restore_window = False, 0
             else:
                 del self.entries[entry.namespace]
             return
@@ -358,10 +497,13 @@ class SessionLedger:
             return
         if notice.kind == 'restored':
             if (entry.phase not in ('active', 'retiring') or not entry.history or
-                    (notice.history, notice.window) != (entry.history, entry.window)):
+                    (notice.history, notice.window) != (entry.history, entry.restore_window or entry.window)):
                 raise ValueError('Unexpected prompt import completion')
             self.commit_import(notice.request_id, notice.history)
+            if notice.retained:
+                entry.retained_position, entry.retained_tokens = entry.history, entry.tokens
             entry.history = entry.window = 0
+            entry.pressure_restore, entry.restore_window = False, 0
             entry.tokens = b''
             return
         if notice.kind != 'retired' or entry.phase != 'retiring':

@@ -9,6 +9,21 @@ from collections import OrderedDict
 import torch
 
 
+def retire_raw_cache(runner, authority):
+    """Drop an authority after real retirement/eviction, not a tool wait.
+
+    Cache entries pin no CPU pages or active GPU allocation. Idle retained
+    sessions may keep entries within the existing shared byte/LRU quotas.
+    The background index must be changed by its own sole producer.
+    """
+    cache = getattr(runner, '_kvmem_gpu_raw_cache', None)
+    if cache is not None:
+        cache.drop_namespace(authority.memory.request_id)
+    refresh = getattr(runner, '_kvmem_async_refresh', None)
+    if refresh is not None:
+        refresh.retire_namespace(authority.memory.request_id)
+
+
 class RawCacheIndex:
     def __init__(self, slots, namespace_slots):
         if min(slots, namespace_slots) <= 0 or namespace_slots > slots:
@@ -69,10 +84,13 @@ class RawCacheIndex:
 
 
 class GpuRawCache:
-    def __init__(self, budget_bytes, shape, device, max_requests, window_blocks):
+    def __init__(self, budget_bytes, shape, device, max_requests, window_blocks, *, dtype=torch.bfloat16):
         self.shape = tuple(shape)
         self.device = device
-        self.record_bytes = 2 * torch.Size(shape).numel()
+        if dtype not in (torch.bfloat16, torch.float16, torch.float8_e4m3fn):
+            raise ValueError('Unsupported immutable raw-K cache dtype')
+        self.dtype = dtype
+        self.record_bytes = dtype.itemsize * torch.Size(shape).numel()
         slots = min(budget_bytes // self.record_bytes, max_requests * window_blocks)
         quota = min(window_blocks, slots // max_requests)
         if not quota:
@@ -93,7 +111,7 @@ class GpuRawCache:
             if self.capacity_bytes + 1024**3 > free:
                 raise BufferError('Insufficient free GPU memory for explicit raw-K cache budget')
             self.tensor = torch.empty((self.index.slots, *self.shape),
-                                      dtype=torch.bfloat16, device=self.device)
+                                      dtype=self.dtype, device=self.device)
 
     def finish(self, event):
         self.fence = event

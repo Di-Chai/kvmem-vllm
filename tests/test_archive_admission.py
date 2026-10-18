@@ -71,6 +71,7 @@ def test_feedback_cannot_publish_candidate_rows_before_native_eos_clipping():
     def premature_drain(*args, **kwargs):
         raise AssertionError('EOS clipping has not arrived; do not drain capture')
     runtime.drain = premature_drain
+    runtime.queue = []
     runtime.authorities = {'a': SimpleNamespace(history_end=128, poll=lambda: 0,
         memory=SimpleNamespace(repository=SimpleNamespace(ready_slots=3)))}
     assert runtime.archive_capacity() == {'a': ArchiveCapacity(128, 3)}
@@ -84,6 +85,7 @@ def test_scheduler_preserves_native_query_and_only_defers_request_without_credit
     from vllm_kvmem.admission import QueryPolicy
     monkeypatch.setattr(Scheduler, '_reserve_prefill_lookahead', lambda self, request, history, tokens: tokens)
     scheduler = KVMemScheduler.__new__(KVMemScheduler)
+    scheduler.connector = SimpleNamespace(publication_blocked=set())
     scheduler._bounded_target = True
     scheduler.session_capture_decode = False
     scheduler.window_managers = {0: SimpleNamespace(offsets={})}

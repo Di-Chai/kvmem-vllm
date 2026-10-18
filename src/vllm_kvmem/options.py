@@ -4,6 +4,68 @@ from dataclasses import dataclass, field
 from .config import KVMemConfig
 
 
+GRAPH_DEFAULTS = {
+    'graph_mode': 'off',
+    'graph_locality_weight': 0.1,
+    'graph_attention_weight': 0.2,
+    'graph_attention_topk': 4,
+    'graph_attention_min_mass': 0.0,
+    'graph_cross_message_weight': 0.25,
+    'graph_max_bytes_per_session': 33554432,
+    'graph_max_total_bytes': 268435456,
+    'graph_trace': False,
+}
+GRAPH_SCORING_MODES = frozenset(('locality', 'attention', 'multi'))
+
+
+def validate_graph_options(values, *, context_mode='meank', request_planning=False,
+                           session_capacity=0, repository_gc=False, query_history=False,
+                           action_pressure=False, action_attention=False,
+                           prefill_attention=False, action_scope='tool-call',
+                           action_fraction=0.25):
+    """Shared validation before either launcher creates a backend or resources."""
+    import math
+    cfg = {**GRAPH_DEFAULTS, **values}
+    mode = cfg['graph_mode']
+    if not isinstance(mode, str) or mode not in ('off', 'collect', *GRAPH_SCORING_MODES):
+        raise ValueError('graph_mode must be off, collect, locality, attention or multi')
+    for name in ('graph_locality_weight', 'graph_attention_weight',
+                 'graph_attention_min_mass', 'graph_cross_message_weight'):
+        value = cfg[name]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError(f'{name} must be finite and in [0, 1]')
+    if cfg['graph_locality_weight'] + cfg['graph_attention_weight'] > 1:
+        raise ValueError('Graph propagation weights must sum to at most one')
+    for name in ('graph_attention_topk', 'graph_max_bytes_per_session', 'graph_max_total_bytes'):
+        if type(cfg[name]) is not int or cfg[name] <= 0:
+            raise ValueError(f'{name} must be a positive integer')
+    if cfg['graph_max_bytes_per_session'] > cfg['graph_max_total_bytes']:
+        raise ValueError('Per-session graph capacity must fit the global graph capacity')
+    if type(cfg['graph_trace']) is not bool:
+        raise ValueError('graph_trace must be boolean')
+    if mode == 'off':
+        return
+    if context_mode != 'meank':
+        raise ValueError('Block graph requires context_mode=meank')
+    if repository_gc:
+        raise ValueError('Block graph requires repository_gc=false')
+    if not session_capacity:
+        raise ValueError('Block graph requires owned sessions')
+    if mode in GRAPH_SCORING_MODES:
+        if not request_planning:
+            raise ValueError('Block graph scoring requires request planning')
+        if query_history:
+            raise ValueError('Block graph scoring requires query_history=false')
+        if action_pressure:
+            raise ValueError('Block graph scoring requires action_pressure=false')
+        if action_attention and action_fraction != 0:
+            raise ValueError('Block graph scoring requires zero effective legacy attention fusion')
+        if mode in ('attention', 'multi') and (
+                not action_attention or not prefill_attention or action_scope != 'non-thinking'):
+            raise ValueError('Attention graph scoring requires action_attention, prefill_attention '
+                             'and action_scope=non-thinking')
+
+
 @dataclass(frozen=True)
 class RuntimeOptions:
     memory: KVMemConfig = field(default_factory=KVMemConfig)
@@ -32,8 +94,249 @@ class RuntimeOptions:
     request_planning: bool = False
     mean_k_backend: str = 'torch_reference'
     session_checkpoint_policy: str = 'sealed'
+    query_history: bool = False
+    query_history_decay: float = 0.5
+    guided_query_tokens: int = 0
+    archive_backend: str = 'nvme'
+    action_scope: str = 'tool-call'
+    action_layers: str = 'spread3'
+    action_interval: int = 16
+    action_decay: float = 0.5
+    async_refresh: bool = False
+    refresh_quantum_tokens: int = 256
+    prefill_attention: bool = False
+    action_pressure: bool = False
+    prefill_attention_interval: int = 1024
+    prefill_attention_stride: int = 32
+    prefill_attention_half_life: float = 8192
+    session_freeze_prompt: bool = False
+    cpu_history_coordination: bool = False
+    cpu_progress_reserve: bool = True
+    maintenance_max_steps: int = 0
+    maintenance_busy_ms: float = 2.0
+    maintenance_idle_ms: float = 8.0
+    maintenance_aging_ms: float = 250.0
+    maintenance_inflight_bytes: int = 0
+    async_restore: bool = False
+    adaptive_prefill: bool = False
+    step_latency_interval: int = 0
+    decode_step_target_ms: float = 50.0
+    prefill_min_tokens: int = 128
+    prefill_max_tokens: int = 2048
+    prefill_feedback_timeout_ms: float = 5000.0
+    prefill_batch_tokens: int = 0
+    active_resident_ttl_ms: float = 0.0
+    active_resident_pressure_only: bool = False
+    active_resident_max_fraction: float = 0.5
+    maintenance_transfer_bytes_per_second: int = 0
+    maintenance_transfer_burst_bytes: int = 67108864
+    offline_agent_policy: bool = False
+    offline_prefill_coalescing: bool = False
+    offline_prefill_max_tokens: int = 4096
+    offline_phase_policy: bool = False
+    phase_prefill_wave_tokens: int = 8192
+    phase_max_wait_ms: float = 1000.0
+    split_capture_dma: bool = True
+    native_prefill_commit: bool = True
+    async_checkpoint_capture: bool = True
+    restore_stage_timing: bool = False
+    native_restore_frame: bool = False
+    native_action_metadata: bool = False
+    resident_restore_slots: int = 1
+    async_action_metadata: bool = False
+    rolling_active_window: bool = False
+    early_capture_slot_release: bool = False
+    early_capture_feedback_bytes: int = 268435456
+    action_profiling: bool = False
+    action_profile_interval: int = 1
+    action_profile_max_events: int = 256
+    graph_mode: str = 'off'
+    graph_locality_weight: float = 0.1
+    graph_attention_weight: float = 0.2
+    graph_attention_topk: int = 4
+    graph_attention_min_mass: float = 0.0
+    graph_cross_message_weight: float = 0.25
+    graph_max_bytes_per_session: int = 33554432
+    graph_max_total_bytes: int = 268435456
+    graph_trace: bool = False
+
+    @property
+    def active_residency_enabled(self):
+        return self.active_resident_pressure_only or bool(self.active_resident_ttl_ms)
+
+    @property
+    def guided_reserve(self):
+        if not self.guided_query_tokens:
+            return 0
+        block = self.memory.block_tokens
+        return ((256 + self.guided_query_tokens + block - 1) // block) * block
 
     def __post_init__(self):
+        import math
+        from . import _native
+        validate_graph_options({name: getattr(self, name) for name in GRAPH_DEFAULTS},
+            request_planning=self.request_planning, session_capacity=self.session_capacity,
+            repository_gc=self.repository_gc, query_history=self.query_history,
+            action_pressure=self.action_pressure, action_attention=self.memory.action_attention,
+            prefill_attention=self.prefill_attention, action_scope=self.action_scope,
+            action_fraction=self.memory.action_fraction)
+        if type(self.async_action_metadata) is not bool:
+            raise ValueError('Asynchronous Action metadata must be boolean')
+        if self.async_action_metadata and not self.memory.action_attention:
+            raise ValueError('Asynchronous Action metadata requires action attention')
+        if type(self.early_capture_slot_release) is not bool:
+            raise ValueError('Early capture slot release must be boolean')
+        if (type(self.early_capture_feedback_bytes) is not int or
+                self.early_capture_feedback_bytes <= 0):
+            raise ValueError('Early capture feedback bytes must be positive')
+        if self.early_capture_slot_release and not self.async_cpu_scatter:
+            raise ValueError('Early capture slot release requires async CPU scatter')
+        if self.early_capture_slot_release and not self.split_capture_dma:
+            raise ValueError('Early capture slot release requires split capture DMA')
+        if type(self.rolling_active_window) is not bool:
+            raise ValueError('Rolling active window must be boolean')
+        if self.rolling_active_window and not (self.request_planning and self.async_refresh and
+                self.async_restore and self.cpu_history_coordination and self.session_capture_terminal):
+            raise ValueError('Rolling active window requires planned asynchronous CPU history sessions and terminal capture')
+        if (type(self.resident_restore_slots) is not int or
+                not 1 <= self.resident_restore_slots <= 32 or
+                (self.resident_restore_slots > 1 and not self.async_restore)):
+            raise ValueError('Resident restore slots must be 1..32 and require async restore when greater than one')
+        for name in ('split_capture_dma', 'native_prefill_commit', 'async_checkpoint_capture',
+                     'restore_stage_timing', 'native_restore_frame', 'native_action_metadata',
+                     'action_profiling'):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f'{name} must be boolean')
+        for name in ('action_profile_interval', 'action_profile_max_events'):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f'{name} must be a positive integer')
+        if self.action_profiling and not self.memory.action_attention:
+            raise ValueError('Action profiling requires action_attention')
+        if type(self.offline_agent_policy) is not bool:
+            raise ValueError('Offline agent policy must be boolean')
+        if type(self.offline_prefill_coalescing) is not bool:
+            raise ValueError('Offline prefill coalescing must be boolean')
+        if self.offline_prefill_coalescing and (not self.offline_agent_policy or self.offline_phase_policy):
+            raise ValueError('Offline prefill coalescing requires continuous offline agent policy without phase gating')
+        if (type(self.offline_prefill_max_tokens) is not int or self.offline_prefill_max_tokens <= 0 or
+                (self.offline_prefill_coalescing and
+                 (self.offline_prefill_max_tokens % self.memory.block_tokens or
+                  self.offline_prefill_max_tokens > self.memory.gen_budget - self.memory.block_tokens))):
+            raise ValueError('Offline prefill maximum must be positive, aligned and fit G headroom')
+        if type(self.offline_phase_policy) is not bool:
+            raise ValueError('Offline phase policy must be boolean')
+        if self.offline_phase_policy and not self.offline_agent_policy:
+            raise ValueError('Offline phase policy requires the coordinated offline agent policy')
+        if (type(self.phase_prefill_wave_tokens) is not int or self.phase_prefill_wave_tokens <= 0 or
+                (self.offline_phase_policy and (self.phase_prefill_wave_tokens % self.memory.block_tokens or
+                 self.phase_prefill_wave_tokens > self.memory.gen_budget))):
+            raise ValueError('Phase prefill wave must be positive, block aligned and fit G')
+        if (type(self.phase_max_wait_ms) not in (int, float) or
+                not math.isfinite(self.phase_max_wait_ms) or self.phase_max_wait_ms <= 0):
+            raise ValueError('Phase maximum wait must be positive and finite')
+        if type(self.active_resident_pressure_only) is not bool:
+            raise ValueError('Pressure-only active residency must be boolean')
+        if self.offline_agent_policy and (not self.cpu_history_coordination or not self.async_restore or
+                not self.active_residency_enabled or not self.step_latency_interval or
+                self.adaptive_prefill or self.maintenance_transfer_bytes_per_second or
+                self.prefill_cadence != 1):
+            raise ValueError('Offline agent policy requires coordinated CPU history, resident async restore and timing; '
+                             'independent latency and fixed-rate controllers must be disabled')
+        if self.prefill_batch_tokens and (self.offline_phase_policy or self.offline_prefill_coalescing):
+            raise ValueError('Shared prefill budget supports continuous offline ordering only; '
+                             'independent phase and coalescing controllers must be disabled')
+        if (type(self.maintenance_transfer_bytes_per_second) is not int or self.maintenance_transfer_bytes_per_second < 0 or
+                type(self.maintenance_transfer_burst_bytes) is not int or self.maintenance_transfer_burst_bytes <= 0):
+            raise ValueError('Invalid background KV transfer rate or burst')
+        if self.maintenance_transfer_bytes_per_second and not self.maintenance_max_steps:
+            raise ValueError('Transfer pacing requires background maintenance coordination')
+        if (type(self.active_resident_ttl_ms) not in (int, float) or
+                not math.isfinite(self.active_resident_ttl_ms) or self.active_resident_ttl_ms < 0 or
+                type(self.active_resident_max_fraction) not in (int, float) or
+                not math.isfinite(self.active_resident_max_fraction) or
+                not 0 < self.active_resident_max_fraction <= 1):
+            raise ValueError('Invalid idle active-view TTL or pool fraction')
+        if self.active_resident_pressure_only and self.active_resident_ttl_ms:
+            raise ValueError('Pressure-only residency and finite TTL are mutually exclusive')
+        if self.active_residency_enabled and (not self.async_restore or not self.session_capture_terminal):
+            raise ValueError('Idle active residency requires exact terminal capture and async restore')
+        if (type(self.prefill_batch_tokens) is not int or self.prefill_batch_tokens < 0 or
+                self.prefill_batch_tokens % self.memory.block_tokens or
+                (self.prefill_batch_tokens and not self.request_planning)):
+            raise ValueError('Shared prefill budget requires explicit planning and aligned nonnegative tokens')
+        if type(self.adaptive_prefill) is not bool or type(self.step_latency_interval) is not int or not 0 <= self.step_latency_interval <= 1024:
+            raise ValueError('Invalid adaptive prefill/step timing settings')
+        if any(type(v) not in (float, int) or not math.isfinite(v) or v <= 0 for v in
+               (self.decode_step_target_ms, self.prefill_feedback_timeout_ms)):
+            raise ValueError('Prefill feedback time settings must be positive and finite')
+        if any(type(v) is not int or v <= 0 for v in (self.prefill_min_tokens, self.prefill_max_tokens)) or self.prefill_min_tokens > self.prefill_max_tokens:
+            raise ValueError('Invalid adaptive prefill chunk bounds')
+        if self.adaptive_prefill and (not self.step_latency_interval or not self.request_planning or
+                self.prefill_min_tokens % self.memory.block_tokens or self.prefill_max_tokens % self.memory.block_tokens or
+                self.prefill_max_tokens > self.memory.gen_budget - self.memory.block_tokens):
+            raise ValueError('Adaptive prefill requires timing, explicit planning and aligned chunks within G headroom')
+        if type(self.async_restore) is not bool or (self.async_restore and (
+                not self.async_refresh or not self.maintenance_max_steps or not self.session_capacity or
+                self.repository_gc or self.archive_backend != 'cpu' or self.session_checkpoint_policy != 'pm')):
+            raise ValueError('Asynchronous restore requires CPU P/M sessions, non-GC async refresh and maintenance budgets')
+        if type(self.cpu_history_coordination) is not bool or type(self.cpu_progress_reserve) is not bool:
+            raise ValueError('CPU history coordination settings must be boolean')
+        if self.cpu_history_coordination and (self.archive_backend != 'cpu' or self.repository_gc or
+                not self.async_archive_retirement or not self.request_planning or not self.session_capacity):
+            raise ValueError('CPU history coordination requires CPU authority, planning and fenced non-GC retirement')
+        if type(self.maintenance_max_steps) is not int or not 0 <= self.maintenance_max_steps <= 64:
+            raise ValueError('Maintenance step limit must be in [0, 64]')
+        if any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in
+               (self.maintenance_busy_ms, self.maintenance_idle_ms, self.maintenance_aging_ms)):
+            raise ValueError('Maintenance time budgets must be positive and finite')
+        if type(self.maintenance_inflight_bytes) is not int or self.maintenance_inflight_bytes < 0:
+            raise ValueError('Maintenance transfer budget must be nonnegative')
+        if self.maintenance_max_steps and not self.async_refresh:
+            raise ValueError('Maintenance coordination requires asynchronous refresh')
+        if self.maintenance_inflight_bytes and not self.maintenance_max_steps:
+            raise ValueError('Maintenance transfer budget requires maintenance coordination')
+        if type(self.session_freeze_prompt) is not bool or (self.session_freeze_prompt and (
+                not self.request_planning or not self.session_capacity or self.session_capture_terminal or
+                self.session_capture_decode or self.query_history)):
+            raise ValueError('Frozen prompt sessions require explicit planning, P-only checkpoints and no cross-question Query history')
+        if (type(self.prefill_attention) is not bool or type(self.action_pressure) is not bool or
+                type(self.prefill_attention_interval) is not int or self.prefill_attention_interval < 1 or
+                type(self.prefill_attention_stride) is not int or self.prefill_attention_stride < 0 or
+                type(self.prefill_attention_half_life) not in (int,float) or
+                not math.isfinite(self.prefill_attention_half_life) or self.prefill_attention_half_life <= 0):
+            raise ValueError('Invalid prefill attention settings')
+        if (self.prefill_attention or self.action_pressure) and not self.memory.action_attention:
+            raise ValueError('Prefill/pressure attention requires action attention')
+        if type(self.async_refresh) is not bool or type(self.refresh_quantum_tokens) is not int or not 1 <= self.refresh_quantum_tokens <= 2048:
+            raise ValueError('Invalid asynchronous refresh settings')
+        if self.async_refresh and (not self.request_planning or self.repository_gc):
+            raise ValueError('Asynchronous refresh requires request planning and bounded non-GC history')
+        if (type(self.action_interval) is not int or not 1<=self.action_interval<=4096 or
+                type(self.action_decay) not in (float,int) or not math.isfinite(self.action_decay) or
+                not 0<=self.action_decay<=1 or not isinstance(self.action_scope,str) or
+                not isinstance(self.action_layers,str)):
+            raise ValueError('Invalid action attention scope/layers/interval/decay')
+        _native.validate_action_options(self.action_scope, self.action_layers,
+                                       self.action_interval, self.action_decay)
+        if self.memory.action_attention and not self.session_capacity:
+            raise ValueError('Action attention requires owned prompt sessions')
+        if type(self.query_history) is not bool:
+            raise ValueError('Query history must be boolean')
+        if (type(self.query_history_decay) not in (float, int) or
+                not math.isfinite(self.query_history_decay) or not 0 <= self.query_history_decay <= 1):
+            raise ValueError('Query history decay must be in [0, 1]')
+        if type(self.guided_query_tokens) is not int or not 0 <= self.guided_query_tokens <= 4096:
+            raise ValueError('Guided query tokens must be in [0, 4096]')
+        if self.archive_backend not in ('nvme', 'cpu'):
+            raise ValueError('Archive backend must be nvme or cpu')
+        if self.archive_backend == 'cpu' and (not self.cpu_read_cache_bytes or self.nvme_preallocate or self.nvme_max_bytes):
+            raise ValueError('CPU-only archive requires a memory budget and no NVMe reservation')
+        if (self.query_history or self.guided_query_tokens) and not self.request_planning:
+            raise ValueError('Query history/guided refresh require explicit request planning')
+        if self.query_history and not self.session_capacity:
+            raise ValueError('Query history requires bounded prompt sessions')
+        if self.guided_query_tokens and self.guided_reserve + 3 * self.memory.block_tokens > self.memory.gen_budget:
+            raise ValueError('Guided scratch reserve must fit generation headroom')
         if self.session_checkpoint_policy not in ('sealed','pm'):
             raise ValueError('Invalid checkpoint policy')
         if self.session_checkpoint_policy=='pm' and self.session_capacity and not self.session_capture_terminal:
@@ -113,6 +416,39 @@ class RuntimeOptions:
         planning = payload.pop('request_planning', False)
         scorer = payload.pop('mean_k_backend', 'torch_reference')
         checkpoint_policy = payload.pop('session_checkpoint_policy','sealed')
+        query_history = payload.pop('query_history', False)
+        query_decay = payload.pop('query_history_decay', 0.5)
+        guided_tokens = payload.pop('guided_query_tokens', 0)
+        archive_backend = payload.pop('archive_backend', 'nvme')
+        graph = {name: payload.pop(name, default) for name, default in GRAPH_DEFAULTS.items()}
+        action = {name: payload.pop(name, default) for name, default in (
+            ('action_scope', 'tool-call'), ('action_layers', 'spread3'),
+            ('action_interval', 16), ('action_decay', 0.5),
+            ('async_refresh', False), ('refresh_quantum_tokens', 256),
+            ('prefill_attention', False), ('action_pressure', False),
+            ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),
+            ('prefill_attention_half_life', 8192), ('session_freeze_prompt', False),
+            ('cpu_history_coordination', False), ('cpu_progress_reserve', True),
+            ('maintenance_max_steps', 0), ('maintenance_busy_ms', 2.0),
+            ('maintenance_idle_ms', 8.0), ('maintenance_aging_ms', 250.0),
+            ('maintenance_inflight_bytes', 0), ('async_restore', False),
+            ('adaptive_prefill', False), ('step_latency_interval', 0),
+            ('decode_step_target_ms', 50.0), ('prefill_min_tokens', 128),
+            ('prefill_max_tokens', 2048), ('prefill_feedback_timeout_ms', 5000.0),
+            ('prefill_batch_tokens', 0), ('active_resident_ttl_ms', 0.0),
+            ('active_resident_pressure_only', False),
+            ('active_resident_max_fraction', 0.5), ('maintenance_transfer_bytes_per_second', 0),
+            ('maintenance_transfer_burst_bytes', 67108864), ('offline_agent_policy', False),
+            ('offline_prefill_coalescing', False), ('offline_prefill_max_tokens', 4096),
+            ('offline_phase_policy', False), ('phase_prefill_wave_tokens', 8192),
+            ('phase_max_wait_ms', 1000.0), ('split_capture_dma', True),
+            ('native_prefill_commit', True), ('async_checkpoint_capture', True),
+            ('restore_stage_timing', False), ('native_restore_frame', False),
+            ('native_action_metadata', False), ('resident_restore_slots', 1),
+            ('async_action_metadata', False),
+            ('rolling_active_window', False), ('early_capture_slot_release', False),
+            ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),
+            ('action_profile_interval', 1), ('action_profile_max_events', 256))}
         try:
             memory = KVMemConfig(**payload)
         except TypeError as error:
@@ -121,4 +457,5 @@ class RuntimeOptions:
             raise ValueError("KVMem source codec differs from the engine KV cache dtype")
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
-                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy)
+                   gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy,
+                   query_history,query_decay,guided_tokens,archive_backend,**action,**graph)

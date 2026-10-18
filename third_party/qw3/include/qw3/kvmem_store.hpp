@@ -436,6 +436,8 @@ public:
     void register_repository_block(KvMemRepository::Lease, uint32_t baked_pos);
     KvMemBlockHandle repository_handle(uint32_t slot) const;
     uint64_t history_end() const { return total_tokens_; }
+    // Host adapter preflight only; does not change original selection policy.
+    bool repository_transaction_pending() const { return repository_append_pending_; }
     // There is at most one foreground append transaction. Prepare reserves
     // whole slots without publishing unwritten bytes; it returns nullptr if
     // the CPU worker has not supplied sufficient ready capacity. The caller
@@ -624,7 +626,7 @@ public:
     // prefill budget.
     std::vector<uint32_t> pick_prefill_pressure_blocks(
         const std::vector<uint32_t> &mandatory_blocks,
-        const PressureActionScores &action_scores = {}) const;
+        const PressureActionScores &action_scores = {}, uint32_t budget_tokens = 0) const;
     struct RepositoryPressureSelection {
         std::vector<uint32_t> blocks;
         std::vector<KvMemRepository::Lease> leases;
@@ -711,7 +713,7 @@ private:
     std::vector<uint32_t> pick_prefill_pressure_from(
         const std::vector<uint32_t> &order,
         const std::vector<uint32_t> &mandatory_blocks,
-        const PressureActionScores &action_scores) const;
+        const PressureActionScores &action_scores, uint32_t budget_tokens = 0) const;
     std::shared_ptr<KvMemGc> gc_;
     std::shared_ptr<const KvMemGc::View> gc_view_;
     std::shared_ptr<KvMemGc::Lease> gc_working_lease_;

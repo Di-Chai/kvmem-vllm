@@ -91,10 +91,12 @@ def test_meank_gateway_passes_complete_history_and_stable_tenant_session_to_engi
         assert response.status_code == 400 and len(observed) == 2
 
 
-def test_explicit_query_is_forwarded_and_invalid_force_preserves_history(tmp_path):
+@pytest.mark.parametrize('block,replay',[(128,None),(32,[96,263])])
+def test_explicit_query_is_forwarded_and_invalid_force_preserves_history(tmp_path,block,replay):
     cfg=configuration(tmp_path)
     cfg.update(context_mode='meank',request_planning=True,active_context_tokens=128,
-        gen_budget_tokens=512,max_model_len=1024,active_bytes=1000,token_history_bytes=8000,max_body_bytes=10000)
+        gen_budget_tokens=512,max_model_len=1024,active_bytes=1000,token_history_bytes=8000,max_body_bytes=10000,
+        block_tokens=block)
     seen=[]
     def upstream(request):
         payload=json.loads(request.content);seen.append(payload)
@@ -103,11 +105,12 @@ def test_explicit_query_is_forwarded_and_invalid_force_preserves_history(tmp_pat
     with TestClient(create_app(cfg)) as client:
         client.app.state.client=httpx.AsyncClient(transport=httpx.MockTransport(upstream),base_url='http://native')
         path='/v1/kvmem/sessions/query/turn';headers={'Authorization':'Bearer key-a'}
+        fields={'kvmem_query_span':[133,263],'kvmem_reselect':'force'}
+        if replay is not None:fields['kvmem_replay_span']=replay
         result=client.post(path,headers=headers,json={'append_token_ids':list(range(300)),
-            'max_tokens':2,'kvmem_query_span':[133,263],'kvmem_reselect':'force'})
+            'max_tokens':2,**fields})
         assert result.status_code==200
-        assert seen[0]['kv_transfer_params']['kvmem_request_plan']=={
-            'kvmem_query_span':[133,263],'kvmem_reselect':'force'}
+        assert seen[0]['kv_transfer_params']['kvmem_request_plan']==fields
         result=client.post(path,headers=headers,json={'version':1,'append_token_ids':[7],
             'max_tokens':2,'kvmem_reselect':'force'})
         assert result.status_code==400 and len(seen)==1

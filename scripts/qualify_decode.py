@@ -267,6 +267,8 @@ def make_payload(args, prompt):
                        chat_template_kwargs={'enable_thinking': False})
     else:
         payload['prompt'] = prompt
+        if getattr(args,'query_span',None) is not None:
+            payload['kvmem_query_span'] = list(args.query_span)
     return payload
 
 
@@ -455,6 +457,8 @@ def parse_args(argv=None):
     parser.add_argument('--concurrency', type=int, nargs='+', default=[1, 2, 4, 8])
     parser.add_argument('--rounds', type=int, default=2)
     parser.add_argument('--output-tokens', type=int, default=1024)
+    parser.add_argument('--query-span',type=int,nargs=2,
+                        help='Explicit absolute token Query span for guided/history qualification')
     parser.add_argument('--prompt-sessions', action='store_true',
                         help='Include native session/checkpoint maintenance in the decode measurement')
     parser.add_argument('--trim-tokens', type=int, default=64)
@@ -500,6 +504,10 @@ def main(argv=None):
     if len(users) < max(args.concurrency):
         raise ValueError('Need a distinct API user for every concurrent request')
     prompt, input_metadata, raw_input = load_prompt(args)
+    if args.query_span is not None:
+        if (not args.prompt_token_file or not 0<=args.query_span[0]<args.query_span[1]<=len(prompt)):
+            raise ValueError('--query-span requires valid coordinates in --prompt-token-file')
+        input_metadata['query_span'] = args.query_span
     args.output.mkdir(parents=True, exist_ok=False)
     if raw_input is not None:
         (args.output / 'input.json').write_bytes(raw_input)

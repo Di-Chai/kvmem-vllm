@@ -1057,8 +1057,8 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_blocks() const {
 
 std::vector<uint32_t> KvMemStore::pick_prefill_pressure_blocks(
         const std::vector<uint32_t> &mandatory_blocks,
-        const PressureActionScores &action_scores) const {
-    return pick_prefill_pressure_from(chronological_ids(), mandatory_blocks, action_scores);
+        const PressureActionScores &action_scores, uint32_t budget_tokens) const {
+    return pick_prefill_pressure_from(chronological_ids(), mandatory_blocks, action_scores, budget_tokens);
 }
 
 KvMemStore::RepositoryPressureSelection KvMemStore::pin_repository_pressure_selection(
@@ -1081,7 +1081,11 @@ KvMemStore::RepositoryPressureSelection KvMemStore::pin_repository_pressure_sele
 std::vector<uint32_t> KvMemStore::pick_prefill_pressure_from(
         const std::vector<uint32_t> &order,
         const std::vector<uint32_t> &mandatory_blocks,
-        const PressureActionScores &action_scores) const {
+        const PressureActionScores &action_scores, uint32_t budget_tokens) const {
+    if (budget_tokens && (budget_tokens % cfg_.block_tokens ||
+            budget_tokens / cfg_.block_tokens > prefill_budget_blocks() ||
+            budget_tokens / cfg_.block_tokens < cfg_.sink_blocks))
+        throw std::invalid_argument("Invalid bounded pressure budget");
     const uint32_t n = block_count();
     std::vector<uint32_t> selected;
     if (n == 0) return selected;
@@ -1096,7 +1100,7 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_from(
                 throw std::runtime_error("KVMem mandatory block is outside the pressure snapshot");
     }
 
-    const uint32_t budget = prefill_budget_blocks();
+    const uint32_t budget = budget_tokens ? budget_tokens / cfg_.block_tokens : prefill_budget_blocks();
     if (budget == 0 || order.size() <= budget) {
         selected.reserve(order.size());
         for (uint32_t id : order) if (is_live(id)) selected.push_back(id);

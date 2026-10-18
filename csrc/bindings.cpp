@@ -1,14 +1,22 @@
 // Host-only bindings. Original algorithms remain in third_party/qw3.
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include "qw3/kvmem_store.hpp"
 #include "qw3/nvme_kv_tier.hpp"
 #include "qw3/kvmem_repository_gc.hpp"
 #include "kvmem_request_plan.hpp"
 #include "kvmem_prefix_reuse_policy.hpp"
+#include "kvmem_query_history.hpp"
+#include "kvmem_action_attention.hpp"
+#include "prefill_attention_commit.hpp"
+#include "restore_frame.hpp"
+#include "action_window_segments.hpp"
 #include <filesystem>
 #include <cstring>
 #include <limits>
+#include <array>
+#include <cmath>
 #include <sys/stat.h>
 
 namespace py = pybind11;
@@ -106,7 +114,25 @@ static inline float bf16_as_float(const char *source) {
     return value;
 }
 
-template<int Count>
+static inline float fp8_as_float(const char *source) {
+    // CUDA __nv_fp8_e4m3 / torch.float8_e4m3fn, unit scale. Include signed
+    // zero, subnormals and both NaN codes; finite source bytes widen exactly.
+    static const std::array<float, 256> values = [] {
+        std::array<float, 256> table{};
+        for (unsigned code=0; code<256; ++code) {
+            const int exponent=(code>>3)&15, mantissa=code&7;
+            float value=(exponent==15 && mantissa==7)
+                ? std::numeric_limits<float>::quiet_NaN()
+                : exponent==0 ? std::ldexp(static_cast<float>(mantissa), -9)
+                              : std::ldexp(static_cast<float>(8+mantissa), exponent-10);
+            table[code]=(code&128) ? -value : value;
+        }
+        return table;
+    }();
+    return values[static_cast<unsigned char>(*source)];
+}
+
+template<int Count, bool Fp8=false>
 KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
                                      const py::buffer_info &sums, ssize_t begin) {
     const auto width = sums.shape[1] * sums.shape[2];
@@ -119,13 +145,56 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
             // Compile-time count permits vectorization across columns without
             // reassociating the FP32 addition order along the token dimension.
             for (int token = 0; token < Count; ++token)
-                total += bf16_as_float(base + token * raw.strides[1] + column * 2);
+                if constexpr (Fp8)
+                    total += fp8_as_float(base + token * raw.strides[1] + column);
+                else
+                    total += bf16_as_float(base + token * raw.strides[1] + column * 2);
             destination[column] += total;
         }
     }
 }
 
 PYBIND11_MODULE(_native, m) {
+    kvmem_prefill::bind(m);
+    using ActionParser = detail::ActionAttentionParser;
+    py::class_<ActionParser>(m, "ActionParser")
+        .def(py::init([](std::string scope, uint32_t interval, const std::vector<int32_t> &ids, bool thinking) {
+            if (ids.size()!=4 || !interval || interval>4096)
+                throw std::invalid_argument("Invalid action parser settings");
+            ActionParser p;
+            p.scope=ActionParser::parse_scope(scope); p.interval=interval;
+            p.open=ids[0]; p.close=ids[1]; p.think_open=ids[2]; p.think_close=ids[3];
+            p.committed.thinking=thinking;
+            return p;
+        }))
+        .def("prepare", [](ActionParser &p, const std::vector<uint32_t> &tokens) {
+            if (tokens.size()>64) throw std::invalid_argument("Action verifier exceeds 64 rows");
+            p.prepare(tokens.data(), tokens.size()); return p.mask;
+        })
+        .def("commit", &ActionParser::commit)
+        .def_property_readonly("state", [](const ActionParser &p) {
+            return py::make_tuple(p.committed.thinking,p.committed.action,p.committed.tokens);
+        });
+    m.def("validate_action_options", [](std::string scope, std::string layers, uint32_t interval, double decay) {
+        KvMemAttentionConfig c; c.scope=scope; c.layers=layers; c.interval=interval; c.decay=decay; c.validate();
+    });
+    m.def("resolve_action_layers", &detail::resolve_attention_layers);
+    using QueryHistory = detail::KvMemQueryHistory;
+    py::class_<QueryHistory::Snapshot>(m, "QueryHistorySnapshot");
+    py::class_<QueryHistory>(m, "QueryHistory")
+        .def(py::init<>())
+        .def("begin", &QueryHistory::begin)
+        .def("preview", &QueryHistory::preview)
+        .def("commit", &QueryHistory::commit)
+        .def("abort", &QueryHistory::abort)
+        .def("snapshot", &QueryHistory::snapshot)
+        .def("restore", &QueryHistory::restore)
+        .def_property_readonly("scores", &QueryHistory::scores)
+        .def_property_readonly("committed_scores", &QueryHistory::committed_scores)
+        .def_property_readonly("open", &QueryHistory::open)
+        .def_property_readonly("has_observation", &QueryHistory::has_observation)
+        .def_property_readonly("input_end", &QueryHistory::input_end)
+        .def_property_readonly("round_count", &QueryHistory::round_count);
     m.def("fit_mandatory_blocks", [](uint32_t prompt, uint32_t budget, uint32_t sink, uint32_t recent,
             const std::vector<std::array<uint32_t,3>> &spans, uint32_t live_begin, uint32_t live_end,
             bool pin_live) {
@@ -170,20 +239,48 @@ PYBIND11_MODULE(_native, m) {
             }
         }
     });
+    m.def("finalize_mean_fp8", [](py::buffer raw, py::buffer sums, ssize_t count) {
+        auto a=raw.request(), b=sums.request(true);
+        if (a.ndim!=4 || a.itemsize!=1 || b.ndim!=3 || b.itemsize!=4 || b.readonly ||
+            b.format!=py::format_descriptor<float>::format() || count<=0 || count>a.shape[1] ||
+            b.shape[0]<=0 || b.shape[0]>a.shape[0] || b.shape[1]!=a.shape[2] || b.shape[2]!=a.shape[3] ||
+            b.shape[1]<=0 || b.shape[2]<=0 || a.strides[3]!=1 || a.strides[2]!=a.shape[3] ||
+            a.strides[1]<a.shape[2]*a.shape[3] || a.strides[0]<a.shape[1]*a.strides[1] ||
+            b.strides[2]!=4 || b.strides[1]!=b.shape[2]*4 || b.strides[0]!=b.shape[1]*b.strides[1])
+            throw std::invalid_argument("Invalid FP8 content-index buffers");
+        py::gil_scoped_release release;
+        for (ssize_t layer=0;layer<b.shape[0];++layer) {
+            float *out=reinterpret_cast<float*>(static_cast<char*>(b.ptr)+layer*b.strides[0]);
+            const ssize_t channels=b.shape[1]*b.shape[2];
+            std::fill(out,out+channels,0.f);
+            for (ssize_t token=0;token<count;++token) {
+                const char *row=static_cast<const char*>(a.ptr)+layer*a.strides[0]+token*a.strides[1];
+                for (ssize_t channel=0;channel<channels;++channel) out[channel]+=fp8_as_float(row+channel);
+            }
+        }
+    });
     m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) {
         struct Row {
             py::buffer_info raw, values, dst_raw, dst_values, delta, sum;
             ssize_t begin, offset, count;
+            bool copy_only;
         };
         std::vector<Row> rows;
         rows.reserve(jobs.size());
         for (const auto &job : jobs) {
-            if (job.size() != 9) throw std::invalid_argument("Invalid history scatter descriptor");
+            if (job.size() != 9 && job.size() != 10)
+                throw std::invalid_argument("Invalid history scatter descriptor");
+            if (job.size() == 10 && !PyBool_Check(job[9].ptr()))
+                throw std::invalid_argument("History copy-only flag must be a bool");
+            const bool copy_only = job.size() == 10 && job[9].cast<bool>();
+            if (copy_only && !job[4].is_none())
+                throw std::invalid_argument("History copy-only descriptor cannot contain a reduction");
             Row r{job[0].cast<py::buffer>().request(), job[1].cast<py::buffer>().request(),
                   job[2].cast<py::buffer>().request(), job[3].cast<py::buffer>().request(),
                   job[4].is_none() ? py::buffer_info{} : job[4].cast<py::buffer>().request(),
                   job[5].cast<py::buffer>().request(),
-                  job[6].cast<ssize_t>(), job[7].cast<ssize_t>(), job[8].cast<ssize_t>()};
+                  job[6].cast<ssize_t>(), job[7].cast<ssize_t>(), job[8].cast<ssize_t>(),
+                  copy_only};
             auto byte_rows = [](const py::buffer_info &v, bool writable) {
                 if (v.ndim != 4 || v.itemsize != 1 || (writable && v.readonly)) return false;
                 if (v.shape[0] <= 0 || v.shape[1] <= 0 || v.shape[2] <= 0 || v.shape[3] <= 0) return false;
@@ -201,16 +298,20 @@ PYBIND11_MODULE(_native, m) {
                 !byte_rows(r.dst_raw, true) || !byte_rows(r.dst_values, true) ||
                 !sums(r.sum, true) ||
                 (r.delta.ptr && (!sums(r.delta, false) || r.delta.shape != r.sum.shape)) ||
-                (!r.delta.ptr && (!native_decode_sum_supported() || r.count > 4 ||
+                (!r.copy_only && !r.delta.ptr && (!native_decode_sum_supported() || r.count > 4 ||
                                  (r.sum.shape[1] * r.sum.shape[2]) % 64)) ||
                 r.sum.shape[0] <= 0 ||
                 r.sum.shape[0] > r.raw.shape[0] || r.sum.shape[1] != r.values.shape[2] ||
                 r.sum.shape[2] != r.values.shape[3] || r.begin < 0 || r.offset < 0 || r.count <= 0)
                 throw std::invalid_argument("Invalid history scatter geometry or buffer ownership");
+            const ssize_t raw_bytes=r.raw.shape[3]/r.values.shape[3];
+            if ((raw_bytes!=1 && raw_bytes!=2) || (!r.delta.ptr && raw_bytes==2 &&
+                    r.raw.shape[3]!=r.values.shape[3]*2))
+                throw std::invalid_argument("Unsupported history raw-K element width");
             for (ssize_t axis : {0, 2, 3}) {
                 if (r.values.shape[axis] != r.dst_values.shape[axis] ||
                     r.raw.shape[axis] != r.dst_raw.shape[axis] ||
-                    r.raw.shape[axis] != r.values.shape[axis] * (axis == 3 ? 2 : 1))
+                    r.raw.shape[axis] != r.values.shape[axis] * (axis == 3 ? raw_bytes : 1))
                     throw std::invalid_argument("History scatter codec mismatch");
             }
             if (r.raw.shape[1] != r.values.shape[1] ||
@@ -218,6 +319,14 @@ PYBIND11_MODULE(_native, m) {
                 r.count > r.raw.shape[1] || r.begin > r.raw.shape[1] - r.count ||
                 r.count > r.dst_raw.shape[1] || r.offset > r.dst_raw.shape[1] - r.count)
                 throw std::invalid_argument("History scatter extent outside owned rows");
+            if (r.copy_only &&
+                (r.offset != r.dst_raw.shape[1] - r.count ||
+                 r.dst_raw.strides[0] < r.dst_raw.shape[1] * r.dst_raw.strides[1] ||
+                 r.raw.format != py::format_descriptor<uint8_t>::format() ||
+                 r.values.format != py::format_descriptor<uint8_t>::format() ||
+                 r.dst_raw.format != py::format_descriptor<uint8_t>::format() ||
+                 r.dst_values.format != py::format_descriptor<uint8_t>::format()))
+                throw std::invalid_argument("History copy-only requires a completed byte-codec page");
             rows.push_back(std::move(r));
         }
         // Every descriptor is validated before touching any destination. The
@@ -239,6 +348,10 @@ PYBIND11_MODULE(_native, m) {
                 copy_rows(r.dst_raw, r.raw);
                 copy_rows(r.dst_values, r.values);
             }
+            // The caller finalizes this completed page from its immutable raw
+            // bytes before committing history. None without this explicit flag
+            // retains the original small-decode fused-reduction semantics.
+            if (r.copy_only) continue;
             auto *sum = static_cast<float *>(r.sum.ptr);
             if (r.delta.ptr) {
                 const auto *delta = static_cast<const float *>(r.delta.ptr);
@@ -246,7 +359,14 @@ PYBIND11_MODULE(_native, m) {
             } else {
                 // Qualified BF16 decode rows, retaining ATen's FP32 outer
                 // reduction order. Larger prefixes use the reference Torch sum.
-                switch (r.count) {
+                if (r.raw.shape[3]==r.values.shape[3]) {
+                    switch (r.count) {
+                        case 1: add_decode_mean<1,true>(r.raw,r.sum,r.begin); break;
+                        case 2: add_decode_mean<2,true>(r.raw,r.sum,r.begin); break;
+                        case 3: add_decode_mean<3,true>(r.raw,r.sum,r.begin); break;
+                        case 4: add_decode_mean<4,true>(r.raw,r.sum,r.begin); break;
+                    }
+                } else switch (r.count) {
                     case 1: add_decode_mean<1>(r.raw, r.sum, r.begin); break;
                     case 2: add_decode_mean<2>(r.raw, r.sum, r.begin); break;
                     case 3: add_decode_mean<3>(r.raw, r.sum, r.begin); break;
@@ -282,6 +402,38 @@ PYBIND11_MODULE(_native, m) {
             }
         }
         return result;
+    });
+    m.def("copy_record_slices", [](py::buffer source, const std::vector<size_t> &offsets,
+                                   size_t record_bytes) {
+        auto view = source.request();
+        if (!record_bytes || record_bytes > static_cast<size_t>(PY_SSIZE_T_MAX) ||
+                view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
+            throw std::invalid_argument("Invalid CPU record copy source or extent");
+        const size_t extent = static_cast<size_t>(view.size);
+        for (size_t offset : offsets)
+            if (offset > extent || record_bytes > extent - offset)
+                throw std::invalid_argument("CPU record copy outside source extent");
+        std::vector<py::bytes> records;
+        std::vector<char *> destinations;
+        records.reserve(offsets.size());
+        destinations.reserve(offsets.size());
+        // Python allocation/refcounts require the GIL. These objects remain
+        // private until every byte is initialized; no Python API is called in
+        // the memcpy region. RAII restores the GIL before owners are destroyed.
+        for (size_t i = 0; i < offsets.size(); ++i) {
+            PyObject *allocated = PyBytes_FromStringAndSize(nullptr,
+                static_cast<Py_ssize_t>(record_bytes));
+            if (!allocated) throw py::error_already_set();
+            records.push_back(py::reinterpret_steal<py::bytes>(allocated));
+            destinations.push_back(PyBytes_AS_STRING(records.back().ptr()));
+        }
+        {
+            py::gil_scoped_release release;
+            const auto *input = static_cast<const char *>(view.ptr);
+            for (size_t i = 0; i < offsets.size(); ++i)
+                std::memcpy(destinations[i], input + offsets[i], record_bytes);
+        }
+        return records;
     });
     // Each source owns one immutable record. A caller may dispatch disjoint
     // ranges through a bounded persistent worker pool; retain Python owners and
@@ -473,7 +625,7 @@ PYBIND11_MODULE(_native, m) {
         CFG(block_tokens) CFG(select_budget) CFG(prefill_budget) CFG(gen_budget)
         CFG(sink_blocks) CFG(recent_blocks) CFG(repository_blocks)
         CFG(immutable_source_k) CFG(immutable_refresh_abs_delta_tokens)
-        CFG(mtp_enabled)
+        CFG(mtp_enabled) CFG(action_fraction) CFG(action_combine)
 #undef CFG
         ;
     py::class_<KvMemStorageSpan>(m, "StorageSpan")
@@ -538,6 +690,19 @@ PYBIND11_MODULE(_native, m) {
             });
             return records;
         })
+        .def("action_window_segments", [](const KvMemStore &store, int64_t history_begin,
+                int64_t local_begin, int64_t count, int64_t block_tokens) {
+            const auto segments = kvmem_action::window_segments(
+                store, history_begin, local_begin, count, block_tokens);
+            py::array_t<int32_t> starts(segments.starts.size()), counts(segments.counts.size());
+            if (!segments.starts.empty()) {
+                std::memcpy(starts.mutable_data(), segments.starts.data(), segments.starts.size()*sizeof(int32_t));
+                std::memcpy(counts.mutable_data(), segments.counts.data(), segments.counts.size()*sizeof(int32_t));
+            }
+            // History remains Python ints: Action/PrefillHistory dict keys and
+            // snapshot JSON must never silently become NumPy scalar objects.
+            return py::make_tuple(std::move(starts), std::move(counts), py::cast(segments.history));
+        }, py::arg("history_begin"), py::arg("local_begin"), py::arg("count"), py::arg("block_tokens"))
         .def("prepare_rewind", &KvMemStore::prepare_repository_rewind, py::keep_alive<0, 1>())
         .def("read", [](const KvMemStore &s, uint64_t b, uint32_t n) {
             return OwnedRead(s.repository_storage_read(b, n));
@@ -545,11 +710,36 @@ PYBIND11_MODULE(_native, m) {
         .def("handle", &KvMemStore::repository_handle)
         .def_property_readonly("history_end", &KvMemStore::history_end)
         .def("scores", &KvMemStore::set_repository_retrieval_scores)
+        .def("set_runtime_select_budget", &KvMemStore::set_runtime_select_budget)
+        .def("set_action_scores", [](KvMemStore &s, const std::unordered_map<uint64_t,double> &scores) {
+            for (const auto &[key,value]:scores)
+                if (!std::isfinite(value) || value<0) throw std::invalid_argument("Invalid action score");
+            std::vector<double> values(s.block_count(),0);
+            for (const auto &b:s.blocks()) if (s.is_live(b.block_id)) {
+                const auto it=scores.find(b.history_pos_start);
+                if (it!=scores.end()) values[b.block_id]=it->second;
+            }
+            s.update_action_scores(values,0);
+        })
         .def("pick", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory) {
             return s.pick_topk_blocks(mandatory);
         })
+        .def("pick_with_prefill", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory,
+                                    const KvMemStore::PrefillSelectionScores &scores) {
+            for (const auto &[key,value]:scores)
+                if (!std::isfinite(value) || value<0) throw std::invalid_argument("Invalid prefill score");
+            return s.pick_topk_blocks(mandatory, scores);
+        })
+        .def("pick_pressure", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory,
+                                 const KvMemStore::PressureActionScores &scores, uint32_t budget) {
+            return s.pick_prefill_pressure_blocks(mandatory, scores, budget);
+        }, py::arg("mandatory"), py::arg("scores"), py::arg("budget") = 0)
         .def("select", &KvMemStore::set_repository_selection,
              py::arg("handles"), py::arg("force_raw_refresh") = false)
+        // Experimental host adapter; serving continues to use RequestMemory's
+        // original Python restore path until separately qualified and enabled.
+        .def("restore_frame", &kvmem_restore::restore_frame,
+             py::arg("prefix"), py::arg("records"))
         .def("set_baked", &KvMemStore::set_block_baked_pos,
              py::arg("slot"), py::arg("position"), py::arg("generation"));
 

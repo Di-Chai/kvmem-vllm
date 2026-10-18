@@ -37,12 +37,16 @@ def neox_rope(raw_k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torc
     half = cos.shape[-1]
     if cos.shape[0] != raw_k.shape[0] or half * 2 > raw_k.shape[-1] or half == 0:
         raise ValueError("Rotary extent does not match K")
-    if raw_k.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-        raise ValueError("Raw K must be captured before KV quantization")
+    if raw_k.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float8_e4m3fn):
+        raise ValueError("Unsupported pre-RoPE raw K codec")
     source = raw_k.float()
     left, right = source[..., :half], source[..., half:2*half]
     c, s = cos.float().unsqueeze(1), sin.float().unsqueeze(1)
-    return torch.cat((left*c - right*s, right*c + left*s, source[..., 2*half:]), dim=-1).to(raw_k.dtype)
+    result = torch.cat((left*c - right*s, right*c + left*s, source[..., 2*half:]), dim=-1)
+    # qw3 widens FP8 raw K, rotates in FP32, then quantizes the destination
+    # once. Rounding the rotated vector back to raw FP8 here would add a
+    # second quantization before the native K scale is applied.
+    return result if raw_k.dtype == torch.float8_e4m3fn else result.to(raw_k.dtype)
 
 
 def quantize(tensor: torch.Tensor, fmt: KVFormat, scale: torch.Tensor) -> torch.Tensor:

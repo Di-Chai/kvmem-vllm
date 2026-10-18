@@ -11,12 +11,14 @@ import torch
 
 def install_quantized_context(runner):
     config = runner.speculative_config
-    if config is None or config.quantization != 'fp8':
+    # MTP inherits the target quantization. Its native projections must not
+    # enter the DFlash-only context patch or DFlash source/geometry checks.
+    if config is None or config.method != 'dflash' or config.quantization != 'fp8':
         return
     from .draft_contract import verify_draft_sources
     verify_draft_sources()
     model = runner.speculator.model.model
-    if config.method != 'dflash' or not model.layers:
+    if not model.layers:
         raise ValueError('FP8 context projection requires the pinned DFlash2 model')
 
     def project_context(self, context_states, num_ctx, num_layers, num_kv_heads, head_dim):

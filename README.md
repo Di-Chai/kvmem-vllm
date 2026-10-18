@@ -1,5 +1,31 @@
 # vllm-kvmem
 
+**Offline agent policy, 2026-10-16:** the [scheduling policy and acceptance evidence](docs/offline-agent-scheduling-policy.md)
+define decode priority, pressure-managed active residency, measured ready-work
+ordering and separate CPU/GPU admission. Three paired synthetic runs passed with
+a median 19.1% multi-turn throughput gain; output-event p95 increased. Performance
+acceptance now uses [fixed 300-second windows](docs/fixed-window-agent-benchmark.md)
+with continuous ingress. The old first16 run stopped after 15 A0 tasks at the
+user's measurement-scope change; it is not a completed A0/P1 task speedup claim.
+The [P1 candidate profile](examples/qwen-nvfp4-offline-agent-k128-g128.json)
+uses K128K/G128K, four native requests, CPU-only history and pressure-only residency;
+replace its local model paths before launching.
+
+The experimental [public prefill/decode phase policy](docs/phased-prefill-decode-policy.md)
+is off by default. It preserves the original RPC and attention-scoring paths;
+its real-model qualification and fixed-window comparison are separate from the CPU gather experiment.
+
+The experimental [cost-aware prefill coalescer](docs/cost-aware-prefill-coalescing.md)
+keeps continuous decode scheduling and compares bounded 2K/4K ordinary-prefill
+chunks. It is off by default; correctness and whole-window performance are separate gates.
+
+**Offline batch inference, 2026-10-15:** a JSONL workload can now keep a bounded
+request pool continuously replenished, without waiting for whole batches or
+enabling the latency controller. See the [offline entry point and measurements](docs/coordination-v2-20261015.md#当前优先项离线批量推理)
+and [native profile](examples/qwen-nvfp4-offline-native.json). Queued requests,
+actual model batch occupancy, and sampled GPU utilization are reported separately;
+this is not a promise of 100% utilization or an SLO qualification.
+
 **Implementation status, 2026-10-14:** the [implemented / partial / missing checklist](docs/implementation-status.md)
 records the current KV management, qw3 parity gaps, qualification results and next
 steps. Per-turn output stays within G. The explicit token-ID Query profile now
@@ -34,6 +60,12 @@ Eight users completed 32K input plus 16K output each at 538.75 steady / 449.94
 whole-batch tok/s, versus 510.48 / 415.01 previously. The same native control
 still runs faster; see the [qualification and remaining-gap report](docs/compiled-capture-history-20261014.md)
 and [compiled profile](examples/qwen-nvfp4-meank-mtp-compiled-elastic.json).
+
+**FP8 immutable raw K, 2026-10-16:** serving now archives pre-RoPE K in unit-scale
+FP8 E4M3FN, including the GPU raw-K cache; MeanK indices remain FP16. Raw K plus
+V history shrinks from three to two bytes per element (one third less). Restore
+uses FP32 re-RoPE before native FP8 encoding. See the
+[format and validation report](docs/fp8-raw-k-20261016.md).
 
 **Raw-K / resident V caching, 2026-10-14:** opt-in bounded GPU raw-key caching,
 shared V staging and adaptive CPU history maintenance now reduce C8/64K payload

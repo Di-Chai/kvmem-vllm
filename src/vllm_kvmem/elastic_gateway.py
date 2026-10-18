@@ -154,7 +154,19 @@ def create_app(config):
                 raise ValueError('Explicit Query planning is not enabled')
             if config.get('request_planning'):
                 from .request_plan import RequestPlan
-                plan = RequestPlan.parse(fields, len(prompt), 128, config['gen_budget_tokens'])
+                guided = config.get('guided_query_tokens',0)
+                block = config.get('block_tokens',128)
+                reserve = ((256+guided+block-1)//block)*block if guided else 0
+                plan = RequestPlan.parse(fields, len(prompt), block, config['gen_budget_tokens'],reserve)
+                if not session.version or plan.reselect == 'force':
+                    # Real launch profiles carry resolved bands; hand-built
+                    # legacy profiles defer unknown bands to the native owner.
+                    plan.validate_capacity(len(prompt), limit, output_tokens=max_output,
+                        sink_blocks=config.get('resolved_sink_blocks', config.get('sink_blocks')) or 0,
+                        recent_blocks=config.get('resolved_recent_blocks', config.get('recent_blocks')) or 0,
+                        rolling=config.get('rolling_active_window', False))
+                if plan.query is not None and reserve and plan.replay_end+reserve>config['max_model_len']:
+                    raise ValueError('Guided Query scratch exceeds the model position limit')
                 # Exact-prefix checkpoint and active-headroom finalization belong
                 # to the native session owner, not the logical prompt length.
             ranges = body.get('active_ranges')

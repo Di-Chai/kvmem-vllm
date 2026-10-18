@@ -27,7 +27,7 @@ def main():
     if args.repeats <= 0:
         parser.error('repeats must be positive')
     torch.set_num_threads(1)
-    record_bytes = 16 * 128 * 4 * 256 * 3
+    record_bytes = 16 * 128 * 4 * 256 * 2
     report = dict(scope='CPU sealed flush; preallocated sources; includes CPU cache; discard-only NVMe; no GPU',
                   record_bytes=record_bytes, repeats=args.repeats, cases={})
     with tempfile.TemporaryDirectory(prefix='kvmem-seal-') as directory:
@@ -43,7 +43,7 @@ def main():
                     return dict(bytes=0, syscalls=0, duration_ns=0)
             archive.tier = DiscardIo()
             archive.executor.submit(lambda: None).result()
-            raw = torch.ones((16, blocks*128, 4, 256), dtype=torch.bfloat16)
+            raw = torch.ones((16, blocks*128, 4, 256), dtype=torch.bfloat16).to(torch.float8_e4m3fn)
             values = torch.full(raw.shape, 7, dtype=torch.uint8)
             expected = hashlib.sha256(raw[:, :128].contiguous().view(torch.uint8).numpy().tobytes()
                                       + values[:, :128].contiguous().numpy().tobytes()).hexdigest()
@@ -55,7 +55,7 @@ def main():
                     for mode in (('sync','async') if repeat % 2 else ('async','sync')):
                         archive.async_seal = mode == 'async'
                         authority = RequestAuthority(f'{repeat}-{mode}', cfg, archive, 16, 4, 256,
-                                                     resident_records=blocks+2)
+                                                     raw_dtype=raw.dtype, resident_records=blocks+2)
                         flush = authority.flush
                         authority.flush = lambda: True
                         assert authority.append(raw, values, history_begin=0, local_rope_begin=0)

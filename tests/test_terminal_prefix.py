@@ -54,6 +54,7 @@ def test_terminal_packet_is_clipped_before_archive_and_preserves_batch_neighbour
         assert owner.append(*payload(0, 4), history_begin=0, local_rope_begin=0)
         drain(owner)
     runtime = CaptureRuntime.__new__(CaptureRuntime)
+    runtime.raw_dtype = torch.bfloat16  # Explicit legacy packet fixture.
     runtime.options = RuntimeOptions(memory=a.memory.config)
     runtime.config, runtime.archive = a.memory.config, archive
     runtime.runner = NS(vllm_config=NS(max_concurrent_batches=1))
@@ -79,7 +80,10 @@ def test_terminal_packet_is_clipped_before_archive_and_preserves_batch_neighbour
     assert record['terminal_discarded_tokens'] == 3 and record['rejected_tokens'] == 2
     assert record['last_steps'][-1]['history_begin'] + record['last_steps'][-1]['accepted'] == 7
     assert record['sealed_records_verified'] == 1
-    assert runtime.authorities == {'b': b} and released == [download]
+    assert runtime.authorities == {'b': b} and released == []
+    assert b.history_end == 4  # Ending a cannot publish an unrelated neighbour.
+    assert runtime.drain_requests({'b'}, wait=True)
+    assert released == [download]
     assert b.history_end == 12 and runtime.accepted['b'] == 12
     assert b.read_record(next(iter(b.records.values())).handle)[0].shape[1] == 4
     drain(b)

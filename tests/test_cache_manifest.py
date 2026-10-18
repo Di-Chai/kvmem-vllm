@@ -12,7 +12,8 @@ def test_geometry_charges_shared_padded_pages_once_for_capacity(monkeypatch, tmp
     from vllm_kvmem.cache_manifest import write_mean_k_geometry
     from vllm_kvmem.elastic import CacheGeometry
     monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: NS(
-        cpu_read_cache_bytes=100000, memory=NS(select_budget=16, gen_budget=8,
+        cpu_read_cache_bytes=100000, cpu_history_coordination=True, cpu_progress_reserve=True,
+        memory=NS(select_budget=16, gen_budget=8,
             repository_blocks=2, block_tokens=128)))
     attention = FullAttentionSpec(block_size=4, num_kv_heads=1, head_size=8,
                                   dtype=torch.float8_e4m3fn)
@@ -25,6 +26,9 @@ def test_geometry_charges_shared_padded_pages_once_for_capacity(monkeypatch, tmp
     write_mean_k_geometry(config, native, tmp_path)
     value = json.loads((tmp_path / 'cache-geometry.json').read_text())
     assert value['capacity_bytes'] == 32000  # one shared backing, not 64000
+    assert value['schema'] == 2
+    assert value['archive_codec'] == 'raw_fp8_e4m3fn_v_fp8_e4m3fn_v1'
+    assert value['cpu_archive_bytes_per_token'] == 16
     assert [g['page_bytes'] for g in value['groups']] == [320, 320]
     assert [g['payload_page_bytes'] for g in value['groups']] == [64, 64]
     assert CacheGeometry(tuple(value['groups']), 32000).active_bytes(9) == (3 + 5) * 320

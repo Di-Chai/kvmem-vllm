@@ -99,7 +99,12 @@ def main():
                               (row['second_query'],row['second_native_response'])):
             matches=[e for e in explicit if e['request_id'].startswith(response['id']+'-')]
             assert len(matches)==1 and matches[0]['query_span']==span
-            assert matches[0]['query_score_tokens']==span[1]-span[0]
+            if cfg.get('guided_query_tokens'):
+                assert 0 <= matches[0]['guided_query_tokens'] <= cfg['guided_query_tokens']
+                assert matches[0]['guided_prompt_tokens']>0 or matches[0].get('guided_fallback')=='capacity'
+                assert matches[0]['query_score_tokens']==(matches[0]['guided_query_tokens'] or span[1]-span[0])
+            else:
+                assert matches[0]['query_score_tokens']==span[1]-span[0]
             assert matches[0]['replay_span']==[span[0]//128*128,span[1]]
     resources=json.loads((a.capture/'scheduler_resources.json').read_text())
     # Allow background retirement to acknowledge without counting HTTP completion

@@ -53,6 +53,21 @@ def make_probe_runner(base):
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
             from .options import RuntimeOptions
             options = RuntimeOptions.from_vllm(self.vllm_config)
+            if self._kvmem_serving and options.mean_k_backend == 'qw3_cuda':
+                # Load before the engine becomes ready. A first Query must not
+                # compile the extension while other owners wait for the GPU.
+                from .cuda_scoring import kernel
+                kernel()
+            self._kvmem_step_timing = None
+            self._kvmem_public_work = None
+            if options.step_latency_interval:
+                from .step_timing import StepTiming
+                from .work_counters import PublicWorkCounters
+                self._kvmem_step_timing = StepTiming(options.step_latency_interval,
+                    self._kvmem_probe_output / 'model_step_latency.jsonl')
+                self._kvmem_public_work = PublicWorkCounters(
+                    self._kvmem_probe_output / 'public_work.json')
+            self._kvmem_cpu_history_coordination = options.cpu_history_coordination
             self._kvmem_repository_gc = options.repository_gc
             self._kvmem_prepared_archive = None
             if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes:
@@ -64,7 +79,7 @@ def make_probe_runner(base):
                 if len(geometry) != 1:
                     raise ValueError('NVMe startup reservation requires uniform target KV geometry')
                 heads, dim = geometry.pop()
-                record_bytes = len(layers) * heads * dim * options.memory.block_tokens * 3
+                record_bytes = len(layers) * heads * dim * options.memory.block_tokens * 2
                 self._kvmem_prepared_archive = make_shared_archive(options,
                     self._kvmem_probe_output / 'continuous_archive', record_bytes,
                     self.vllm_config.scheduler_config.max_num_seqs if self._kvmem_bounded_target else 1,
@@ -83,6 +98,7 @@ def make_probe_runner(base):
                 self._kvmem_sessions = SessionWorker(self, options)
             self._kvmem_request_generations = {}
             self._kvmem_next_generation = 0
+            self._kvmem_restore_allocations = {}
             if self._kvmem_bounded_target:
                 if any(os.getenv(flag) == "1" for flag in (
                         "KVMEM_REPLAY_PROBE", "KVMEM_COMPRESSION_PROBE", "KVMEM_REBUILD_PROBE", "KVMEM_SCHEDULED_REBUILD_PROBE")):
@@ -116,10 +132,31 @@ def make_probe_runner(base):
             for request in scheduler_output.scheduled_new_reqs:
                 self._kvmem_next_generation += 1
                 self._kvmem_request_generations[request.req_id] = self._kvmem_next_generation
+                sessions = getattr(self, '_kvmem_sessions', None)
+                if (sessions is not None and sessions.options.async_restore and
+                        request.req_id in sessions.imports):
+                    from .restore_lease import FreshRestoreLease
+                    self._kvmem_restore_allocations[request.req_id] = FreshRestoreLease.capture(
+                        self, request.req_id, request.block_ids)
             return result
+
+        def update_requests(self, scheduler_output):
+            leased = getattr(self, '_kvmem_restore_allocations', {})
+            updated = (set(scheduler_output.num_scheduled_tokens) |
+                       set(scheduler_output.block_table_updates or {}) |
+                       set(scheduler_output.scheduled_cached_reqs.req_ids))
+            if leased.keys() & updated:
+                raise RuntimeError('Suspended restore allocation received a public page/state update')
+            return super().update_requests(scheduler_output)
 
         def initialize_kv_cache(self, *args, **kwargs):
             result = super().initialize_kv_cache(*args, **kwargs)
+            from .recurrent_table_journal import install_recurrent_table_journal
+            is_profiling = kwargs.get('is_profiling', args[1] if len(args) > 1 else False)
+            install_recurrent_table_journal(self, is_profiling=is_profiling)
+            refresh = getattr(self, '_kvmem_async_refresh', None)
+            if refresh is not None:
+                refresh.initialize_cache()
             if getattr(self, '_kvmem_graph', False):
                 from .graph_runtime import initialize_graph_window
                 initialize_graph_window(self)
@@ -128,6 +165,8 @@ def make_probe_runner(base):
             return result
 
         def finish_requests(self, scheduler_output):
+            if getattr(self, '_kvmem_restore_allocations', {}).keys() & scheduler_output.finished_req_ids:
+                raise RuntimeError('Native request was freed before its restore fence')
             result = super().finish_requests(scheduler_output)
             for request_id in scheduler_output.finished_req_ids:
                 self._kvmem_request_generations.pop(request_id, None)
@@ -135,6 +174,9 @@ def make_probe_runner(base):
 
         def shutdown(self):
             try:
+                refresh = getattr(self, '_kvmem_async_refresh', None)
+                if refresh is not None:
+                    refresh.shutdown()
                 runtime = getattr(self, '_kvmem_capture_runtime', None)
                 if runtime is not None:
                     runtime.shutdown_retirement()
@@ -143,7 +185,12 @@ def make_probe_runner(base):
                     if archive is not None and not archive.close():
                         raise RuntimeError('Unused startup archive retained I/O ownership')
             finally:
-                super().shutdown()
+                try:
+                    work = getattr(self, '_kvmem_public_work', None)
+                    if work is not None:
+                        work.poll(force=True, flush=True)
+                finally:
+                    super().shutdown()
 
         def _kvmem_refresh(self, command):
             from .refresh_probe import rebuild_native_batch
@@ -187,7 +234,8 @@ def make_probe_runner(base):
             if sessions is not None:
                 sessions.before_attention(input_batch)
             if getattr(self, '_kvmem_bounded_target', False):
-                from .native_state import canonicalize_before_non_speculative_batch
+                from .native_state import canonicalize_before_non_speculative_batch, initialize_cold_single_token_state
+                initialize_cold_single_token_state(self, input_batch)
                 canonicalize_before_non_speculative_batch(self, input_batch)
             self._kvmem_last_batch = input_batch
             self._kvmem_window_batch = None
@@ -198,10 +246,29 @@ def make_probe_runner(base):
                     active_groups = set(full_attention_groups(self.kv_cache_config))
                     if active_groups != set(window.groups):
                         raise ValueError("Window mapping must cover exactly the full-attention cache groups")
-                    return super().prepare_attn(replace(input_batch, positions=window.positions))
-            return super().prepare_attn(input_batch)
+                    result = super().prepare_attn(replace(input_batch, positions=window.positions))
+                    self._kvmem_prepare_action_metadata(input_batch, window.positions)
+                    timing = getattr(self, '_kvmem_step_timing', None)
+                    if timing is not None:
+                        timing.model_begin(input_batch, self._kvmem_window_adapter.offsets)
+                    return result
+            result = super().prepare_attn(input_batch)
+            self._kvmem_prepare_action_metadata(input_batch, input_batch.positions)
+            timing = getattr(self, '_kvmem_step_timing', None)
+            if timing is not None:
+                timing.model_begin(input_batch)
+            return result
+
+        def _kvmem_prepare_action_metadata(self, batch, positions):
+            runtime = getattr(self, '_kvmem_capture_runtime', None)
+            action = getattr(runtime, 'action', None)
+            if action is not None and getattr(self, '_kvmem_public_action_forward', False):
+                action.prepare(batch, positions)
 
         def sample(self, hidden_states, input_batch, grammar_output):
+            timing = getattr(self, '_kvmem_step_timing', None)
+            if timing is not None:
+                timing.classify(input_batch)
             result = super().sample(hidden_states, input_batch, grammar_output)
             pending = getattr(self, "_kvmem_pending_capture", None)
             if pending is not None:
@@ -217,6 +284,34 @@ def make_probe_runner(base):
                     self._kvmem_pending_capture = None
             return result
 
+        def sample_tokens(self, grammar_output):
+            result = super().sample_tokens(grammar_output)
+            timing = getattr(self, '_kvmem_step_timing', None)
+            if timing is not None:
+                timing.end()
+            work = getattr(self, '_kvmem_public_work', None)
+            if work is not None:
+                work.poll()
+            return result
+
+        def _kvmem_execute_public_forward(self, scheduler_output, *, observe_work, **kwargs):
+            # Observe the fresh native execution state, after a successful
+            # target forward. Private maintenance uses prepare_attn directly,
+            # and must never count here. This also counts prefill chunks that
+            # produce no output tokens or do not reach sample_tokens.
+            before = getattr(self, 'execute_model_state', None)
+            self._kvmem_public_action_forward = observe_work
+            try:
+                result = super().execute_model(scheduler_output, **kwargs)
+            finally:
+                self._kvmem_public_action_forward = False
+            state = getattr(self, 'execute_model_state', None)
+            work = getattr(self, '_kvmem_public_work', None)
+            if observe_work and work is not None and state is not None and state is not before:
+                adapter = getattr(self, '_kvmem_window_adapter', None)
+                work.submit(state.input_batch, getattr(adapter, 'offsets', None))
+            return result
+
         def execute_model(self, scheduler_output, intermediate_tensors=None,
                           dummy_run=False, skip_attn_for_dummy_run=False,
                           is_profile=False, context_len=0, valid_dummy_state_slots=False):
@@ -224,9 +319,34 @@ def make_probe_runner(base):
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots)
+            timing = getattr(self, '_kvmem_step_timing', None)
+            if (timing is not None and not dummy_run and not is_profile and
+                    scheduler_output.total_num_scheduled_tokens and
+                    (self._kvmem_probe_output / 'armed').is_file()):
+                timing.begin(getattr(scheduler_output.kv_connector_metadata, 'cost_classification', None))
             runtime = getattr(self, "_kvmem_capture_runtime", None)
+            refresh = getattr(self, '_kvmem_async_refresh', None)
+            terminal = None
             if not dummy_run and runtime is not None:
-                runtime.join_cpu_scatter()
+                if getattr(self, '_kvmem_bounded_target', False):
+                    from .connector import ControlMetadata
+                    control = scheduler_output.kv_connector_metadata
+                    if not isinstance(control, ControlMetadata):
+                        raise RuntimeError('Bounded capture requires scheduler control metadata')
+                    terminal = control.terminal_prefixes
+                # Only the next scheduler decision can authorize the previous
+                # sample. Install EOS/cancel clipping before publication, while
+                # leaving unrelated request writers free to continue.
+                runtime.begin_step(scheduler_output.finished_req_ids, terminal)
+            if not dummy_run and refresh is not None:
+                scheduler_output = refresh.defer_terminals(scheduler_output)
+            if not dummy_run and runtime is not None:
+                # A retiring owner may still be publishing a large prefill.
+                # Keep its native index until its own history is ready, while
+                # allowing the rest of this public batch to proceed.
+                scheduler_output = runtime.defer_terminals(scheduler_output)
+                if getattr(self, '_kvmem_bounded_target', False):
+                    terminal = scheduler_output.kv_connector_metadata.terminal_prefixes
             sessions = getattr(self, '_kvmem_sessions', None)
             if not dummy_run and getattr(self, '_kvmem_serving', False):
                 from .connector import ControlMetadata
@@ -236,6 +356,13 @@ def make_probe_runner(base):
                     # forward; API readiness polling must not create a capture gap.
                     if not (self._kvmem_probe_output / 'armed').is_file():
                         (self._kvmem_probe_output / 'armed').touch()
+            work = getattr(self, '_kvmem_public_work', None)
+            work_armed = not dummy_run and not is_profile and (self._kvmem_probe_output / 'armed').is_file()
+            if work is not None and work_armed:
+                # Zero-token retirement/connector iterations can confirm a
+                # completed fence and fence the final partial interval.
+                work.poll(flush=not scheduler_output.total_num_scheduled_tokens)
+            observe_work = work_armed and bool(scheduler_output.total_num_scheduled_tokens)
             # V2 kernel warmup invokes ordinary execute_model with synthetic
             # requests and no connector metadata. Session control starts at the
             # same explicit post-warmup boundary as accepted authority capture.
@@ -247,20 +374,10 @@ def make_probe_runner(base):
                     raise RuntimeError('Prompt sessions require native connector metadata')
                 sessions.receive(control.sessions)
             if not dummy_run and runtime is not None:
-                terminal = None
-                if getattr(self, '_kvmem_bounded_target', False):
-                    from .connector import ControlMetadata
-                    control = scheduler_output.kv_connector_metadata
-                    if not isinstance(control, ControlMetadata):
-                        raise RuntimeError('Bounded capture requires scheduler control metadata')
-                    terminal = control.terminal_prefixes
                 # Apply EOS/cancellation truncation before draining the latest
                 # accepted sample packet into the immutable authority.
                 runtime.finish(scheduler_output.finished_req_ids, terminal)
-                if runtime.options.async_cpu_scatter:
-                    runtime.start_cpu_scatter()
-                else:
-                    runtime.drain(wait=False)
+                runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh)
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)
@@ -273,8 +390,22 @@ def make_probe_runner(base):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 connector = get_kv_transfer_group()
                 connector.session_worker = sessions
+                if timing is not None:
+                    connector.step_timings = timing.poll
+                if refresh is not None and refresh.maintenance is not None:
+                    connector.restore_timings = refresh.maintenance.pop_restore_timings
                 connector.runtime = self._kvmem_query_refresh
                 connector.retirement_done = (runtime.retirement_done if runtime is not None else lambda _: True)
+                # The first real forward constructs the capture runtime only
+                # after this setup. Resolve it at feedback time so its first
+                # large packet is also excluded from premature rescheduling.
+                connector.publication_snapshot = lambda: (
+                    self._kvmem_capture_runtime.publication_blocked_requests()
+                    if self._kvmem_capture_runtime is not None else set())
+                if getattr(self, '_kvmem_cpu_history_coordination', False):
+                    connector.history_usage = lambda: (
+                        self._kvmem_capture_runtime.archive.tier.used_slots * self._kvmem_capture_runtime.archive.record_bytes
+                        if self._kvmem_capture_runtime is not None else 0)
                 if getattr(self, '_kvmem_repository_gc', False):
                     connector.archive_snapshot = lambda: (
                         self._kvmem_capture_runtime.archive_capacity()
@@ -283,7 +414,7 @@ def make_probe_runner(base):
                     not scheduler_output.total_num_scheduled_tokens or
                     (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or
                     not (self._kvmem_probe_output / "armed").is_file()):
-                return super().execute_model(scheduler_output, **kwargs)
+                return self._kvmem_execute_public_forward(scheduler_output, observe_work=observe_work, **kwargs)
             captured = []
             if getattr(self, '_kvmem_graph', False):
                 from .graph_runtime import needs_refresh_batch
@@ -292,7 +423,7 @@ def make_probe_runner(base):
                     # batch still executes all GDN groups and normal sampling.
                     kwargs['is_profile'] = True
             with capture_to(captured.append):
-                result = super().execute_model(scheduler_output, **kwargs)
+                result = self._kvmem_execute_public_forward(scheduler_output, observe_work=observe_work, **kwargs)
             if getattr(self, '_kvmem_graph', False):
                 captured = self._kvmem_graph_captures
             if not captured:

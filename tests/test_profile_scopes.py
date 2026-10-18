@@ -7,6 +7,18 @@ torch = pytest.importorskip('torch')
 from vllm_kvmem import profile_scopes as profiling
 
 
+def test_mixed_step_diagnostics_cover_actual_capture_and_score_methods():
+    stages={stage:(owner,method) for owner,method,stage in profiling._owned_stages()}
+    required=('capture.pack_fp8','capture.download_slot','capture.advance_publication',
+        'capture.drain_requests','capture.publish_claim','capture.copy_source_owners',
+        'capture.query_history','action.prepare','action.capture','action.accept',
+        'refresh.step','restore.step','maintenance.pump','session.prepare_claim_window',
+        'append.seal_finalize_fp8','append.seal_finalize_bf16','append.scatter')
+    for stage in required:
+        owner,method=stages[stage]
+        assert callable(getattr(owner,method))  # Missing methods must not silently skip a range.
+
+
 @pytest.mark.parametrize('kind', [None, 'cuda', 'proton'])
 def test_disabled_install_leaves_callables_untouched_and_skips_stage_imports(monkeypatch, kind):
     call = lambda value: value

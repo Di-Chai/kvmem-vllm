@@ -34,6 +34,71 @@ def first_turn(control, req=None):
     return binding, notice
 
 
+def close_request(name='close', session='s'):
+    req = request(name, session=session, tokens=[777])
+    req.num_prompt_tokens = 1
+    req.num_computed_tokens = 0
+    req.max_tokens = 1
+    req.kv_transfer_params = {'kvmem_release_session':True}
+    return req
+
+
+def test_explicit_release_fences_old_generation_and_keeps_no_replacement_checkpoint():
+    control, events = ledger()
+    binding, _ = first_turn(control)
+    peer, _ = first_turn(control, request('peer', session='other'))
+    control.terminal_capture = True
+    req = close_request()
+    assert control.lookup(req, 0) is None
+    eviction, = control.take_commands().evictions
+    assert (eviction.namespace, eviction.generation) == (binding.namespace, binding.generation)
+    assert control.lookup(req, 0) is None  # No allocation before worker fence.
+    with pytest.raises(ValueError, match='Stale'):
+        control.consume(SessionNotice('evicted', binding.namespace, binding.generation+1, ''))
+    control.consume(SessionNotice('evicted', binding.namespace, binding.generation, ''))
+    assert control.lookup(req, 0) == control.lookup(req, 0) == 0
+    assert control.lookup(request('successor'), 0) is None
+    control.allocated(req, 0)
+    control.capture_before_final_prefill(req, 1)
+    control.capture_decode_boundary(req)
+    control.finished(req)
+    commands = control.take_commands()
+    assert not commands.bindings and not commands.captures and not commands.terminals
+    assert set(control.entries) == {peer.namespace}
+    assert not control.requests and not control.uncached_sessions and not control.uncached_requests
+    assert events == []  # No import of closed authority.
+    assert control.lookup(request('successor'), 0) == 0
+
+
+def test_release_waits_for_active_turn_and_can_close_absent_namespace_at_capacity():
+    control, _ = ledger(capacity=1)
+    req = request(); control.lookup(req, 0); control.allocated(req, 0)
+    control.capture_before_final_prefill(req, 9)
+    commands = control.take_commands(); binding = commands.bindings[0]
+    closing = close_request()
+    assert control.lookup(closing, 0) is None and not control.take_commands().evictions
+    # An absent namespace needs no checkpoint capacity and cannot evict a peer.
+    absent = close_request('absent', session='absent')
+    assert control.lookup(absent, 0) == 0
+    control.allocated(absent, 0); control.finished(absent)
+    assert not control.take_commands().evictions
+    assert control.entries[binding.namespace].request_id == req.request_id
+    control.finished(req)
+    assert control.lookup(closing, 0) is None
+    control.consume(SessionNotice('retired', binding.namespace, binding.generation, req.request_id, 16, 12))
+    assert control.lookup(closing, 0) is None
+    assert len(control.take_commands().evictions) == 1
+
+
+def test_cancel_release_before_allocation_releases_namespace_serialization():
+    control, _ = ledger()
+    req = close_request()
+    assert control.lookup(req, 0) == 0
+    control.finished(req)
+    assert not control.entries and not control.uncached_sessions
+    assert control.lookup(request('new'), 0) == 0
+
+
 def test_hit_requires_worker_retirement_then_fresh_exact_prefix_allocation():
     control, events = ledger()
     a, b = request(), request('b')
@@ -165,6 +230,154 @@ def test_prefix_miss_and_lru_eviction_hold_capacity_until_generation_ack():
     assert len(control.take_commands().evictions) == 1
 
 
+def planned_idle_session():
+    control, events = ledger()
+    binding, _ = first_turn(control)
+    control.gen_budget, control.select_budget = 32, 64
+    entry = control.entries[binding.namespace]
+    entry.query = (8, 15)
+    entry.mandatory = ((0, 4, 'root'), (8, 15, 'query'))
+    return control, events, binding, entry
+
+
+@pytest.mark.parametrize('explicit_pins', [False, True])
+def test_short_prefix_replacement_does_not_inherit_old_query_pins(explicit_pins):
+    from vllm_kvmem.request_plan import request_plan
+    control, _, binding, _ = planned_idle_session()
+    req = request('reset', tokens=[999])
+    req.num_prompt_tokens = 1
+    fields = {'kvmem_reselect':'off'}
+    if explicit_pins:
+        fields['kvmem_mandatory_spans'] = []
+    req.kv_transfer_params = {'kvmem_request_plan':fields}
+    assert control.lookup(req, 0) is None
+    control.consume(SessionNotice('evicted', binding.namespace, binding.generation, ''))
+    assert control.lookup(req, 0) == 0
+    plan = request_plan(req, 4, 32)
+    assert plan.query is None and not plan.mandatory
+
+
+def test_exact_continuation_keeps_old_query_and_mandatory_pins():
+    from vllm_kvmem.request_plan import request_plan
+    control, events, _, entry = planned_idle_session()
+    req = request('next', tokens=list(range(25))+[999])
+    req.num_prompt_tokens = len(req.prompt_token_ids)
+    req.kv_transfer_params = {'kvmem_request_plan':{'kvmem_query_span':[8, 15]}}
+    assert control.lookup(req, 0) == 16
+    plan = request_plan(req, 4, 32)
+    assert plan.query is None
+    assert plan.mandatory == ((0, 4, 'root'), (8, 15, 'query'))
+    assert entry.query == (8, 15)
+    assert events[-1] == ('prepare', ('next', 16, 12))
+
+
+@pytest.mark.parametrize('cancel_before_allocation', [False, True])
+@pytest.mark.parametrize('max_output,expected_window', [(16,63),(32,55)])
+def test_larger_output_after_partial_terminal_compacts_during_import(
+        cancel_before_allocation,max_output,expected_window):
+    from vllm_kvmem.prompt_checkpoints import token_bytes
+    control, events, binding, entry = planned_idle_session()
+    entry.history = entry.window = 95
+    entry.tokens = token_bytes(list(range(96)), 95)
+    req = request('larger-output', tokens=list(range(96)))
+    req.num_prompt_tokens = 96
+    req.max_tokens = max_output
+    req.kv_transfer_params = {'kvmem_request_plan': {'kvmem_reselect': 'off'}}
+    assert control.lookup(req, 0) == 95
+    assert entry.pressure_restore and entry.restore_window == expected_window
+    assert entry.history == entry.window == 95  # Durable M remains unchanged.
+    assert events[-1] == ('prepare', ('larger-output', 95, expected_window))
+    assert expected_window + 1 + req.max_tokens <= 96 - 4
+    from vllm_kvmem.restore_admission import RestoreAdmission
+    gate = RestoreAdmission()
+    assert gate.lookup(req, entry)
+    assert gate.permits[req.request_id].window == expected_window
+    assert gate.lookup(req, entry)  # Repeated prefix lookup preserves the permit.
+    if cancel_before_allocation:
+        gate.rollback(req)
+        control.finished(req)
+        assert entry.phase == 'idle' and entry.history == entry.window == 95
+        assert not entry.pressure_restore and entry.restore_window == 0
+    else:
+        gate.before_allocate(req, 95)
+        gate.allocated(req)
+        control.allocated(req, 95)
+        new_binding = control.take_commands().bindings[-1]
+        assert new_binding.pressure_restore and new_binding.window == expected_window
+        gate.dispatch(SimpleNamespace(request_id=req.request_id, command_id=-1,
+            generation=new_binding.generation, history_end=95, window_tokens=expected_window, resident=False))
+        control.consume(SessionNotice('restored', binding.namespace, binding.generation,
+            req.request_id, 95, expected_window))
+        gate.complete(req.request_id, -1)
+        assert events[-1] == ('commit', ('larger-output', 95))
+
+
+@pytest.mark.parametrize('rolling,history,expected_window,pressure', [
+    (False,79,55,True), (True,79,79,False), (True,95,63,True)])
+def test_rolling_partial_m_preserves_selected_pages_when_only_output_reserve_overflows(
+        monkeypatch,rolling,history,expected_window,pressure):
+    import json
+    from vllm_kvmem.prompt_checkpoints import token_bytes
+    from vllm_kvmem.request_plan import request_plan
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':rolling}))
+    control, events, _, entry = planned_idle_session()
+    entry.history = entry.window = history
+    entry.tokens = token_bytes(list(range(history+1)),history)
+    req = request('next',tokens=list(range(history+1)))
+    req.num_prompt_tokens = len(req.prompt_token_ids)
+    req.max_tokens = 32
+    req.kv_transfer_params = {'kvmem_request_plan':{'kvmem_reselect':'off'}}
+    assert control.lookup(req,0) == history
+    assert entry.pressure_restore == pressure
+    assert events[-1] == ('prepare',('next',history,expected_window))
+    plan = request_plan(req,4,32)
+    assert plan.rolling_active_window == rolling
+    assert plan.prefill_window == ('pressure' if pressure else 'keep_selected')
+    assert plan.mandatory == ((0,4,'root'),(8,15,'query'))
+    assert plan.output_tokens == req.max_tokens == 32
+    assert entry.history == entry.window == history
+    control.finished(req)  # Cancellation before allocation retains the original M.
+    assert entry.phase == 'idle' and entry.history == entry.window == history
+    assert entry.restore_window == 0 and not entry.pressure_restore
+
+
+@pytest.mark.parametrize('session', ['s',None])
+@pytest.mark.parametrize('rolling,prompt,expected', [
+    (False,80,'pressure'), (True,80,'keep_selected'), (True,93,'pressure')])
+def test_rolling_cold_plan_reserves_input_and_native_headroom(
+        monkeypatch,session,rolling,prompt,expected):
+    import json
+    from vllm_kvmem.request_plan import request_plan
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':rolling}))
+    control, _ = ledger()
+    control.gen_budget, control.select_budget = 32,64
+    req = request(session=session,tokens=list(range(prompt)))
+    req.num_prompt_tokens = prompt
+    req.max_tokens = 32
+    req.kv_transfer_params = {'kvmem_request_plan':{
+        'kvmem_reselect':'off','kvmem_prefill_window':'keep_selected'}}
+    assert control.lookup(req,0) == 0
+    plan = request_plan(req,4,32)
+    assert plan.prefill_window == expected
+    assert plan.output_tokens == req.max_tokens == 32
+
+
+def test_changed_branch_inherits_only_pins_in_verified_prompt_checkpoint():
+    from vllm_kvmem.prompt_checkpoints import token_bytes
+    from vllm_kvmem.request_plan import request_plan
+    control, events, _, entry = planned_idle_session()
+    entry.prompt_history = entry.prompt_window = 8
+    entry.prompt_tokens = token_bytes(list(range(25)), 8)
+    req = request('branch', tokens=list(range(8))+[999, 1000])
+    req.num_prompt_tokens = len(req.prompt_token_ids)
+    req.kv_transfer_params = {'kvmem_request_plan':{'kvmem_reselect':'off'}}
+    assert control.lookup(req, 0) == 8
+    plan = request_plan(req, 4, 32)
+    assert plan.mandatory == ((0, 4, 'root'),)
+    assert plan.query is None and entry.query is None
+    assert events[-1] == ('prepare', ('branch', 8, 8))
+
+
 def test_cancel_before_allocation_restores_idle_lease_and_aborts_only_preparation():
     control, events = ledger()
     binding, _ = first_turn(control)
@@ -276,3 +489,26 @@ def test_native_connector_metadata_roundtrip_for_exact_checkpoint_ack(monkeypatc
         sessions=[SessionNotice('retired', binding.namespace, binding.generation, 'a', 16, 12)])))
     assert scheduler.get_num_new_matched_tokens(request('b'), 0) == (16, False)
     assert events == [('prepare', ('b', 16, 12))]
+
+
+@pytest.mark.parametrize('cancel_before_restore', [False, True])
+def test_retained_import_survives_cancellation_without_another_capture(cancel_before_restore):
+    control, events = ledger()
+    binding, original = first_turn(control)
+    req = request('b')
+    assert control.lookup(req, 0) == original.history
+    control.allocated(req, original.history)
+    control.take_commands()
+    if cancel_before_restore:
+        control.finished(req)
+    restored = replace(original, kind='restored', request_id='b', retained=True)
+    control.consume(restored)
+    assert events[-1] == ('commit', ('b', original.history))
+    if not cancel_before_restore:
+        control.finished(req)
+    control.consume(replace(original, request_id='b'))
+    entry = control.entries[binding.namespace]
+    assert entry.phase == 'idle' and entry.history == original.history
+    assert entry.tokens and not control.requests
+    assert control.lookup(request('c'), 0) == original.history
+    assert events[-1] == ('prepare', ('c', original.history, original.window))

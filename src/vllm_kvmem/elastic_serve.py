@@ -11,7 +11,8 @@ import secrets
 import signal
 
 from .multi_user import _load_users
-from .serve import _validate_nvfp4_config, _validate_profiler_config
+from .serve import _validate_safetensors_config, _validate_profiler_config
+from .options import GRAPH_DEFAULTS, validate_graph_options
 
 
 def build_launch(profile, base, run_dir):
@@ -32,10 +33,49 @@ def build_launch(profile, base, run_dir):
         'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
-        'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None}
+        'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None,
+        'query_history':False,'query_history_decay':0.5,'guided_query_tokens':0,
+        'action_attention':False,'action_scope':'tool-call','action_layers':'spread3',
+        'action_interval':16,'action_fraction':.25,'action_decay':.5,'action_combine':'quota',
+        'archive_backend':'nvme','async_refresh':False,'refresh_quantum_tokens':256,
+        'prefill_attention':False,'action_pressure':False,'prefill_attention_interval':1024,
+        'prefill_attention_stride':32,'prefill_attention_half_life':8192,'prefill_chunk_tokens':0,
+        'block_tokens':128,'sink_blocks':None,'recent_blocks':None,
+        'cpu_history_coordination':False,'cpu_progress_reserve':True,
+        'maintenance_max_steps':0,'maintenance_busy_ms':2.0,'maintenance_idle_ms':8.0,
+        'maintenance_aging_ms':250.0,'maintenance_inflight_bytes':0,'async_restore':False,
+        'adaptive_prefill':False,'step_latency_interval':0,'decode_step_target_ms':50.0,
+        'prefill_min_tokens':128,'prefill_max_tokens':2048,'prefill_feedback_timeout_ms':5000.0,'prefill_batch_tokens':0,'active_resident_ttl_ms':0.0,'active_resident_max_fraction':0.5,
+        'active_resident_pressure_only':False,
+        'maintenance_transfer_bytes_per_second':0,'maintenance_transfer_burst_bytes':67108864,'offline_agent_policy':False,
+        'repository_gc':False, **GRAPH_DEFAULTS}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
+    if type(cfg['repository_gc']) is not bool:
+        raise ValueError('repository_gc must be boolean')
+    validate_graph_options({name: cfg[name] for name in GRAPH_DEFAULTS},
+        context_mode=cfg['context_mode'], request_planning=cfg['request_planning'],
+        session_capacity=cfg['max_sessions'], repository_gc=cfg['repository_gc'],
+        query_history=cfg['query_history'], action_pressure=cfg['action_pressure'],
+        action_attention=cfg['action_attention'], prefill_attention=cfg['prefill_attention'],
+        action_scope=cfg['action_scope'], action_fraction=cfg['action_fraction'])
+    if cfg['repository_gc'] and cfg['context_mode'] != 'meank':
+        raise ValueError('repository_gc requires MeanK context management')
+    if (cfg['cpu_history_coordination'] or cfg['maintenance_max_steps'] or cfg['async_restore'] or cfg['adaptive_prefill'] or cfg['step_latency_interval'] or cfg['prefill_batch_tokens'] or cfg['active_resident_ttl_ms'] or cfg['active_resident_pressure_only'] or cfg['maintenance_transfer_bytes_per_second'] or cfg['offline_agent_policy']) and cfg['context_mode'] != 'meank':
+        raise ValueError('History/maintenance coordination requires MeanK context management')
+    if cfg['archive_backend'] not in ('nvme','cpu'):
+        raise ValueError('Archive backend must be nvme or cpu')
+    if cfg['action_attention'] and cfg['context_mode']!='meank':
+        raise ValueError('Action attention requires MeanK historical context management')
+    if (cfg['prefill_attention'] or cfg['action_pressure'] or cfg['prefill_chunk_tokens']) and cfg['context_mode']!='meank':
+        raise ValueError('Prefill/pressure attention requires MeanK historical context management')
+    if type(cfg['prefill_chunk_tokens']) is not int or cfg['prefill_chunk_tokens'] < 0:
+        raise ValueError('prefill_chunk_tokens must be a nonnegative integer')
+    if type(cfg['async_refresh']) is not bool or (cfg['async_refresh'] and cfg['context_mode']!='meank'):
+        raise ValueError('Asynchronous refresh requires MeanK context management')
+    if (cfg['query_history'] or cfg['guided_query_tokens']) and not cfg['request_planning']:
+        raise ValueError('Guided refresh/history require explicit request planning')
     cfg['session_checkpoint_policy'] = cfg['session_checkpoint_policy'] or ('pm' if cfg['request_planning'] else 'sealed')
     if 'session_checkpoint_bytes' not in profile and cfg['session_checkpoint_policy']=='pm':
         # P and M each own a recurrent-model snapshot. Keep both for the
@@ -72,15 +112,24 @@ def build_launch(profile, base, run_dir):
     for name in required:
         path = Path(cfg[name]).expanduser()
         cfg[name] = str((base / path if not path.is_absolute() else path).resolve())
-    _validate_nvfp4_config(cfg['model'])
+    _validate_safetensors_config(cfg['model'])
     if not Path(cfg['tokenizer']).is_dir():
         raise ValueError('Missing tokenizer directory')
     _load_users(cfg['users_file'])
-    for name in set(defaults) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
+    for name in set(defaults) - set(GRAPH_DEFAULTS) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
                                'draft_quantization', 'profiler_config', 'async_seal', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
-                               'request_planning', 'mean_k_backend', 'session_checkpoint_policy'}:
+                               'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
+                               'query_history','query_history_decay','guided_query_tokens','repository_gc',
+                               'action_attention','action_scope','action_layers','action_interval',
+                               'action_fraction','action_decay','action_combine','archive_backend','async_refresh',
+                               'prefill_attention','action_pressure','prefill_attention_stride','prefill_attention_half_life','prefill_chunk_tokens',
+                               'sink_blocks','recent_blocks','cpu_history_coordination','cpu_progress_reserve',
+                               'maintenance_max_steps','maintenance_busy_ms','maintenance_idle_ms',
+                               'maintenance_aging_ms','maintenance_inflight_bytes','async_restore',
+                               'adaptive_prefill','step_latency_interval','decode_step_target_ms',
+                               'prefill_min_tokens','prefill_max_tokens','prefill_feedback_timeout_ms','prefill_batch_tokens','active_resident_ttl_ms','active_resident_pressure_only','active_resident_max_fraction','maintenance_transfer_bytes_per_second','maintenance_transfer_burst_bytes','offline_agent_policy'}:
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
@@ -120,10 +169,15 @@ def build_launch(profile, base, run_dir):
             'host': '127.0.0.1', 'port': cfg['backend_port'], 'served_model_name': cfg['served_model_name'],
             'max_model_len': cfg['max_model_len'], 'max_num_seqs': cfg['max_num_seqs'],
             'max_num_batched_tokens': cfg['max_num_batched_tokens'], 'long_prefill_token_threshold': 1024,
+            'prefill_chunk_tokens':cfg['prefill_chunk_tokens'],
             'gpu_memory_utilization': cfg['gpu_memory_utilization'],
             'kvmem': {'select_budget': cfg['active_context_tokens'], 'gen_budget': cfg['gen_budget_tokens'],
-                'repository_blocks': (cfg['max_model_len'] + 127) // 128,
+                'block_tokens':cfg['block_tokens'],'sink_blocks':cfg['sink_blocks'],'recent_blocks':cfg['recent_blocks'],
+                'repository_blocks': (cfg['max_model_len'] + cfg['block_tokens'] - 1) // cfg['block_tokens'],
                 'cpu_read_cache_bytes': cfg['cpu_kv_bytes'],
+                'archive_backend': cfg['archive_backend'],
+                'repository_gc': cfg['repository_gc'],
+                **{key: cfg[key] for key in GRAPH_DEFAULTS},
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'async_seal': cfg['async_seal'],
                 'gpu_raw_k_cache_bytes': cfg['gpu_raw_k_cache_bytes'],
@@ -131,6 +185,13 @@ def build_launch(profile, base, run_dir):
                 'async_cpu_scatter':cfg['async_cpu_scatter'],
                 'batched_cpu_append':cfg['batched_cpu_append'],
                 'cpu_scatter_min_tokens':cfg['cpu_scatter_min_tokens'],
+                'async_refresh':cfg['async_refresh'],
+                'refresh_quantum_tokens':cfg['refresh_quantum_tokens'],
+                **{key:cfg[key] for key in ('cpu_history_coordination','cpu_progress_reserve',
+                    'maintenance_max_steps','maintenance_busy_ms','maintenance_idle_ms',
+                    'maintenance_aging_ms','maintenance_inflight_bytes','async_restore',
+                    'adaptive_prefill','step_latency_interval','decode_step_target_ms',
+                    'prefill_min_tokens','prefill_max_tokens','prefill_feedback_timeout_ms','prefill_batch_tokens','active_resident_ttl_ms','active_resident_pressure_only','active_resident_max_fraction','maintenance_transfer_bytes_per_second','maintenance_transfer_burst_bytes','offline_agent_policy')},
                 # The archive clips this to its actual historical record
                 # geometry. MTP adds a layer; do not retain the target-only
                 # 12 GiB constant and leave global CPU capacity unused.
@@ -141,11 +202,21 @@ def build_launch(profile, base, run_dir):
                 'session_capture_terminal': not cfg['request_planning'] or cfg['session_checkpoint_policy']=='pm',
                 'session_capture_decode': cfg['request_planning'] and cfg['session_checkpoint_policy']=='sealed',
                 'session_checkpoint_policy':cfg['session_checkpoint_policy'],
-                'request_planning': cfg['request_planning'], 'mean_k_backend': cfg['mean_k_backend']}}
+                'request_planning': cfg['request_planning'], 'mean_k_backend': cfg['mean_k_backend'],
+                'query_history':cfg['query_history'],'query_history_decay':cfg['query_history_decay'],
+                'guided_query_tokens':cfg['guided_query_tokens'],
+                **{key:cfg[key] for key in ('action_attention','action_scope','action_layers',
+                    'action_interval','action_fraction','action_decay','action_combine',
+                    'prefill_attention','action_pressure','prefill_attention_interval',
+                    'prefill_attention_stride','prefill_attention_half_life')}}}
         if cfg['linear_backend_per_quant'] is not None:
             backend['linear_backend_per_quant'] = cfg['linear_backend_per_quant']
         # Validate the concrete native arguments before creating any resources.
-        build_mean_k_launch(backend, run_dir, run_dir / 'meank')
+        concrete = build_mean_k_launch(backend, run_dir, run_dir / 'meank')
+        if cfg['request_planning']:
+            plan_config = json.loads(concrete['environment']['KVMEM_REQUEST_PLAN_CONFIG'])
+            cfg['resolved_sink_blocks'] = plan_config['sink_blocks']
+            cfg['resolved_recent_blocks'] = plan_config['recent_blocks']
         cfg['geometry_file'] = str(run_dir / 'meank/capture/cache-geometry.json')
         cfg['session_views_file'] = str(run_dir / 'meank/capture/scheduler_resources.json')
         cfg['mean_k_backend_profile'] = backend

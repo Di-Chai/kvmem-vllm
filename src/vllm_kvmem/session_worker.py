@@ -76,7 +76,8 @@ class SessionWorker:
     def __init__(self, runner, options):
         self.runner, self.options = runner, options
         self.pool = PromptCheckpointPool(options.session_capacity, options.session_checkpoint_bytes,
-            retain_prompt=getattr(options,'session_checkpoint_policy','sealed')=='pm')
+            retain_prompt=getattr(options,'session_checkpoint_policy','sealed')=='pm',
+            native_restore_frame=getattr(options, 'native_restore_frame', False))
         self.bindings = {}
         self.identities = {}
         self.imports = set()
@@ -89,12 +90,14 @@ class SessionWorker:
         self.restore_oracles = {}
         self.checkpoint_deferrals = 0
         self.restored_tokens = 0
+        self.release_requests = set()
 
     @property
     def runtime(self):
         return self.runner._kvmem_capture_runtime
 
     def receive(self, commands):
+        self.release_requests.update(getattr(commands, 'release_requests', ()))
         for binding in commands.bindings:
             if binding.request_id in self.bindings:
                 raise ValueError('Duplicate worker session binding')
@@ -119,12 +122,15 @@ class SessionWorker:
             self.terminal_captures[capture.request_id] = capture
 
     def before_attention(self, batch):
+        if getattr(self.options, 'async_restore', False) and self.imports.intersection(batch.req_ids):
+            raise RuntimeError('Unready checkpoint restore entered a public model batch')
         selected = self.imports.intersection(batch.req_ids) | (self.captures.keys() & set(batch.req_ids))
         if not selected:
             return
         if self.runtime is None:
             raise RuntimeError('Prompt checkpoint has no accepted authority runtime')
-        self.runtime.drain(wait=True)
+        if not self.runtime.drain_requests(selected, wait=True):
+            raise RuntimeError('Prompt checkpoint preceded scheduler publication confirmation')
         if self.model_adapter is None:
             self.model_adapter = PromptStateAdapter(self.runner)
         for request_id in batch.req_ids:
@@ -177,6 +183,11 @@ class SessionWorker:
         if checkpoint is not None and checkpoint.position == history:
             if checkpoint.request_id != request_id:
                 raise ValueError('Selected frame belongs to another checkpoint request')
+            if getattr(self.options,'session_freeze_prompt',False):
+                # Independent questions may share an exact input prefix. Keep
+                # its pre-selection frame/model/attention state unchanged;
+                # the previous answer's selection must not influence the next Q.
+                return
             self.pool.update_live_window(checkpoint)
 
     def _restore(self, request_id):
@@ -195,13 +206,17 @@ class SessionWorker:
         assembler = NativeWindowAssembler.from_runner(self.runner, request_id, self.runtime.names,
             cfg.block_tokens, packed=self.options.packed_assembly,
             direct_pinned_reads=self.options.direct_pinned_reads)
-        if binding.pressure_restore:
-            plan = self.pool.prepare_claim_window(checkpoint, pressure=True)
-            if plan.total_window_tokens != binding.window:
-                raise ValueError('Pressure restore differs from its reserved window')
-        else:
-            plan = self.pool.prepare_claim_window(checkpoint)
         try:
+            if binding.pressure_restore:
+                block = cfg.block_tokens
+                plan = self.pool.prepare_claim_window(checkpoint, pressure=True,
+                    pressure_budget=(binding.window + block - 1) // block * block,
+                    mandatory_spans=binding.mandatory_spans)
+                if plan.total_window_tokens != binding.window:
+                    raise ValueError('Pressure restore differs from its reserved window')
+            else:
+                plan = self.pool.prepare_claim_window(checkpoint)
+            self.prepare_restore_metadata(request_id, authority)
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
@@ -209,56 +224,7 @@ class SessionWorker:
             event = self.model_adapter.restore(checkpoint.model, request_id)
             if event is not None:
                 event.synchronize()
-            oracle = getattr(self, 'restore_oracles', {}).pop(binding.namespace, None)
-            if isinstance(oracle,tuple):
-                oracle = oracle[1] if oracle[0]==checkpoint.position else None
-            if binding.pressure_restore:
-                # The intended selected page set changed; an old-view byte
-                # oracle is not a valid comparison for a pressure refresh.
-                oracle = None
-            if os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
-                recurrent = self.model_adapter._recurrent_views(request_id)
-                if any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name,t in recurrent.items()):
-                    raise RuntimeError('Query-boundary recurrent state differs from its CPU checkpoint')
-                import json
-                with (self.runner._kvmem_probe_output/'verified_state_restores.jsonl').open('a') as stream:
-                    stream.write(json.dumps({'request_id':request_id,'history_tokens':binding.history,
-                        'working_tokens':binding.window,'recurrent_tensors':len(recurrent),
-                        'checkpoint_kind':checkpoint.kind,
-                        'pressure_restore':binding.pressure_restore,'recurrent_byte_equal':True})+'\n')
-            if oracle is not None:
-                actual = self._target_bytes(request_id, checkpoint.window.window_tokens)
-                if not torch.equal(actual, oracle):
-                    import json
-                    width = self.runtime.heads * self.runtime.dim
-                    size = checkpoint.window.window_tokens * width
-                    differences = []
-                    for i, name in enumerate(self.runtime.names):
-                        row = {'layer': name}
-                        for j, kind in enumerate(('key', 'value')):
-                            begin = (2 * i + j) * size
-                            mismatch = (actual[begin:begin+size] != oracle[begin:begin+size])
-                            positions = mismatch.reshape(-1, width).any(dim=1).nonzero().flatten()
-                            row[kind] = {'bytes': int(mismatch.sum()), 'rows': positions.numel(),
-                                         'first_rows': positions[:8].tolist()}
-                        differences.append(row)
-                    (self.runner._kvmem_probe_output / 'restore_mismatch.json').write_text(
-                        json.dumps(differences, indent=2))
-                    raise RuntimeError('Restored target KV differs from the native terminal window')
-                recurrent = self.model_adapter._recurrent_views(request_id)
-                draft = self.model_adapter._draft_views(request_id, checkpoint.model.draft_begin,
-                                                       checkpoint.position)
-                if (any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name, t in recurrent.items())
-                        or any(not torch.equal(cache[pages, offsets].cpu(), checkpoint.model.draft[name])
-                               for name, (cache, pages, offsets) in draft.items())):
-                    raise RuntimeError('Restored GDN or draft state differs from its terminal checkpoint')
-                import json
-                with (self.runner._kvmem_probe_output / 'verified_restores.jsonl').open('a') as stream:
-                    stream.write(json.dumps({'request_id': request_id, 'history_tokens': binding.history,
-                        'working_tokens': checkpoint.window.window_tokens, 'target_kv_bytes': oracle.numel(),
-                        'working_attention_layers': len(self.runtime.names),
-                        'mtp_attention_layers': len(getattr(self.runner, '_kvmem_mtp_modules', {})),
-                        'recurrent_tensors': len(recurrent), 'draft_layers': len(draft), 'byte_equal': True}) + '\n')
+            self._verify_restored(request_id, checkpoint)
             restored = self.pool.finish_claim(checkpoint, event or _Ready())
             assert restored is authority
         except BaseException:
@@ -270,24 +236,153 @@ class SessionWorker:
             raise
         finally:
             assembler.close()
+        self.publish_restore(request_id, authority)
+
+    def _rebuilt_target_bytes(self, request_id, authority):
+        """Verification-only CPU oracle from immutable FP8 source records.
+
+        Do not compare a cold FP8-raw rebuild to the original unquantized
+        forward's rotated K. The source quantization is intentionally lossy.
+        This oracle uses independent Torch math, never the assembly kernels.
+        """
+        from .window_assembly import NativeWindowAssembler
+        from .codec import neox_rope
+        authority.publish_sealed(self.runtime._wait_archive_progress)
+        records = tuple(authority.memory._store.working_records())
+        assembler = NativeWindowAssembler.from_runner(self.runner, request_id, self.runtime.names,
+                                                       self.options.memory.block_tokens)
+        try:
+            keys, values = [[] for _ in assembler.layers], [[] for _ in assembler.layers]
+            trigs = [layer.cos_sin.cpu() for layer in assembler.layers]
+            scales = [layer.key_scale.cpu() for layer in assembler.layers]
+            for start in range(0, len(records), 32):
+                chunk = records[start:start+32]
+                handles = [authority.records[(slot, generation)].handle
+                           for slot, generation, *_ in chunk]
+                payloads = authority.read_records(handles)
+                for (_, _, _, count, position), (raw, value) in zip(chunk, payloads):
+                    positions = torch.arange(position, position+count)
+                    for index, layer in enumerate(assembler.layers):
+                        trig = trigs[index][positions]
+                        half = trig.shape[-1]//2
+                        rotated = neox_rope(raw[index], trig[:, :half], trig[:, half:])
+                        key = (rotated.float()/scales[index]).clamp(-448,448).to(torch.float8_e4m3fn)
+                        keys[index].append(key.view(torch.uint8).flatten())
+                        values[index].append(value[index].flatten())
+            return torch.cat([tensor for k,v in zip(keys,values)
+                              for tensor in (torch.cat(k),torch.cat(v))])
+        finally:
+            assembler.close()
+
+    def _verify_restored(self, request_id, checkpoint, resident=False):
+        if not self.pool.model_ready(checkpoint):
+            raise RuntimeError('Restore verification requires a completed model checkpoint')
+        binding = self.bindings[request_id]
+        working_tokens = binding.window if binding.pressure_restore else checkpoint.window.window_tokens
+        # Verification-only: retain one bounded oracle per namespace until a
+        # new terminal checkpoint replaces it or the session is evicted. A
+        # cancelled successor must prove its return to this same M checkpoint.
+        oracle = getattr(self, 'restore_oracles', {}).get(binding.namespace)
+        if isinstance(oracle,tuple):
+            oracle = oracle[1] if oracle[0]==checkpoint.position else None
+        if binding.pressure_restore:
+            # The intended selected page set changed; an old-view byte
+            # oracle is not a valid comparison for a pressure refresh.
+            oracle = None
+        oracle_kind = 'native_terminal_window'
+        if (os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1' and not resident and
+                checkpoint.authority.raw_dtype == torch.float8_e4m3fn):
+            oracle = self._rebuilt_target_bytes(request_id, checkpoint.authority)
+            oracle_kind = 'fp8_immutable_rebuild'
+        if os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+            recurrent = self.model_adapter._recurrent_views(request_id)
+            if any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name,t in recurrent.items()):
+                raise RuntimeError('Query-boundary recurrent state differs from its CPU checkpoint')
+            import json
+            with (self.runner._kvmem_probe_output/'verified_state_restores.jsonl').open('a') as stream:
+                stream.write(json.dumps({'request_id':request_id,'history_tokens':binding.history,
+                    'working_tokens':binding.window,'recurrent_tensors':len(recurrent),
+                    'checkpoint_kind':checkpoint.kind,
+                    'pressure_restore':binding.pressure_restore,'recurrent_byte_equal':True})+'\n')
+        if oracle is not None:
+            actual = self._target_bytes(request_id, working_tokens)
+            if not torch.equal(actual, oracle):
+                import json
+                width = self.runtime.heads * self.runtime.dim
+                size = working_tokens * width
+                differences = []
+                for i, name in enumerate(self.runtime.names):
+                    row = {'layer': name}
+                    for j, kind in enumerate(('key', 'value')):
+                        begin = (2 * i + j) * size
+                        mismatch = (actual[begin:begin+size] != oracle[begin:begin+size])
+                        positions = mismatch.reshape(-1, width).any(dim=1).nonzero().flatten()
+                        row[kind] = {'bytes': int(mismatch.sum()), 'rows': positions.numel(),
+                                     'first_rows': positions[:8].tolist()}
+                    differences.append(row)
+                (self.runner._kvmem_probe_output / 'restore_mismatch.json').write_text(
+                    json.dumps(differences, indent=2))
+                raise RuntimeError('Restored target KV differs from its '+oracle_kind+' oracle')
+            recurrent = self.model_adapter._recurrent_views(request_id)
+            draft = self.model_adapter._draft_views(request_id, checkpoint.model.draft_begin,
+                                                   checkpoint.position)
+            if (any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name, t in recurrent.items())
+                    or any(not torch.equal(cache[pages, offsets].cpu(), checkpoint.model.draft[name])
+                           for name, (cache, pages, offsets) in draft.items())):
+                raise RuntimeError('Restored GDN or draft state differs from its terminal checkpoint')
+            import json
+            with (self.runner._kvmem_probe_output / 'verified_restores.jsonl').open('a') as stream:
+                stream.write(json.dumps({'request_id': request_id, 'history_tokens': binding.history,
+                    'working_tokens': working_tokens, 'target_kv_bytes': oracle.numel(),
+                    'working_attention_layers': len(self.runtime.names),
+                    'mtp_attention_layers': len(getattr(self.runner, '_kvmem_mtp_modules', {})),
+                    'recurrent_tensors': len(recurrent), 'draft_layers': len(draft),
+                    'oracle_kind': oracle_kind, 'byte_equal': True}) + '\n')
+
+    def prepare_restore_metadata(self, request_id, authority):
+        binding = self.bindings[request_id]
+        graph = getattr(authority, 'block_graph', None)
+        if graph is not None:
+            # The checkpoint claim has already compared exact token prefixes.
+            # Omitted metadata inherits only this verified historical prefix;
+            # conflicting boundaries are errors, never silently spliced.
+            graph.update_message_spans(getattr(binding, 'message_spans', ()),
+                validated_prefix=getattr(authority, '_graph_validated_prefix', binding.history))
+
+    def publish_restore(self, request_id, authority, *, retained=False):
+        from .cache_groups import full_attention_groups
+        from .window_batch import WindowBatchAdapter
+        binding, cfg = self.bindings[request_id], self.options.memory
+        if getattr(authority, 'block_graph', None) is not None:
+            authority.graph_request_id = request_id
         if self.runner._kvmem_window_adapter is None:
             self.runner._kvmem_window_adapter = WindowBatchAdapter(
                 full_attention_groups(self.runner.kv_cache_config), cfg.select_budget + cfg.gen_budget)
         self.runner._kvmem_window_adapter.commit(request_id, binding.history, binding.window)
-        self.runtime.authorities[request_id] = authority
-        self.runtime.accepted[request_id] = binding.history
-        self.runtime.rejected[request_id] = 0
-        self.runtime.last_steps[request_id] = []
+        # Another request may be publishing CPU history while this restore
+        # completes. Register the new owner atomically with its initial fence.
+        with self.runtime._publication_lock():
+            self.runtime._raise_publication_error()
+            self.runtime.authorities[request_id] = authority
+            self.runtime.accepted[request_id] = binding.history
+            self.runtime.rejected[request_id] = 0
+            self.runtime.last_steps[request_id] = []
+            self.runtime._snapshot_capacity(request_id, authority)
         if authority.gc is not None:
             authority.memory._store.gc_begin_step()
         self.restored_tokens += binding.history
         self.completed.append(SessionNotice('restored', binding.namespace, binding.generation,
-                                            request_id, binding.history, binding.window))
+                                            request_id, binding.history, binding.window, retained=retained))
 
     def detach(self, request_id, authority, report):
         binding = self.bindings.get(request_id)
         if binding is None:
             return False
+        history = getattr(authority,'query_history',None)
+        if history is not None and history.policy.open:
+            # A cancelled/incomplete prefill cannot retain provisional relevance
+            # or its GPU Q tensor in an idle CPU-only checkpoint.
+            history.abort()
         command = getattr(self, 'terminal_captures', {}).pop(request_id, None)
         if command is not None:
             if command.position != authority.history_end:
@@ -312,7 +407,9 @@ class SessionWorker:
         if command is not None and kind == 'captured' and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
             self.restore_oracles[binding.namespace] = (checkpoint.position,self._target_bytes(request_id, checkpoint.window.window_tokens))
         verified = verify_preserved_authority(authority) if self.options.verify_archive_on_finish else 0
-        self.pool.retire(checkpoint, _Ready())  # Capture downloads and CPU state copies have drained.
+        # Accepted KV capture has drained. The independent model snapshot can
+        # still be downloading; pool.idle gates this request's retirement ack.
+        self.pool.retire(checkpoint, _Ready())
         self.retiring[request_id] = (checkpoint, {**report, 'history_end': authority.history_end,
             'checkpoint_tokens': checkpoint.position, 'sealed_records_verified': verified,
             'retirement_strategy': 'terminal_checkpoint' if checkpoint.kind=='M' else 'checkpoint_rewind',
@@ -337,13 +434,18 @@ class SessionWorker:
             checkpoint.authority.memory.repository.ready_slots,
             prompt.position if prompt else 0,prompt.window.window_tokens if prompt else 0,
             prompt.tokens if prompt else b'',
-            tuple((r[2],r[3]) for r in checkpoint.window.records)))
+            tuple((r[2],r[3]) for r in checkpoint.window.records),
+            resident_ready=(checkpoint.kind == 'M' and not checkpoint.rewind_started and
+                            checkpoint.position == report['history_end'] and
+                            (report.get('terminal_prefix') or {}).get('status') in
+                            ('FINISHED_STOPPED', 'FINISHED_LENGTH_CAPPED'))))
         self.runtime.completed.append({**report, 'retirement_ack_ready_at': time.perf_counter()})
         del self.retiring[request_id]
         self.runtime._write_archive_report()
         return True
 
     def ordinary_retired(self, request_id):
+        getattr(self, 'release_requests', set()).discard(request_id)
         binding = self.bindings.pop(request_id, None)
         if binding is not None:
             self.completed.append(SessionNotice('retired', binding.namespace, binding.generation, request_id))
@@ -354,8 +456,11 @@ class SessionWorker:
             if self.identities.get(command.namespace) != command.generation or command.namespace in self.evictions:
                 raise ValueError('Stale or duplicate session eviction')
             checkpoint = self.pool.entries[command.namespace]
+            authority = checkpoint.authority
             self.evictions[command.namespace] = command
             self.pool.evict(checkpoint)
+            from .gpu_raw_cache import retire_raw_cache
+            retire_raw_cache(self.runner, authority)
         self._poll_evictions()
 
     def _poll_evictions(self):
@@ -373,6 +478,7 @@ class SessionWorker:
             self.runtime._write_archive_report()
 
     def notices(self):
+        self.pool.poll_captures()
         self._poll_evictions()
         result, self.completed = self.completed, []
         return result
@@ -386,9 +492,10 @@ class SessionWorker:
                 self.pool.poll_eviction(checkpoint)
             else:
                 self.pool.evict(checkpoint, _Ready() if checkpoint.phase is CheckpointPhase.CLAIMED else None)
-        if self.pool.entries:
+        if not self.pool.poll_captures() or self.pool.entries:
             return False
         self.bindings.clear()
+        getattr(self, 'release_requests', set()).clear()
         self.identities.clear()
         self.imports.clear()
         self.captures.clear()

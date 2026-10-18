@@ -9,6 +9,57 @@ import shutil
 import torch
 
 
+_SOURCE_NAMES = ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_tiled.cuh')
+
+
+def _publish_source(path, content):
+    """Publish one complete immutable source without touching an existing copy."""
+    try:
+        existing = path.read_bytes()
+    except FileNotFoundError:
+        pass
+    else:
+        if existing != content:
+            raise RuntimeError(f'MeanK cached source content differs: {path}')
+        return
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.' + path.name + '.',
+                                         suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            # Another process may have published these same bytes meanwhile.
+            # Unlike replace(), link-if-absent preserves its inode and mtime.
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != content:
+                raise RuntimeError(f'MeanK cached source content differs: {path}')
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _prepare_build_sources(source, build_root):
+    # Snapshot all inputs before publishing any of them. Including boundaries
+    # prevents different distributions across the three files sharing a key.
+    contents = [(name, (source / name).read_bytes()) for name in _SOURCE_NAMES]
+    key = hashlib.sha256()
+    for name, content in contents:
+        key.update(name.encode() + b'\0' + len(content).to_bytes(8, 'big') + content)
+    digest = key.hexdigest()
+    directory = build_root / ('kvmem_meank_' + digest[:12])
+    # Keep the full content key in the input path even if module names share a
+    # truncated prefix. All quoted local headers remain adjacent to the .cu.
+    stable = directory / 'sources' / digest
+    stable.mkdir(parents=True, exist_ok=True)
+    for name, content in contents:
+        _publish_source(stable / name, content)
+    return directory, stable / _SOURCE_NAMES[0], digest[:12]
+
+
 @lru_cache(maxsize=1)
 def kernel():
     if shutil.which('ninja') is None:
@@ -19,11 +70,9 @@ def kernel():
     source = Path(__file__).parent / 'cuda_sources'
     if not source.exists():
         source = Path(__file__).resolve().parents[2] / 'csrc'
-    digest = hashlib.sha256(b''.join((source / n).read_bytes()
-        for n in ('qw3_mean_k.cu','qw3_mean_k_kernel.cuh'))).hexdigest()[:12]
-    directory = Path(os.getenv('KVMEM_CUDA_BUILD_DIR', tempfile.gettempdir())) / ('kvmem_meank_' + digest)
-    directory.mkdir(parents=True, exist_ok=True)
-    return load(name='kvmem_meank_' + digest, sources=[str(source / 'qw3_mean_k.cu')],
+    directory, stable_source, digest = _prepare_build_sources(source,
+        Path(os.getenv('KVMEM_CUDA_BUILD_DIR', tempfile.gettempdir())).resolve())
+    return load(name='kvmem_meank_' + digest, sources=[str(stable_source)],
         build_directory=str(directory), extra_cuda_cflags=['-O3'], verbose=False)
 
 

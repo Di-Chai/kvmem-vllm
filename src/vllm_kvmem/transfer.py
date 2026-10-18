@@ -32,6 +32,7 @@ class PackedTransfers:
         self.preparing = set()
         self._lock = RLock()
         self.closed = False
+        self.bandwidth_limiter = None
 
     def poll(self) -> int:
         with self._lock:
@@ -73,6 +74,8 @@ class PackedTransfers:
                              for owner in source_owners)
             staging = self.buffers[slot][:size]
             filled = fill(staging)
+            if self.bandwidth_limiter is not None:
+                self.bandwidth_limiter.acquire(size)
             if ready is None:
                 ready = torch.cuda.Event()
                 ready.record(torch.cuda.current_stream(self.device))
@@ -125,10 +128,16 @@ class PackedDownloads:
         self.device = torch.device("cuda", torch.cuda.current_device()) if device.index is None else device
         self.stream = torch.cuda.Stream(device=self.device)
         self.buffers = [torch.empty(slot_bytes, dtype=torch.uint8, pin_memory=True) for _ in range(slots)]
+        self.capacity_bytes = slot_bytes * slots
         self.pending = {}
         self.closed = False
+        self._lock = RLock()
 
     def download(self, payload, source_owners=(), ready=None):
+        with self._lock:
+            return self._download_locked(payload, source_owners, ready)
+
+    def _download_locked(self, payload, source_owners=(), ready=None):
         if self.closed:
             raise RuntimeError("Download pool is closed")
         if (payload.device != self.device or payload.dtype != torch.uint8 or
@@ -143,28 +152,36 @@ class PackedDownloads:
         retained = tuple(owner.clone() if isinstance(owner, _native.Lease) else owner
                          for owner in source_owners)
         staging = self.buffers[slot][:payload.numel()]
-        with torch.cuda.stream(self.stream):
-            self.stream.wait_event(ready)
-            staging.copy_(payload.flatten(), non_blocking=True)
-            payload.record_stream(self.stream)
-            event = torch.cuda.Event()
-            event.record(self.stream)
+        try:
+            with torch.cuda.stream(self.stream):
+                self.stream.wait_event(ready)
+                staging.copy_(payload.flatten(), non_blocking=True)
+                payload.record_stream(self.stream)
+                event = torch.cuda.Event()
+                event.record(self.stream)
+        except BaseException:
+            # An enqueue failure must not let the producer reuse a pinned slot
+            # while an earlier copy still writes it. This is failure-only.
+            self.stream.synchronize()
+            raise
         result = Download(event, staging, (payload, ready, *retained), slot)
         self.pending[slot] = result
         return result
 
     def release(self, download):
-        if self.pending.get(download.slot) is not download:
-            raise ValueError("Stale download slot release")
-        if not download.query():
-            return False
-        del self.pending[download.slot]
-        download.owners = ()
-        return True
+        with self._lock:
+            if self.pending.get(download.slot) is not download:
+                raise ValueError("Stale download slot release")
+            if not download.query():
+                return False
+            del self.pending[download.slot]
+            download.owners = ()
+            return True
 
     def close(self):
-        if self.pending:
-            return False
-        self.closed = True
-        self.buffers.clear()
-        return True
+        with self._lock:
+            if self.pending:
+                return False
+            self.closed = True
+            self.buffers.clear()
+            return True
