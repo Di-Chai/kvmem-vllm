@@ -373,3 +373,10 @@ comparison separately measures collection overhead. No tuning using answer gold.
   the current served-cap difference stays documented and every new result
   still requires its own cap-hit check. Proof at
   `artifacts/graph-v2-suite-preflight-20261018/historical-lme-output-caps.json`.
+- Second formal complete length passed: NIAH-A128K60/60exact,100% macro
+  numeric coverage,0cap hits; all original served hashes and scores rechecked.
+  Complete needle-range coverage is40/60cases, distinct from answer quality.
+  Median request183.58s excludes external admission wait/post-response retirement
+  and is not decode TPS. Bound first answers/evidence/releases in
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-A-128k-first.json`.
+  A256K is running; C/D and both memory suites remain pending.
