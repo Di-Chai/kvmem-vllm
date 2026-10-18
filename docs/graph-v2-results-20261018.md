@@ -239,8 +239,33 @@ r2 A 现已完成全部 1,116 个首次回答，技术错误为零；29 个历�
 A 有 102 个回答达到原始题目输出上限，其中 100 个 finish_reason 为 length、
 两个恰在上限自然停止；这不计为技术错误，也不代表答对。触顶分布为 MAB
 longmemeval 32/300、eventqa 3/500、ruler 4/100、factconsolidation sh 8/100、
-mh 54/100、摘要 1/16。保持原参数，不为消除触顶而重生成；历史 qw3 触顶对照
-及正式裁判评分待完成。证据为同目录 `full-mab-A-r2-output-caps.json`。
+mh 54/100、摘要 1/16。保持原参数，不为消除触顶而重生成。证据为同目录
+`full-mab-A-r2-output-caps.json`。
+
+另独立检查历史 qw3 attention/query 各 1,116 个结果，逐题 source/prompt/Query
+均与本轮 fixture 一致，回答绑定与冻结的历史 judge-answer manifest 一致，
+输出上限也逐题相同。旧两组分别有 125/130 个触顶，全部以 length 结束；
+因此这不是本轮新增输出限制。旧 attention 的 factconsolidation mh 为 89/100
+触顶、MAB longmemeval 为 25/300；旧 query 为 69/100、54/300。触顶数量的
+变化不等于准确率提升，也不能独立解释评分策略或量化的影响。历史结果文件
+校验值和各 source 统计保存在同目录 `historical-mab-output-caps.json`。
+
+原裁判流程已独立排队，状态与无凭据 runner 副本保存在
+`artifacts/graph-v2-original-scoring-20261019/r1/`。它绑定实际推理父进程的 PID、
+启动时间和命令校验值；九个冻结任务全部通过、完成 GPU 清理、父流程终止后，
+才调用六个冻结的原始 memory 评分器。任何推理失败都停止评分，不重生成回答。
+先运行含原校准的独立 LME，再运行 MAB；尚未发送正式评分请求。密钥通过
+隐藏终端进入进程内存，不写入 runner、manifest、日志或请求头文件。排队状态
+不是评分完成，最终仍需核对全部原评分和未判定项。
+
+C 的首个正式跨题恢复现已核对：group007 的前两题均实际运行 V2 multi
+Query 传播（alpha=.2、两类图等权），分别改变 57/58 个入选块。首题 20 次
+pressure，续题零次；P=367,616、prefill sample=11,453、图 source/edge 计数
+保持一致，action-history 为零，pressure 仍为本臂声明的旧 attention 策略。
+原始 token 输入没有编造消息边界，locality 使用 unknown fallback。首次回答、
+事件、请求与返回校验值绑定在同目录 `full-mab-C-r2-first-continuation.json`。
+这是当前冻结运行时实际启用图评分及 P 恢复的证据，不扩展为完整 C 组、
+回答质量或吞吐收益。
 
 在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
 校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算

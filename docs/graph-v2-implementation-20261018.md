@@ -548,3 +548,25 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Source distribution bound in `full-mab-A-r2-output-caps.json`;this is not
   technical failure or answer correctness. No answer regeneration or cap tuning;
   historical qw3 cap-hit comparison remains pending.
+- Historical MAB cap audit now passed for all1116 answers per qw3 attention/query
+  arm:input/prompt/Query identities match r2 fixture,answer hashes match frozen
+  original judge manifests,and every per-question cap equals r2. Old at-cap/
+  length counts125/130 versus r2 A102at-cap/100length. Source breakdown and
+  original result hashes in `historical-mab-output-caps.json`;not quality evidence
+  or causal attribution to scoring/quantization. Read audit took0.66s,no GPU work.
+- Original scoring queue launched as independent session18591,waiting for owned
+  inference workflow PID2918260 with start-time/command hash identity. Evidence
+  and credential-free runner copy: `artifacts/graph-v2-original-scoring-20261019/r1/`.
+  Requires all9frozen jobs passed,empty cleanup and original parent terminal
+  before six unchanged memory scorers;inference failure prevents judging.
+  LME's original calibrated judge first,then MAB;credentials hidden,memory-only,
+  children GPU-disabled. No formal judge requests/scores yet;do not launch a
+  competing scorer while this queue is live. Scoring summary completeness gates
+  remain separate from final full-goal completion audit.
+- First formal C cold/continuation pair observed in current frozen source:
+  group007,P367616,prefill samples11453,graph sources11453/edges45802 constant.
+  V2 multi Query alpha.2/equal shares actually changes57/58selected blocks;
+  first20pressure,continuation0,action history0,pressure policy stays attention.
+  Original token-only locality remains unknown fallback,no invented boundaries.
+  Bind first case artifacts in `full-mab-C-r2-first-continuation.json`;not complete
+  C-group release/quality/performance proof. Read audit took0.14s,no GPU work.
