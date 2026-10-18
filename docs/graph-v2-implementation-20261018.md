@@ -410,3 +410,14 @@ comparison separately measures collection overhead. No tuning using answer gold.
   retained A hashes verified;median request182.51s is descriptive,not a speedup
   gate. C256K is running;D and both memory suites remain pending. First proofs:
   `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-128k-first.json`.
+- Full C180 passed and released all owned/GPU processes;D started. Recomputed
+  all original scores,verified A input/seed/non-graph-mode controls,retained
+  all A and earlier C64K/128K first-proof hashes unchanged. C256K55/60exact,
+  97.9167%coverage,60/60complete needle intervals,0cap hits. Paired versus A:
+  two A errors corrected and one new error,net+1;no significance claim.
+  C total175/180 versus A174/180;complete-needle coverage C180/180 versus A133/180.
+  Wall4978.41s versus A4945.79 (+0.66%),pure-prefill GPU-event6004.64/s versus
+  6033.41/s. No stable performance gain/regression inference from one run.
+  Complete source-bound proofs:
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-all-first.json`.
+  D and both memory suites/original external scoring remain pending.
