@@ -296,6 +296,7 @@ class KVMemScheduler(Scheduler):
             report['sessions'] = dict(entries=len(sessions.entries), hits=sessions.hits,
                                       misses=sessions.misses, waits=sessions.waits)
             report['session_views'] = sessions.snapshot()
+            report['session_owners'] = sessions.owner_snapshot()
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
         temporary = path / "scheduler_resources.tmp"
         temporary.write_text(json.dumps(report))

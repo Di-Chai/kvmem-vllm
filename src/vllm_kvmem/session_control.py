@@ -377,6 +377,15 @@ class SessionLedger:
                  'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records}
                 for e in self.entries.values() if e.phase=='idle']
 
+    def owner_snapshot(self):
+        """All live namespace leases, including retirement before idle publish."""
+        return [dict(namespace=list(e.namespace), generation=e.generation,
+                     request_id=e.request_id, phase=e.phase)
+                for e in self.entries.values()] + [
+                    dict(namespace=list(namespace), generation=None,
+                         request_id=request_id, phase='uncached')
+                    for namespace, request_id in self.uncached_sessions.items()]
+
     def allocated(self, request, external_tokens):
         entry = self.requests.get(request.request_id)
         if entry is None:

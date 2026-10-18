@@ -165,6 +165,9 @@ class HistoryAdmission:
         return dict(capacity_bytes=self.capacity_bytes, reserved_bytes=used,
                     progress_reserve_bytes=reserve, available_bytes=self.capacity_bytes-used-reserve,
                     leases=len(self.leases), active=sum(v.phase == 'active' for v in self.leases.values()),
+                    lease_views=[dict(key=list(key), generation=lease.generation,
+                                      request_id=lease.request_id, phase=lease.phase, bytes=lease.bytes)
+                                 for key, lease in self.leases.items()],
                     retiring=sum(v.phase == 'retiring' for v in self.leases.values()),
                     waiting=len(self.waiting), deferrals=self.deferrals, admissions=self.admissions,
                     last_observed_archive_bytes=self.observed_bytes,

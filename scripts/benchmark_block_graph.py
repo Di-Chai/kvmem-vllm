@@ -108,6 +108,9 @@ def prepare(args):
     if not args.fixture.is_file():
         raise ValueError('Prepare a shared fixture first; qualification inputs must be frozen')
     qualifier = getattr(args, 'qualifier', None) or ROOT/'scripts/qualify_block_graph.py'
+    client_timeout = getattr(args, 'client_timeout_seconds', 1200)
+    if type(client_timeout) is not int or not 1 <= client_timeout <= 86400:
+        raise ValueError('Client timeout must be between 1 and 86400 seconds')
     qualifier = qualifier.resolve()
     if qualifier.parent != (ROOT/'scripts').resolve() or qualifier.suffix != '.py' or not qualifier.is_file():
         raise ValueError('Qualification client must be a Python file in this repository scripts directory')
@@ -149,6 +152,7 @@ def prepare(args):
     hashes = {str(path.relative_to(runtime)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in runtime.rglob('*') if path.is_file()}
     write(root/'manifest.json', dict(arm=args.arm, synchronous=args.synchronous,
+        client_timeout_seconds=client_timeout,
         qualification_script=qualifier.name,
         created_at=time.time(), runtime_sha256=hashes, python=sys.executable,
         fixture=str(root/'fixture.json'), original_fixture=str(args.fixture.resolve()),
@@ -160,6 +164,9 @@ def prepare(args):
 def run(args):
     root = args.output.resolve()
     manifest = json.loads((root/'manifest.json').read_text())
+    client_timeout = manifest.get('client_timeout_seconds', 1200)
+    if type(client_timeout) is not int or not 1 <= client_timeout <= 86400:
+        raise ValueError('Frozen client timeout must be between 1 and 86400 seconds')
     runtime = root/'runtime'
     qualifier = manifest.get('qualification_script', 'qualify_block_graph.py')
     if Path(qualifier).name != qualifier or not qualifier.endswith('.py'):
@@ -222,8 +229,10 @@ def run(args):
             with (root/'client.log').open('x') as log:
                 client = subprocess.Popen(client_command, cwd=runtime, env=environment,
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            deadline = time.monotonic()+1200
+            deadline = time.monotonic()+client_timeout
             while client.poll() is None:
+                if (root/'qualification/client-failure.json').exists():
+                    raise RuntimeError('Qualification client reported a technical failure; see retained client-failure.json')
                 if server.poll() is not None or time.monotonic() > deadline:
                     raise RuntimeError('Model or qualification client failed or timed out')
                 time.sleep(1)
@@ -259,6 +268,7 @@ def main():
     parser.add_argument('--arm', choices=('baseline','collect','legacy','locality','attention','multi'), required=True)
     parser.add_argument('--port', type=int, default=18618)
     parser.add_argument('--synchronous', action='store_true')
+    parser.add_argument('--client-timeout-seconds', type=int, default=1200)
     parser.add_argument('--profile', type=Path,
         help='Prepare using a complete custom profile; only port and --synchronous override it')
     parser.add_argument('--qualifier', type=Path,

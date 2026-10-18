@@ -43,6 +43,23 @@ def close_request(name='close', session='s'):
     return req
 
 
+def test_owner_view_keeps_retiring_namespace_until_validated_empty_retirement():
+    control, _ = ledger(capacity=1)
+    req = request()
+    control.lookup(req, 0)
+    control.allocated(req, 0)
+    binding = control.take_commands().bindings[0]
+    assert control.owner_snapshot() == [dict(namespace=['tenant','s'],
+        generation=binding.generation,request_id='a',phase='active')]
+    control.finished(req)
+    assert control.owner_snapshot()[0]['phase'] == 'retiring'
+    with pytest.raises(ValueError,match='Stale'):
+        control.consume(SessionNotice('retired',binding.namespace,binding.generation+1,'a'))
+    assert len(control.owner_snapshot()) == 1
+    control.consume(SessionNotice('retired',binding.namespace,binding.generation,'a'))
+    assert control.owner_snapshot() == []
+
+
 def test_explicit_release_fences_old_generation_and_keeps_no_replacement_checkpoint():
     control, events = ledger()
     binding, _ = first_turn(control)

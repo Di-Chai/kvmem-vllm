@@ -63,6 +63,22 @@ def test_credits_wait_for_exact_generation_and_retirement_fences():
         gate.consume(SessionNotice('evicted', ('tenant', 'a'), 7, ''))
 
 
+def test_lease_view_distinguishes_active_retiring_retained_and_released_history():
+    gate = HistoryAdmission(200, 4, 1, 100)
+    req = request('a')
+    gate.allocated(req, 7)
+    view = gate.snapshot()['lease_views']
+    assert view == [dict(key=['session','tenant','a'],generation=7,
+                         request_id='a',phase='active',bytes=88)]
+    gate.finished(req)
+    assert gate.snapshot()['lease_views'][0]['phase'] == 'retiring'
+    gate.consume(retired(req, 7))
+    view = gate.snapshot()['lease_views'][0]
+    assert view['phase'] == 'idle' and view['request_id'] is None and view['bytes'] == 88
+    gate.consume(SessionNotice('evicted', ('tenant','a'), 7, ''))
+    assert gate.snapshot()['lease_views'] == []
+
+
 def test_cancelled_waiter_never_takes_credits_and_stateless_release_is_fenced():
     gate = HistoryAdmission(200, 4, 1, 100)
     for key in ('a', 'b'):
