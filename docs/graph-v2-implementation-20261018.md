@@ -340,4 +340,11 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Regression114 passed. The complete remaining r3 audit was replayed offline
   into `diagnostic-v2-evidence.json` and passed, without reclassifying r3.
   Diagnostic output150.11/s and native peak8 are not a qualified paired gain.
-  Metadata r4 is a new frozen/validated complete pair and is now running.
+- Fresh natural-agent metadata r4 completed both arms and all history/config/
+  retirement/release checks. Fixed300s accepted output baseline176.04/s versus
+  candidate163.63/s, both actual native/decode peak8. Output/selection drift on
+  126 common turns makes the comparison inconclusive; no >=5% promotion evidence.
+  Freeze the verified baseline execution settings for full A/C/D: raw-K0,
+  direct seal false, async action metadata false. Preserve failed r1/r3 and
+  all original first answers; do not replace them with this new successful run.
+  Metadata r4 retains its own frozen source, complete pair and comparison.
