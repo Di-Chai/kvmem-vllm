@@ -21,6 +21,15 @@ precede the shared 300-second window. Epochs end normally after 16 turns or when
 the next complete input plus output allowance would exceed 262144 tokens. No
 pressure-driven truncation, recomputation or forced answer lengths are added.
 
+The original fixture uses `auto` with an early Query inside K. Its initial
+prefix fits intact and the observed trajectory can contain only graph pressure,
+with no Mean-K Query selection event. This is reported as unexercised Query
+propagation, not fabricated coverage. Initial epochs without a scored selection
+must have an explicitly early auto Query and actual pressure windows whose hard
+mandatory blocks and selected ranges protect that Query. Later turns must still
+prove restoration of the original Query-containing history. The independent
+structured and NIAH tests qualify scored Query propagation.
+
 From the repository root, prepare one screening pair:
 
 ```sh

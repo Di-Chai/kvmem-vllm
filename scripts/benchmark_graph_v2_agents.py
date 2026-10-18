@@ -234,7 +234,7 @@ def audit_job(root, job, manifest, result):
             entry.get('checkpoint_kind')=='M' and entry.get('checkpoint_tokens')==entry['history_end'] for entry in matching),
             'Missing complete accepted terminal CPU history/checkpoint publication')
     report = dict(history=history, actual_profile=checks.actual_profile(directory,
-        read(root/'expected-launches.json')[job['id']]), graph=checks.graph_evidence(directory/'server/capture',fixture,rows),
+        read(root/'expected-launches.json')[job['id']]), graph=checks.graph_evidence(directory/'server/capture',fixture,rows,profile),
         measured=checks.measurements(directory,profile,result))
     save(directory/'v2-evidence.json',report)
     return report

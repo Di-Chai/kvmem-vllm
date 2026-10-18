@@ -195,6 +195,33 @@ def test_restored_history_must_contain_original_query(tmp_path):
     with pytest.raises(ValueError,match='restore'): checks.graph_evidence(tmp_path,fixture,rows)
 
 
+def test_original_early_auto_query_requires_real_pressure_protection_not_a_fake_query_event(tmp_path):
+    fixture,rows=graph_fixture(tmp_path)
+    for plan in fixture['agent_plans']:plan['query_plan']['kvmem_reselect']='auto'
+    for row in rows:row['query_plan']['kvmem_reselect']='auto'
+    query=fixture['agent_plans'][0]['query_plan']['kvmem_query_span']
+    blocks=list(range(query[0]//32,(query[1]+31)//32))
+    pressure=dict(request_id='cmpl-0-x',selection='pressure',
+        selected_history_ranges=[[i*32,32] for i in blocks],mandatory_fit=dict(hard_blocks=blocks))
+    lines(tmp_path/'bounded_refresh.jsonl',[pressure])
+    graph=dict(mode='multi',scoring_version='v2',score_domain_version='qw3-native-v2',alpha=.2,
+        pressure_policy='graph',phase='pressure',seed_source='prefill',graph_global_bytes=1000,graph_bytes=500)
+    lines(tmp_path/'block_graph.jsonl',[graph])
+    profile=next(iter(checks.profiles(base(),1234,'raw-k-cache').values()))
+    result=checks.graph_evidence(tmp_path,fixture,rows,profile)
+    assert result['early_auto_query_epochs']==1 and result['mean_k_query_graph_exercised'] is False
+    assert result['requests'][0]['query_executions']==0
+    with pytest.raises(ValueError):checks.graph_evidence(tmp_path,fixture,rows)
+    lines(tmp_path/'bounded_refresh.jsonl',[dict(pressure,mandatory_fit={'hard_blocks':[]})])
+    with pytest.raises(ValueError,match='protected'):checks.graph_evidence(tmp_path,fixture,rows,profile)
+    lines(tmp_path/'bounded_refresh.jsonl',[dict(pressure,selected_history_ranges=[])])
+    with pytest.raises(ValueError,match='protected'):checks.graph_evidence(tmp_path,fixture,rows,profile)
+    lines(tmp_path/'bounded_refresh.jsonl',[pressure])
+    for row in rows:row['query_plan']['kvmem_reselect']='force'
+    fixture['agent_plans'][0]['query_plan']['kvmem_reselect']='force'
+    with pytest.raises(ValueError,match='Initial epoch'):checks.graph_evidence(tmp_path,fixture,rows,profile)
+
+
 def measurement_fixture(tmp_path):
     capture=tmp_path/'server/capture'
     save(tmp_path/'tools/window.json',dict(begin=10.,end=310.,agents=8,warmup_turns=2))

@@ -8,6 +8,7 @@ from pathlib import Path
 import benchmark_capacity_chain as chain
 import benchmark_graph_v2_performance as pairs
 import qualify_graph_v2_performance as counters
+from qualify_graph_niah import covered
 
 ready, cap, work = chain.ready, chain.cap, chain.work
 require, read, sha = cap.require, cap.read, cap.sha
@@ -195,7 +196,7 @@ def qualification_proof(root, baseline, runtime_hashes, synchronous, *, runtime_
         scope='Prior sync/async byte-restore and release evidence only. Fresh baseline and candidate runs each require their own history/config/resource checks.')
 
 
-def graph_evidence(capture, fixture, rows):
+def graph_evidence(capture, fixture, rows, profile=None):
     graphs, refresh = ready.records(capture/'block_graph.jsonl'), ready.records(capture/'bounded_refresh.jsonl')
     require(graphs and refresh, 'Actual graph and selection evidence required')
     for event in graphs:
@@ -223,7 +224,23 @@ def graph_evidence(capture, fixture, rows):
         # retain the full original Query plan in transport and restore history.
         for event in selections:
             require(event.get('query_span') == expected['kvmem_query_span'], 'Executed Query coordinates changed')
-        if row['turn'] == 0:
+        disposition = 'scored' if selections else 'continuation_reuse'
+        if row['turn'] == 0 and not selections:
+            # The unchanged fixture places its auto Query before K. That
+            # prefix fits intact, so the runtime need not perform Mean-K Query
+            # selection. Its subsequent pressure windows must protect Query.
+            require(profile is not None and expected.get('kvmem_reselect') == 'auto' and
+                expected['kvmem_query_span'][1] <= profile['kvmem']['select_budget'],
+                'Initial epoch lacks an actual Query selection or supported early auto Query')
+            pressure = [event for event in refresh if match(event) and event.get('selection') == 'pressure']
+            begin,end = expected['kvmem_query_span']
+            block = profile['kvmem']['block_tokens']
+            required = set(range(begin//block,(end+block-1)//block))
+            require(pressure and all(covered(begin,end,event.get('selected_history_ranges',[])) and
+                required <= set((event.get('mandatory_fit') or {}).get('hard_blocks',[]))
+                for event in pressure), 'Early auto Query was not protected in actual pressure windows')
+            disposition = 'early_auto_query_protected_without_scored_selection'
+        elif row['turn'] == 0:
             require(selections, 'Initial epoch lacks an actual Query selection')
         else:
             restored = [event for event in restores if match(event)]
@@ -232,9 +249,12 @@ def graph_evidence(capture, fixture, rows):
         selected = [dict(selection=e['selection'],ranges=e['selected_history_ranges']) for e in refresh if match(e)]
         verified.append(dict(request_id=row['request_id'], agent=row['agent'],epoch=row['epoch'],turn=row['turn'],
             query_executions=len(selections),selection_sha256=counters.digest(selected),
+            query_disposition=disposition,
             query_plan_sha256=counters.digest(expected), input_sha256=row['input_sha256'], output_sha256=row['output_sha256']))
     return dict(requests=verified, query_events=sum(e['phase']=='query' for e in graphs),
-        pressure_events=sum(e['phase']=='pressure' for e in graphs), original_query_positions_preserved=True)
+        pressure_events=sum(e['phase']=='pressure' for e in graphs), original_query_positions_preserved=True,
+        mean_k_query_graph_exercised=any(e['phase']=='query' for e in graphs),
+        early_auto_query_epochs=sum(r['query_disposition']=='early_auto_query_protected_without_scored_selection' for r in verified))
 
 
 def actual_profile(directory, expected):

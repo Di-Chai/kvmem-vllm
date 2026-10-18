@@ -330,3 +330,14 @@ comparison separately measures collection overhead. No tuning using answer gold.
   AST comparison proves the remaining graph code identical and tracing off.
   Unrun metadata r2 is superseded, retaining its manifest; metadata r3 was
   prepared/validated and has started a new complete pair after host admission.
+- Agent r3 completed workload, drain, and verified explicit release, then the
+  Query-event audit failed. The original fixed fixture uses an early `auto`
+  Query inside K; all original Q pages are hard mandatory in pressure windows,
+  and no scored Query event was observed. The audit now allows this native
+  all-fit path only with the unchanged early auto plan and actual complete
+  pressure hard-pin/selected-range protection. Late/forced/missing evidence
+  still fails; Query propagation is explicitly marked unexercised here.
+  Regression114 passed. The complete remaining r3 audit was replayed offline
+  into `diagnostic-v2-evidence.json` and passed, without reclassifying r3.
+  Diagnostic output150.11/s and native peak8 are not a qualified paired gain.
+  Metadata r4 is a new frozen/validated complete pair and is now running.
