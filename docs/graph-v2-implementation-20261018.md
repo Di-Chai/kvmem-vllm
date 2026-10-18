@@ -440,3 +440,20 @@ comparison separately measures collection overhead. No tuning using answer gold.
   and restore selections;not a300s rate or per-HTTP count. Existing source
   configuration and full graph-log hashes bound in
   `artifacts/graph-v2-suite-preflight-20261018/real-output-prefill-pressure-seeds.json`.
+- Full formal D180 passed and released all owned/GPU processes; MAB-A started
+  automatically. Original scorer/input/seed/non-pressure-policy controls and
+  retained A/C plus D64K/128K first-proof hashes all revalidated. D256K53/60
+  exact,97.0833%coverage,60/60complete needle intervals,0cap hits; paired versus
+  C corrects2 and introduces4 errors (net-2),versus A corrects1/introduces2.
+  All1140pressure graph events (60/300/780 per length) are nonidentity and
+  selection-changing,seeded from cumulative prefill attention. Full wall5031.07s,
+  useful input5469.51/s,pure-prefill GPU-event6076.01/s;actual native peak8,
+  decode peak7. No stable speedup or statistical significance claim.
+  Source-bound proof: `full-niah-D-all-first.json` in the suite preflight dir.
+- Formal NIAH matrix now contains all540 first answers. Read-only error audit
+  bound all three complete proofs: A/C/D6/5/7 errors,all256K,all exactly one
+  omitted number,no extra numbers/unclosed thinking/cap hit. All C/D error
+  cases retain complete needle intervals;retention is not answer correctness
+  and does not diagnose the cause of the remaining generation errors.
+  Evidence: `full-niah-ACD-error-reading.json`. No tuning/reruns use this gold
+  analysis. Both memory suites and original judging remain pending.
