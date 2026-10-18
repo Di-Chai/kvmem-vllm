@@ -51,3 +51,36 @@ vLLM 继续负责已准入请求的 continuous batching、chunked prefill 和 de
 
 CPU 验证共 409 项通过，覆盖队列补位／失败、逐所有权释放门禁、会话生命周期、CPU 准入、
 恢复协调、服务启动参数以及图评分原有证据门禁。真实模型的连续补位与三组质量对照单独记录。
+
+r4 真实模型已观察到第 9、10 条分别在首批仍有 7、6 条未完成时准入。
+各自前一条任务的自身退休门禁与校验完成后，外层队列约 7／12 ms 发出新准入；
+这是队列决策耗时，不是新请求的 prefill 或首 token 延迟。
+证据保存在该测试的 `continuous-refill-proof.json`。整轮质量与吞吐比较仍待完成。
+
+## 伴随运行的只读监控
+
+`scripts/monitor_offline_inference.py` 可附加到冻结测试目录，无需修改正在运行的 runtime、
+请求或调度参数。默认每秒采集，随 arm 切换，测试完成或失败后自动退出。
+
+- GPU 利用率、功率、空闲显存复用测试控制器已有的 NVML 记录。
+- prefill 用 KVMem `public_work` 中**已完成**的真实公开 target prefill 计数，
+  排除历史 KV 恢复、private Query forward、草稿与图 padding。
+- decode 用本实例 vLLM `generation_tokens_total` 的增量，即接受输出／墙钟时间。
+  包含 prefill、重选、维护带来的停顿，不是纯 decode 内核吞吐；不把草稿 token 当输出。
+- 同步记录外层 waiting/running/retiring、原生 running/waiting 与模型 step 的实际 decode batch。
+  原生 running 数不等于正在 decode 的路数。
+- 记录 1／10／60 秒速率及实际窗口跨度；监控刚启动时的短窗口不会伪称完整 60 秒。
+  数据缺失／过期记为 null，计数器重置后重新建立窗口。
+
+输出为 `samples.jsonl`、`samples.csv` 和原子更新的 `latest.json`；manifest 记录监控脚本哈希、
+启动时间与统计定义。GPU／模型原始记录仍在原测试目录中保存。
+中途附加的监控不重建过去的接受输出速率，因此不能直接把第一组的局部均值与后两组全程均值比较。
+
+```bash
+python3 -B scripts/monitor_offline_inference.py \
+  --campaign artifacts/graph-niah256k-20261018-r4 \
+  --output artifacts/graph-niah256k-20261018-r4/telemetry-repro
+```
+
+输出目录必须全新；现有运行正在记录到该测试的 `telemetry-r1/`。
+监控另有 6 项 CPU 回归，覆盖计数器重置、缺失／过期数据、窗口跨度、模型过滤和增量 JSONL 读取。
