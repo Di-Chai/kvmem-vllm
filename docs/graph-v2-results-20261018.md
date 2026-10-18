@@ -206,7 +206,25 @@ r2 A 的首个完整 MAB 历史组（60 题、P=367,616 token）已完成并释�
 421.15/6.74 秒，包含不同工作，不能据此推导修复的速度提升。旧 r1 的同题
 HTTP500 文件保持原样；这是两项容量修复组合后的成功路径，不隔离各自贡献。
 证据为 `artifacts/graph-v2-memory-capacity-20261019/full-mab-A-r2-544k-first.json`。
-最长 757,259-token 样本及完整 MAB/其他策略仍待验收，不扩展该两题的结论。
+完整 MAB/其他策略仍待验收，不扩展该两题的结论。
+
+最长原始样本现也通过 r2 A：757,259 个输入 token、冻结 P=755,712，返回
+1,150 个输出 token 后自然停止，未达到原始 1,200 输出上限；请求耗时 405.88 秒。
+完整返回的 prompt token IDs 和 P 前缀分别与原始样本校验值一致，实际发生
+一次 Query、48 次 pressure，随后会话正常释放。Query 时实际图预算计费为
+34,785,462 bytes，超过旧的 32 MiB 单会话上限；这说明较长样本确实需要
+足够的配额，不只是修复重复元数据的无效预留。两项修复没有隔离计时。
+证据为同目录 `full-mab-A-r2-757k-first.json`；这仍不是完整三臂质量结论。
+
+另已核对实际 vLLM 服务的指标实现：`generation_time_ms` 为首个到末个输出
+的 engine 时间戳差，`tokens_per_second` 则包含从 scheduled 到首 token 的
+阶段。上述 757K 请求首 token 后间隔为 15.49 秒，按 (1,150−1)/15.49 为
+74.18 token/s；包含 scheduled→首 token 的 389.68 秒后，服务整请求输出率
+为 2.84 token/s。这是单请求共享服务的墙钟输出率，可能包含其他请求的
+prefill/恢复干扰，不是 GPU 合计或隔离的纯 decode TPS；首 token 前时间也
+不能全部归为模型 prefill。原生 queue 指标不涵盖所有网关准入等待。
+定义源码校验值、公式及样本绑定保存在同目录
+`per-request-metric-definition.json`，单 token 或零生成间隔不推导 decode 率。
 
 在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
 校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算

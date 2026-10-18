@@ -521,3 +521,17 @@ comparison separately measures collection overhead. No tuning using answer gold.
   memory-capacity artifact directory.421.15/6.74s are different-scope request
   durations,not a speedup. Combined repair works on this prefix;maximum757259
   input,all1116questions,other arms and original quality scoring remain pending.
+- Maximum original MAB input now passed in r2 A:757259input,P755712,1150output,
+  natural stop below original1200cap,405.88s wall. Independently verified all
+  echoed original prompt IDs and prefix hash;1Query/48pressure events,ordinary
+  retirement released. Actual charged graph34785462bytes exceeds old32MiB cap,
+  supporting legitimate capacity expansion in addition to metadata no-op repair.
+  Bound source/first response/events/release in `full-mab-A-r2-757k-first.json`.
+  This is single-case capacity proof,not full A/C/D quality/performance evidence.
+- Audited installed vLLM timing source and identities in
+  `per-request-metric-definition.json`:generation is engine first-to-last output,
+  overall tokens_per_second includes scheduled-to-first interval. Longest case
+  yields74.18acceptedtok/s after first token vs2.84whole-server-requesttok/s.
+  Shared-service per-request rate includes interference,not aggregate/pure GPU
+  decode TPS. Native queue excludes earlier gateway admission;TTFT does not
+  isolate model prefill. Invalid/one-token intervals remain undefined.
