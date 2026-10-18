@@ -380,3 +380,20 @@ comparison separately measures collection overhead. No tuning using answer gold.
   and is not decode TPS. Bound first answers/evidence/releases in
   `artifacts/graph-v2-suite-preflight-20261018/full-niah-A-128k-first.json`.
   A256K is running; C/D and both memory suites remain pending.
+- Full formal NIAH-A180 passed and cleaned all owned/GPU processes; C started
+  automatically. Recomputed all180 original scores/input bindings and verified
+  prior64K/128K first proofs unchanged. Exact64K60/60,128K60/60,256K54/60;
+  coverage100/100/97.5%; complete-needle-range coverage60/40/33cases;0cap hits.
+  Wall4945.79s,original-input5563.83/s,pure-prefill GPU-event6033.41/s including
+  replay. Whole output39331/4945.79=7.95/s is not decode TPS. Actual request peak8
+  in7steps,decode peak7,363pure-decode and3919mixed steps. Full first proofs:
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-A-all-first.json`.
+- Read-only natural-agent phase report validates all complete offered request
+  token-ID/timeline/usage bindings and exact window output reconciliation.
+  Baseline per-request post-first-emission stream p50/p95=40.89/87.00 tokens/s,
+  duration-weighted33.88; candidate40.99/95.63,31.05. Includes mixed interference
+  and offered-cohort drain, not isolated GPU decode or aggregate speedup. Only
+  three pure-prefill steps in each window; no general short-prefill claim.
+  Existing native samples omit per-owner reservation/progress snapshots needed
+  for rigorous pure-decode wall cohorts. No proposal-count proxy is substituted.
+  Proof: `artifacts/graph-v2-performance-20261018/agent-phase-rate-reading.json`.
