@@ -69,6 +69,47 @@ def test_mab_complete_757k_history_fits_and_cpu_credits_remain_explicit():
     assert report['cases'] == 1116 and report['independent_owners'] == 12
     assert report['maximum_owner_credit_bytes'] < report['cpu_payload_credits_bytes']
     assert report['largest_eight_fit_cpu_credits'] is False
+    assert report['graph_per_owner_required_bytes'] == 256 * 1024**2
+    assert report['graph_total_required_bytes'] == 2 * 1024**3
+
+
+@pytest.mark.parametrize('limit', ['graph_max_bytes_per_session', 'graph_max_total_bytes'])
+def test_mab_preflight_rejects_the_insufficient_cold_niah_graph_limits(limit):
+    rows, sampling = reference_inputs()
+    profile = protocol.profiles(base(), 1234, 'memoryagentbench')['A']
+    profile['kvmem'][limit] = 33554432 if limit.endswith('session') else 268435456
+    with pytest.raises(ValueError, match='Frozen-P graph capacity'):
+        protocol.preflight_reference(rows, sampling, profile, 'memoryagentbench')
+
+
+def test_one_million_token_graph_retained_prefix_and_staging_fit_mab_capacity():
+    from vllm_kvmem.block_graph import BlockGraph, GraphSample, GraphBudget
+    from vllm_kvmem.prompt_spans import install_graph_metadata
+    per_owner, total = protocol.frozen_prefix_graph_capacity(32768, 8)
+    pool = GraphBudget(total)
+    graph = BlockGraph('mab', 32, budget=pool, max_bytes_per_session=per_owner)
+    install_graph_metadata(graph, SimpleNamespace())
+    end = 1048576 - 32
+    samples = tuple(GraphSample(block * 32,
+        tuple((block - i) * 32 for i in range(1, 5)), (.25,) * 4, 'prefill')
+        for block in range(4, end // 32))
+    with graph.prepare(0, end, samples) as update:
+        update.commit()
+    prefix, scoring = graph.snapshot(), graph.snapshot()
+    graph.set_preserved_prefix(prefix, end)
+    before = graph.binding, graph.bytes
+    install_graph_metadata(graph, SimpleNamespace(), validated_prefix=end)
+    assert (graph.binding, graph.bytes) == before
+    with graph.prepare(end, end + 32,
+            (GraphSample(end, tuple(end - i * 32 for i in range(1, 5)), (.25,) * 4, 'output'),)) as update:
+        assert pool.used <= per_owner
+        update.commit()
+    assert graph.accepted_through == 1048576
+    assert graph.bytes <= per_owner and prefix.accepted_through == end
+    scoring.close()
+    prefix.close()
+    graph.close()
+    assert pool.used == 0
 
 
 @pytest.mark.parametrize('mutation', ['context','repository','cpu_credit','source_identity','output'])

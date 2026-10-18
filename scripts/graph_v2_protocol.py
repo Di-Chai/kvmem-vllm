@@ -18,6 +18,18 @@ STREAM_WARMUP_COMPLETIONS = 8
 STREAM_SLOTS = 8
 
 
+def frozen_prefix_graph_capacity(repository_blocks, owners):
+    """Conservative graph cap for complete P histories, not allocated KV bytes.
+
+    Budget 8 KiB per logical block for Python top-4 rows, live/P/scoring copies
+    and bounded acceptance scratch. The 1M repository needs a larger graph
+    allowance than the 256K cold cases; a live-row-only estimate misses retained
+    immutable owners. All memory arms use the same non-scoring capacity.
+    """
+    per_owner = repository_blocks * 8192
+    return per_owner, owners * per_owner
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -60,6 +72,8 @@ def profiles(base, port, suite='niah'):
         # restore implementation requires P/M terminal capture, so retain the
         # supported synchronous frozen-P import for every MAB arm.
         kv['async_restore'] = False
+        kv['graph_max_bytes_per_session'], kv['graph_max_total_bytes'] = frozen_prefix_graph_capacity(
+            kv['repository_blocks'], kv['session_capacity'])
     result = {}
     for arm, (mode, policy) in ARM_POLICY.items():
         result[arm] = deepcopy(common)
@@ -103,6 +117,10 @@ def validate_profile(profile, arm, suite='niah'):
     if suite == 'memoryagentbench':
         require(profile.get('max_model_len') == 1048576 and kv.get('repository_blocks') == 32768,
             'MAB requires the original 1M context and 32768 CPU history blocks')
+        per_owner, total = frozen_prefix_graph_capacity(kv['repository_blocks'], kv['session_capacity'])
+        require(kv.get('graph_max_bytes_per_session', 0) >= per_owner and
+            kv.get('graph_max_total_bytes', 0) >= total,
+            'Frozen-P graph capacity must cover live/checkpoint/scoring/staging owners')
         require(kv.get('session_freeze_prompt') and not kv.get('session_capture_terminal') and
             not kv.get('session_capture_decode') and kv.get('session_checkpoint_bytes', 0) > 1,
             'MAB retains only a frozen P prefix between independent questions')
@@ -122,6 +140,15 @@ def preflight_reference(rows, sampling, profile, suite):
     budget = kv['cpu_read_cache_bytes'] - 16 * 1024**3
     groups = {}
     output_caps = set()
+    graph_capacity = {}
+    if suite == 'memoryagentbench':
+        per_owner, total = frozen_prefix_graph_capacity(kv['repository_blocks'], kv['session_capacity'])
+        require(kv.get('graph_max_bytes_per_session', 0) >= per_owner and
+            kv.get('graph_max_total_bytes', 0) >= total,
+            'Frozen-P graph capacity must cover live/checkpoint/scoring/staging owners')
+        graph_capacity = dict(graph_per_owner_required_bytes=per_owner,
+            graph_total_required_bytes=total,
+            graph_capacity_policy='8192 bytes per repository block including retained graph owners; cap, not allocation')
     for row in rows:
         config = sampling[row['id']]
         require(config.get('token_sha256') == row['token_sha256'], 'Original request token identity differs')
@@ -145,7 +172,7 @@ def preflight_reference(rows, sampling, profile, suite):
         groups[group] = max(groups.get(group, 0), amount)
         output_caps.add(original_output)
     largest_eight = sum(sorted(groups.values(), reverse=True)[:8])
-    return dict(cases=len(rows), independent_owners=len(groups),
+    return dict(cases=len(rows), independent_owners=len(groups), **graph_capacity,
         input_token_range=[min(row['input_tokens'] for row in rows), max(row['input_tokens'] for row in rows)],
         original_output_caps=sorted(output_caps), cpu_payload_credits_bytes=budget,
         maximum_owner_credit_bytes=max(groups.values()), largest_eight_owner_credit_bytes=largest_eight,

@@ -1,7 +1,8 @@
 # Graph V2 阶段性验收结果
 
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
-NIAH 三臂共 540 题完成，两套记忆测试尚未完成，尚无稳定的质量或吞吐提升结论。
+首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
+新冻结运行尚待开始。两套记忆测试未完成，尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
 
@@ -94,7 +95,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | 三组全部完成并释放，首次答案与原评分复核通过 |
-| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | A 已启动；C/D 排队，原裁判评分尚待完成 |
+| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 A 保留 69 个完成回答及 5 条技术错误；新冻结运行待开始 |
 | 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 已冻结并校验，排在 MAB 后运行 |
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
@@ -141,8 +142,33 @@ prefill/decode 各自峰值均为七路，不能宣称这组测试是持续八�
 
 完整首次证据为 `artifacts/graph-v2-suite-preflight-20261018/` 下的
 `full-niah-{A,C,D}-all-first.json`；错误分析为 `full-niah-ACD-error-reading.json`。
-所有早先的 64K/128K 首次证明继续保留。D 清理后，MAB A 自动启动；两套
-记忆测试与原裁判评分仍待完成，完整 4,194 回答矩阵尚未完成。
+所有早先的 64K/128K 首次证明继续保留。D 清理后，MAB A 自动启动，随后
+因图配额技术错误停止，详见下文。两套记忆测试与原裁判评分仍待完成，完整
+4,194 回答矩阵尚未完成。
+
+MAB r1 在 69 个完成回答后发生 EngineCore `BufferError`，五个在途请求随引擎
+退出而报错。栈为 `install_graph_metadata → update_message_spans → prepare →
+GraphBudget.reserve`；GPU 未 OOM，最终所属进程和 GPU 进程均清理。失败根目录
+和全部首次回答保持原样，证据为
+`artifacts/graph-v2-suite-preflight-20261018/full-mab-A-r1-failure.json`。
+先前两个历史组的首题／续题独立核对了原始 prompt token IDs、冻结 P、prefill
+采样计数、图 source/edge 计数及 action-history=0，续题没有再次 pressure。
+四题局部证据 `full-mab-A-first-p-reuse.json` 继续保留；它不代表完整 MAB 通过
+或全部状态逐字节相等，也不用于质量结论。
+
+修复分两部分：相同元数据先在小额、受配额保护的暂存区完成完整校验；没有变化
+时返回原有 no-op 事务，不再预留两份完整图。真正的边界变化、prefix 冲突和
+pending 事务约束继续执行。MAB 的完整 1M 仓库另外按每逻辑块 8 KiB 设置保守
+图配额，覆盖 live/P/scoring/staging 的多份记账：每会话 256 MiB、全局 2 GiB，
+三臂相同。这是上限，不是实际分配；生产默认和 NIAH 图配额不变，CPU KV 历史
+预算仍为 100 GB。新增 preflight 会拒绝旧的不足配额，耗尽错误也记录各项用量。
+没有改变 token、K/G、采样、图参数或增加重算。
+
+相关 CPU 回归 352 项通过并正常退出，含 1M token 图、P/scoring/preserved
+快照同时保留、追加和完整释放，以及无变化更新在紧配额下保持状态不变。
+日志为 `artifacts/graph-v2-memory-capacity-20261019/cpu-regression.log`。
+真实模型容量验收尚未完成。由于运行时已修改，需要新的独立冻结尝试；旧 r1
+结果保留，不能与新结果拼接成同运行时的完整 4,194 回答矩阵。
 
 冷 NIAH 不覆盖跨轮 output seed。为此另核对了自然 agent r4 完整生命周期
 的图日志：基线含 129 次 prefill seed、117 次 output seed；异步元数据候选

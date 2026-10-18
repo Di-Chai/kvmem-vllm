@@ -457,3 +457,24 @@ comparison separately measures collection overhead. No tuning using answer gold.
   and does not diagnose the cause of the remaining generation errors.
   Evidence: `full-niah-ACD-error-reading.json`. No tuning/reruns use this gold
   analysis. Both memory suites and original judging remain pending.
+- MAB-A r1 subsequently failed after69complete answers with5in-flight HTTP500s.
+  Authoritative root session88261 exited1; EngineCore stack reports GraphBudget
+  exhaustion during metadata installation,not GPU OOM. Owned/GPU processes
+  cleaned. Original failed root,all first answers/errors and prior four-case P
+  reuse proof remain intact; bound in `full-mab-A-r1-failure.json`.
+- Source diagnosis: metadata-only no-op entered full `2*live_bytes` graph staging
+  before detecting identical metadata. Frozen-P retained owners and longer MAB
+  histories also exceed the cold-profile32MiB per-session allowance. Changed
+  metadata-only preparation to a small charged validation reservation,retaining
+  span/provenance/transaction validation and identical no-op publication behavior.
+  Genuine updates retain full staging checks. Capacity errors now include numeric
+  owner/global usage,reservation and limits.
+- MAB profiles now provision a conservative8KiB per repository block for retained
+  graph owners:256MiB per session/2GiB global for the1M repository and8slots.
+  These are caps,not allocations;all arms match,CPU KV100GB and production/NIAH
+  defaults unchanged. Profile and source preflight reject insufficient graph caps.
+  352targeted CPU tests passed with process exit0,including actual1M graph rows,
+  retained P/scoring/preserved snapshots,append and full release. GPU capacity
+  qualification remains pending; new runtime requires a fresh frozen attempt,
+  not silent retry or stitching r1 NIAH with different-runtime memory answers.
+  CPU log: `artifacts/graph-v2-memory-capacity-20261019/cpu-regression.log`.

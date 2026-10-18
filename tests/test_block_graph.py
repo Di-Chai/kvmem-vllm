@@ -333,3 +333,41 @@ def test_staging_remains_charged_until_publication():
     update.commit()
     assert graph.bytes == graph.live_bytes == update.final_bytes
     assert update.data is None and update.charge is None
+
+
+@pytest.mark.parametrize('known', [False, True])
+def test_unchanged_metadata_with_retained_prefix_does_not_reserve_graph_copies(known):
+    graph = BlockGraph('s', 4)
+    accept(graph, 0, 400, [row(p) for p in range(8, 400, 4)])
+    spans = ((0, 400, 'tool'),) if known else ()
+    graph.update_message_spans(spans, validated_prefix=400)
+    prefix = graph.snapshot()
+    before = graph.binding, graph.bytes, graph.rows, prefix.binding
+    # Enough for metadata validation, deliberately not two more graph copies.
+    graph.max_bytes_per_session = graph.bytes + 4096
+    graph.budget.maximum = graph.budget.used + 4096
+    assert graph.live_bytes * 2 > 4096
+    for _ in range(3):
+        graph.update_message_spans(spans, validated_prefix=400)
+        assert (graph.binding, graph.bytes, graph.rows, prefix.binding) == before
+    prefix.close()
+    graph.close()
+    assert graph.budget.used == 0
+
+
+def test_metadata_noop_still_validates_conflicts_prefix_and_pending_transaction():
+    graph = BlockGraph('s', 4)
+    graph.update_message_spans(((0, 16, 'tool'),))
+    before = graph.binding, graph.bytes
+    with pytest.raises(ValueError, match='validated message prefix'):
+        graph.update_message_spans((), validated_prefix=-1)
+    with pytest.raises(ValueError, match='Conflicting'):
+        graph.update_message_spans(((0, 8, 'user'),), validated_prefix=16)
+    assert (graph.binding, graph.bytes) == before
+    update = graph.prepare(0, 0)
+    update.detach()
+    with pytest.raises(BlockingIOError, match='reserved acceptance'):
+        graph.update_message_spans(((0, 16, 'tool'),), validated_prefix=16)
+    update.close()
+    assert (graph.binding, graph.bytes) == before
+    graph.close()

@@ -48,7 +48,9 @@ class GraphBudget:
         with self._lock:
             current = self._owners.get(owner, 0)
             if current + amount > limit or self.used + amount > self.maximum:
-                raise BufferError('Block graph memory capacity exceeded before acceptance')
+                raise BufferError('Block graph memory capacity exceeded before acceptance '
+                    f'(owner_used={current}, requested={amount}, owner_limit={limit}, '
+                    f'global_used={self.used}, global_limit={self.maximum})')
             self.used += amount
             self._owners[owner] = current + amount
         return _Charge(self, owner, amount)
@@ -504,6 +506,29 @@ class BlockGraph:
                 from .prompt_spans import normalize_provenance
                 locality_provenance = normalize_provenance(locality_provenance)
                 scratch += _size(locality_provenance) * 2
+            metadata = None
+            if not len(rows) and accepted_end <= self.accepted_through:
+                # A refresh reinstalls the same metadata on every boundary.
+                # Validate/merge it under its own small reservation before
+                # charging full graph staging. Frozen-P owners retain graph
+                # snapshots too; charging two graph copies for an unchanged
+                # empty span list could exhaust their capacity unnecessarily.
+                metadata_scratch = 2048
+                if message_spans is not None:
+                    metadata_scratch += (len(message_spans) + len(self.message_spans)) * 512
+                if locality_provenance is not None:
+                    metadata_scratch += _size(locality_provenance) * 2
+                charge = self.budget.reserve(self._account, metadata_scratch, self.max_bytes_per_session)
+                spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
+                    self.message_spans, self.message_end_known, message_spans,
+                    self.accepted_through if verified_prefix is None else verified_prefix)
+                provenance = self.locality_provenance if locality_provenance is None else locality_provenance
+                metadata = spans, ends_known, provenance
+                charge.close()
+                charge = None
+                if (spans == self.message_spans and ends_known == self.message_end_known and
+                        provenance == self.locality_provenance):
+                    return GraphUpdate(self)
             upper = self.live_bytes * 2 + scratch
             charge = self.budget.reserve(self._account, upper, self.max_bytes_per_session)
             seen = set()
@@ -534,10 +559,13 @@ class BlockGraph:
                 dense_result = rows.native(rows.positions, rows.targets, rows.masses,
                     self.accepted_through, max(self.accepted_through, accepted_end),
                     self.block_tokens, self.topk, self.min_mass, rows.kind == 'prefill', self.partial)
-            spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
-                self.message_spans, self.message_end_known, message_spans,
-                self.accepted_through if verified_prefix is None else verified_prefix)
-            provenance = self.locality_provenance if locality_provenance is None else locality_provenance
+            if metadata is None:
+                spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
+                    self.message_spans, self.message_end_known, message_spans,
+                    self.accepted_through if verified_prefix is None else verified_prefix)
+                provenance = self.locality_provenance if locality_provenance is None else locality_provenance
+            else:
+                spans, ends_known, provenance = metadata
             end = max(self.accepted_through, accepted_end)
             if (end == self.accepted_through and spans == self.message_spans and
                     ends_known == self.message_end_known and provenance == self.locality_provenance):
