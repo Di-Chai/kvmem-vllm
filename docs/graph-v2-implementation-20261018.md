@@ -397,3 +397,10 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Existing native samples omit per-owner reservation/progress snapshots needed
   for rigorous pure-decode wall cohorts. No proposal-count proxy is substituted.
   Proof: `artifacts/graph-v2-performance-20261018/agent-phase-rate-reading.json`.
+- Formal C64K60 completed:60/60exact,100%coverage,60/60full needle intervals,
+  60/60actual graph selection changes,0cap hits,median request83.37s. Recomputed
+  original scores, verified same original inputs/seeds and all non-graph_mode
+  profile fields versus A, and retained A first-answer hashes unchanged. A64K
+  is also60/60,so no accuracy gain observed at this length; no speedup claim
+  from one median difference. C128K continues; D and memory jobs still pending.
+  Proof: `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-64k-first.json`.
