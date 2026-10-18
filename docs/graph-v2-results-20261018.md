@@ -2,7 +2,7 @@
 
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
-新 r2 已通过工具跨轮复验，正式 MAB A 正在运行。两套记忆测试未完成，
+新 r2 已通过工具跨轮复验，正式 MAB A 的 1,116 题已完成、C 正在运行。两套记忆测试未完成，
 尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
@@ -96,7 +96,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 排在 MAB 之后重新运行 |
-| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 A 保留 69 个完成回答及 5 条技术错误；r2 A 正在运行 |
+| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A 全部生成并释放、待评分，C 已启动 |
 | 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 已冻结并校验，排在 MAB 后运行 |
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
@@ -225,6 +225,22 @@ prefill/恢复干扰，不是 GPU 合计或隔离的纯 decode TPS；首 token �
 不能全部归为模型 prefill。原生 queue 指标不涵盖所有网关准入等待。
 定义源码校验值、公式及样本绑定保存在同目录
 `per-request-metric-definition.json`，单 token 或零生成间隔不推导 decode 率。
+
+r2 A 现已完成全部 1,116 个首次回答，技术错误为零；29 个历史组均释放，
+1,087 个续题的 P 前缀和 prefill sample 计数保持一致，所有题的 action-history
+页数为零。CPU 历史、检查点、pending download 及 active request 最终清零，
+所属进程和 GPU 进程均清理完毕，C 随后自动启动。完整流程为 5,903.88 秒；
+八个客户端的 CPU 准入峰值为五，实际 native batch 峰值五、prefill/decode
+峰值各四，不能称为八路同时 decode。绑定证明为同目录
+`full-mab-A-r2-all-first.json`；冻结 worker 逐题验证返回输入 IDs，此处另核对
+全部 source/prompt/Query 绑定。完整原评分及独立全响应审计仍待完成。
+
+原始 MAB 各题输出上限并不统一等于 G：QA 为 10/40/50，摘要为 1,200。
+A 有 102 个回答达到原始题目输出上限，其中 100 个 finish_reason 为 length、
+两个恰在上限自然停止；这不计为技术错误，也不代表答对。触顶分布为 MAB
+longmemeval 32/300、eventqa 3/500、ruler 4/100、factconsolidation sh 8/100、
+mh 54/100、摘要 1/16。保持原参数，不为消除触顶而重生成；历史 qw3 触顶对照
+及正式裁判评分待完成。证据为同目录 `full-mab-A-r2-output-caps.json`。
 
 在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
 校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算

@@ -535,3 +535,16 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Shared-service per-request rate includes interference,not aggregate/pure GPU
   decode TPS. Native queue excludes earlier gateway admission;TTFT does not
   isolate model prefill. Invalid/one-token intervals remain undefined.
+- Formal r2 MAB-A completed all1116 first answers with0technical errors;29groups
+  released,1087continuations retain frozen P/prefill counts and action pages0.
+  CPU history/checkpoints/pending downloads/active requests cleared,owned/GPU
+  process cleanup empty;C automatically started. Wall5903.88s,CPU admission
+  peak5,native peak5,prefill/decode peaks4,not C8 decode. Bound result/fixture/
+  profile/cleanup/release files and all answer/source/Query identities in
+  `full-mab-A-r2-all-first.json`. Audit ran while C was loading,not during its
+  measured workload. Independent complete-response audit and scoring pending.
+- Original per-question MAB output caps retained:10/40/50QA,1200summary. A has
+  102at-cap outputs,100length finishes plus2natural-stop exactly at limit.
+  Source distribution bound in `full-mab-A-r2-output-caps.json`;this is not
+  technical failure or answer correctness. No answer regeneration or cap tuning;
+  historical qw3 cap-hit comparison remains pending.
