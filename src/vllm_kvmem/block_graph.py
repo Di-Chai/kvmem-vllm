@@ -90,6 +90,18 @@ class GraphSample:
 
 
 @dataclass(frozen=True, slots=True)
+class _DenseSamples:
+    positions: tuple
+    targets: tuple
+    masses: object
+    kind: str
+    native: object
+
+    def __len__(self):
+        return len(self.positions)
+
+
+@dataclass(frozen=True, slots=True)
 class GraphRow:
     source: int
     targets: tuple
@@ -439,6 +451,21 @@ class BlockGraph:
         if len(source_positions) != len(mass_rows):
             raise ValueError('Graph source/mass row shape mismatch')
         targets = tuple(target_starts)
+        # Captured CPU matrices already own this buffer. Keep it dense through
+        # validation/aggregation, allocating graph output only after admission.
+        # Sequence callers remain the scalar reference implementation.
+        try:
+            view = memoryview(mass_rows)
+        except TypeError:
+            view = None
+        if view is not None and view.ndim == 2 and view.format in ('f', 'd'):
+            from . import _native
+            native = getattr(_native, 'prepare_block_graph', None)
+            if native is not None:
+                if view.shape != (len(source_positions), len(targets)):
+                    raise ValueError('Graph attention matrix shape mismatch')
+                return self.prepare(begin, end, _DenseSamples(
+                    tuple(operator.index(p) for p in source_positions), targets, view, kind, native))
         return self.prepare(begin, end, tuple(GraphSample(operator.index(position), targets, values, kind)
                             for position, values in zip(source_positions, mass_rows)))
 
@@ -455,8 +482,9 @@ class BlockGraph:
                 raise ValueError('Graph accepted progress has a gap or invalid interval')
             # Pre-reserve temporary containers and a conservative new-state bound.
             # Includes normalized row dicts and a full-repository partial scratch.
-            count = sum(len(row.targets) for row in rows)
-            maximum_row = max((len(row.targets) for row in rows), default=0)
+            dense = isinstance(rows, _DenseSamples)
+            count = len(rows) * len(rows.targets) if dense else sum(len(row.targets) for row in rows)
+            maximum_row = len(rows.targets) if dense else max((len(row.targets) for row in rows), default=0)
             target_bound = min(count, (accepted_end + self.block_tokens - 1) // self.block_tokens)
             scratch = 2048 + (maximum_row + target_bound) * 320 + len(rows) * 512
             if self.partial is not None:
@@ -466,7 +494,7 @@ class BlockGraph:
             upper = self.live_bytes * 2 + scratch
             charge = self.budget.reserve(self._account, upper, self.max_bytes_per_session)
             seen = set()
-            for row in rows:
+            for row in (() if dense else rows):
                 if (type(row.position) is not int or not accepted_begin <= row.position < accepted_end or
                         row.kind not in ('prefill', 'output') or len(row.targets) != len(row.masses) or
                         not row.targets or row.position in seen):
@@ -483,6 +511,16 @@ class BlockGraph:
                     continue
                 if any(target > row.position and mass > 0 for target, mass in zip(row.targets, row.masses)):
                     raise ValueError('Graph sampled mass points to a future token block')
+            dense_result = None
+            if dense:
+                if (rows.kind not in ('prefill', 'output') or
+                        len(set(rows.positions)) != len(rows.positions) or
+                        any(not accepted_begin <= p < accepted_end for p in rows.positions) or
+                        any(type(p) is not int or p < 0 or p % self.block_tokens for p in rows.targets)):
+                    raise ValueError('Invalid dense graph sampled source/target rows')
+                dense_result = rows.native(rows.positions, rows.targets, rows.masses,
+                    self.accepted_through, max(self.accepted_through, accepted_end),
+                    self.block_tokens, self.topk, self.min_mass, rows.kind == 'prefill', self.partial)
             spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
                 self.message_spans, self.message_end_known, message_spans,
                 self.accepted_through if verified_prefix is None else verified_prefix)
@@ -492,7 +530,7 @@ class BlockGraph:
                 return GraphUpdate(self)
             completed = []
             added_bytes = 0
-            partial = self.partial
+            partial = None if dense else self.partial
             source = partial.source if partial is not None else None
             totals = dict(zip(partial.targets, partial.sums)) if partial is not None else {}
             samples = partial.samples if partial is not None else 0
@@ -512,7 +550,7 @@ class BlockGraph:
                     added_bytes += _size(sealed)
                 source, totals, samples, prefill, output = None, {}, 0, 0, 0
 
-            for row in sorted(rows, key=lambda row: row.position):
+            for row in (() if dense else sorted(rows, key=lambda row: row.position)):
                 position, kind = row.position, row.kind
                 if position < self.accepted_through:
                     continue
@@ -538,6 +576,10 @@ class BlockGraph:
                 entries = sorted(totals.items())
                 pending = GraphPartial(source, tuple(v[0] for v in entries), tuple(v[1] for v in entries),
                                        samples, prefill, output)
+            if dense:
+                completed = [GraphRow(*row) for row in dense_result[0]]
+                pending = GraphPartial(*dense_result[1]) if dense_result[1] is not None else None
+                added_bytes = sum(_size(row) for row in completed)
             stored = self.rows + tuple(completed) if completed else self.rows
             metadata_bytes = self._data.metadata_bytes if (spans is self.message_spans and ends_known is self.message_end_known) else _size((spans, ends_known))
             data = _Data(stored, pending, end, end // self.block_tokens * self.block_tokens, spans, ends_known,
