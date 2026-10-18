@@ -144,13 +144,26 @@ GPU 均已清理，D 自动启动。完整首次证据为
 此前 64K/128K 的首次证明，答案/选页/释放文件校验值未改变。D 和两套记忆
 测试尚未完成，完整矩阵的结论继续等待。
 
-D 组首个完整长度 64K 已完成：60/60 exact、100% 数值覆盖率，60/60 题
-完整保留所有 needle 区间，零输出触顶。A/C/D 在这一长度回答结果相同。
-逐题原评分、输入、seed 及既存 A/C 答案校验值复核通过；C/D 的全部非
-pressure_policy 配置相同。60 次实际 pressure 图评分均非恒等、均改变选页，
-seed 全部来自旧累计 prefill attention，明确覆盖了新 pressure 路径。请求
-耗时中位数 82.36 秒，仅作描述，不能推断稳定性能增益。D128K 正在继续。
-证据为 `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-64k-first.json`。
+D 组 64K、128K 各 60 题已完成。逐题原评分、输入、seed 及既存 A/C 答案
+校验值复核通过；C/D 的全部非 pressure_policy 配置相同，零输出触顶。
+
+| D 组长度 | Exact | 数值覆盖率 | 所有 needle 区间完整入选 | 实际非恒等 pressure 图事件 | 请求耗时中位数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 64K | 60/60 | 100% | 60/60 | 60 | 82.36 s |
+| 128K | 60/60 | 100% | 60/60 | 300 | 181.98 s |
+
+全部 pressure 图事件均改变选页，seed 来自旧累计 prefill attention。A/C/D
+在这两个长度上的回答 exact 相同，没有观察到 pressure 图传播的额外回答
+收益，仍待 D256K 和记忆测试。请求中位数仅作描述，不作稳定性能增益结论。
+首次证据为 `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-64k-first.json`
+和 `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-128k-first.json`。
+
+冷 NIAH 不覆盖跨轮 output seed。为此另核对了自然 agent r4 完整生命周期
+的图日志：基线含 129 次 prefill seed、117 次 output seed；异步元数据候选
+含 141/124 次，两类事件均实际执行非恒等传播并改变选页。这是现有真模型
+跨轮路径的功能证据，含 warmup、测量、drain 及恢复选择，不能除以 300 秒
+当作窗口速率，也不是每个 HTTP 请求的选择次数。绑定日志/配置校验值的证据：
+`artifacts/graph-v2-suite-preflight-20261018/real-output-prefill-pressure-seeds.json`。
 
 对已经完成的自然 agent r4 做了额外的只读分阶段统计：基线单请求首 token
 后输出流速度 p50/p95 为 40.89/87.00 token/s，按各请求生成时长加权为

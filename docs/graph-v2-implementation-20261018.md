@@ -428,3 +428,15 @@ comparison separately measures collection overhead. No tuning using answer gold.
   own scores and prior A/C hashes revalidated. Median request82.36s is not
   a stable speedup claim. D128K continues; first source-bound proofs:
   `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-64k-first.json`.
+- Formal D128K60 completed:60/60exact,100%coverage,60/60full needle intervals,
+  0cap hits. All300pressure events use prefill seed,are nonidentity,and change
+  selection;all input/seed/non-pressure-policy controls and A/C hashes verified.
+  Median request181.98s is descriptive;A/C/D answer exact stays identical at
+  64K/128K. D256K and memory jobs remain pending. First proof:
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-D-128k-first.json`.
+- Real output-seed coverage checked in completed natural-agent r4 lifetime:
+  baseline129prefill/117output, candidate141prefill/124output graph pressure
+  events,all nonidentity and selection-changing. Includes warmup/window/drain
+  and restore selections;not a300s rate or per-HTTP count. Existing source
+  configuration and full graph-log hashes bound in
+  `artifacts/graph-v2-suite-preflight-20261018/real-output-prefill-pressure-seeds.json`.
