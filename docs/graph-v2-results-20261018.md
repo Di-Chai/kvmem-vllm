@@ -97,6 +97,16 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | 已冻结并校验，排在 NIAH 后运行 |
 | 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 已冻结并校验，排在 MAB 后运行 |
 
+首个完整长度：NIAH-A 64K 的原始 60 题已全部完成，**exact 60/60、宏平均
+数值覆盖率 100%**，60 题均选中全部 needle，零输出触顶。输入哈希与冻结
+样本一致，逐题用冻结的原始评分函数重新计算并核对结果。请求耗时中位数
+85.39 秒，包含服务内排队、完整预填充、Query、生成及网络，不含离线队列
+待准入和后续释放时间；不能当作 decode 吞吐。128K 正在继续，C/D 尚未
+运行，因此没有策略改善结论。证据为
+`artifacts/graph-v2-suite-preflight-20261018/full-niah-A-64k-first.json`，其中绑定
+60 题首次答案、选页和释放证据的校验值。相邻长度在持续补位时会重叠，未
+从这一长度的完成时间估计纯 prefill/decode 速率。
+
 正式矩阵合计 4,194 个回答。三臂保持相同执行优化、模型、输入、采样、K/G 和
 batch 参数；A 为对齐 Mean-K Query + 旧 attention pressure，C 增加 V2 Query
 传播，D 再增加 graph pressure。完整首次答案及技术失败均保留。

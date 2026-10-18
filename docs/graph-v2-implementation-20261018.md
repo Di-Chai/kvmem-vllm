@@ -355,3 +355,15 @@ comparison separately measures collection overhead. No tuning using answer gold.
   sequential fresh services with per-arm C8 continuous replacement. NIAH-A
   is running; memory jobs and original scoring remain pending. This is an
   in-progress campaign, not a successful full-quality qualification.
+- Original judge availability preflight passed with the already-authorized
+  credential: read-only official `/models` returned200 and both original
+  `deepseek-v4-pro` / `deepseek-flash`. No benchmark content was sent by this
+  probe; credential was entered without echo and never persisted in evidence.
+  Metadata-only proof: `artifacts/graph-v2-suite-preflight-20261018/judge-api-probe.json`.
+- First formal complete length passed: NIAH-A64K60/60exact,100% macro numeric
+  coverage,60/60all needles selected,0output cap hits. Recomputed every score
+  using the frozen original function and verified original served input hashes;
+  bound all60 first result/response/selection/release proofs in
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-A-64k-first.json`.
+  Median complete request85.39s is not decode TPS. A128K continues; no C/D
+  comparison or complete4194-answer result is claimed.
