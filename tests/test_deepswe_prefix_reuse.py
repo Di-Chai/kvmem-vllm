@@ -138,3 +138,84 @@ def test_message_coordinate_work_is_linear_and_duplicate_points_are_cached(bound
             assert encoded.count(point)==value and tokenizer.characters==cost
         begin+=len(part.encode())
     assert tokenizer.characters < 3*len(text)
+
+
+def renderer(*, request):
+    """An authoritative structured renderer; no substring search for offsets."""
+    text, spans = '', []
+    for index, message in enumerate(request['messages']):
+        begin = len(text.encode())
+        role, content = message['role'], message['content']
+        text += '<|im_start|>' + role + '\n'
+        content_begin = len(text.encode())
+        text += content + (request.get('rewrite', '') if index == 0 else '')
+        content_end = len(text.encode())
+        text += '<|im_end|>\n'
+        spans.append(dict(index=index, begin=begin, end=len(text.encode()), role=role,
+                          content_begin=content_begin, content_end=content_end))
+    text += request.get('generation_header', '<|im_start|>assistant\n<think>\n')
+    return dict(prompt=text, spans=spans, messages=request['messages'], control_end=0,
+                tools=request.get('tools', []), pins=[], query_index=-1)
+
+
+def test_structured_producer_keeps_actual_output_and_suffix_coordinates(boundary_tokenizer):
+    planner = bridge.Planner(renderer, boundary_tokenizer)
+    state = bridge.Trajectory()
+    payload = dict(messages=[dict(role='user', content='测试🙂重复')], tools=['declaration'])
+    prepared = planner.prepare(payload, state)
+    assert prepared[0] == planner.encode(prepared[2]['prompt'])
+    assert prepared[1]['kvmem_locality_spans']
+    assert prepared[1]['kvmem_locality_provenance']['status'] == 'exact'
+    # Deliberately choose accepted IDs which cannot be recovered by rendering
+    # the returned assistant text. Only the actual accepted list is authoritative.
+    output = [17, 18, 19, planner.end]
+    response = dict(content='displayed answer')
+    planner.commit(state, prepared, payload, response, output)
+    accepted_end = len(prepared[0]) + len(output)
+    assert state.locality_spans[-1] == (prepared.assistant_begin, accepted_end, 'assistant')
+    following = dict(messages=payload['messages'] + [dict(role='assistant', content=response['content']),
+        dict(role='tool', content='测试🙂重复'), dict(role='tool', content='')], tools=['declaration'])
+    continued = planner.prepare(following, state)
+    assert continued[5] is True
+    assert continued[0][:accepted_end] == prepared[0] + output
+    spans = continued[1]['kvmem_locality_spans']
+    assert [(s['begin'],s['end'],s['role']) for s in spans[:2]] == list(state.locality_spans)
+    assert [s['role'] for s in spans[-2:]] == ['tool','tool']
+    assert spans[-2]['begin'] >= accepted_end
+    raw = continued[2]['prompt'].encode()
+    first = next(s for s in continued[2]['spans'] if s['index'] == 2)
+    suffix = '\n' + raw[first['begin']:].decode()
+    offsets = boundary_tokenizer(suffix, add_special_tokens=False, return_offsets_mapping=True)
+    first_span = spans[-2]
+    relative_begin = first_span['begin'] - accepted_end
+    assert suffix[offsets['offset_mapping'][relative_begin][0]:].startswith('<|im_start|>tool\n')
+    assert continued[0][accepted_end:] == offsets['input_ids']
+    assert continued[1]['kvmem_mandatory_spans'] == prepared[1]['kvmem_mandatory_spans'] == []
+    assert 'kvmem_message_spans' not in continued[1]
+
+
+def test_renderer_prefix_change_and_control_options_disable_stale_reuse(boundary_tokenizer):
+    planner = bridge.Planner(renderer, boundary_tokenizer)
+    state = bridge.Trajectory()
+    payload = dict(messages=[dict(role='user', content='unchanged')])
+    first = planner.prepare(payload, state)
+    planner.commit(state, first, payload, dict(content='answer'), [7, planner.end])
+    following = dict(messages=payload['messages'] + [dict(role='assistant',content='answer'),
+                                                    dict(role='tool',content='new')])
+    assert planner.prepare(following, state)[5]
+    for changes in (dict(rewrite=' TEMPLATE CHANGED'), dict(tools=['new declaration'])):
+        edited = planner.prepare({**following, **changes}, state)
+        assert not edited[5]
+        assert edited[0] == planner.encode(edited[2]['prompt'])
+        assert edited[1]['kvmem_locality_provenance']['history'] == 'canonical_full_render'
+
+
+def test_incomplete_header_or_nonterminal_output_does_not_invent_assistant_end(boundary_tokenizer):
+    planner = bridge.Planner(renderer, boundary_tokenizer)
+    for header, output in (('<|im_sta', [planner.end]),
+                           ('<|im_start|>assistant\n<think>\n', [17,18])):
+        state = bridge.Trajectory()
+        payload = dict(messages=[dict(role='user',content='x')], generation_header=header)
+        first = planner.prepare(payload, state)
+        planner.commit(state, first, payload, dict(content='answer'), output)
+        assert all(role != 'assistant' for _,_,role in state.locality_spans)

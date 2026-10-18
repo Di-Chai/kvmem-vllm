@@ -109,6 +109,10 @@ def install_bounded_target(runner):
                 raise ValueError("Refresh groups disagree on query extent")
             history, selected_cap, query = values.pop()
             authority = runtime.authorities[request_id]
+            graph = getattr(authority, 'block_graph', None)
+            if graph is not None:
+                from .prompt_spans import install_graph_metadata
+                install_graph_metadata(graph, job.command, validated_prefix=history)
             if getattr(authority,'query_history',None) is not None:
                 from .query_history import begin_round
                 begin_round(runner, authority, request_id)
@@ -172,20 +176,22 @@ def install_bounded_target(runner):
             guided_seconds = 0.0
             guided_fallback = None
             guided_diagnostics = {}
-            from .request_plan import RequestPlan
-            from dataclasses import replace
-            selected_cfg = replace(cfg,select_budget=job.command.groups[0][1].window_tokens)
+            from .request_plan import RequestPlan, selection_config
+            pressure_policy = getattr(runtime.options, 'pressure_policy', None) or (
+                'attention' if getattr(runtime.options, 'action_pressure', False) else 'recency')
+            selected_cfg = selection_config(cfg,job.command.groups[0][1].window_tokens,
+                selection=job.command.selection,pressure_policy=pressure_policy)
             mandatory_fit = RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
                 mandatory=getattr(job.command,'mandatory_spans',())).mandatory_fit(history,selected_cfg)
             required = set(mandatory_fit['hard_blocks'])
             mandatory = [r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory} != required:
                 raise ValueError('Required historical blocks are missing from the durable source')
-            if history <= selected_cfg.select_budget:
-                plan = authority.memory.select({})  # Exact all-history bootstrap.
-            elif job.command.selection == 'pressure':
+            if job.command.selection == 'pressure':
                 from .prefill_attention import select_pressure
                 plan = select_pressure(authority,mandatory,max_tokens=selected_cfg.select_budget)
+            elif history <= selected_cfg.select_budget:
+                plan = authority.memory.select({})  # Exact all-history bootstrap.
             else:
                 queries = public_queries[request_id]
                 if runtime.options.guided_query_tokens and job.command.query_span is not None:
@@ -251,7 +257,7 @@ def install_bounded_target(runner):
                 **guided_diagnostics,
                 "query_history_enabled":getattr(authority,'query_history',None) is not None,
                 "action_attention_enabled":cfg.action_attention,
-                **selection_report(authority),
+                **selection_report(authority, phase=job.command.selection),
                 "action_history_pages":sum(v>0 for v in getattr(getattr(authority,'action_history',None),'scores',{}).values()),
                 "action_fraction":cfg.action_fraction if cfg.action_attention else 0.0,
                 "action_combine":cfg.action_combine,

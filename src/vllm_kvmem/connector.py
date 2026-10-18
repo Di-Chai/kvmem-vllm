@@ -45,6 +45,8 @@ class RefreshCommand:
     asynchronous: bool = False
     speculative_padding: int = 0
     message_spans: tuple = ()
+    locality_spans: tuple = ()
+    locality_provenance: tuple = ()
 
 
 @dataclass
@@ -107,6 +109,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.archive_sequence = 0
         self.sessions = None  # Scheduler ledger; worker lifecycle is separate.
         self.request_plan_memory = None
+        self.request_plan_pressure_policy = 'recency'
         self.capacity_rejections = {}
         self.history_admission = None
         self.history_usage = None
@@ -298,7 +301,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             plan = request_plan(request, config.block_tokens, config.gen_budget)
             if plan is not None:
                 plan.validate_capacity(request.num_prompt_tokens, config.select_budget,
-                    sink_blocks=config.sink_blocks, recent_blocks=config.recent_blocks)
+                    sink_blocks=config.sink_blocks, recent_blocks=config.recent_blocks,
+                    pressure_policy=self.request_plan_pressure_policy)
         return 0, False
 
     def update_state_after_alloc(self, request, blocks, num_external_tokens):

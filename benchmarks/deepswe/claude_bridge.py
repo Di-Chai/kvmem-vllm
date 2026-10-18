@@ -41,6 +41,7 @@ def backend_request(*, model, tokens, session, max_tokens, plan, backend_kind):
 
 class Protocol:
     def __init__(self, library):
+        self.template = "qw3_claude_code:" + hashlib.sha256(Path(library).read_bytes()).hexdigest()
         self.lib = ctypes.CDLL(str(library))
         self.lib.qw3_protocol.argtypes = [ctypes.c_char_p]
         self.lib.qw3_protocol.restype = ctypes.c_void_p
@@ -133,6 +134,18 @@ class Trajectory:
     output: list = field(default_factory=list)
     turns: int = 0
     locations: dict = field(default_factory=dict)
+    # Independent of Query/pin prefix counts: these refer to actual sent IDs.
+    locality_spans: tuple = ()
+    locality_provenance: tuple = ()
+    rendered_prefix: bytes | None = None
+
+
+class Prepared(tuple):
+    """Retain the seven-field transport tuple for existing bridge consumers."""
+    def __new__(cls, values, *, assistant_begin=None):
+        value = super().__new__(cls, values)
+        value.assistant_begin = assistant_begin
+        return value
 
 
 class PrefixTokens:
@@ -146,6 +159,7 @@ class PrefixTokens:
     def __init__(self, tokenizer, text):
         self.tokenizer, self.data = tokenizer, text.encode()
         self.positions, self.counts = [0], [0]
+        self.offset_mapping, self.offset_ids = None, None
         backend = getattr(tokenizer, 'backend_tokenizer', None)
         markers = {}
         # Qwen uses NFC. Non-normalized delimiters are extracted before that
@@ -159,6 +173,7 @@ class PrefixTokens:
         if markers:
             encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
             self.ids = encoded['input_ids']
+            self.offset_mapping, self.offset_ids = encoded['offset_mapping'], self.ids
             previous, byte_end = 0, 0
             for index,(token_id,(begin,end)) in enumerate(zip(self.ids,encoded['offset_mapping'])):
                 if token_id not in markers:continue
@@ -169,6 +184,13 @@ class PrefixTokens:
                 previous=end
         else:
             self.ids = tokenizer.encode(text, add_special_tokens=False)
+            # Preserve the established production encoding; metadata is admitted
+            # only if the complete offset encoding reproduces every actual ID.
+            try:
+                full = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+                self.offset_mapping, self.offset_ids = full['offset_mapping'], full['input_ids']
+            except (TypeError, ValueError, KeyError, NotImplementedError, AttributeError):
+                pass
         self.cache = {0:0, len(self.data):len(self.ids)}
 
     def count(self, point):
@@ -198,6 +220,10 @@ class Planner:
         reused = bool(state.output and control == state.control and len(messages) > n+1
                       and messages[:n] == state.messages and messages[n] == state.assistant
                       and state.output[-1] == self.end)
+        if reused and state.rendered_prefix is not None:
+            historical_end = max((s['end'] for s in rendered['spans'] if s['index'] < n),
+                                 default=rendered['control_end'])
+            reused = text[:historical_end] == state.rendered_prefix
         def location(point):
             if point <= rendered['control_end']:return (-1,point)
             for span in rendered['spans']:
@@ -246,10 +272,50 @@ class Planner:
                 continue  # Match qw3 default lifetimes: tools remain selectable.
             pins.append({'begin':coordinate(pin['begin']), 'end':coordinate(pin['end']), 'kind':kind})
         plan['kvmem_mandatory_spans'] = list({canonical(p):p for p in pins}.values())
+        from vllm_kvmem.prompt_spans import map_prompt_spans, span_payload, normalize_provenance
+        # Renderer byte ranges cover each real message/tool result. The new
+        # suffix uses its actual encoding and exactly one history offset.
+        shift = 1 - boundary if reused else 0
+        local_text = suffix if reused else text.decode()
+        local_spans = [dict(begin=span['begin'] + shift, end=span['end'] + shift,
+                            role=span['role']) for span in rendered['spans']
+                       if not reused or span['begin'] >= boundary]
+        mapped = map_prompt_spans(local_text, local_spans, encoded.ids,
+            offset_mapping=encoded.offset_mapping, encoded_ids=encoded.offset_ids,
+            tokenizer=self.tokenizer, source='deepswe_protocol',
+            template=getattr(self.protocol, 'template', 'qw3_claude_code'),
+            token_offset=len(prefix) if reused else 0)
+        inherited = state.locality_spans if reused else ()
+        spans = inherited + mapped.spans
+        provenance = dict(mapped.provenance)
+        provenance.update(exact_spans=len(spans), encoding_scope='append_suffix' if reused else 'prompt',
+                          history='actual_accepted_ids' if reused else 'canonical_full_render')
+        if reused:
+            previous_provenance = dict(state.locality_provenance)
+            provenance['unknown_spans'] += previous_provenance.get('unknown_spans', 0)
+            reasons = set(previous_provenance.get('reason', '').split('; ')) | set(provenance['reason'].split('; '))
+            provenance['reason'] = '; '.join(sorted(reasons - {''}))
+        if provenance['unknown_spans']:
+            provenance['status'] = 'partial' if spans else 'unknown'
+        plan['kvmem_locality_spans'] = span_payload(spans)
+        plan['kvmem_locality_provenance'] = dict(normalize_provenance(provenance))
+        # The generation header is not yet a complete message. Record its start
+        # only when the authoritative Qwen header and full token boundary agree;
+        # commit will close it at the actual accepted EOS, never a re-encoding.
+        assistant_begin = None
+        header = max((span['end'] for span in rendered['spans']), default=rendered['control_end'])
+        if text[header:].startswith(b'<|im_start|>assistant\n'):
+            pending = map_prompt_spans(local_text,
+                [dict(begin=header + shift, end=len(local_text.encode()), role='assistant')],
+                encoded.ids, offset_mapping=encoded.offset_mapping, encoded_ids=encoded.offset_ids,
+                tokenizer=self.tokenizer, token_offset=len(prefix) if reused else 0)
+            if pending.spans:
+                assistant_begin = pending.spans[0][0]
         # Validate against the public API before launching model work.
         from vllm_kvmem.request_plan import RequestPlan
         RequestPlan.parse(plan, len(tokens), 32, self.gen_budget)
-        return tokens, plan, rendered, messages, control, reused, locations
+        return Prepared((tokens, plan, rendered, messages, control, reused, locations),
+                        assistant_begin=assistant_begin)
 
     def response(self, raw, tools, model, usage, finish):
         clean = raw.removesuffix('<|im_end|>').removesuffix('<|endoftext|>')
@@ -275,6 +341,24 @@ class Planner:
         state.messages, state.control, state.tokens = messages, control, tokens
         state.plan, state.output = plan, output
         state.locations = locations
+        historical_end = max((s['end'] for s in rendered['spans']), default=rendered['control_end'])
+        state.rendered_prefix = rendered['prompt'].encode()[:historical_end]
+        from vllm_kvmem.prompt_spans import normalize_spans, normalize_provenance
+        state.locality_spans = normalize_spans(plan.get('kvmem_locality_spans', []), len(tokens))
+        state.locality_provenance = normalize_provenance(plan.get('kvmem_locality_provenance'))
+        assistant_begin = getattr(prepared, 'assistant_begin', None)
+        if assistant_begin is not None and output and output[-1] == self.end:
+            state.locality_spans += ((assistant_begin, len(tokens) + len(output), 'assistant'),)
+        accepted_provenance = dict(state.locality_provenance)
+        if accepted_provenance:
+            accepted_provenance.update(exact_spans=len(state.locality_spans), history='actual_accepted_ids')
+            if output and (assistant_begin is None or output[-1] != self.end):
+                accepted_provenance['unknown_spans'] = accepted_provenance.get('unknown_spans', 0) + 1
+                accepted_provenance['status'] = 'partial' if state.locality_spans else 'unknown'
+                reasons = set(accepted_provenance.get('reason', '').split('; '))
+                reasons.add('Accepted assistant interval lacks a proven complete message boundary')
+                accepted_provenance['reason'] = '; '.join(sorted(reasons - {''}))
+            state.locality_provenance = normalize_provenance(accepted_provenance)
         state.assistant = message_identity(converted['messages'][-1])
         state.turns += 1
 

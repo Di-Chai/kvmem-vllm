@@ -12,10 +12,17 @@ import signal
 
 from .multi_user import _load_users
 from .serve import _validate_safetensors_config, _validate_profiler_config
-from .options import GRAPH_DEFAULTS, validate_graph_options
+from .options import (GRAPH_DEFAULTS, canonical_policy_payload, resolve_graph_policy,
+                      validate_graph_options)
 
 
 def build_launch(profile, base, run_dir):
+    if isinstance(profile, dict):
+        # These fields are emitted in the resolved launch record, then rebuilt
+        # from its canonical settings when that record is used as a profile.
+        derived = {'geometry_file', 'backend_url', 'resolved_sink_blocks',
+                   'resolved_recent_blocks', 'session_views_file', 'mean_k_backend_profile'}
+        profile = {key: value for key, value in profile.items() if key not in derived}
     required = {'model', 'tokenizer', 'users_file'}
     defaults = {'host': '127.0.0.1', 'port': 18382, 'backend_port': 18381,
         'served_model_name': 'kvmem-elastic', 'max_model_len': 262144,
@@ -30,7 +37,7 @@ def build_launch(profile, base, run_dir):
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
-        'cpu_gather_workers': 8, 'async_seal': False, 'draft_method': 'dflash',
+        'cpu_gather_workers': 8, 'async_seal': False, 'cpu_direct_record_seal': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
         'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None,
@@ -38,7 +45,7 @@ def build_launch(profile, base, run_dir):
         'action_attention':False,'action_scope':'tool-call','action_layers':'spread3',
         'action_interval':16,'action_fraction':.25,'action_decay':.5,'action_combine':'quota',
         'archive_backend':'nvme','async_refresh':False,'refresh_quantum_tokens':256,
-        'prefill_attention':False,'action_pressure':False,'prefill_attention_interval':1024,
+        'prefill_attention':False,'action_pressure':False,'pressure_policy':None,'prefill_attention_interval':1024,
         'prefill_attention_stride':32,'prefill_attention_half_life':8192,'prefill_chunk_tokens':0,
         'block_tokens':128,'sink_blocks':None,'recent_blocks':None,
         'cpu_history_coordination':False,'cpu_progress_reserve':True,
@@ -52,6 +59,7 @@ def build_launch(profile, base, run_dir):
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
+    cfg = resolve_graph_policy(cfg, explicit_fields=profile)
     if type(cfg['repository_gc']) is not bool:
         raise ValueError('repository_gc must be boolean')
     validate_graph_options({name: cfg[name] for name in GRAPH_DEFAULTS},
@@ -59,7 +67,8 @@ def build_launch(profile, base, run_dir):
         session_capacity=cfg['max_sessions'], repository_gc=cfg['repository_gc'],
         query_history=cfg['query_history'], action_pressure=cfg['action_pressure'],
         action_attention=cfg['action_attention'], prefill_attention=cfg['prefill_attention'],
-        action_scope=cfg['action_scope'], action_fraction=cfg['action_fraction'])
+        action_scope=cfg['action_scope'], action_fraction=cfg['action_fraction'],
+        pressure_policy=cfg['pressure_policy'])
     if cfg['repository_gc'] and cfg['context_mode'] != 'meank':
         raise ValueError('repository_gc requires MeanK context management')
     if (cfg['cpu_history_coordination'] or cfg['maintenance_max_steps'] or cfg['async_restore'] or cfg['adaptive_prefill'] or cfg['step_latency_interval'] or cfg['prefill_batch_tokens'] or cfg['active_resident_ttl_ms'] or cfg['active_resident_pressure_only'] or cfg['maintenance_transfer_bytes_per_second'] or cfg['offline_agent_policy']) and cfg['context_mode'] != 'meank':
@@ -98,6 +107,12 @@ def build_launch(profile, base, run_dir):
         raise ValueError('verify_session_restore must be boolean')
     if type(cfg['async_seal']) is not bool:
         raise ValueError('async_seal must be boolean')
+    if type(cfg['cpu_direct_record_seal']) is not bool:
+        raise ValueError('cpu_direct_record_seal must be boolean')
+    if cfg['cpu_direct_record_seal'] and (cfg['archive_backend'] != 'cpu' or not cfg['async_seal']):
+        raise ValueError('cpu_direct_record_seal requires archive_backend=cpu and async_seal=true')
+    if cfg['cpu_direct_record_seal'] and cfg['context_mode'] != 'meank':
+        raise ValueError('cpu_direct_record_seal requires MeanK context management')
     if type(cfg['reuse_resident_v']) is not bool:
         raise ValueError('reuse_resident_v must be boolean')
     if type(cfg['batched_cpu_append']) is not bool:
@@ -118,13 +133,13 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - set(GRAPH_DEFAULTS) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization', 'profiler_config', 'async_seal', 'draft_method',
+                               'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
                                'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
                                'query_history','query_history_decay','guided_query_tokens','repository_gc',
                                'action_attention','action_scope','action_layers','action_interval',
                                'action_fraction','action_decay','action_combine','archive_backend','async_refresh',
-                               'prefill_attention','action_pressure','prefill_attention_stride','prefill_attention_half_life','prefill_chunk_tokens',
+                               'prefill_attention','action_pressure','pressure_policy','prefill_attention_stride','prefill_attention_half_life','prefill_chunk_tokens',
                                'sink_blocks','recent_blocks','cpu_history_coordination','cpu_progress_reserve',
                                'maintenance_max_steps','maintenance_busy_ms','maintenance_idle_ms',
                                'maintenance_aging_ms','maintenance_inflight_bytes','async_restore',
@@ -135,7 +150,8 @@ def build_launch(profile, base, run_dir):
     if type(cfg['active_context_tokens']) is not int or not 0 <= cfg['active_context_tokens'] <= cfg['max_model_len']:
         raise ValueError('active_context_tokens must be zero or a bounded positive token count')
     utilization = cfg['gpu_memory_utilization']
-    if cfg['mtp_k'] not in (2, 3) or type(utilization) not in (int, float) or not 0 < utilization < 1:
+    if ((cfg['context_mode'] != 'meank' and cfg['mtp_k'] not in (2, 3)) or
+            type(utilization) not in (int, float) or not 0 < utilization < 1):
         raise ValueError('Unsupported MTP depth or GPU allocation')
     if cfg['port'] == cfg['backend_port'] or max(cfg['port'], cfg['backend_port']) > 65535:
         raise ValueError('Gateway and backend require distinct valid ports')
@@ -180,6 +196,7 @@ def build_launch(profile, base, run_dir):
                 **{key: cfg[key] for key in GRAPH_DEFAULTS},
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'async_seal': cfg['async_seal'],
+                'cpu_direct_record_seal': cfg['cpu_direct_record_seal'],
                 'gpu_raw_k_cache_bytes': cfg['gpu_raw_k_cache_bytes'],
                 'reuse_resident_v': cfg['reuse_resident_v'],
                 'async_cpu_scatter':cfg['async_cpu_scatter'],
@@ -207,8 +224,9 @@ def build_launch(profile, base, run_dir):
                 'guided_query_tokens':cfg['guided_query_tokens'],
                 **{key:cfg[key] for key in ('action_attention','action_scope','action_layers',
                     'action_interval','action_fraction','action_decay','action_combine',
-                    'prefill_attention','action_pressure','prefill_attention_interval',
+                    'prefill_attention','action_pressure','pressure_policy','prefill_attention_interval',
                     'prefill_attention_stride','prefill_attention_half_life')}}}
+        backend['kvmem'] = canonical_policy_payload(backend['kvmem'], cfg)
         if cfg['linear_backend_per_quant'] is not None:
             backend['linear_backend_per_quant'] = cfg['linear_backend_per_quant']
         # Validate the concrete native arguments before creating any resources.
@@ -221,6 +239,7 @@ def build_launch(profile, base, run_dir):
         cfg['session_views_file'] = str(run_dir / 'meank/capture/scheduler_resources.json')
         cfg['mean_k_backend_profile'] = backend
         cfg['mtp_k'] = cfg['draft_tokens'] if cfg['draft_method'] == 'mtp' else None
+        cfg = canonical_policy_payload(cfg, cfg)
         return cfg, [sys.executable, '-m', 'vllm_kvmem', 'serve',
             '--config', str(run_dir / 'backend-profile.json'), '--run-dir', str(run_dir / 'meank')]
     if cfg['linear_backend_per_quant'] is not None:
@@ -246,7 +265,7 @@ def build_launch(profile, base, run_dir):
         '--middleware', 'vllm_kvmem.elastic_control.ElasticControlMiddleware']
     if cfg['profiler_config'] is not None:
         argv += ['--profiler-config', json.dumps(cfg['profiler_config'])]
-    return cfg, argv
+    return canonical_policy_payload(cfg, cfg), argv
 
 
 def main(argv=None):

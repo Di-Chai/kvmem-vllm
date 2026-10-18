@@ -587,8 +587,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
                         budget=self.block_graph_budget)
                     authority.graph_options = self.options
                     authority.graph_report_path = self.output/'block_graph.jsonl'
-                    authority.block_graph.update_message_spans(
-                        getattr(binding,'message_spans',()),validated_prefix=0)
+                    from .prompt_spans import install_graph_metadata
+                    install_graph_metadata(authority.block_graph, binding, validated_prefix=0)
                 except BaseException:
                     graph = getattr(authority,'block_graph',None)
                     if graph is not None:

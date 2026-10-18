@@ -202,6 +202,35 @@ def external_suffix(previous, current, protocol, message_identity):
     return suffix, proof
 
 
+def locality_mapper():
+    # The source bridge/request planner may intentionally be frozen V1 code.
+    # Load this new metadata-only helper independently, preserving that source
+    # renderer and all of its original token/Query/mandatory behavior.
+    name = 'timed_trace_locality_mapper'
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, ROOT/'src/vllm_kvmem/prompt_spans.py')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def rendered_locality(planner, text, spans, tokens, *, source):
+    mapper = locality_mapper()
+    intervals = [dict(begin=s['begin'], end=s['end'], role=s['role']) for s in spans]
+    kwargs = dict(tokenizer=getattr(planner, 'tokenizer', None), source=source,
+                  template=getattr(planner.protocol, 'template', 'frozen_qw3_claude_code'))
+    mapped = mapper.map_prompt_spans(text, intervals, tokens, **kwargs)
+    header = max((s['end'] for s in spans), default=0)
+    assistant_begin = None
+    if text.encode()[header:].startswith(b'<|im_start|>assistant\n'):
+        pending = mapper.map_prompt_spans(text,
+            [dict(begin=header, end=len(text.encode()), role='assistant')], tokens, **kwargs)
+        if pending.spans:
+            assistant_begin = pending.spans[0][0]
+    return mapped, assistant_begin
+
+
 def make_agent_plan(source, planner, bridge):
     first = source['rows'][0]
     prepared = planner.prepare(first['request'], bridge.Trajectory())
@@ -209,11 +238,15 @@ def make_agent_plan(source, planner, bridge):
     if prepared[5]:
         raise ValueError('Initial seed must use an empty-state canonical rendering')
     first['rendered'] = rendered
+    mapped, assistant_begin = rendered_locality(planner, rendered['prompt'], rendered['spans'],
+        initial, source='frozen_deepswe_initial')
+    query_plan = {**query_plan, **mapped.payload()}
     output = []
     previous = None
     for row in source['rows']:
         if previous is None:
             tool_tokens, wait, proof = [], 0., None
+            tool_metadata, next_assistant_begin = None, None
         else:
             row['rendered'] = planner.protocol(request=row['request'])
             try:
@@ -221,6 +254,12 @@ def make_agent_plan(source, planner, bridge):
             except ValueError as error:
                 raise ValueError(f"{source['task']} turn {row['source_turn']}: {error}") from error
             tool_tokens = planner.encode(suffix)
+            relative_spans = [dict(begin=s['begin'] - proof['source_byte_begin'] + 1,
+                                   end=s['end'] - proof['source_byte_begin'] + 1, role=s['role'])
+                              for s in row['rendered']['spans']
+                              if s['index'] in proof['message_indices']]
+            tool_metadata, next_assistant_begin = rendered_locality(planner, suffix, relative_spans,
+                tool_tokens, source='frozen_deepswe_external_append')
             wait = row['start']['request_started_at'] - previous['finish']['at']
             if not math.isfinite(wait) or wait < 0:
                 raise ValueError(f"{source['task']} turn {row['source_turn']}: negative/nonfinite tool wait")
@@ -229,13 +268,17 @@ def make_agent_plan(source, planner, bridge):
                            tool_tokens=tool_tokens, tool_wait_seconds=wait,
                            source_finish_reason=row['native']['choices'][0]['finish_reason'],
                            source_logical_prompt_tokens=row['plan']['prompt_tokens'],
-                           tool_tokens_sha256=ids_sha(tool_tokens), external_message_proof=proof))
+                           tool_tokens_sha256=ids_sha(tool_tokens), external_message_proof=proof,
+                           tool_locality_spans=[] if tool_metadata is None else
+                               locality_mapper().span_payload(tool_metadata.spans),
+                           tool_locality_provenance={} if tool_metadata is None else dict(tool_metadata.provenance),
+                           assistant_begin=next_assistant_begin))
         previous = row
     return dict(source_task=source['task'], source_turn=first['source_turn'],
                 initial_tokens=initial, initial_tokens_sha256=ids_sha(initial),
                 canonical_initial_tokens=len(initial),
                 source_logical_initial_tokens=first['plan']['prompt_tokens'],
-                query_plan=query_plan, turns=output,
+                query_plan=query_plan, turns=output, initial_assistant_begin=assistant_begin,
                 skipped_incomplete_candidates=source['skipped_incomplete_candidates'])
 
 
@@ -296,7 +339,8 @@ def freeze(args):
     if not Path(request_plan.__file__).resolve().is_relative_to(frozen_src.resolve()):
         raise ValueError('RequestPlan was imported from outside the source frozen tree')
     paths = {run/name for name in ('manifest.json', 'run.json', 'profile.json', 'bridge/requests.jsonl')}
-    paths.update((bridge_path, Path(request_plan.__file__).resolve(), Path(__file__).resolve()))
+    paths.update((bridge_path, Path(request_plan.__file__).resolve(), Path(__file__).resolve(),
+                  ROOT/'src/vllm_kvmem/prompt_spans.py'))
     paths.update(path for path in (run/'protocol').rglob('*') if path.is_file())
     for source in sources:
         if fallback or max_history is not None:
@@ -314,7 +358,7 @@ def freeze(args):
                       tokenizer_file_sha256={str(p): sha(p) for p in tokenizer_paths},
                       tokenizer_class=type(tokenizer).__name__,
                       library_versions=dict(transformers=transformers.__version__, tokenizers=tokenizers.__version__))
-    artifact = dict(schema_version=1,
+    artifact = dict(schema_version=2,
         scope='Fixed-length external-message performance trace; not original DeepSWE task quality',
         selection=dict(users=args.users, manifest_order='first users without reward/timing selection',
                        history_threshold=args.history_threshold, turns=args.turns,
@@ -325,7 +369,10 @@ def freeze(args):
                        tool_wait='Next request_started_at minus previous finish.at; no clipping',
                        tools='Recorded external results independent of newly generated tool choices',
                        eos='Fixed output lengths are performance quotas; downstream harness must declare stop/EOS policy',
-                       quality='Does not measure original task correctness or an on-policy tool agent'),
+                       quality='Does not measure original task correctness or an on-policy tool agent',
+                       locality='Graph-only full-encoding offsets; tool spans are relative to tool_tokens only. '
+                           'Add actual accepted history length once; assistant intervals close only at actual EOS. '
+                           'Missing/ambiguous offsets stay unknown; V1 frozen inputs are never rewritten.'),
         agent_plans=agents, summary=describe(agents), provenance=provenance)
     if fallback or max_history is not None:
         artifact['selection'].update(allow_shorter_history_fallback=fallback,max_initial_history=max_history,

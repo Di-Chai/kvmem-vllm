@@ -529,3 +529,21 @@ def test_retained_import_survives_cancellation_without_another_capture(cancel_be
     assert entry.tokens and not control.requests
     assert control.lookup(request('c'), 0) == original.history
     assert events[-1] == ('prepare', ('c', original.history, original.window))
+
+
+def test_graph_only_metadata_survives_scheduler_session_binding():
+    control, _ = ledger()
+    control.gen_budget = 64
+    control.select_budget = 64
+    req = request(tokens=list(range(24)))
+    req.num_prompt_tokens = 24
+    req.kv_transfer_params = dict(kvmem_request_plan=dict(
+        kvmem_locality_spans=[dict(begin=0,end=12,role='user'),dict(begin=12,end=24,role='tool')],
+        kvmem_locality_provenance=dict(schema_version=1,source='renderer')))
+    control.lookup(req,0)
+    control.allocated(req,0)
+    binding, = control.take_commands().bindings
+    assert binding.locality_spans == ((0,12,'user'),(12,24,'tool'))
+    assert dict(binding.locality_provenance)['source'] == 'renderer'
+    assert binding.message_spans == binding.mandatory_spans == ()
+    assert binding.tokens == tuple(req.prompt_token_ids)

@@ -101,16 +101,24 @@ class PrefillHistory:
             self.end, self.samples, self.chunks = end, samples, chunks
 
 
-def selection_report(authority):
+def selection_report(authority, *, phase=None):
     state = getattr(authority, 'action_history', None)
     prefill = getattr(state, 'prefill', None)
     scores = prefill.scores() if prefill else {}
     live = {r.history_begin for r in authority.records.values()}
     output = state is not None and any(v > 0 and key in live for key, v in state.scores.items())
     source = 'output' if output else 'prefill' if any(v > 0 and key in live for key,v in scores.items()) else 'none'
-    return {'attention_source': source, 'prefill_attention_samples': prefill.samples if prefill else 0,
+    result = {'attention_source': source, 'prefill_attention_samples': prefill.samples if prefill else 0,
             'prefill_attention_chunks': prefill.chunks if prefill else 0,
             'prefill_attention_pages': sum(v > 0 and key in live for key,v in scores.items())}
+    selection = getattr(authority, 'graph_selection_report', {})
+    if phase is not None and selection.get('phase') == phase:
+        result.update({key: selection[key] for key in ('phase','seed_source','scoring_version',
+            'score_domain_version','pressure_policy','alpha','score_mask_count','transport_mask_count')
+            if key in selection})
+        if phase == 'pressure':
+            result['attention_source'] = selection['seed_source']
+    return result
 
 
 def exclude_query_replay(runner, authority, request_id, begin, end, explicit):
@@ -125,15 +133,15 @@ def exclude_query_replay(runner, authority, request_id, begin, end, explicit):
     state.prefill_replay = (begin, end)
 
 
-def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
+def pressure_seed(authority, records):
+    """Read the old complete-window output/prefill seed without committing it.
+
+    Fallback is decided BEFORE applying the transport mask, including fixed
+    sink/mandatory rows. Selection never finishes/decays the Action state.
+    """
     state = getattr(authority, 'action_history', None)
-    if state is None or not getattr(state.options, 'action_pressure', False):
-        return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
-                                       tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
-    # A checkpoint restore has fresh GPU pages. Its old logical active view
-    # still defines pressure candidates after physical residency is cleared.
-    records = (authority.memory._store.working_records() if candidate_records is None
-               else candidate_records)
+    if state is None:
+        raise ValueError('Attention pressure requires accepted attention state')
     scores = []
     for slot, generation, begin, _, _ in records:
         handle = authority.memory._store.handle(slot)
@@ -143,9 +151,55 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
         if state.samples:
             score = state.options.action_decay * score + state.mass.get(begin, 0.) / state.samples
         scores.append((slot, score))
+    if any(not math.isfinite(score) or score < 0 for _, score in scores):
+        raise ValueError('Pressure seed must be finite and nonnegative')
+    source = 'output' if any(score > 0 for _, score in scores) else 'none'
     if state.prefill is not None and not any(score > 0 for _, score in scores):
         prefill = state.prefill.scores()
         scores = [(slot, prefill.get(begin, 0.)) for slot, _, begin, _, _ in records]
+        source = 'prefill' if any(score > 0 for _, score in scores) else 'none'
+    if any(not math.isfinite(score) or score < 0 for _, score in scores):
+        raise ValueError('Pressure seed must be finite and nonnegative')
     if not scores and authority.history_end:
         raise RuntimeError('Attention pressure has no resident history')
-    return authority.memory.select({}, tuple(h.slot for h in mandatory), action=False, pressure_scores=scores, max_tokens=max_tokens)
+    return scores, source
+
+
+def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
+    state = getattr(authority, 'action_history', None)
+    options = getattr(authority, 'graph_options', None) or getattr(state, 'options', None)
+    policy = getattr(options, 'pressure_policy', None)
+    if policy is None:
+        policy = 'attention' if state is not None and getattr(state.options, 'action_pressure', False) else 'recency'
+    if policy == 'recency':
+        return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
+                                       tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
+    # Checkpoint records remain authoritative after physical residency clears.
+    records = tuple(authority.memory._store.working_records() if candidate_records is None else candidate_records)
+    if policy == 'graph':
+        from .graph_integration import pressure_score_and_select
+        return pressure_score_and_select(authority, records, mandatory, max_tokens=max_tokens)
+    if policy != 'attention':
+        raise ValueError('Unknown pressure policy')
+    scores, source = pressure_seed(authority, records)
+    if getattr(authority,'block_graph',None) is not None:
+        from .authority import SCORE_DOMAIN_VERSION, record_key
+        from .graph_integration import emit_graph_report
+        graph=authority.block_graph
+        picked = authority.memory.preview_selection({}, tuple(h.slot for h in mandatory),
+            action=False,pressure_scores=scores,max_tokens=max_tokens)
+        report=dict(phase='pressure',seed_source=source,pressure_policy='attention',
+            mode=options.graph_mode,scoring_version=getattr(options,'graph_scoring_version','v1'),
+            alpha=getattr(options,'graph_alpha',.2),propagation_applied=False,
+            score_domain_version=SCORE_DOMAIN_VERSION,candidate_count=len(records),
+            score_mask_count=len(records),transport_mask_count=0,
+            revision=graph.revision,runtime_epoch=graph.runtime_epoch,
+            accepted_through=graph.accepted_through,
+            selected_tokens=sum(authority.records[record_key(authority.memory._store.handle(s))].count for s in picked),
+            budget=max_tokens or authority.memory.config.select_budget,
+            graph_bytes=graph.bytes,graph_live_bytes=graph.live_bytes,
+            locality_provenance=dict(getattr(graph,'locality_provenance',())))
+        authority.graph_selection_report=report
+        emit_graph_report(authority,report)
+    plan = authority.memory.select({}, tuple(h.slot for h in mandatory), action=False, pressure_scores=scores, max_tokens=max_tokens)
+    return plan

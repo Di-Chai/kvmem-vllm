@@ -1,7 +1,8 @@
-"""One-hop Query-conditioned propagation over original logical block starts.
+"""Versioned one-hop propagation over original logical block starts.
 
-Both operators read the same immutable Mean-K vector. Missing or excluded
-edges are self loops; stored attention rows are never refilled or normalized.
+Both operators read one immutable seed vector. V1 uses stored attention mass;
+V2 normalizes its surviving edges for each selection's transport mask. Neither
+version changes the stored rows or refills edges excluded from their top-k.
 """
 from dataclasses import dataclass, field
 from bisect import bisect_right
@@ -64,14 +65,19 @@ class _LocalityBoundaries:
             [end for (_begin, end, _role), known in zip(spans, ends_known) if known])))
 
     def coefficient(self, source, target, block_tokens, cross_message_weight):
+        category = self.classify(source, target, block_tokens)
+        return (cross_message_weight if category == 'cross_message' else 1.,
+                category == 'unknown')
+
+    def classify(self, source, target, block_tokens):
         low, high = min(source, target), max(source, target) + block_tokens
         index = bisect_right(self.starts, low) - 1
         if index >= 0 and high <= self.spans[index][1]:
-            return 1., False
+            return 'same_message'
         boundary = bisect_right(self.boundaries, low)
         if boundary < len(self.boundaries) and self.boundaries[boundary] < high:
-            return cross_message_weight, False
-        return 1., True
+            return 'cross_message'
+        return 'unknown'
 
 
 def locality_boundary(source, target, block_tokens, spans, cross_message_weight, ends_known=None):
@@ -80,14 +86,44 @@ def locality_boundary(source, target, block_tokens, spans, cross_message_weight,
         source, target, block_tokens, cross_message_weight)
 
 
+def _operator_weights(mode, scoring_version, alpha, locality_weight,
+                      attention_weight, cross_message_weight):
+    if mode not in ('off', 'collect', 'locality', 'attention', 'multi'):
+        raise ValueError('Invalid graph scoring mode')
+    if scoring_version not in ('v1', 'v2'):
+        raise ValueError('Invalid graph scoring version')
+    if (isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or
+            not math.isfinite(alpha) or not 0 <= alpha <= 1):
+        raise ValueError('Invalid graph alpha')
+    if not math.isfinite(cross_message_weight) or not 0 <= cross_message_weight <= 1:
+        raise ValueError('Invalid graph propagation weights')
+    if scoring_version == 'v2':
+        return (alpha / 2 if mode == 'multi' else alpha if mode == 'locality' else 0.,
+                alpha / 2 if mode == 'multi' else alpha if mode == 'attention' else 0.)
+    if (any(not math.isfinite(w) or w < 0 for w in (locality_weight, attention_weight)) or
+            locality_weight + attention_weight > 1):
+        raise ValueError('Invalid graph propagation weights')
+    return (locality_weight if mode in ('locality', 'multi') else 0.,
+            attention_weight if mode in ('attention', 'multi') else 0.)
+
+
 def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
+                scoring_version='v1', alpha=.2,
                 locality_weight=.1, attention_weight=.2, cross_message_weight=.25,
                 block_tokens=None, trace=False, trace_targets=()):
+    """Propagate Query or pressure seeds; ``eligible`` is the transport mask.
+
+    Ineligible seeds remain exactly unchanged, including nonzero mandatory
+    seeds. Zero-score eligible nodes may receive mass. V2's alpha is shared by
+    its operators; multi always assigns half to each, including identity rows.
+    Legacy weight conflicts are resolved by the user-facing configuration
+    parser; these compatibility arguments have no effect on the V2 operator.
+    """
     if len(raw_scores) != len(starts) or len(eligible) != len(starts):
         raise ValueError('Graph scoring/index shapes differ')
     reserve = getattr(snapshot, 'reserve_scoring_scratch', None)
-    wl = locality_weight if mode in ('locality', 'multi') else 0.
-    wa = attention_weight if mode in ('attention', 'multi') else 0.
+    wl, wa = _operator_weights(mode, scoring_version, alpha, locality_weight,
+                               attention_weight, cross_message_weight)
     work = (mode in ('locality', 'attention', 'multi') and wl + wa > 0 and
             sum(bool(value) for value in eligible) > 1 and
             any(bool(keep) and value > 0 for keep, value in zip(eligible, raw_scores)))
@@ -97,6 +133,7 @@ def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
             charge = reserve(scoring_scratch_bytes(len(starts), len(snapshot.rows),
                 len(snapshot.message_spans), trace=trace))
         result = _score_graph(raw_scores, starts, eligible, snapshot, mode=mode,
+            scoring_version=scoring_version, alpha=alpha,
             locality_weight=locality_weight, attention_weight=attention_weight,
             cross_message_weight=cross_message_weight, block_tokens=block_tokens,
             trace=trace, trace_targets=trace_targets)
@@ -109,37 +146,47 @@ def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
 
 
 def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
+                scoring_version='v1', alpha=.2,
                 locality_weight=.1, attention_weight=.2, cross_message_weight=.25,
                 block_tokens=None, trace=False, trace_targets=()):
     started = time.perf_counter()
-    if mode not in ('off', 'collect', 'locality', 'attention', 'multi'):
-        raise ValueError('Invalid graph scoring mode')
-    if (any(not math.isfinite(w) or w < 0 for w in (locality_weight, attention_weight)) or
-            locality_weight + attention_weight > 1 or
-            not math.isfinite(cross_message_weight) or not 0 <= cross_message_weight <= 1):
-        raise ValueError('Invalid graph propagation weights')
+    wl, wa = _operator_weights(mode, scoring_version, alpha, locality_weight,
+                               attention_weight, cross_message_weight)
     if len(raw_scores) != len(starts) or len(eligible) != len(starts):
         raise ValueError('Graph scoring/index shapes differ')
     if any(not math.isfinite(x) or x < 0 for x in raw_scores):
-        raise ValueError('Mean-K graph input must be finite and nonnegative')
+        raise ValueError('Graph input scores must be finite and nonnegative')
     block_tokens = snapshot.block_tokens if block_tokens is None and snapshot is not None else block_tokens
     if block_tokens is None or type(block_tokens) is not int or block_tokens <= 0:
         raise ValueError('Graph scoring requires valid logical block size')
     if any(type(p) is not int or p < 0 or p % block_tokens for p in starts):
         raise ValueError('Graph scoring requires distinct original block starts')
-    wl = locality_weight if mode in ('locality', 'multi') else 0.
-    wa = attention_weight if mode in ('attention', 'multi') else 0.
     eligible_count = sum(bool(value) for value in eligible)
-    total = math.fsum(value for value, keep in zip(raw_scores, eligible) if bool(keep))
-    diagnostics = {'mode': mode, 'locality_weight': wl, 'attention_weight': wa,
-                   'eligible': eligible_count, 'raw_score_sum': math.fsum(raw_scores),
+    try:
+        total = math.fsum(value for value, keep in zip(raw_scores, eligible) if bool(keep))
+        raw_total = math.fsum(raw_scores)
+    except OverflowError as exc:
+        raise ValueError('Graph input score sum must be finite') from exc
+    diagnostics = {'mode': mode, 'scoring_version': scoring_version,
+                   'alpha': alpha if scoring_version == 'v2' else None,
+                   'locality_weight': wl, 'attention_weight': wa,
+                   'locality_share': ((.5 if mode == 'multi' else 1. if mode == 'locality' else 0.)
+                                      if scoring_version == 'v2' else wl / (wl + wa) if wl + wa else 0.),
+                   'attention_share': ((.5 if mode == 'multi' else 1. if mode == 'attention' else 0.)
+                                       if scoring_version == 'v2' else wa / (wl + wa) if wl + wa else 0.),
+                   'eligible': eligible_count, 'raw_score_sum': raw_total,
                    'raw_eligible_sum': total, 'normalized_input_sum': 1. if total else 0.,
                    'normalized_output_sum': 1. if total else 0., 'identity': True,
                    'locality_fallback_count': 0, 'locality_missing_count': 0,
+                   'locality_same_message_count': 0, 'locality_cross_message_count': 0,
                    'locality_masked_count': 0, 'attention_missing_count': 0,
                    'attention_masked_count': 0, 'masked_self_mass': 0.,
                    'missing_self_mass': 0., 'attention_external_mass': 0.,
-                   'locality_external_mass': 0., 'observed_sources': 0, 'edges': 0}
+                   'attention_seed_coverage': 0., 'attention_retained_raw_mass': 0.,
+                   'attention_effective_raw_mass': 0., 'attention_excluded_raw_mass': 0.,
+                   'locality_external_mass': 0., 'observed_sources': 0, 'edges': 0,
+                   'self_retained_mass': 1. if total else 0.,
+                   'normalized_l1_change': 0., 'raw_l1_change': 0.}
     if snapshot is not None:
         diagnostics.update(revision=snapshot.revision, runtime_epoch=snapshot.epoch,
                            accepted_through=snapshot.accepted_through,
@@ -153,6 +200,20 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
 
     def finish(scores, details=()):
         diagnostics['propagated_score_sum'] = math.fsum(scores)
+        # These include unavailable rows/slots and boundary attenuation. In
+        # V2 discarded raw attention mass is not itself retained: a surviving
+        # edge receives the complete attention share after normalization.
+        diagnostics['attention_identity_mass'] = (wa if total else 0.) - diagnostics['attention_external_mass']
+        diagnostics['locality_identity_mass'] = (wl if total else 0.) - diagnostics['locality_external_mass']
+        for kind in ('attention_external', 'locality_external', 'self_retained'):
+            diagnostics['raw_' + kind + '_mass'] = diagnostics[kind + '_mass'] * total
+        locality_edges = (diagnostics['locality_fallback_count'] +
+                          diagnostics['locality_same_message_count'] +
+                          diagnostics['locality_cross_message_count'])
+        for category, key in (('unknown', 'fallback'), ('same_message', 'same_message'),
+                              ('cross_message', 'cross_message')):
+            diagnostics['locality_' + category + '_fraction'] = (
+                diagnostics['locality_' + key + '_count'] / locality_edges if locality_edges else 0.)
         diagnostics['scoring_seconds'] = time.perf_counter() - started
         return GraphScores(scores, diagnostics, details)
 
@@ -175,8 +236,10 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
         nonlocal movements
         if i == j or edge == 0 or weight == 0:
             return
-        movements += 1
         delta = weight * r[i] * edge
+        if scoring_version == 'v2' and delta == 0:
+            return
+        movements += 1
         result[i] -= delta
         result[j] += delta
         outgoing[i] += delta
@@ -191,10 +254,25 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                 if target not in allowed:
                     category = 'masked' if target in live else 'missing'
                     diagnostics['locality_' + category + '_count'] += 1
-                    diagnostics[category + '_self_mass'] += wl * r[i] * edge
+                    diagnostics[category + '_self_mass'] += wl * r[i] * (.5 if scoring_version == 'v2' else edge)
                     continue
                 diagnostics['locality_fallback_count'] += fallback
+                category = boundaries.classify(source, target, block_tokens)
+                if category != 'unknown':
+                    diagnostics['locality_' + category + '_count'] += 1
                 transfer(i, allowed[target], edge, wl, 'locality')
+
+    def attention_edges(row):
+        if scoring_version == 'v2':
+            if row.samples == 0 or row.source + block_tokens > snapshot.completed_through:
+                return ()
+            surviving = tuple((target, edge) for target, edge in zip(row.targets, row.weights)
+                              if target in allowed and target != row.source and edge > 0)
+            denominator = math.fsum(edge for _target, edge in surviving)
+            return tuple((target, edge, edge / denominator) for target, edge in surviving)
+        return tuple((target, edge, edge) for target, edge in zip(row.targets, row.weights)
+                     if target in allowed and target != row.source)
+
     if wa:
         seen_sources = set()
         for row in snapshot.rows:
@@ -202,20 +280,35 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                 raise ValueError('Invalid stored graph source row')
             seen_sources.add(row.source)
             if (len(set(row.targets)) != len(row.targets) or
-                    any(not math.isfinite(v) or v <= 0 for v in row.weights) or
+                    any(not math.isfinite(v) or v < 0 or (v == 0 and scoring_version == 'v1')
+                        for v in row.weights) or
                     math.fsum(row.weights) > 1 + 1e-12):
                 raise ValueError('Invalid stored graph edge mass')
+            if scoring_version == 'v2' and (type(row.samples) is not int or row.samples < 0):
+                raise ValueError('Invalid stored graph sample count')
             if row.source not in allowed:
                 continue
             i = allowed[row.source]
+            if (scoring_version == 'v2' and
+                    (row.samples == 0 or row.source + block_tokens > snapshot.completed_through)):
+                continue
+            diagnostics['attention_retained_raw_mass'] += r[i] * math.fsum(row.weights)
             for target, edge in zip(row.targets, row.weights):
-                if target == row.source:
+                if target == row.source or edge == 0:
                     continue
                 if target not in allowed:
                     category = 'masked' if target in live else 'missing'
                     diagnostics['attention_' + category + '_count'] += 1
-                    diagnostics[category + '_self_mass'] += wa * r[i] * edge
+                    if scoring_version == 'v1':
+                        diagnostics[category + '_self_mass'] += wa * r[i] * edge
                     continue
+            edges = attention_edges(row)
+            effective_raw_mass = math.fsum(edge for _, edge, _ in edges)
+            diagnostics['attention_excluded_raw_mass'] += r[i] * (math.fsum(row.weights) - effective_raw_mass)
+            if edges:
+                diagnostics['attention_seed_coverage'] += r[i]
+                diagnostics['attention_effective_raw_mass'] += r[i] * effective_raw_mass
+            for target, _raw_edge, edge in edges:
                 transfer(i, allowed[target], edge, wa, 'attention')
     if movements == 0:
         return finish(raw_scores)
@@ -229,6 +322,8 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
     diagnostics['identity'] = False
     diagnostics['normalized_output_sum'] = math.fsum(result)
     diagnostics['self_retained_mass'] = math.fsum(r) - math.fsum(outgoing)
+    diagnostics['normalized_l1_change'] = math.fsum(abs(after-before) for after, before in zip(result, r))
+    diagnostics['raw_l1_change'] = math.fsum(abs(after-before) for after, before in zip(scores, raw_scores))
     details = ()
     if trace:
         preferred = list(dict.fromkeys(allowed[p] for p in trace_targets if p in allowed))[:64]
@@ -237,7 +332,7 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                     if i not in preferred][:64 - len(preferred)]
         contributors = {i: [] for i in ranking}
 
-        def explanation(source, target, edge, weight, kind):
+        def explanation(source, target, edge, weight, kind, raw_edge=None):
             if source not in allowed or target not in allowed or source == target:
                 return
             i, j = allowed[source], allowed[target]
@@ -245,7 +340,7 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
             if j not in contributors or not contribution:
                 return
             entries = contributors[j]
-            entries.append((contribution, source, edge, kind))
+            entries.append((contribution, source, edge, kind, edge if raw_edge is None else raw_edge))
             entries.sort(key=lambda item: (-item[0], item[1], item[3]))
             del entries[4:]
 
@@ -259,13 +354,15 @@ def _score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                     explanation(source, target, .5 * coefficient, wl, 'locality')
         if wa:
             for row in snapshot.rows:
-                for target, edge in zip(row.targets, row.weights):
-                    explanation(row.source, target, edge, wa, 'attention')
+                for target, raw_edge, edge in attention_edges(row):
+                    explanation(row.source, target, edge, wa, 'attention', raw_edge)
         details = tuple({'target': starts[i], 'direct_query_score': r[i],
+                         'direct_seed_score': r[i], 'raw_seed_score': raw_scores[i],
                          'self_retained': r[i] - outgoing[i],
                          'locality_incoming': incoming_l[i], 'attention_incoming': incoming_a[i],
                          'final_score': result[i], 'raw_final_score': scores[i],
-                         'sources': tuple({'source': p, 'edge_weight': e, 'kind': k, 'contribution': d}
-                                          for d, p, e, k in contributors.get(i, ()))}
+                         'sources': tuple({'source': p, 'edge_weight': e, 'raw_edge_weight': raw,
+                                           'normalized_edge_weight': e, 'kind': k, 'contribution': d}
+                                          for d, p, e, k, raw in contributors.get(i, ()))}
                         for i in ranking)
     return finish(scores, details)

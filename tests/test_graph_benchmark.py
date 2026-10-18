@@ -254,6 +254,68 @@ def test_custom_profile_and_client_are_frozen_without_graph_overrides(monkeypatc
     assert json.loads((tmp_path/'profile.json').read_text()) == profile
 
 
+def test_structured_session_prepare_freezes_bridge_and_protocol(monkeypatch, tmp_path):
+    source = tmp_path/'source'
+    (source/'src').mkdir(parents=True)
+    (source/'src/example.py').write_text('X = 1\n')
+    (source/'scripts').mkdir()
+    for name in ('qualify_block_graph.py', 'benchmark_block_graph.py', 'qualify_graph_v2_sessions.py'):
+        (source/'scripts'/name).write_text('# '+name+'\n')
+    (source/'benchmarks/deepswe').mkdir(parents=True)
+    (source/'benchmarks/deepswe/claude_bridge.py').write_text('# authoritative bridge\n')
+    protocol = tmp_path/'producer/protocol.so'
+    protocol.parent.mkdir()
+    protocol.write_bytes(b'compiled authoritative protocol')
+    save(protocol.with_name('provenance.json'), dict(source='qw3'))
+    profile = dict(kvmem=dict(graph_mode='multi', graph_scoring_version='v2'))
+    save(tmp_path/'profile.json', profile)
+    save(tmp_path/'fixture.json', dict(kind='graph_v2_structured_sessions_v1', prompt_tokens=131072))
+    args = SimpleNamespace(output=tmp_path/'attempt', fixture=tmp_path/'fixture.json',
+        arm='multi', synchronous=False, port=12345, profile=tmp_path/'profile.json',
+        qualifier=source/'scripts/qualify_graph_v2_sessions.py', protocol=protocol)
+    monkeypatch.setattr(bench, 'ROOT', source)
+    bench.prepare(args)
+    manifest = json.loads((args.output/'manifest.json').read_text())
+    assert manifest['protocol'] == 'protocol/protocol.so'
+    for path in ('protocol/protocol.so','protocol/provenance.json','benchmarks/deepswe/claude_bridge.py'):
+        assert manifest['runtime_sha256'][path] == hashlib.sha256((args.output/'runtime'/path).read_bytes()).hexdigest()
+    protocol.write_bytes(b'changed workspace library')
+    assert (args.output/'runtime/protocol/protocol.so').read_bytes() == b'compiled authoritative protocol'
+
+
+@pytest.mark.parametrize('missing', ['protocol/protocol.so','benchmarks/deepswe/claude_bridge.py'])
+def test_structured_qualifier_requires_frozen_dependencies_before_gpu(monkeypatch,tmp_path,missing):
+    args, manifest = prepared(tmp_path)
+    manifest.update(qualification_script='qualify_graph_v2_sessions.py', protocol='protocol/protocol.so')
+    manifest['runtime_sha256'] = {name:'unused' for name in (
+        'scripts/qualify_graph_v2_sessions.py','protocol/protocol.so','benchmarks/deepswe/claude_bridge.py') if name != missing}
+    save(args.output/'manifest.json',manifest)
+    monkeypatch.setattr(bench, 'gpu_processes', lambda: pytest.fail('Touched GPU before validation'))
+    with pytest.raises(ValueError,match='not frozen and hashed'):
+        bench.run(args)
+
+
+def test_structured_run_passes_frozen_protocol_path_to_client(monkeypatch,tmp_path):
+    args, manifest = prepared(tmp_path)
+    manifest.update(qualification_script='qualify_graph_v2_sessions.py', protocol='protocol/protocol.so')
+    paths = ('scripts/qualify_graph_v2_sessions.py','protocol/protocol.so','benchmarks/deepswe/claude_bridge.py')
+    for name in paths:
+        path = args.output/'runtime'/name
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('# immutable dependency\n')
+        manifest['runtime_sha256'][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    save(args.output/'manifest.json',manifest)
+    fake_processes(monkeypatch,tmp_path,args)
+    spawn = bench.subprocess.Popen
+    commands=[]
+    def capture(command,**kwargs):
+        commands.append(command)
+        return spawn(command,**kwargs)
+    monkeypatch.setattr(bench.subprocess,'Popen',capture)
+    bench.run(args)
+    assert commands[1][-2:] == ['--protocol',str(args.output/'runtime/protocol/protocol.so')]
+
+
 @pytest.mark.parametrize('name', ['../outside.py', 'scripts/nested.py', 'client.txt'])
 def test_manifest_client_cannot_escape_frozen_scripts(monkeypatch, tmp_path, name):
     args, manifest = prepared(tmp_path)

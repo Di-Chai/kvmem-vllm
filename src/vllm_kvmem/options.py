@@ -6,6 +6,8 @@ from .config import KVMemConfig
 
 GRAPH_DEFAULTS = {
     'graph_mode': 'off',
+    'graph_scoring_version': 'v1',
+    'graph_alpha': 0.2,
     'graph_locality_weight': 0.1,
     'graph_attention_weight': 0.2,
     'graph_attention_topk': 4,
@@ -16,16 +18,80 @@ GRAPH_DEFAULTS = {
     'graph_trace': False,
 }
 GRAPH_SCORING_MODES = frozenset(('locality', 'attention', 'multi'))
+_UNSET = object()
+_LEGACY_GRAPH_WEIGHTS = frozenset(('graph_locality_weight', 'graph_attention_weight'))
+_POLICY_FIELDS = frozenset((*GRAPH_DEFAULTS, 'pressure_policy', 'action_pressure'))
+
+
+def resolve_graph_policy(values, *, explicit_fields=None):
+    """Resolve policy aliases before defaults erase which fields were supplied."""
+    import math
+    explicit = set(values) if explicit_fields is None else set(explicit_fields)
+    cfg = {**GRAPH_DEFAULTS, 'action_pressure': False, **values}
+    version = cfg['graph_scoring_version']
+    if not isinstance(version, str) or version not in ('v1', 'v2'):
+        raise ValueError('graph_scoring_version must be v1 or v2')
+    alpha = cfg['graph_alpha']
+    if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError('graph_alpha must be finite and in [0, 1]')
+    legacy_weights = explicit & _LEGACY_GRAPH_WEIGHTS
+    if 'graph_alpha' in explicit and legacy_weights:
+        raise ValueError('graph_alpha cannot be combined with legacy graph weights')
+    if version == 'v2' and legacy_weights:
+        raise ValueError('graph_scoring_version=v2 rejects legacy graph weights')
+    if version == 'v1' and 'graph_alpha' in explicit:
+        raise ValueError('graph_alpha requires graph_scoring_version=v2')
+    if type(cfg['action_pressure']) is not bool:
+        raise ValueError('action_pressure must be boolean')
+    if 'pressure_policy' in explicit:
+        policy = cfg.get('pressure_policy')
+        if not isinstance(policy, str) or policy not in ('recency', 'attention', 'graph'):
+            raise ValueError('pressure_policy must be recency, attention or graph')
+        if 'action_pressure' in explicit and (
+                policy == 'graph' or cfg['action_pressure'] != (policy == 'attention')):
+            raise ValueError('pressure_policy conflicts with explicit action_pressure')
+    else:
+        policy = 'attention' if cfg['action_pressure'] else 'recency'
+    cfg['pressure_policy'] = policy
+    # Compatibility for consumers that only need to know whether pressure uses
+    # attention. Dispatch between legacy and graph pressure uses the enum.
+    cfg['action_pressure'] = policy != 'recency'
+    return cfg
+
+
+def canonical_policy_payload(values, resolved):
+    """Serialize resolved policies without turning inactive defaults into input."""
+    payload = dict(values)
+    get = resolved.get if isinstance(resolved, dict) else lambda name: getattr(resolved, name)
+    version = get('graph_scoring_version')
+    payload['graph_scoring_version'] = version
+    payload['pressure_policy'] = get('pressure_policy')
+    if version == 'v2':
+        payload['graph_alpha'] = get('graph_alpha')
+        for name in (*_LEGACY_GRAPH_WEIGHTS, 'action_pressure'):
+            payload.pop(name, None)
+    else:
+        payload.pop('graph_alpha', None)
+    return payload
 
 
 def validate_graph_options(values, *, context_mode='meank', request_planning=False,
                            session_capacity=0, repository_gc=False, query_history=False,
                            action_pressure=False, action_attention=False,
                            prefill_attention=False, action_scope='tool-call',
-                           action_fraction=0.25):
+                           action_fraction=0.25, pressure_policy=None):
     """Shared validation before either launcher creates a backend or resources."""
     import math
     cfg = {**GRAPH_DEFAULTS, **values}
+    version = cfg['graph_scoring_version']
+    if not isinstance(version, str) or version not in ('v1', 'v2'):
+        raise ValueError('graph_scoring_version must be v1 or v2')
+    alpha = cfg['graph_alpha']
+    if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError('graph_alpha must be finite and in [0, 1]')
+    policy = pressure_policy if pressure_policy is not None else ('attention' if action_pressure else 'recency')
+    if not isinstance(policy, str) or policy not in ('recency', 'attention', 'graph'):
+        raise ValueError('pressure_policy must be recency, attention or graph')
     mode = cfg['graph_mode']
     if not isinstance(mode, str) or mode not in ('off', 'collect', *GRAPH_SCORING_MODES):
         raise ValueError('graph_mode must be off, collect, locality, attention or multi')
@@ -43,6 +109,11 @@ def validate_graph_options(values, *, context_mode='meank', request_planning=Fal
         raise ValueError('Per-session graph capacity must fit the global graph capacity')
     if type(cfg['graph_trace']) is not bool:
         raise ValueError('graph_trace must be boolean')
+    if policy == 'graph':
+        if version != 'v2' or mode not in GRAPH_SCORING_MODES:
+            raise ValueError('pressure_policy=graph requires graph_scoring_version=v2 and a scoring graph_mode')
+        if not action_attention or not prefill_attention or action_scope != 'non-thinking':
+            raise ValueError('Graph pressure requires action_attention, prefill_attention and action_scope=non-thinking')
     if mode == 'off':
         return
     if context_mode != 'meank':
@@ -56,8 +127,8 @@ def validate_graph_options(values, *, context_mode='meank', request_planning=Fal
             raise ValueError('Block graph scoring requires request planning')
         if query_history:
             raise ValueError('Block graph scoring requires query_history=false')
-        if action_pressure:
-            raise ValueError('Block graph scoring requires action_pressure=false')
+        if version == 'v1' and policy != 'recency':
+            raise ValueError('V1 block graph scoring requires action_pressure=false (pressure_policy=recency)')
         if action_attention and action_fraction != 0:
             raise ValueError('Block graph scoring requires zero effective legacy attention fusion')
         if mode in ('attention', 'multi') and (
@@ -105,7 +176,7 @@ class RuntimeOptions:
     async_refresh: bool = False
     refresh_quantum_tokens: int = 256
     prefill_attention: bool = False
-    action_pressure: bool = False
+    action_pressure: bool = _UNSET
     prefill_attention_interval: int = 1024
     prefill_attention_stride: int = 32
     prefill_attention_half_life: float = 8192
@@ -151,14 +222,20 @@ class RuntimeOptions:
     action_profile_interval: int = 1
     action_profile_max_events: int = 256
     graph_mode: str = 'off'
-    graph_locality_weight: float = 0.1
-    graph_attention_weight: float = 0.2
+    graph_locality_weight: float = _UNSET
+    graph_attention_weight: float = _UNSET
     graph_attention_topk: int = 4
     graph_attention_min_mass: float = 0.0
     graph_cross_message_weight: float = 0.25
     graph_max_bytes_per_session: int = 33554432
     graph_max_total_bytes: int = 268435456
     graph_trace: bool = False
+    graph_scoring_version: str = 'v1'
+    graph_alpha: float = _UNSET
+    pressure_policy: str = _UNSET
+    _policy_explicit_fields: frozenset | None = field(default=None, repr=False, compare=False)
+    _policy_resolved_values: tuple | None = field(default=None, repr=False, compare=False)
+    cpu_direct_record_seal: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -174,12 +251,28 @@ class RuntimeOptions:
     def __post_init__(self):
         import math
         from . import _native
+        supplied = {name: getattr(self, name) for name in _POLICY_FIELDS
+                    if getattr(self, name) is not _UNSET}
+        explicit = (frozenset(supplied) if self._policy_explicit_fields is None
+                    else self._policy_explicit_fields)
+        if self._policy_resolved_values is not None:
+            # dataclasses.replace carries already resolved defaults. Preserve
+            # their provenance, while treating actual replacement values as
+            # explicit settings instead of silently ignoring a policy change.
+            explicit = explicit | frozenset(name for name, previous in self._policy_resolved_values
+                if supplied.get(name, _UNSET) != previous)
+        resolved = resolve_graph_policy(supplied, explicit_fields=explicit)
+        for name in _POLICY_FIELDS:
+            object.__setattr__(self, name, resolved[name])
+        object.__setattr__(self, '_policy_explicit_fields', explicit)
+        object.__setattr__(self, '_policy_resolved_values',
+                           tuple((name, resolved[name]) for name in sorted(_POLICY_FIELDS)))
         validate_graph_options({name: getattr(self, name) for name in GRAPH_DEFAULTS},
             request_planning=self.request_planning, session_capacity=self.session_capacity,
             repository_gc=self.repository_gc, query_history=self.query_history,
             action_pressure=self.action_pressure, action_attention=self.memory.action_attention,
             prefill_attention=self.prefill_attention, action_scope=self.action_scope,
-            action_fraction=self.memory.action_fraction)
+            action_fraction=self.memory.action_fraction, pressure_policy=self.pressure_policy)
         if type(self.async_action_metadata) is not bool:
             raise ValueError('Asynchronous Action metadata must be boolean')
         if self.async_action_metadata and not self.memory.action_attention:
@@ -331,6 +424,10 @@ class RuntimeOptions:
             raise ValueError('Archive backend must be nvme or cpu')
         if self.archive_backend == 'cpu' and (not self.cpu_read_cache_bytes or self.nvme_preallocate or self.nvme_max_bytes):
             raise ValueError('CPU-only archive requires a memory budget and no NVMe reservation')
+        if type(self.cpu_direct_record_seal) is not bool:
+            raise ValueError('cpu_direct_record_seal must be boolean')
+        if self.cpu_direct_record_seal and (self.archive_backend != 'cpu' or not self.async_seal):
+            raise ValueError('cpu_direct_record_seal requires archive_backend=cpu and async_seal=true')
         if (self.query_history or self.guided_query_tokens) and not self.request_planning:
             raise ValueError('Query history/guided refresh require explicit request planning')
         if self.query_history and not self.session_capacity:
@@ -408,6 +505,7 @@ class RuntimeOptions:
         capture_terminal = payload.pop('session_capture_terminal', False)
         gather_workers = payload.pop('cpu_gather_workers', 8)
         async_seal = payload.pop('async_seal', False)
+        direct_record_seal = payload.pop('cpu_direct_record_seal', False)
         raw_cache = payload.pop('gpu_raw_k_cache_bytes', 0)
         reuse_v = payload.pop('reuse_resident_v', False)
         cpu_scatter = payload.pop('async_cpu_scatter', False)
@@ -420,12 +518,13 @@ class RuntimeOptions:
         query_decay = payload.pop('query_history_decay', 0.5)
         guided_tokens = payload.pop('guided_query_tokens', 0)
         archive_backend = payload.pop('archive_backend', 'nvme')
-        graph = {name: payload.pop(name, default) for name, default in GRAPH_DEFAULTS.items()}
+        graph = {name: payload.pop(name) for name in GRAPH_DEFAULTS if name in payload}
+        graph['pressure_policy'] = payload.pop('pressure_policy', _UNSET)
         action = {name: payload.pop(name, default) for name, default in (
             ('action_scope', 'tool-call'), ('action_layers', 'spread3'),
             ('action_interval', 16), ('action_decay', 0.5),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
-            ('prefill_attention', False), ('action_pressure', False),
+            ('prefill_attention', False), ('action_pressure', _UNSET),
             ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),
             ('prefill_attention_half_life', 8192), ('session_freeze_prompt', False),
             ('cpu_history_coordination', False), ('cpu_progress_reserve', True),
@@ -458,4 +557,5 @@ class RuntimeOptions:
         return cls(memory, cache_bytes, packed, verify, direct, cadence, retirement, gc, preallocate, nvme_bytes,
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
                    gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy,
-                   query_history,query_decay,guided_tokens,archive_backend,**action,**graph)
+                   query_history,query_decay,guided_tokens,archive_backend,
+                   cpu_direct_record_seal=direct_record_seal,**action,**graph)

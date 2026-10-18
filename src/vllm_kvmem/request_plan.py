@@ -9,13 +9,24 @@ from dataclasses import dataclass, replace
 
 FIELDS = {'kvmem_query_span', 'kvmem_query_message_range', 'kvmem_message_spans',
           'kvmem_reselect', 'kvmem_prefill_window', 'kvmem_replay_span',
-          'kvmem_mandatory_spans', 'kvmem_mandatory_parts'}
+          'kvmem_mandatory_spans', 'kvmem_mandatory_parts',
+          'kvmem_locality_spans', 'kvmem_locality_provenance'}
 PARTS = {'system', 'root', 'query', 'policy', 'tool-call', 'tool-result'}
 KINDS = PARTS | {'file', 'explicit'}
 
 
 class RequestCapacityError(ValueError):
     """A supported plan whose combined reservations cannot fit this engine."""
+
+
+def selection_config(config, select_budget, *, selection, pressure_policy='recency'):
+    """Fit reservations using the bands of the actual native picker.
+
+    Attention/graph pressure keeps sink and mandatory pages but has no fixed
+    recent band. Keep the owner configuration unchanged for subsequent Queries.
+    """
+    recent = 0 if selection == 'pressure' and pressure_policy in ('attention', 'graph') else config.recent_blocks
+    return replace(config, select_budget=select_budget, recent_blocks=recent)
 
 
 def _parts(value):
@@ -56,6 +67,8 @@ class RequestPlan:
     # Original message coordinates, never dense-window positions. Append to
     # preserve positional callers of the pre-existing request-plan contract.
     message_spans: tuple[tuple[int, int, str], ...] = ()
+    locality_spans: tuple[tuple[int, int, str], ...] = ()
+    locality_provenance: tuple = ()
 
     @property
     def output_reserve(self):
@@ -91,7 +104,7 @@ class RequestPlan:
 
     def validate_capacity(self, prompt_tokens, select_budget, *, output_tokens=None,
                           sink_blocks=0, recent_blocks=0, rolling=None,
-                          resume_history=0, resume_window=0):
+                          resume_history=0, resume_window=0, pressure_policy='recency'):
         """Validate a finalized plan before allocation or checkpoint mutation.
 
         The API can call this for cold/forced requests. Session owners must first
@@ -103,7 +116,6 @@ class RequestPlan:
             output_tokens=self.output_tokens if output_tokens is None else output_tokens,
             rolling_active_window=self.rolling_active_window if rolling is None else rolling)
         capacity = select_budget + self.gen_budget
-        minimum = max(1, sink_blocks + recent_blocks) * self.block_tokens
         checkpoint = plan.generation_checkpoint(prompt_tokens)
         # A restored terminal tail may lie beyond the final sealed input point.
         # SessionLedger then pressure-compacts at that exact import position.
@@ -114,9 +126,14 @@ class RequestPlan:
                 (capacity - plan.output_reserve - (prompt_tokens - resume_history) -
                  self.block_tokens) // self.block_tokens * self.block_tokens)
             needs_selection = True
+            selection = 'pressure'
         else:
             budget = plan.selection_budget(checkpoint, prompt_tokens, capacity)
             needs_selection = checkpoint >= budget
+            selection = plan.action(checkpoint, prompt_tokens, 0, capacity)
+        if selection == 'pressure' and pressure_policy in ('attention', 'graph'):
+            recent_blocks = 0
+        minimum = max(1, sink_blocks + recent_blocks) * self.block_tokens
         if needs_selection and budget < minimum:
             raise RequestCapacityError(
                 'Complete Query, output reserve and fixed sink/recent bands exceed '
@@ -149,6 +166,11 @@ class RequestPlan:
             # boundaries are independent evidence, so reparsing this transport
             # must not silently re-enable default root/system/query pins.
             out['kvmem_mandatory_parts'] = 'none'
+        if self.locality_spans:
+            from .prompt_spans import span_payload
+            out['kvmem_locality_spans'] = span_payload(self.locality_spans)
+        if self.locality_provenance:
+            out['kvmem_locality_provenance'] = dict(self.locality_provenance)
         return out
 
     def continuation(self, prompt_tokens, output_tokens, history, window, capacity,
@@ -170,15 +192,31 @@ class RequestPlan:
         return replace(self,query=query,replay=self.replay if query else None,
                        mandatory=mandatory,prefill_window=policy), changed
 
-    def mandatory_fit(self, history, config):
+    def mandatory_fit(self, history, config, *, preserve_tail=False):
         from . import _native
         bt = self.block_tokens
         count = (history + bt - 1) // bt
         spans = [(b//bt,min(count,(e+bt-1)//bt),1 if k in ('root','policy') else 0)
                  for b,e,k in self.mandatory if b < history]
         spans = [s for s in spans if s[0] < s[1]]
-        return _native.fit_mandatory_blocks(count,config.select_budget//bt,
-                                           config.sink_blocks,config.recent_blocks,spans)
+        tail = count - 1 if preserve_tail and history % bt else None
+        fixed = set()
+        if tail is not None:
+            fixed.update(range(min(count, config.sink_blocks)))
+            fixed.add(tail)
+            # Explicit hard evidence cannot be softened to make room for a
+            # resumed partial record. Root/policy spans retain native fitting.
+            for begin, end, kind in self.mandatory:
+                if kind == 'explicit':
+                    fixed.update(range(begin // bt, min(count, (end + bt - 1) // bt)))
+            if len(fixed) > config.select_budget // bt:
+                raise RequestCapacityError('Sink, explicit mandatory and accepted tail exceed active capacity')
+        result = _native.fit_mandatory_blocks(count,config.select_budget//bt,
+            config.sink_blocks,config.recent_blocks,spans,
+            live_begin=tail or 0,live_end=count if tail is not None else 0)
+        if not fixed.issubset(result['hard_blocks']):
+            raise RequestCapacityError('Explicit mandatory evidence cannot fit beside accepted tail')
+        return result
 
     def prefill_checkpoint(self,prompt_tokens):
         if self.query is not None:
@@ -208,17 +246,16 @@ class RequestPlan:
             raise ValueError('Invalid KVMem reselection/prefill policy')
         query = payload.get('kvmem_query_span')
         spans = payload.get('kvmem_message_spans', [])
-        if not isinstance(spans, list):
+        if not isinstance(spans, list) or any(not isinstance(s, dict) for s in spans):
             raise ValueError('Message spans must be an ordered list')
-        previous = 0
-        for span in spans:
-            if (not isinstance(span, dict) or set(span) != {'role', 'begin', 'end'} or
-                    span['role'] not in ('system', 'developer', 'user', 'assistant', 'tool')):
-                raise ValueError('Invalid message span')
-            begin, end = _range([span['begin'], span['end']], prompt_tokens, 'message span')
-            if begin < previous:
-                raise ValueError('Message spans overlap or are out of order')
-            previous = end
+        from .prompt_spans import normalize_spans, normalize_provenance, combine_spans
+        normalized_messages = normalize_spans(spans, prompt_tokens, label='Message')
+        locality = payload.get('kvmem_locality_spans', [])
+        if not isinstance(locality, list) or any(not isinstance(s, dict) for s in locality):
+            raise ValueError('Locality spans must be an ordered list')
+        normalized_locality = normalize_spans(locality, prompt_tokens)
+        combine_spans(normalized_messages, normalized_locality)
+        provenance = normalize_provenance(payload.get('kvmem_locality_provenance'))
         if 'kvmem_query_message_range' in payload:
             if query is not None:
                 raise ValueError('Specify Query token span or message range, not both')
@@ -260,7 +297,8 @@ class RequestPlan:
             mandatory.append((begin,end,span['kind']))
         plan = cls(query, mode, window, block_tokens, gen_budget, replay,
                    tuple(dict.fromkeys(mandatory)), bool(set(payload)&{'kvmem_mandatory_spans','kvmem_message_spans','kvmem_mandatory_parts'}),probe_tokens,
-                   message_spans=tuple((s['begin'], s['end'], s['role']) for s in spans))
+                   message_spans=normalized_messages, locality_spans=normalized_locality,
+                   locality_provenance=provenance)
         if query is not None and plan.replay_end - plan.replay_begin > gen_budget:
             raise ValueError('Complete partial tail + Query exceeds G replay capacity')
         if query is not None and plan.replay_end - plan.replay_begin > gen_budget - block_tokens - probe_tokens:

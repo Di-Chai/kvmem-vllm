@@ -136,12 +136,11 @@ def _step_restore(manager, job, *, timing=None):
                     pressure_budget=(binding.window + block - 1) // block * block,
                     mandatory_spans=binding.mandatory_spans)
             plan = worker.pool.prepare_claim_window(job.checkpoint, wait=False,
+                metadata_binding=binding,
                 **pressure_kwargs,
                 **({'timing': timing} if timing is not None else {}))
         if plan is None:
             return False  # P rewind waits only this request, never the public batch.
-        if getattr(job.authority, 'block_graph', None) is not None:
-            worker.prepare_restore_metadata(rid, job.authority)
         if pressure and plan.total_window_tokens != binding.window:
             raise ValueError('Pressure restore differs from its reserved window')
         from .session_state import PromptStateAdapter

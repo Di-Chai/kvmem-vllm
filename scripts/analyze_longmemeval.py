@@ -43,8 +43,9 @@ def analyze(args):
     assert expected_identity['parameters']==lme.PARAMETERS and expected_identity['api_base']==lme.API_BASE
     assert expected_identity['scorer_sha256']==sha(FROZEN/'historical_lme_score.py')
     assert expected_identity['prompt_sha256']==sha(lme.OFFICIAL)
-    cfg=json.loads((args.campaign.parent/'profile.json').read_text())
-    assert sha(args.campaign.parent/'profile.json')==manifest['server_profile_sha256']
+    config = getattr(args, 'config', None) or args.campaign.parent/'profile.json'
+    cfg=json.loads(config.read_text())
+    assert sha(config)==manifest['server_profile_sha256']
     options=SimpleNamespace(**cfg['kvmem']);tok=Tokenizer.from_file(str(Path(cfg['tokenizer'])/'tokenizer.json'))
     markers=[tok.token_to_id(t) for t in ('<tool_call>','</tool_call>','<think>','</think>','<|im_start|>')]
     records={};requests={};bindings={};action_samples=0
@@ -179,4 +180,5 @@ def analyze(args):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--campaign',type=Path,required=True);p.add_argument('--external',action='store_true')
+    p.add_argument('--config',type=Path,help='Explicit profile for nested qualification/dataset outputs')
     analyze(p.parse_args())

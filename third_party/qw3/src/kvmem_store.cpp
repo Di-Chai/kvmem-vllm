@@ -1055,6 +1055,41 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_blocks() const {
     return pick_prefill_pressure_blocks({});
 }
 
+std::vector<uint32_t> KvMemStore::fixed_selection_blocks(
+        const std::vector<uint32_t> &mandatory, bool pressure, uint32_t budget_tokens) const {
+    const auto order = chronological_ids();
+    gc_validate_mandatory(mandatory);
+    if (budget_tokens && (budget_tokens % cfg_.block_tokens ||
+            budget_tokens > (pressure ? prefill_budget_blocks() * cfg_.block_tokens
+                                      : select_budget_tokens()) ||
+            (pressure && budget_tokens / cfg_.block_tokens < cfg_.sink_blocks)))
+        throw std::invalid_argument("Invalid fixed selection budget");
+    const auto budget = budget_tokens ? budget_tokens / cfg_.block_tokens
+                                     : pressure ? prefill_budget_blocks() : budget_blocks();
+    return fixed_selection_from(order, mandatory, pressure, budget);
+}
+
+std::vector<uint32_t> KvMemStore::fixed_selection_from(const std::vector<uint32_t> &order,
+        const std::vector<uint32_t> &mandatory, bool pressure, uint32_t budget) const {
+    if (!budget || order.size() <= budget) return order;
+    std::vector<uint8_t> kept(block_count(), 0);
+    uint32_t count = 0;
+    auto keep = [&](uint32_t id) {
+        if (id < kept.size() && is_live(id) && !kept[id]) { kept[id] = 1; ++count; }
+    };
+    for (auto id : order) if (sink_block(id) && count < budget) keep(id);
+    for (auto id : mandatory) keep(id);
+    if (count > budget)
+        throw std::runtime_error("KVMem mandatory selection plus sink blocks exceeds the configured selection budget");
+    if (!pressure) {
+        const auto recent = std::min<size_t>(cfg_.recent_blocks, order.size());
+        for (size_t i = 0; i < recent && count < budget; ++i) keep(order[order.size()-1-i]);
+    }
+    std::vector<uint32_t> result;
+    for (auto id : order) if (kept[id]) result.push_back(id);
+    return result;
+}
+
 std::vector<uint32_t> KvMemStore::pick_prefill_pressure_blocks(
         const std::vector<uint32_t> &mandatory_blocks,
         const PressureActionScores &action_scores, uint32_t budget_tokens) const {
@@ -1102,8 +1137,21 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_from(
 
     const uint32_t budget = budget_tokens ? budget_tokens / cfg_.block_tokens : prefill_budget_blocks();
     if (budget == 0 || order.size() <= budget) {
+        // Explicit accepted working candidates stay authoritative even when
+        // the entire repository fits: do not reopen cold history on restore.
+        std::vector<uint8_t> candidate;
+        if (!action_scores.empty()) {
+            candidate.resize(n, 0);
+            for (const auto &[id, score] : action_scores) {
+                if (!std::isfinite(score) || score < 0)
+                    throw std::invalid_argument("invalid pressure action score");
+                if (id < n) candidate[id] = 1;
+            }
+            for (auto id : mandatory_blocks) if (id < n) candidate[id] = 1;
+        }
         selected.reserve(order.size());
-        for (uint32_t id : order) if (is_live(id)) selected.push_back(id);
+        for (uint32_t id : order)
+            if (is_live(id) && (candidate.empty() || candidate[id] || sink_block(id))) selected.push_back(id);
         return selected;
     }
 
@@ -1115,13 +1163,7 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_from(
             ++kept_count;
         }
     };
-    for (uint32_t id : order) if (sink_block(id) && kept_count < budget) keep(id);
-    for (uint32_t id : mandatory_blocks) keep(id);
-    if (kept_count > budget) {
-        throw std::runtime_error(
-            "KVMem mandatory prefill selection plus sink blocks exceeds "
-            "the configured prefill budget");
-    }
+    for (uint32_t id : fixed_selection_from(order, mandatory_blocks, true, budget)) keep(id);
     // The executor supplies only resident, accepted-history candidates. Do not
     // consult stale Query scores or pull high-scoring cold history onto GPU.
     std::vector<uint8_t> action_resident;
@@ -1207,23 +1249,12 @@ std::vector<uint32_t> KvMemStore::pick_topk_blocks(
     // Zero is literal: do not reserve any suffix blocks.  Earlier versions used
     // zero as an implicit "auto = budget/4", which made a 200K-token budget
     // silently pin 50K tokens and was both surprising and hard to control.
-    const uint32_t recent = std::min<uint32_t>(cfg_.recent_blocks, order.size());
-
     std::vector<bool> kept(n, false);
     uint32_t kept_count = 0;
     auto keep = [&](uint32_t id) {
         if (id < n && is_live(id) && !kept[id]) { kept[id] = true; ++kept_count; }
     };
-    for (uint32_t id : order) if (sink_block(id) && kept_count < budget) keep(id);
-    for (uint32_t id : mandatory_blocks) keep(id);
-    if (kept_count > budget) {
-        throw std::runtime_error(
-            "KVMem mandatory selection plus sink blocks exceeds the "
-            "configured selection budget");
-    }
-    for (uint32_t i = 0; i < recent && kept_count < budget; ++i) {
-        keep(order[order.size() - 1 - i]);
-    }
+    for (uint32_t id : fixed_selection_from(order, mandatory_blocks, false, budget)) keep(id);
 
     auto take_top = [&](uint32_t quota, auto score_fn, bool positive_only = false) {
         if (kept_count >= budget || quota == 0) return;

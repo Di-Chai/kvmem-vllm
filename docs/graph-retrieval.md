@@ -2,6 +2,12 @@
 
 更新：2026-10-18。功能默认关闭。当前实现是在既有 Mean-K 分数上做一次关系传播，再交给原生选块器；不改变 KV 格式、Mean-K CUDA kernel、GPU active 预算或历史 KV 装配流程。
 
+V2 的配置、兼容规则见 [V2 配置说明](graph-scoring-v2-configuration.md)，实际验收进展见
+[实施记录](graph-v2-implementation-20261018.md)。以下旧双权重及绝对 attention mass
+传播公式描述 V1；V2 显式选择 `graph_scoring_version=v2`，使用共享 `graph_alpha`
+和有效 attention 边的按来源归一化，并可启用累计 attention seed 的 graph pressure。
+Mean-K 评分域修复对所有版本生效，旧实验不能充当修复后的冻结基线。
+
 第一阶段验证的问题是：**固定预算下，由当前 Query 加权的历史依赖和相邻内容，能否改善选页。** CPU 合成结果已经验证算法与接线；真实模型的质量、吞吐及全部运行路径仍以本页末尾的独立验收记录为准。
 
 ## 模式与启动约束
@@ -30,7 +36,11 @@
 
 节点身份为 owned session、历史分支及原始 token 起点 `floor(p/B)*B`，其中 `B=block_tokens`。dense active 位置、GPU page、repository slot 和临时 request ID 均不作为永久节点身份。选页时通过当前已 pin 的 index snapshot 映射到带 generation 的 handle；换槽或 generation 变化不能把物理位置误当成旧逻辑节点。
 
-沿用现有 Mean-K eligible 集合 `E`：sink、recent、mandatory 在 Mean-K softmax 前排除，仍由原生保留策略处理。令原始分数为 `x`，在 `E` 内归一化得到 `r=x/sum_E(x)`：
+Mean-K 的 `score_mask` 直接来自 qw3 原生 `repository_score_frame`，使用当前索引的
+generation、counts、accepted boundary 和 scoped runtime budget。额外 mandatory
+不因必留身份从 softmax 删除；sink/recent 是否屏蔽也遵循原生条件。图的集合 `E`
+另由原生 picker 实际固定保留集合构造，允许原始分数为零的竞争节点接收传播。
+令原始分数为 `x`，在 `E` 内归一化得到 `r=x/sum_E(x)`，V1 公式为：
 
 ```text
 s = (1 - wL - wA) r + wL PLᵀ r + wA PAᵀ r
@@ -56,7 +66,10 @@ P[source, target] = 来源向目标传递的比例
 
 只有一个邻居时仍最多转出 0.5；跨消息衰减不会再被按行归一化抵消。缺失、不可用或被 mask 的邻居，其质量留在来源自身；不跨洞寻找下一个现存 block，不用压缩窗口相邻关系，也不建立同消息全连接。
 
-消息信息沿用 `kvmem_message_spans` 的原始 token 区间协议，经 `RequestPlan → scheduler/connector → SessionBinding → authority → checkpoint` 传递。已有 dataclass 的位置参数调用保持兼容。
+新增自动消息边界使用独立 `kvmem_locality_spans`，经 `RequestPlan → scheduler/connector
+→ SessionBinding → authority → checkpoint` 传递，仅影响图。原 `kvmem_message_spans`
+仍保留其 mandatory 契约；两者已知重叠部分必须一致。真实 DeepSWE renderer producer
+基于完整编码 offsets 映射，无法精确映射的输入报告 unknown。已有 dataclass 的位置参数调用保持兼容。
 
 续接省略元数据时，只继承通过 token 前缀验证的已知部分。若一条旧消息 span 被验证边界截断，`message_end_known=false` 表示这个截断位置不是已知消息终点，不能据此施加跨消息衰减；新后缀保持未知。重新提供完整 span 可以扩展未知终点。同一已验证前缀上的起点、已知终点或角色发生冲突时明确拒绝，不静默拼接。
 

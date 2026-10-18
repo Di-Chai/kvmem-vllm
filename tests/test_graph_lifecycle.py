@@ -121,7 +121,7 @@ def test_collect_observer_can_run_inside_uncommitted_graph_acceptance(tmp_path, 
 def test_native_keep_bands_mandatory_and_runtime_budget_survive_graph(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path, sink=1, recent=1, budget=16)
     def scores(q, means, eligible):
-        assert eligible.tolist() == [False, True, False, True, True, False]
+        assert eligible.tolist() == [False, True, True, True, True, False]
         return torch.tensor([0., .1, 0., .5, .4, 0.])
     monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores', scores)
     mandatory = [r.handle for r in authority.records.values() if r.history_begin == 8]

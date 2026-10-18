@@ -604,7 +604,7 @@ def test_partial_terminal_pressure_restore_uses_fresh_assembly_and_preserves_mod
     try:
         assert manager.step(job)
         assert calls == [(48, dict(wait=False, pressure=True, pressure_budget=32,
-                                  mandatory_spans=((0,4,'root'),)))]
+                                  mandatory_spans=((0,4,'root'),), metadata_binding=binding))]
         assert checkpoints['cold'].position == 48
         assert job.restore_context.assembler is not None
         release.set()

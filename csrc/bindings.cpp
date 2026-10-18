@@ -54,6 +54,24 @@ struct OwnedRead : KvMemStorageRead {
     OwnedRead(OwnedRead &&) = default;
 };
 
+struct OwnedScoreFrame {
+    KvMemRepositoryScoreFrame frame;
+    std::vector<bool> score_mask, transport_mask;
+    OwnedScoreFrame() = default;
+    OwnedScoreFrame(const OwnedScoreFrame &) = delete;
+    void close() { frame.leases.clear(); }
+};
+
+struct ScopedSelectionBudget {
+    KvMemStore &store;
+    uint32_t previous;
+    ScopedSelectionBudget(KvMemStore &s, uint32_t budget)
+        : store(s), previous(s.runtime_select_budget_tokens()) {
+        if (budget) store.set_runtime_select_budget(budget);
+    }
+    ~ScopedSelectionBudget() { store.set_runtime_select_budget(previous); }
+};
+
 // Python callbacks run only on the CPU policy worker. Joining it while holding
 // the GIL would deadlock a pending release callback. Store's keep_alive binding
 // below retains this bridge as long as native Store retains its GC instance.
@@ -659,6 +677,10 @@ PYBIND11_MODULE(_native, m) {
             return OwnedRead(a.storage_write(b, n));
         })
         .def("discarded_page_ranges", &KvMemStore::RepositoryAppend::discarded_page_ranges);
+    py::class_<OwnedScoreFrame>(m, "QueryScoreFrame")
+        .def_readonly("score_mask", &OwnedScoreFrame::score_mask)
+        .def_readonly("transport_mask", &OwnedScoreFrame::transport_mask)
+        .def("close", &OwnedScoreFrame::close);
     py::class_<KvMemStore>(m, "Store")
         .def(py::init<KvMemStoreConfig, std::shared_ptr<KvMemRepository>>())
         .def("attach_gc", [](KvMemStore &store, std::shared_ptr<RepositoryGcBridge> gc) {
@@ -711,6 +733,40 @@ PYBIND11_MODULE(_native, m) {
         })
         .def("handle", &KvMemStore::repository_handle)
         .def_property_readonly("history_end", &KvMemStore::history_end)
+        .def_property_readonly("runtime_select_budget", &KvMemStore::runtime_select_budget_tokens)
+        .def("query_score_frame", [](KvMemStore &store,
+                const std::vector<KvMemBlockHandle> &handles, const std::vector<uint32_t> &counts,
+                uint64_t boundary, const std::vector<uint32_t> &mandatory, uint32_t budget) {
+            if (handles.size() != counts.size() || boundary > store.history_end())
+                throw std::invalid_argument("Invalid Query score index shape or accepted boundary");
+            ScopedSelectionBudget scoped(store, budget);
+            std::vector<KvMemIndexStamp> index(store.block_count());
+            std::vector<uint8_t> seen(store.block_count(), 0);
+            for (size_t i=0; i<handles.size(); ++i) {
+                auto h=handles[i];
+                if (h.slot >= index.size() || !h.generation ||
+                        store.repository_handle(h.slot) != h || seen[h.slot] || !counts[i])
+                    throw std::invalid_argument("Stale, duplicate or invalid Query score index");
+                seen[h.slot]=1;
+                index[h.slot]={h,counts[i]};
+            }
+            for (auto slot : mandatory)
+                if (slot >= seen.size() || !seen[slot])
+                    throw std::invalid_argument("Mandatory block outside Query score index");
+            auto result=std::make_unique<OwnedScoreFrame>();
+            result->frame=store.repository_score_frame(index,boundary,true);
+            const auto fixed=store.fixed_selection_blocks(mandatory);
+            std::vector<uint8_t> kept(store.block_count(),0);
+            for (auto slot:fixed) kept[slot]=1;
+            for (auto h:handles) {
+                result->score_mask.push_back(result->frame.enabled[h.slot]!=0);
+                result->transport_mask.push_back(!kept[h.slot]);
+            }
+            return result;
+        }, py::arg("handles"), py::arg("counts"), py::arg("boundary"),
+           py::arg("mandatory")=std::vector<uint32_t>{}, py::arg("budget")=0)
+        .def("fixed_selection_blocks", &KvMemStore::fixed_selection_blocks,
+             py::arg("mandatory"), py::arg("pressure")=false, py::arg("budget")=0)
         .def("scores", &KvMemStore::set_repository_retrieval_scores)
         .def("set_runtime_select_budget", &KvMemStore::set_runtime_select_budget)
         .def("set_action_scores", [](KvMemStore &s, const std::unordered_map<uint64_t,double> &scores) {

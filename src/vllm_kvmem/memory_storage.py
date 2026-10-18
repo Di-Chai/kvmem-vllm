@@ -6,6 +6,7 @@ The owner must reserve each request's complete history before admission.
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock, local
+import hashlib
 import time
 
 from . import _native
@@ -104,6 +105,35 @@ class MemoryTier:
             self.records.pop(allocation.slot, None)
             return True
 
+    def publish_records(self, allocations, records):
+        """Atomically install independent immutable bytes for exact generations."""
+        started = time.perf_counter_ns()
+        allocations, records = tuple(allocations), tuple(records)
+        pending = {}
+        try:
+            if (len(allocations) != len(records) or
+                    any(type(a) is not MemoryAllocation for a in allocations) or
+                    len({a.slot for a in allocations}) != len(allocations) or
+                    any(type(record) is not bytes or len(record) != self.record_bytes for record in records)):
+                raise ValueError('Invalid owned CPU record publication')
+            pending = {a.slot: record for a, record in zip(allocations, records)}
+            with self.lock:
+                if any(self.allocations.get(a.slot) != a for a in allocations):
+                    raise ValueError('CPU archive allocation changed during record copy')
+                if any(slot in self.records for slot in pending):
+                    raise ValueError('Cannot overwrite immutable CPU authority')
+                try:
+                    self.records.update(pending)
+                except BaseException:
+                    for slot in pending:
+                        self.records.pop(slot, None)
+                    raise
+            return dict(bytes=len(records)*self.record_bytes, syscalls=0,
+                        duration_ns=time.perf_counter_ns()-started)
+        finally:
+            records = ()
+            pending.clear()
+
     def io(self, spans, buffer, write):
         start = time.perf_counter_ns()
         view = memoryview(buffer).cast('B')
@@ -139,25 +169,8 @@ class MemoryTier:
             if (len(records) != len(spans) or
                     any(type(record) is not bytes or len(record) != self.record_bytes for record in records)):
                 raise RuntimeError('Invalid owned CPU record copy')
-            pending = {span.slot: record for span, record in zip(spans, records)}
             copy_seconds = time.perf_counter() - started
-            with self.lock:
-                # Archive leases ordinarily prevent this race, but direct tier
-                # callers can release/reallocate a slot while copying is out of
-                # the lock. Never publish bytes into a replacement generation.
-                if any(self.allocations.get(span.slot) != allocation
-                       for span, allocation in zip(spans, allocations)):
-                    raise ValueError('CPU archive allocation changed during record copy')
-                if any(span.slot in self.records for span in spans):
-                    raise ValueError('Cannot overwrite immutable CPU authority')
-                try:
-                    self.records.update(pending)
-                except BaseException:
-                    # A failed insertion must not expose a partial transaction.
-                    # All slots were absent and the publication lock is held.
-                    for slot in pending:
-                        self.records.pop(slot, None)
-                    raise
+            self.publish_records(allocations, records)
             read_stats = dict(seal_record_copy_seconds=copy_seconds)
         else:
             copy_started = time.perf_counter()
@@ -186,10 +199,17 @@ class MemoryTier:
 
 
 class MemoryArchive(AsyncArchive):
-    def __init__(self, *args, gather_workers=8, **kwargs):
+    def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False, **kwargs):
         if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
             raise ValueError('CPU gather workers must be between 1 and 16')
+        if type(cpu_direct_record_seal) is not bool:
+            raise ValueError('cpu_direct_record_seal must be boolean')
         super().__init__(*args, **kwargs, memory_only=True)
+        self.cpu_direct_record_seal = cpu_direct_record_seal
+        self._seal_totals = dict(seal_batches=0, seal_records=0, seal_payload_bytes=0,
+            seal_direct_records=0, seal_direct_bytes=0, seal_pack_seconds=0.,
+            seal_hash_seconds=0., seal_cache_seconds=0., seal_record_copy_seconds=0.,
+            seal_record_publish_seconds=0.)
         self.gather_workers = gather_workers
         # Archive jobs wait for their copies; using the archive executor for
         # these tasks would deadlock when its workers are all occupied by reads.
@@ -201,6 +221,33 @@ class MemoryArchive(AsyncArchive):
         self._gather_shutdown_done = Event()
         self._gather_worker = local()
         self.tier.gather = self._gather
+
+    def _seal_views(self, keys, entries, spans, views):
+        if not self.cpu_direct_record_seal:
+            return super()._seal_views(keys, entries, spans, views)
+        records = []
+        record = None
+        try:
+            started = time.perf_counter()
+            for i in range(len(entries)):
+                record = _native.pack_record_views(views[2*i:2*i+2])
+                if type(record) is not bytes or len(record) != self.record_bytes:
+                    raise RuntimeError('Invalid owned CPU sealed record')
+                records.append(record)
+            packed = time.perf_counter()
+            digests = tuple(hashlib.sha256(record).hexdigest() for record in records)
+            hashed = time.perf_counter()
+            # No batch slab or record views survive publication. The exact
+            # bytes objects hashed above become the immutable authority owners.
+            stats = self.tier.publish_records([e.allocation for e in entries], records)
+            stats.update(record_digests=digests, seal_pack_seconds=packed-started,
+                seal_hash_seconds=hashed-packed, seal_cache_seconds=0.,
+                seal_record_copy_seconds=0., seal_record_publish_seconds=time.perf_counter()-hashed,
+                seal_direct_records=len(records), seal_direct_bytes=len(records)*self.record_bytes)
+            return stats
+        finally:
+            views = record = None
+            records.clear()
 
     def _copy_range(self, *args):
         self._gather_worker.active = True

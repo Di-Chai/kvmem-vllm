@@ -17,8 +17,13 @@ SAMPLING = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repet
 
 def run(args):
     cfg=json.loads(args.config.read_text());kv=cfg['kvmem']
-    assert kv['archive_backend']=='cpu' and kv['prefill_attention'] and kv['action_pressure']
-    assert kv['session_checkpoint_bytes']==1 and kv['query_history']
+    graph_v2 = kv.get('graph_scoring_version', 'v1') == 'v2'
+    if graph_v2:
+        import graph_v2_protocol as graph_protocol
+        graph_protocol.validate_profile(cfg, graph_protocol.infer_arm(cfg), 'longmemeval_s')
+    else:
+        assert kv['archive_backend']=='cpu' and kv['prefill_attention'] and kv['action_pressure']
+        assert kv['session_checkpoint_bytes']==1 and kv['query_history']
     rows=[r for r in json.loads((args.reference/'cohort.json').read_text())['cases'] if r['suite']=='longmemeval_s']
     assert len(rows)==102 and len({r['id'] for r in rows})==102
     configs={};bindings=[]
@@ -40,6 +45,10 @@ def run(args):
         'original_max_tokens':32768,'served_max_tokens':kv['gen_budget'],
         'output_cap_difference':'Native vLLM requires single-turn max_tokens <= G. Retain original K=36864/G=16384 attention pressure geometry, cap output at 16384; audit that no answer reaches cap.',
         'thinking_token_budget':4096,'protocol':'Cold independent full original token IDs, no truncation, no recompute. Prefill attention and pressure then explicit public Query selection; no cross-case feedback.'}
+    if graph_v2:
+        manifest.update(graph_protocol=graph_protocol.SCHEMA, graph_arm=graph_protocol.infer_arm(cfg),
+            score_domain_version=graph_protocol.SCORE_DOMAIN, pressure_policy=kv['pressure_policy'],
+            graph_scoring_version='v2', graph_alpha=kv['graph_alpha'])
     path=args.output/'manifest.json'
     if path.exists():assert args.resume and json.loads(path.read_text())==manifest
     else:save(path,manifest)
@@ -79,7 +88,7 @@ def run(args):
             q=queries[0];assert q['query_span']==[row['query_begin'],row['query_end']]
             assert q['attention_source']=='prefill' and q['action_history_pages']==0
             assert q['prefill_attention_samples']>0 and q['selected_tokens']<=kv['select_budget']
-            assert q['mean_k_backend']=='qw3_cuda' and q['query_history_enabled']
+            assert q['mean_k_backend']=='qw3_cuda' and q['query_history_enabled'] is (not graph_v2)
             pressure=[e for e in events if e['selection']=='pressure']
             assert pressure and all(e['attention_source']=='prefill' for e in pressure)
             action=[e for e in read_events(args.capture/'action_attention.jsonl') if e['request_id'].startswith(rid+'-')]
@@ -93,6 +102,12 @@ def run(args):
                 'query_sha256':row['query_sha256'],'original_input_intact':True,
                 'attention':q,'pressure_refreshes':len(pressure),'finish_reason':response['choices'][0]['finish_reason'],
                 'hit_output_cap':response['usage']['completion_tokens']>=payload['max_tokens']}
+            if graph_v2:
+                import qualify_graph_niah as graph_client
+                record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
+                    [row['query_begin'], row['query_end']], require_pressure=True)
+                record['release'] = graph_client.wait_owner_released(args.capture, session,
+                    {'response_id': rid}, terminal)
             save(directory/'events.json',events);save(directory/'terminal.json',terminal)
             save(directory/'action_attention.json',action[0]);save(directory/'result.json',record)
             print(json.dumps({'event':'finish','id':row['id'],'seconds':seconds,'output_tokens':response['usage']['completion_tokens']}),flush=True)

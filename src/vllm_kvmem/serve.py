@@ -189,6 +189,10 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
+    from .options import canonical_policy_payload
+    payload = canonical_policy_payload(payload, options)
+    cfg['kvmem'] = payload
+    transfer['kv_connector_extra_config']['kvmem'] = payload
     if options.graph_mode != 'off' and 'multi_user' in profile:
         raise ValueError('Block graph does not support the legacy direct multi_user middleware; '
                          'use elastic-serve or owned sessions on direct serve')
@@ -342,6 +346,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         env['KVMEM_REQUEST_PLAN_CONFIG'] = json.dumps({'block_tokens': options.memory.block_tokens,
             'gen_budget': options.memory.gen_budget, 'select_budget': options.memory.select_budget,
             'sink_blocks': options.memory.sink_blocks, 'recent_blocks': options.memory.recent_blocks,
+            'pressure_policy': options.pressure_policy,
             'guided_reserve':options.guided_reserve,'max_model_len':cfg['max_model_len'],
             'query_replay_budget':cfg['query_replay_budget'],
             'rolling_active_window':options.rolling_active_window})

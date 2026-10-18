@@ -536,6 +536,11 @@ public:
     KvMemRepositoryScoreFrame repository_score_frame(
         const std::vector<KvMemIndexStamp> &index, uint64_t history_end,
         bool mask_kept) const;
+    // The same fixed keep set used by the Query/pressure pickers, exposed to
+    // transport scorers without duplicating keep-band policy in Python.
+    std::vector<uint32_t> fixed_selection_blocks(
+        const std::vector<uint32_t> &mandatory_blocks, bool pressure = false,
+        uint32_t budget_tokens = 0) const;
     // Scorers/IO retain these leases across asynchronous work. The immutable
     // handles must accompany returned scores and selected blocks, so a stale
     // slot number cannot silently address the next generation.
@@ -685,6 +690,8 @@ public:
     void clear_working_set();
 
 private:
+    std::vector<uint32_t> fixed_selection_from(const std::vector<uint32_t> &order,
+        const std::vector<uint32_t> &mandatory, bool pressure, uint32_t budget) const;
     void repository_sync_gc(uint32_t slot, bool used = false);
     void install_repository_block(KvMemRepository::Lease, uint32_t baked_pos,
                                   uint32_t valid_tokens);

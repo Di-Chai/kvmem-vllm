@@ -114,7 +114,17 @@ def prepare(args):
     qualifier = qualifier.resolve()
     if qualifier.parent != (ROOT/'scripts').resolve() or qualifier.suffix != '.py' or not qualifier.is_file():
         raise ValueError('Qualification client must be a Python file in this repository scripts directory')
+    structured = qualifier.name == 'qualify_graph_v2_sessions.py'
+    protocol = getattr(args, 'protocol', None)
+    if structured:
+        fixture = json.loads(args.fixture.read_text())
+        if fixture.get('kind') != 'graph_v2_structured_sessions_v1':
+            raise ValueError('Structured session qualifier requires its versioned fixture')
+        if protocol is None or not protocol.is_file():
+            raise ValueError('Structured session qualifier requires --protocol pointing to protocol.so')
     custom_profile = getattr(args, 'profile', None)
+    if structured and custom_profile is None:
+        raise ValueError('Structured session qualifier requires a complete --profile')
     if custom_profile is not None:
         profile = json.loads(custom_profile.read_text())
         if not isinstance(profile.get('kvmem'), dict):
@@ -128,6 +138,14 @@ def prepare(args):
     shutil.copyfile(ROOT/'scripts/benchmark_block_graph.py', runtime/'scripts/benchmark_block_graph.py')
     if qualifier.name != 'qualify_block_graph.py':
         shutil.copyfile(qualifier, runtime/'scripts'/qualifier.name)
+    if structured:
+        (runtime/'benchmarks/deepswe').mkdir(parents=True)
+        shutil.copyfile(ROOT/'benchmarks/deepswe/claude_bridge.py',runtime/'benchmarks/deepswe/claude_bridge.py')
+        (runtime/'protocol').mkdir()
+        shutil.copyfile(protocol,runtime/'protocol/protocol.so')
+        provenance = protocol.with_name('provenance.json')
+        if provenance.is_file():
+            shutil.copyfile(provenance,runtime/'protocol/provenance.json')
     if custom_profile is None:
         profile = json.loads((ROOT/'artifacts/capacity-chain-g16-release-performance-20261017-r3/rolling-candidate-v2.json').read_text())
         profile.update(served_model_name='kvmem-graph-qualification',
@@ -154,6 +172,7 @@ def prepare(args):
     write(root/'manifest.json', dict(arm=args.arm, synchronous=args.synchronous,
         client_timeout_seconds=client_timeout,
         qualification_script=qualifier.name,
+        protocol='protocol/protocol.so' if structured else None,
         created_at=time.time(), runtime_sha256=hashes, python=sys.executable,
         fixture=str(root/'fixture.json'), original_fixture=str(args.fixture.resolve()),
         fixture_sha256=hashlib.sha256((root/'fixture.json').read_bytes()).hexdigest(),
@@ -173,6 +192,12 @@ def run(args):
         raise ValueError('Frozen qualification client must be a Python filename')
     if 'qualification_script' in manifest and 'scripts/'+qualifier not in manifest['runtime_sha256']:
         raise ValueError('Frozen qualification client is missing its runtime hash')
+    if qualifier == 'qualify_graph_v2_sessions.py':
+        protocol = manifest.get('protocol')
+        if protocol != 'protocol/protocol.so' or protocol not in manifest['runtime_sha256']:
+            raise ValueError('Structured qualifier protocol is not frozen and hashed')
+        if 'benchmarks/deepswe/claude_bridge.py' not in manifest['runtime_sha256']:
+            raise ValueError('Structured qualifier bridge is not frozen and hashed')
     for field, path in (('profile_sha256', root/'profile.json'),
             ('fixture_sha256', Path(manifest['fixture']))):
         if field not in manifest:
@@ -226,6 +251,8 @@ def run(args):
                 '--config', str(root/'profile.json'), '--capture', str(root/'server/capture'),
                 '--output', str(root/'qualification'), '--fixture', manifest['fixture'],
                 '--arm', manifest['arm']]
+            if qualifier == 'qualify_graph_v2_sessions.py':
+                client_command += ['--protocol',str(runtime/manifest['protocol'])]
             with (root/'client.log').open('x') as log:
                 client = subprocess.Popen(client_command, cwd=runtime, env=environment,
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -271,6 +298,8 @@ def main():
     parser.add_argument('--client-timeout-seconds', type=int, default=1200)
     parser.add_argument('--profile', type=Path,
         help='Prepare using a complete custom profile; only port and --synchronous override it')
+    parser.add_argument('--protocol', type=Path,
+        help='Freeze the DeepSWE protocol.so for the structured V2 session qualifier')
     parser.add_argument('--qualifier', type=Path,
         help='Prepare with a repository scripts client accepting the standard qualification arguments')
     args = parser.parse_args()

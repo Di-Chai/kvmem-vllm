@@ -39,12 +39,12 @@
   "action_attention_import": "2026-10-14; unchanged transactional scope parser; Store fusion already imported",
   "local_adaptations": {
     "include/qw3/kvmem_store.hpp": {
-      "sha256": "1284d1847333ecbf7bf7cb356222a9b4904de5333ed304f49cca7e92813968e4",
-      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged. 2026-10-16: add only a const repository_transaction_pending() accessor for host restore-frame preflight; original selector and mutation algorithms remain unchanged."
+      "sha256": "6e3e824402bb3c83137ed9fbe416ae837220a43ed306591dd7e9ab08832c04b2",
+      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged. 2026-10-16: add only a const repository_transaction_pending() accessor for host restore-frame preflight; original selector and mutation algorithms remain unchanged. 2026-10-18: expose native fixed-selection keep set shared by Query/pressure pickers, for independent graph transport masks; original repository_score_frame is unchanged."
     },
     "src/kvmem_store.cpp": {
-      "sha256": "40b1150d5db8d326f34d62ee5c44bafd20ddb008d7568261a4a56126eeddf457",
-      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged."
+      "sha256": "3be9566f8a022f74d61815ae57c6057d3ecd2accfdf4e879c2379470424f4f43",
+      "change": "Optional per-call pressure selection token limit to reserve the complete final prompt suffix, generation budget and native speculation headroom. Default selection behavior is unchanged. 2026-10-18: extract unchanged fixed keep rules into a shared helper. Explicit pressure candidates also constrain the all-history-fits fast path, preserving permitted sink/mandatory without recalling cold ordinary records."
     }
   }
 }

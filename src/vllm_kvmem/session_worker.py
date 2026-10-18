@@ -211,12 +211,11 @@ class SessionWorker:
                 block = cfg.block_tokens
                 plan = self.pool.prepare_claim_window(checkpoint, pressure=True,
                     pressure_budget=(binding.window + block - 1) // block * block,
-                    mandatory_spans=binding.mandatory_spans)
+                    mandatory_spans=binding.mandatory_spans, metadata_binding=binding)
                 if plan.total_window_tokens != binding.window:
                     raise ValueError('Pressure restore differs from its reserved window')
             else:
-                plan = self.pool.prepare_claim_window(checkpoint)
-            self.prepare_restore_metadata(request_id, authority)
+                plan = self.pool.prepare_claim_window(checkpoint, metadata_binding=binding)
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
@@ -346,7 +345,8 @@ class SessionWorker:
             # The checkpoint claim has already compared exact token prefixes.
             # Omitted metadata inherits only this verified historical prefix;
             # conflicting boundaries are errors, never silently spliced.
-            graph.update_message_spans(getattr(binding, 'message_spans', ()),
+            from .prompt_spans import install_graph_metadata
+            install_graph_metadata(graph, binding,
                 validated_prefix=getattr(authority, '_graph_validated_prefix', binding.history))
 
     def publish_restore(self, request_id, authority, *, retained=False):

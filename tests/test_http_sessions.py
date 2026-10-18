@@ -168,3 +168,22 @@ def test_rolling_cold_headroom_uses_actual_input_and_preserves_output_limit(monk
         normalize_query_plan(dict(payload))
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(dict(cfg, rolling_active_window=True)))
     assert normalize_query_plan(payload) and payload['max_tokens'] == 32
+
+
+def test_graph_only_metadata_moves_to_transport_without_planning_side_effects(monkeypatch):
+    import json
+    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.request_plan import RequestPlan
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps(dict(
+        block_tokens=4, gen_budget=32, select_budget=64)))
+    ids = list(range(24))
+    payload = dict(prompt=list(ids), session_id='owned', max_tokens=1,
+        kvmem_locality_spans=[dict(begin=0,end=12,role='system'),dict(begin=12,end=24,role='user')],
+        kvmem_locality_provenance=dict(schema_version=1,source='caller'))
+    assert normalize_query_plan(payload)
+    assert payload['prompt'] == ids
+    fields = payload['kv_transfer_params']['kvmem_request_plan']
+    assert set(fields) == {'kvmem_locality_spans','kvmem_locality_provenance'}
+    plan = RequestPlan.parse(fields,len(ids),4,32)
+    assert plan.query is None and plan.mandatory == () and not plan.explicit_mandatory
+    assert 'kvmem_locality_spans' not in payload

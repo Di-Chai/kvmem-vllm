@@ -39,6 +39,20 @@ def record_key(handle):
     return handle.slot, handle.generation
 
 
+SCORE_DOMAIN_VERSION = 'qw3-native-v2'
+
+
+@contextmanager
+def query_score_frame(memory, records, mandatory=(), max_tokens=None):
+    """Keep the original qw3 score-frame leases through scoring and selection."""
+    frame = memory._store.query_score_frame([r.handle for r in records],
+        [r.count for r in records], memory.history_end, list(mandatory), max_tokens or 0)
+    try:
+        yield frame
+    finally:
+        frame.close()
+
+
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
                  raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
@@ -418,13 +432,18 @@ class RequestAuthority:
             mandatory = {record_key(h) for h in mandatory_handles}
             if not mandatory.issubset(keys):
                 raise ValueError("Mandatory selection uses a stale or foreign record")
-            cfg = self.memory.config
-            eligible = torch.tensor([
-                record.history_begin >= cfg.sink_blocks * cfg.block_tokens
-                and i < len(keys) - cfg.recent_blocks and key not in mandatory
-                for i, (key, record) in enumerate(zip(keys, records))],
-                dtype=torch.bool, device=queries.device)
-            scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+            # Native policy owns the softmax domain. Mandatory identity does
+            # not remove a logit; fixed picker keeps instead mask transport.
+            with query_score_frame(self.memory, records,
+                    tuple(slot for slot, _ in mandatory), max_tokens) as frame:
+                score_mask = frame.score_mask
+                transport_mask = frame.transport_mask
+                eligible = torch.tensor(score_mask, dtype=torch.bool, device=queries.device)
+                scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+            # index_snapshot retains the same generation-qualified records
+            # through the remaining synchronous picker/assembly preparation.
+            self.query_score_domain = dict(version=SCORE_DOMAIN_VERSION,
+                score_mask=tuple(score_mask), transport_mask=tuple(transport_mask))
             history = getattr(self, 'query_history', None)
             if history is not None and history.policy.open:
                 scores_by_start = history.preview({r.history_begin: score
@@ -435,10 +454,10 @@ class RequestAuthority:
             graph_options = getattr(self, 'graph_options', None)
             if graph_snapshot is not None:
                 from .graph_integration import record_query_inputs
-                record_query_inputs(self, records, scores, eligible.cpu().tolist(),
+                record_query_inputs(self, records, scores, transport_mask,
                     graph_snapshot, tuple(slot for slot, _ in mandatory), max_tokens)
             if graph_snapshot is not None and graph_options.graph_mode in ('locality', 'attention', 'multi'):
-                return score_and_select(self, records, scores, eligible.cpu().tolist(),
+                return score_and_select(self, records, scores, transport_mask,
                     graph_snapshot, tuple(slot for slot, _ in mandatory), max_tokens)
             action = getattr(self,'action_history',None)
             if action is not None:
@@ -446,25 +465,32 @@ class RequestAuthority:
                 # Apply saved logical scores to pages that have now reappeared.
                 self.memory.set_action_scores(action.scores)
             prefill = getattr(action,'prefill',None)
-            plan = self.memory.select({h.slot: score for h, score in zip(handles, scores)},
-                                      tuple(slot for slot, _ in mandatory),
-                                      prefill_scores=prefill.scores() if prefill is not None and not action.samples else None,
-                                      max_tokens=max_tokens)
+            by_slot = {h.slot: score for h, score in zip(handles, scores)}
+            pins = tuple(slot for slot, _ in mandatory)
+            prefill_scores = prefill.scores() if prefill is not None and not action.samples else None
             if graph_snapshot is not None:
                 from .graph_integration import emit_graph_report
                 graph = self.block_graph
+                selected = set(self.memory.preview_selection(by_slot, pins,
+                    prefill_scores=prefill_scores, max_tokens=max_tokens))
                 report = dict(mode='collect', revision=graph_snapshot.revision,
+                    phase='query', seed_source='mean_k', score_domain_version=SCORE_DOMAIN_VERSION,
+                    scoring_version=getattr(graph_options,'graph_scoring_version','v1'),
+                    alpha=getattr(graph_options,'graph_alpha',.2),
+                    pressure_policy=getattr(graph_options,'pressure_policy','recency'),
+                    score_mask_count=sum(score_mask), transport_mask_count=sum(transport_mask),
+                    locality_provenance=dict(getattr(graph_snapshot,'locality_provenance',())),
                     accepted_through=graph_snapshot.accepted_through,
                     observed_sources=len(graph_snapshot.rows),
                     edges=sum(len(row.targets) for row in graph_snapshot.rows),
                     graph_bytes=graph.bytes, graph_live_bytes=graph.live_bytes,
                     snapshot_bytes=graph_snapshot.bytes, graph_global_bytes=graph.budget.used,
-                    selected_tokens=plan.total_window_tokens, selection_unchanged=True)
+                    selected_tokens=sum(r.count for r in records if r.handle.slot in selected), selection_unchanged=True)
                 if graph_options.graph_trace:
-                    selected = {row.block_id for row in plan.remaps}
                     report['selected_starts'] = [r.history_begin for r in records if r.handle.slot in selected][:256]
                 self.graph_selection_report = report
                 emit_graph_report(self, report)
+            plan = self.memory.select(by_slot, pins, prefill_scores=prefill_scores, max_tokens=max_tokens)
             return plan
 
     def begin_rewind(self, checkpoint):

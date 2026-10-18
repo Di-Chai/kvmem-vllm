@@ -48,6 +48,7 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
         options = RuntimeOptions.from_vllm(self.vllm_config)
         self.connector.request_plan_memory = options.memory if options.request_planning else None
+        self.connector.request_plan_pressure_policy = options.pressure_policy
         if options.rolling_active_window and (
                 self.draft_contract is None or self.draft_contract.method != 'mtp'):
             raise ValueError('Rolling active window currently requires native MTP accepted-prefix admission')
@@ -156,7 +157,8 @@ class KVMemScheduler(Scheduler):
                                                     gen_budget=config.gen_budget if options.request_planning else None,
                                                     checkpoint_policy=options.session_checkpoint_policy,memory_config=config,
                                                     preserve_history=options.cpu_history_coordination,
-                                                    require_owned=options.graph_mode != 'off')
+                                                    require_owned=options.graph_mode != 'off',
+                                                    pressure_policy=options.pressure_policy)
         if options.cpu_history_coordination:
             from .coordination import HistoryAdmission
             from .cache_manifest import archive_bytes_per_token
@@ -210,7 +212,7 @@ class KVMemScheduler(Scheduler):
             self.phase_policy = PhasePolicy(self.scheduler_config.max_num_seqs,
                 options.phase_prefill_wave_tokens, options.phase_max_wait_ms)
 
-    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=(), input_tokens=(), asynchronous=False, speculative_padding=0, message_spans=()):
+    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=(), input_tokens=(), asynchronous=False, speculative_padding=0, message_spans=(), locality_spans=(), locality_provenance=()):
         if getattr(request, "num_in_flight_tokens", 0):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:
@@ -228,7 +230,8 @@ class KVMemScheduler(Scheduler):
             raise
         groups = tuple(prepared)
         command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups,query_span,selection,mandatory_spans,
-                                 tuple(input_tokens), asynchronous, speculative_padding, tuple(message_spans))
+                                 tuple(input_tokens), asynchronous, speculative_padding, tuple(message_spans),
+                                 tuple(locality_spans), tuple(locality_provenance))
         self.transactions[request.request_id] = (command, request.next_decode_eligible_step)
         request.next_decode_eligible_step = 2**62
         self.connector.queue(command)
@@ -739,6 +742,8 @@ class KVMemScheduler(Scheduler):
                         selection='pressure' if action == 'pressure' else 'query' if action == 'query' else 'chunk',
                         mandatory_spans=plan.mandatory if plan is not None else (),
                         message_spans=plan.message_spans if plan is not None else (),
+                        locality_spans=plan.locality_spans if plan is not None else (),
+                        locality_provenance=plan.locality_provenance if plan is not None else (),
                         input_tokens=tokens, asynchronous=asynchronous, speculative_padding=padding)
                     if asynchronous:
                         # Allocation/new-request/table updates remain delivered

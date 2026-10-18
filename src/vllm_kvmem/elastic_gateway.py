@@ -164,7 +164,8 @@ def create_app(config):
                     plan.validate_capacity(len(prompt), limit, output_tokens=max_output,
                         sink_blocks=config.get('resolved_sink_blocks', config.get('sink_blocks')) or 0,
                         recent_blocks=config.get('resolved_recent_blocks', config.get('recent_blocks')) or 0,
-                        rolling=config.get('rolling_active_window', False))
+                        rolling=config.get('rolling_active_window', False),
+                        pressure_policy=config.get('pressure_policy', 'recency'))
                 if plan.query is not None and reserve and plan.replay_end+reserve>config['max_model_len']:
                     raise ValueError('Guided Query scratch exceeds the model position limit')
                 # Exact-prefix checkpoint and active-headroom finalization belong

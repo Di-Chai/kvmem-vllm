@@ -1,0 +1,92 @@
+# Graph V2 阶段性验收结果
+
+这是进行中的结果记录。核心实现和跨轮功能验收已经完成；持续性能和完整
+A/C/D 质量矩阵尚未完成，不能据此宣称 Graph V2 提高了准确率或稳定吞吐。
+
+## 已实现与已验证
+
+- Mean-K 使用 qw3 原生评分域；softmax mask 与传播 mask 分离，额外 mandatory
+  参与正确的 softmax 分母。graph off、collect、scoring 共用原始分数。
+- V2 仅使用 alpha=.2，一跳传播；attention 有效出边过滤后按来源归一化，
+  multi 两类算子固定等权。保留 V1 配置解释和 c14 的 native 密集聚合。
+- 真实 Protocol 消息、工具结果及实际接受的 output IDs 生成 graph-only 边界；
+  不改变输入、Query/replay 或 mandatory。原始 token 输入保持 unknown fallback。
+- Query 与 pressure 共用传播函数。Pressure 精确读取旧累计 output/prefill
+  attention seed，候选限于当前或 checkpoint 工作窗口，再进入原生 picker。
+- 同步、异步和 checkpoint 恢复先安装正确的状态与边界，再评分和发布；
+  完整验证的 M 前缀可在 P 重放时保留统计，真实编辑使用分支隔离。
+
+冻结的同步、异步真实模型验收分别完成两 owner、三轮请求，包含实际工具调用、
+工具结果、新 Query 和 Query 编辑。每次恢复核对 17 个 attention 层（含 MTP）
+及 96 个 recurrent tensor；两组均通过并释放所属资源。对应冻结运行时的
+针对性 CPU 回归为 695 项通过，后续入口/配置修复另有独立回归记录，不能简单相加。
+
+证据目录：
+
+- `artifacts/graph-v2-sessions-20261018/{sync-r1,async-r1}`
+- `artifacts/graph-v2-locality-20261018/cpu-producer.json`
+- 详细门槛和限制见 `docs/graph-v2-implementation-20261018.md`。
+
+## 冷负载性能筛选
+
+共同配置为本地 27B NVFP4 模型、FP8 attention KV、原生 MTP(k=4)、编译及
+CUDA Graph、八客户端、K=36,864/G=16,384、chunk=1,024、batch=16,424。
+使用原始八个 256K NIAH 输入；每个变体启动独立服务，仅修改一个开关。
+CPU 历史总预算为 100 GB，KV 不使用 SSD，不截断或重算历史。
+
+下表为完整冷 cohort 的耗时及 useful input/整轮时间的描述性变化，**不是纯
+decode 吞吐**，也不是预热后的 300 秒持续性能门槛。
+
+| 候选 | 基线/候选耗时 | 描述性输入率变化 | 观察 |
+| --- | ---: | ---: | --- |
+| raw-K 总预算 4 GiB | 387.57 / 396.02 s | -2.13% | 装配上传 71.68 → 48.80 GB |
+| CPU 直接封存 | 385.08 / 385.89 s | -0.21% | 二次记录复制消除，但打包/哈希等总主机工作未下降 |
+| 异步 attention 元数据 | 387.17 / 377.60 s | +2.53% | 实际触发 2,086 次上传、22.80 MB |
+| raw-K 完整窗口预算 10 GiB | 383.47 / 381.52 s | +0.51% | 装配上传 71.58 → 40.38 GB；命中 1,797,888 token |
+
+各对照存在选页/接受输出差异，实际 native batch 峰值均为七；不能把八个
+admitted owner 当作 batch 八。所有冷筛选结论均为 inconclusive，未建立稳定收益。
+上述候选继续默认关闭；异步元数据进入持续负载筛选，不代表已满足采用门槛。
+
+直接封存对照中，模型 step 的累计 CUDA event 区间约 357 秒，两条路径接近；
+整轮约 385 秒。主机封存工作与模型执行重叠，减少复制没有直接转化为整轮收益。
+这些 event 区间和重叠主机耗时都不能当作独立 kernel 活跃时间或 GPU idle。
+
+独立证据：`artifacts/graph-v2-performance-20261018/` 下的
+`raw-k-r1`、`seal-r1`、`metadata-r1`、`raw-window-r1`。每组保留原始首次结果、
+测量区间、NVML、实际 batch、传输量、资源释放和比较条件。
+
+## 图开销与策略消融
+
+- A/C/D 八题功能 smoke 全部完成并释放：三组均为 7/8 exact、96.875% 数值覆盖率，
+  耗时 378.91 / 380.17 / 385.04 秒。这一小样本没有建立质量改善。
+- 独立 off/collect r2 已完成：374.40 / 380.76 秒，原始耗时比为 1.017；
+  两组均为 7/8 exact、96.875% 覆盖率，并释放所属资源。选页、输出和采样数量
+  存在差异，native 峰值七，比较仍为 inconclusive，不能把 6.36 秒全归因于收集。
+  Collect 的累计图准备/提交主机时间为 7.08 / 0.19 秒，可能与 GPU 执行重叠。
+- 固定真实输入的 V1 attention / V2 attention / V2 multi unknown /
+  V2 multi known 四臂消融正在运行。它会验证完整原生选页重放及同快照反事实，
+  不把分数变化或外传质量当作回答准确率。
+
+## 尚待完成的正式验收
+
+| 项目 | 原始样本与规模 | 当前状态 |
+| --- | --- | --- |
+| 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 已冻结，待 GPU |
+| 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | 已冻结，待 GPU |
+| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | 未开始完整矩阵 |
+| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | 源数据与评分器已预检，未开始完整矩阵 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 源数据与评分器已预检，未开始完整矩阵 |
+
+正式矩阵合计 4,194 个回答。三臂保持相同执行优化、模型、输入、采样、K/G 和
+batch 参数；A 为对齐 Mean-K Query + 旧 attention pressure，C 增加 V2 Query
+传播，D 再增加 graph pressure。完整首次答案及技术失败均保留。
+
+MAB 原始长度为 267,553–757,259 token，需要 1M 逻辑上下文；最长八组完整历史
+超过 CPU 预算，因此实际驻留组数会低于八，完整历史排队。独立 LME 为
+102,963–112,819 token，八组可容纳。LME 新三臂统一使用 G=16,384 输出上限，
+历史参考使用 32,768；必须报告 cap hit，历史分数不能作为严格参数相同的对照。
+
+最终报告还需要给出原始评分协议下的质量、prefill/接受输出吞吐、延迟、实际
+native batch、边界覆盖及资源限制。未评分、未观测和不满足比较条件的结果
+保持明确标记，不补写为零或成功。

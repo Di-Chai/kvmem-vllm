@@ -135,6 +135,7 @@ class _Data:
     message_end_known: tuple = ()
     rows_bytes: int = 0
     metadata_bytes: int = 0
+    locality_provenance: tuple = ()
 
 
 def _graph_size(data):
@@ -188,6 +189,10 @@ class GraphSnapshot:
     @property
     def message_end_known(self):
         return self._data.message_end_known
+
+    @property
+    def locality_provenance(self):
+        return self._data.locality_provenance
 
     @property
     def binding(self):
@@ -431,6 +436,10 @@ class BlockGraph:
     def message_end_known(self):
         return self._data.message_end_known
 
+    @property
+    def locality_provenance(self):
+        return self._data.locality_provenance
+
     def _open(self):
         if self.closed:
             raise RuntimeError('Block graph is released')
@@ -470,7 +479,7 @@ class BlockGraph:
                             for position, values in zip(source_positions, mass_rows)))
 
     def prepare(self, accepted_begin, accepted_end, rows=(), *, message_spans=None,
-                verified_prefix=None):
+                verified_prefix=None, locality_provenance=None):
         self._lock.acquire()
         charge = None
         try:
@@ -491,6 +500,10 @@ class BlockGraph:
                 scratch += len(self.partial.targets) * 320
             if message_spans is not None:
                 scratch += (len(message_spans) + len(self.message_spans)) * 512
+            if locality_provenance is not None:
+                from .prompt_spans import normalize_provenance
+                locality_provenance = normalize_provenance(locality_provenance)
+                scratch += _size(locality_provenance) * 2
             upper = self.live_bytes * 2 + scratch
             charge = self.budget.reserve(self._account, upper, self.max_bytes_per_session)
             seen = set()
@@ -524,8 +537,10 @@ class BlockGraph:
             spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
                 self.message_spans, self.message_end_known, message_spans,
                 self.accepted_through if verified_prefix is None else verified_prefix)
+            provenance = self.locality_provenance if locality_provenance is None else locality_provenance
             end = max(self.accepted_through, accepted_end)
-            if end == self.accepted_through and spans == self.message_spans and ends_known == self.message_end_known:
+            if (end == self.accepted_through and spans == self.message_spans and
+                    ends_known == self.message_end_known and provenance == self.locality_provenance):
                 charge.close()
                 return GraphUpdate(self)
             completed = []
@@ -581,9 +596,9 @@ class BlockGraph:
                 pending = GraphPartial(*dense_result[1]) if dense_result[1] is not None else None
                 added_bytes = sum(_size(row) for row in completed)
             stored = self.rows + tuple(completed) if completed else self.rows
-            metadata_bytes = self._data.metadata_bytes if (spans is self.message_spans and ends_known is self.message_end_known) else _size((spans, ends_known))
+            metadata_bytes = self._data.metadata_bytes if (spans is self.message_spans and ends_known is self.message_end_known and provenance is self.locality_provenance) else _size((spans, ends_known, provenance))
             data = _Data(stored, pending, end, end // self.block_tokens * self.block_tokens, spans, ends_known,
-                         self._data.rows_bytes + added_bytes, metadata_bytes)
+                         self._data.rows_bytes + added_bytes, metadata_bytes, provenance)
             size = _graph_size(data)
             if size > upper:
                 raise BufferError('Graph staging estimate exceeded before acceptance')
@@ -596,9 +611,10 @@ class BlockGraph:
             self._lock.release()
             raise
 
-    def update_message_spans(self, spans, validated_prefix=0):
+    def update_message_spans(self, spans, validated_prefix=0, *, locality_provenance=None):
         with self.prepare(self.accepted_through, self.accepted_through,
-                          message_spans=spans, verified_prefix=validated_prefix) as update:
+                          message_spans=spans, verified_prefix=validated_prefix,
+                          locality_provenance=locality_provenance) as update:
             update.commit()
 
     def snapshot(self, position=None):
@@ -658,6 +674,7 @@ class BlockGraph:
 
     def stats(self):
         return {'revision': self.revision, 'runtime_epoch': self.runtime_epoch,
+                'locality_provenance': dict(self.locality_provenance),
                 'accepted_through': self.accepted_through, 'completed_through': self.completed_through,
                 'observed_sources': len(self.rows), 'edges': sum(len(row.targets) for row in self.rows),
                 'samples': sum(row.samples for row in self.rows) + (self.partial.samples if self.partial else 0),

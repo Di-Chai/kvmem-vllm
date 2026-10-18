@@ -15,6 +15,7 @@ from benchmark_niah import save, sha
 
 FROZEN = Path('/home/chaidi/qw3/benchmark/qw3_memory_comparison_20261004/frozen')
 PYTHON = '/home/chaidi/kvmem_eval/KVMem_Motivation/.venv/bin/python'
+OFFICIAL_REPO = None
 
 
 def key(record):
@@ -70,7 +71,8 @@ def analyze(args):
     save(out/'judge-answer-manifest.json',bindings)
     write_lines(out/'rows/selected/results.jsonl',records.values())
     subprocess.run([PYTHON, '-P', str(FROZEN/'score_memoryagentbench_official_local.py'),
-                    '--results-dir',str(out.resolve()),'--allow-partial'],check=True)
+                    '--results-dir',str(out.resolve()),'--allow-partial'] +
+                   (['--official-repo',str(OFFICIAL_REPO)] if OFFICIAL_REPO is not None else []),check=True)
 
     # A byte-identical answer/input can reuse its original judgment, but the
     # cached outcome must never be applied just because the question matches.
@@ -105,6 +107,8 @@ def analyze(args):
             command = [PYTHON,'-P',str(FROZEN/'judge_memoryagentbench_special.py'),
                 '--results-dir',str(dest.resolve()),'--allow-partial','--model','deepseek-v4-pro',
                 '--longmem-max-tokens',str(budget)]
+            if OFFICIAL_REPO is not None:
+                command += ['--official-repo',str(OFFICIAL_REPO)]
             with (dest/'judge.log').open('w') as log:
                 result = subprocess.run(command,stdout=log,stderr=subprocess.STDOUT)
             if result.returncode:

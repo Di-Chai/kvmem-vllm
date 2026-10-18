@@ -9,6 +9,8 @@ import pytest
 from vllm_kvmem.options import GRAPH_DEFAULTS, RuntimeOptions, validate_graph_options
 from vllm_kvmem.serve import build_launch
 
+V1_GRAPH_DEFAULTS = {key: value for key, value in GRAPH_DEFAULTS.items() if key != 'graph_alpha'}
+
 
 def runtime(payload=None):
     return RuntimeOptions.from_vllm(SimpleNamespace(
@@ -118,11 +120,11 @@ def worker_payload(plan):
 @pytest.mark.parametrize('mode', ['off', 'collect', 'locality', 'attention', 'multi'])
 def test_direct_launcher_forwards_exact_graph_fields_and_replays_profile(tmp_path, mode):
     profile = model_profile(tmp_path)
-    profile['kvmem'].update(GRAPH_DEFAULTS, graph_mode=mode, graph_trace=True,
+    profile['kvmem'].update(V1_GRAPH_DEFAULTS, graph_mode=mode, graph_trace=True,
         graph_locality_weight=0.2, graph_attention_weight=0.3)
     plan = build_launch(profile, tmp_path, tmp_path / 'run')
     assert (plan['environment'].get('KVMEM_REQUIRE_OWNED_SESSION') == '1') is (mode != 'off')
-    for key in GRAPH_DEFAULTS:
+    for key in V1_GRAPH_DEFAULTS:
         assert worker_payload(plan)[key] == profile['kvmem'][key]
     replay = build_launch(plan['profile'], tmp_path, tmp_path / 'replay')
     assert worker_payload(replay) == worker_payload(plan)
@@ -140,11 +142,11 @@ def test_elastic_launcher_validates_and_forwards_all_graph_fields(tmp_path, mode
         active_context_tokens=8192, gen_budget_tokens=4096, max_output_tokens=512,
         request_planning=True, action_attention=True, action_fraction=0.0,
         action_scope='non-thinking', prefill_attention=True, prefill_chunk_tokens=1024,
-        **{**GRAPH_DEFAULTS, 'graph_mode': mode, 'graph_trace': True})
+        **{**V1_GRAPH_DEFAULTS, 'graph_mode': mode, 'graph_trace': True})
     resolved, _ = build_elastic(profile, tmp_path, tmp_path / 'elastic')
     backend = resolved['mean_k_backend_profile']
     native = worker_payload(build_launch(backend, tmp_path, tmp_path / 'native'))
-    for key in GRAPH_DEFAULTS:
+    for key in V1_GRAPH_DEFAULTS:
         assert resolved[key] == backend['kvmem'][key] == native[key] == profile[key]
     for change, match in (({'repository_gc': True}, 'repository_gc'),
                           ({'context_mode': 'full'}, 'context_mode')):
@@ -155,7 +157,7 @@ def test_elastic_launcher_validates_and_forwards_all_graph_fields(tmp_path, mode
 def test_example_is_a_complete_profile_and_all_defaults_are_explicit(tmp_path):
     profile = json.loads((Path(__file__).parents[1] / 'examples/query-block-graph-elastic.json').read_text())
     assert profile['graph_mode'] == 'multi'
-    assert set(GRAPH_DEFAULTS).issubset(profile)
+    assert (set(V1_GRAPH_DEFAULTS) - {'graph_scoring_version'}).issubset(profile)
     assert not profile['query_history'] and not profile['action_pressure']
     assert profile['guided_query_tokens'] == 0 and profile['action_fraction'] == 0
     assert profile['max_output_tokens'] <= profile['gen_budget_tokens']

@@ -272,10 +272,13 @@ class AsyncRefresh:
         self.emit(job,'assembly_queued')
 
     def _assemble(self,job,queries,ready):
-        from .request_plan import RequestPlan
+        from .request_plan import RequestPlan, selection_config
         from .window_assembly import NativeWindowAssembler
-        from dataclasses import replace
-        cfg=replace(self.options.memory,select_budget=job.command.groups[0][1].window_tokens);authority=job.authority
+        pressure_policy = getattr(self.options, 'pressure_policy', None) or (
+            'attention' if getattr(self.options, 'action_pressure', False) else 'recency')
+        cfg=selection_config(self.options.memory,job.command.groups[0][1].window_tokens,
+            selection=job.command.selection,pressure_policy=pressure_policy)
+        authority=job.authority
         graph = getattr(authority, 'block_graph', None)
         if graph is not None and job.graph_binding is not None:
             graph.validate_binding(job.graph_binding)
@@ -289,10 +292,10 @@ class AsyncRefresh:
             mandatory=[r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory}!=required:
                 raise ValueError('Missing required historical evidence')
-            if job.history<=cfg.select_budget:plan=authority.memory.select({})
-            elif job.command.selection=='pressure':
+            if job.command.selection=='pressure':
                 from .prefill_attention import select_pressure
                 plan=select_pressure(authority,mandatory,max_tokens=cfg.select_budget)
+            elif job.history<=cfg.select_budget:plan=authority.memory.select({})
             else:plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget)
             started=time.perf_counter()
             assembler=NativeWindowAssembler.from_runner(self.runner,job.command.request_id,self.runtime.names,
@@ -384,6 +387,8 @@ class AsyncRefresh:
             job.authority=authority
             graph = getattr(authority, 'block_graph', None)
             if graph is not None:
+                from .prompt_spans import install_graph_metadata
+                install_graph_metadata(graph, job.command, validated_prefix=job.history)
                 job.graph_binding = graph.binding
             if getattr(authority,'query_history',None) is not None:
                 from .query_history import begin_round
@@ -490,7 +495,7 @@ class AsyncRefresh:
             refresh_started_at=job.started,refresh_finished_at=time.perf_counter(),asynchronous=True,
             public_peer_count=len(job.peers),private_forward_steps=job.steps,cancelled=job.cancelled,
             maintenance=self.maintenance.snapshot() if getattr(self, 'maintenance', None) is not None else None,
-            **selection_report(authority))
+            **selection_report(authority, phase=job.command.selection))
         row.update(job.guided_diagnostics)
         with (self.runner._kvmem_probe_output/'bounded_refresh.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
 

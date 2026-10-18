@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Replay bounded, recorded Query inputs through six fixed-budget selectors.
+"""Replay bounded, versioned Query and pressure inputs through native selectors.
 
 This is a counterfactual *selection* analysis. The recorded Mean-K vector and
 attention graph remain fixed for every arm; no model is run and no answer
-correctness or closed-loop quality is inferred from these rankings.
+correctness or closed-loop quality is inferred from these rankings. Pressure
+arms retain the complete recorded candidate window, including zero seeds.
 """
 import argparse
 from copy import deepcopy
@@ -15,17 +16,19 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
+from vllm_kvmem import _native
 from vllm_kvmem.block_graph import GraphPartial, GraphRow
 from vllm_kvmem.config import KVMemConfig
 from vllm_kvmem.graph_scoring import score_graph
 from vllm_kvmem.memory import RequestMemory
 
 
-MAX_NODES = 2048
+MAX_NODES = 8192
 MAX_RECORDS = 256
 MAX_INPUT_BYTES = 64 * 1024 * 1024
-MAX_RECORD_BYTES = 256 * 1024
+MAX_RECORD_BYTES = 2 * 1024 * 1024
 ARMS = ('mean_k', 'collect', 'legacy_attention', 'locality', 'attention', 'multi')
+PRESSURE_ARMS = ('attention_seed', 'locality', 'attention', 'multi')
 
 
 class _Ready:
@@ -59,33 +62,107 @@ def _snapshot(record, block_tokens):
         accepted_through=int(value['accepted_through']),
         completed_through=int(value['completed_through']),revision=int(value.get('revision',0)),
         epoch=int(value.get('runtime_epoch',value.get('epoch',0))),block_tokens=block_tokens,
+        locality_provenance=value.get('locality_provenance', {}),
         closed=False,bytes=int(value.get('bytes',0)))
 
 
 def _validate_record(record):
-    if record.get('version') != 1:
+    version = record.get('version')
+    if type(version) is not int or version not in (1, 2):
         raise ValueError('Unsupported recorded graph input version')
+    if version == 1 and (record.get('phase', 'query') != 'query' or
+                         record.get('scoring_version', 'v1') != 'v1'):
+        raise ValueError('Recorded graph input version 1 only supports legacy Query scoring')
+    if version == 2:
+        required = ('phase', 'scoring_version', 'alpha', 'score_domain_version',
+                    'score_mask', 'transport_mask', 'handles', 'accepted_boundary')
+        if any(key not in record for key in required):
+            raise ValueError('Recorded graph input version 2 is missing replay metadata')
+        if record['phase'] not in ('query', 'pressure'):
+            raise ValueError('Unsupported recorded graph selection phase')
+        if record['scoring_version'] not in ('v1', 'v2'):
+            raise ValueError('Unsupported recorded graph scoring version')
+        if record['score_domain_version'] != 'qw3-native-v2':
+            raise ValueError('Unsupported recorded Mean-K score-domain version')
+        alpha = record['alpha']
+        if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+            raise ValueError('Invalid recorded graph alpha')
     starts,counts,raw,eligible = (record[key] for key in ('starts','counts','raw_scores','eligible'))
     if not 0 < len(starts) <= MAX_NODES or not len(starts) == len(counts) == len(raw) == len(eligible):
         raise ValueError('Recorded graph index is empty, oversized or shape mismatched')
     cfg = KVMemConfig(**record['config'])
     block = cfg.block_tokens
-    if starts != list(range(0,len(starts)*block,block)):
+    phase = record.get('phase', 'query') if version == 2 else 'query'
+    if any(type(p) is not int or p < 0 or p % block for p in starts) or len(set(starts)) != len(starts):
+        raise ValueError('Recorded index contains invalid or duplicate logical starts')
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in raw):
+        raise ValueError('Recorded raw seeds must be finite and nonnegative')
+    if any(type(value) is not bool for value in eligible):
+        raise ValueError('Recorded eligible mask must contain booleans')
+    if phase == 'query' and starts != list(range(0,len(starts)*block,block)):
         raise ValueError('Offline native replay requires contiguous original history; holes are unsupported')
-    if any(type(n) is not int or n != block for n in counts[:-1]) or not 0 < counts[-1] <= block:
+    boundary = record.get('accepted_boundary', starts[-1] + counts[-1])
+    if type(boundary) is not int or boundary <= 0:
+        raise ValueError('Invalid recorded accepted boundary')
+    if any(type(n) is not int or not 0 < n <= block or
+           p + n > boundary or (n != block and p + n != boundary) for p, n in zip(starts, counts)):
         raise ValueError('Recorded history has an incomplete non-tail block')
-    if any(type(p) is not int or p not in starts for p in record['mandatory_starts']):
+    if phase == 'query' and starts[-1] + counts[-1] != boundary:
+        raise ValueError('Recorded Query index does not cover its accepted boundary')
+    repository = None
+    if version == 2:
+        for name in ('score_mask', 'transport_mask'):
+            if len(record[name]) != len(starts) or any(type(v) is not bool for v in record[name]):
+                raise ValueError('Recorded scoring/transport mask shape or type differs')
+        if list(eligible) != list(record['transport_mask']):
+            raise ValueError('Recorded eligible and transport masks differ')
+        handles = record['handles']
+        if (len(handles) != len(starts) or any(not isinstance(h, (list, tuple)) or len(h) != 2 or type(h[0]) is not int or
+                type(h[1]) is not int or not 0 <= h[0] < cfg.repository_blocks or h[1] <= 0 for h in handles) or
+                len({h[0] for h in handles}) != len(handles)):
+            raise ValueError('Recorded generation-qualified handles are invalid or duplicated')
+        if phase == 'query' and any(not keep and value != 0 for keep, value in zip(record['score_mask'], raw)):
+            raise ValueError('Recorded Query seeds contain mass outside the score mask')
+    if phase == 'pressure':
+        if record['scoring_version'] != 'v2' or record.get('pressure_policy') != 'graph':
+            raise ValueError('Recorded graph pressure requires V2 graph policy')
+        if record.get('seed_source') not in ('output', 'prefill', 'none'):
+            raise ValueError('Invalid recorded pressure seed source')
+        repository = record.get('repository_records', ())
+        if not 0 < len(repository) <= MAX_NODES or any(len(r) != 4 for r in repository):
+            raise ValueError('Recorded pressure repository is missing or exceeds bounded replay capacity')
+        if any(any(type(v) is not int for v in r) or not 0 <= r[0] < cfg.repository_blocks or
+               r[1] <= 0 for r in repository) or len({r[0] for r in repository}) != len(repository):
+            raise ValueError('Recorded pressure repository has invalid generation-qualified identities')
+        ordered = sorted(repository, key=lambda r: r[2])
+        if [r[2] for r in ordered] != list(range(0, len(ordered) * block, block)):
+            raise ValueError('Offline pressure replay requires a contiguous repository directory')
+        if any(r[3] != min(block, boundary-r[2]) or r[3] <= 0 for r in ordered) or ordered[-1][2]+ordered[-1][3] != boundary:
+            raise ValueError('Recorded pressure repository counts do not match accepted boundary')
+        candidates = record.get('candidate_records', ())
+        directory = {r[2]: tuple(r) for r in ordered}
+        if len(candidates) != len(starts) or any(len(r) != 5 for r in candidates):
+            raise ValueError('Recorded pressure requires its complete candidate records')
+        for start, count, handle, candidate in zip(starts, counts, record['handles'], candidates):
+            if (any(type(v) is not int for v in candidate) or candidate[4] < 0 or
+                    tuple(candidate[:4]) != (handle[0], handle[1], start, count) or
+                    tuple(candidate[:4]) != directory.get(start)):
+                raise ValueError('Recorded pressure candidate generation, position or count differs')
+        if not all(record['score_mask']):
+            raise ValueError('Pressure seeds must retain the complete scoring candidate set')
+    available = set(starts) if repository is None else {r[2] for r in repository}
+    if any(type(p) is not int or p not in available for p in record['mandatory_starts']):
         raise ValueError('Recorded mandatory identity is missing from the index')
     mandatory = set(record['mandatory_starts'])
     expected = [start >= cfg.sink_blocks*block and i < len(starts)-cfg.recent_blocks and start not in mandatory
                 for i,start in enumerate(starts)]
-    if eligible != expected:
+    if version == 1 and eligible != expected:
         raise ValueError('Recorded eligible mask differs from native keep bands or mandatory identity')
     budget = record['budget']
     if type(budget) is not int or not 0 < budget <= cfg.select_budget or budget % block:
         raise ValueError('Recorded runtime budget must be block aligned and fit the original K')
     snapshot = _snapshot(record,block)
-    if snapshot.accepted_through < starts[-1]+counts[-1]:
+    if snapshot.accepted_through < boundary:
         raise ValueError('Recorded graph accepted watermark precedes its Query index')
     if len(snapshot.rows) > MAX_NODES or (snapshot.partial is not None and len(snapshot.partial.targets)>MAX_NODES):
         raise ValueError('Recorded graph exceeds bounded replay capacity')
@@ -98,6 +175,27 @@ def _validate_record(record):
                     for target in row.targets)):
             raise ValueError('Recorded attention graph has invalid or noncausal logical identities')
     return cfg,snapshot
+
+
+def _validate_native_masks(record, memory, handles):
+    """V2 delegates keep-band and runtime-budget rules to the same native code."""
+    if record['version'] == 1:
+        return
+    mandatory = [handles[start].slot for start in record['mandatory_starts']]
+    if record['phase'] == 'pressure':
+        fixed = set(memory._store.fixed_selection_blocks(mandatory, True, record['budget']))
+        expected = [handles[start].slot not in fixed for start in record['starts']]
+    else:
+        frame = memory._store.query_score_frame([handles[start] for start in record['starts']],
+            record['counts'], record['accepted_boundary'], mandatory, record['budget'])
+        try:
+            if list(frame.score_mask) != list(record['score_mask']):
+                raise ValueError('Recorded score mask differs from native scoring domain')
+            expected = list(frame.transport_mask)
+        finally:
+            frame.close()
+    if expected != list(record['transport_mask']):
+        raise ValueError('Recorded transport mask differs from native fixed selection')
 
 
 def _native_history(config, starts, counts):
@@ -119,7 +217,10 @@ def _native_history(config, starts, counts):
             spans = memory.begin_append(count,local)
             if spans is None:
                 raise BufferError('Recorded repository capacity cannot reconstruct its history')
-            handles.update((span.history_begin,span.handle) for span in spans)
+            # Copy values: Span.handle otherwise retains its Append/Store
+            # through pybind reference_internal after RequestMemory.close().
+            handles.update((span.history_begin, _native.Handle(span.handle.slot, span.handle.generation))
+                           for span in spans)
             memory.attach_completion(_Ready())
             assert memory.commit_append(count)
             remaining -= count
@@ -294,8 +395,12 @@ def summarize_records(results):
     metrics = ('required_evidence_coverage','required_dependency_coselection',
         'source_span_complete','dependency_span_complete','full_evidence_coselection',
         'displaced_mean_k_evidence','duplicate_blocks','outdated_blocks','irrelevant_blocks','answer_correctness')
-    for arm in ARMS:
-        data = [record['arms'][arm] for record in results]
+    groups = list(dict.fromkeys((record['phase'], record['scoring_version'], arm)
+                               for record in results for arm in record['arms']))
+    mixed = len({(phase, version) for phase, version, _arm in groups}) > 1
+    for phase, version, arm in groups:
+        data = [record['arms'][arm] for record in results if arm in record['arms'] and
+                record['phase'] == phase and record['scoring_version'] == version]
         summary = dict(records=len(data),added_blocks=sum(len(row['added_starts']) for row in data),
                        displaced_blocks=sum(len(row['displaced_starts']) for row in data))
         for metric in metrics:
@@ -304,39 +409,64 @@ def summarize_records(results):
             summary[metric] = dict(labeled_records=len(known),
                 mean=math.fsum(known)/len(known) if known else None,
                 total=math.fsum(known) if known else None)
-        summaries[arm] = summary
+        summaries[f'{phase}:{version}:{arm}' if mixed else arm] = summary
     return summaries
 
 
-def analyze_record(record, *, locality_weight=.1, attention_weight=.2,
-                   cross_message_weight=.25, legacy_fraction=.25):
+def analyze_record(record, *, locality_weight=None, attention_weight=None,
+                   cross_message_weight=None, legacy_fraction=.25):
     config,snapshot = _validate_record(record)
     starts,raw,eligible = (record[key] for key in ('starts','raw_scores','eligible'))
+    phase = record.get('phase', 'query') if record['version'] == 2 else 'query'
+    scoring_version = record['scoring_version'] if record['version'] == 2 else 'v1'
+    if scoring_version == 'v2' and (locality_weight is not None or attention_weight is not None):
+        raise ValueError('Legacy weight overrides do not apply to V2; its recorded alpha fixes both shares')
+    alpha = record.get('alpha', .2)
+    locality_weight = record.get('locality_weight', .1) if locality_weight is None else locality_weight
+    attention_weight = record.get('attention_weight', .2) if attention_weight is None else attention_weight
+    cross_message_weight = record.get('cross_message_weight', .25) if cross_message_weight is None else cross_message_weight
     if not math.isfinite(legacy_fraction) or not 0 <= legacy_fraction <= 1:
         raise ValueError('Legacy comparison fraction must lie in [0,1]')
     modes = dict(mean_k='off',collect='collect',legacy_attention='off',
-                 locality='locality',attention='attention',multi='multi')
+                 attention_seed='off', locality='locality',attention='attention',multi='multi')
+    arms = PRESSURE_ARMS if phase == 'pressure' else ARMS
+    repository = (sorted(record['repository_records'], key=lambda r: r[2]) if phase == 'pressure'
+                  else [(None, None, start, count) for start, count in zip(starts, record['counts'])])
+    history_starts, history_counts = [r[2] for r in repository], [r[3] for r in repository]
     results,baseline = {},None
-    for arm in ARMS:
+    for arm in arms:
         legacy = arm == 'legacy_attention'
         cfg = replace(config,action_attention=legacy,action_fraction=legacy_fraction if legacy else 0.)
-        memory,handles = _native_history(cfg,starts,record['counts'])
+        memory,handles = _native_history(cfg,history_starts,history_counts)
+        propagated = None
         try:
+            _validate_native_masks(record, memory, handles)
             propagated = score_graph(raw,starts,eligible,snapshot,mode=modes[arm],
+                scoring_version=scoring_version, alpha=alpha,
                 locality_weight=locality_weight,attention_weight=attention_weight,
                 cross_message_weight=cross_message_weight,block_tokens=cfg.block_tokens)
             if legacy:
                 memory.set_action_scores(_pairs(record.get('legacy_action_scores',{})))
-            slots = memory.preview_selection({handles[start].slot:score
-                for start,score in zip(starts,propagated.scores)},
-                tuple(handles[start].slot for start in record['mandatory_starts']),
-                action=legacy,prefill_scores=_pairs(record.get('prefill_scores',{})) if legacy else None,
-                max_tokens=record['budget'])
+            mandatory = tuple(handles[start].slot for start in record['mandatory_starts'])
+            if phase == 'pressure':
+                # Every C node constrains native pressure fallback, including
+                # zeros. An empty or positive-only list can reopen cold history.
+                candidates = [(handles[start].slot, value) for start, value in zip(starts, propagated.scores)]
+                slots = memory.preview_selection({}, mandatory, action=False,
+                    pressure_scores=candidates, max_tokens=record['budget'])
+            else:
+                slots = memory.preview_selection({handles[start].slot:score
+                    for start,score in zip(starts,propagated.scores)}, mandatory,
+                    action=legacy,prefill_scores=_pairs(record.get('prefill_scores',{})) if legacy else None,
+                    max_tokens=record['budget'])
             slot_positions = {handle.slot:start for start,handle in handles.items()}
             selected = {slot_positions[slot] for slot in slots}
             if baseline is None:
                 baseline = selected
-            counts = dict(zip(starts,record['counts']))
+                recorded_baseline = record.get('baseline_selected_starts')
+                if recorded_baseline is not None and sorted(recorded_baseline) != sorted(baseline):
+                    raise ValueError('Recorded baseline selection differs from native replay')
+            counts = dict(zip(history_starts,history_counts))
             used = sum(counts[start] for start in selected)
             if used > record['budget']:
                 raise RuntimeError('Native replay exceeded its fixed token budget')
@@ -348,7 +478,9 @@ def analyze_record(record, *, locality_weight=.1, attention_weight=.2,
             # model inference, restoration and request scheduling.
             results[arm] = dict(selected_starts=sorted(selected),selected_tokens=used,
                 added_starts=sorted(selected-baseline),displaced_starts=sorted(baseline-selected),
-                retained_raw_mean_k_mass=math.fsum(score for start,score in zip(starts,raw) if start in selected),
+                retained_raw_seed_mass=math.fsum(score for start,score in zip(starts,raw) if start in selected),
+                retained_raw_mean_k_mass=(math.fsum(score for start,score in zip(starts,raw) if start in selected)
+                                          if phase == 'query' else None),
                 legacy_fraction=legacy_fraction if legacy else 0.,
                 observed_edge_coselection=(sum(a in selected and b in selected for a,b,_ in observed)/len(observed)
                                           if observed else None),
@@ -356,11 +488,21 @@ def analyze_record(record, *, locality_weight=.1, attention_weight=.2,
                                           if retained_mass else None),
                 diagnostics=diagnostics,quality=_quality(record,selected,baseline))
         finally:
+            if propagated is not None:
+                propagated.close()
             assert memory.close()
-    return dict(version=1,authority_id=record.get('authority_id'),request_id=record.get('request_id'),
+    return dict(version=2,input_version=record['version'],phase=phase,scoring_version=scoring_version,
+        alpha=alpha if scoring_version == 'v2' else None,
+        score_domain_version=record.get('score_domain_version', 'legacy-python-v1'),
+        seed_source=record.get('seed_source', 'mean_k'),
+        authority_id=record.get('authority_id'),request_id=record.get('request_id'),
         captured_mode=record.get('mode'),input_sha256=hashlib.sha256(json.dumps(record,sort_keys=True).encode()).hexdigest(),
         annotation=record.get('annotation'),
-        history_blocks=len(starts),budget=record['budget'],block_tokens=config.block_tokens,
+        history_blocks=len(history_starts),candidate_blocks=len(starts),
+        budget=record['budget'],block_tokens=config.block_tokens,
+        locality_provenance=snapshot.locality_provenance,
+        recorded_handles=record.get('handles'),
+        baseline_selected_starts=sorted(baseline),
         labeled_fixture=record.get('evidence') is not None,
         observed_source_coverage=len(snapshot.rows)/len(starts),
         mean_retained_attention_mass=(math.fsum(row.retained_mass for row in snapshot.rows)/len(snapshot.rows)
@@ -410,9 +552,9 @@ def main(argv=None):
     parser.add_argument('--synthetic',action='store_true',help='Include the explicitly labeled causal fixture')
     parser.add_argument('--output-dir',type=Path,required=True)
     parser.add_argument('--max-records',type=int,default=64)
-    parser.add_argument('--locality-weight',type=float,default=.1)
-    parser.add_argument('--attention-weight',type=float,default=.2)
-    parser.add_argument('--cross-message-weight',type=float,default=.25)
+    parser.add_argument('--locality-weight',type=float,help='Explicit V1 counterfactual; otherwise use recorded value')
+    parser.add_argument('--attention-weight',type=float,help='Explicit V1 counterfactual; otherwise use recorded value')
+    parser.add_argument('--cross-message-weight',type=float,help='Explicit boundary counterfactual; otherwise use recorded value')
     parser.add_argument('--legacy-fraction',type=float,default=.25)
     parser.add_argument('--fixture',type=Path,help='Unmodified real-model block graph fixture for exact evidence labels')
     parser.add_argument('--traces',type=Path,help='Retained qualification/traces.json for request/agent and prompt hash joins')
@@ -446,11 +588,13 @@ def main(argv=None):
     results = [analyze_record(record,locality_weight=args.locality_weight,
         attention_weight=args.attention_weight,cross_message_weight=args.cross_message_weight,
         legacy_fraction=args.legacy_fraction) for record in records]
-    output = dict(version=1,kind='fixed_recorded_input_selection_analysis',sources=sources,
-        limitations=['All arms reuse the same recorded Mean-K and attention observations.',
+    output = dict(version=2,kind='fixed_recorded_input_selection_analysis',sources=sources,
+        limitations=['All arms reuse the same recorded raw seeds, candidate masks and attention observations.',
                      'No model inference, answer correctness, end-to-end throughput or closed-loop quality is measured.',
                      'Evidence metrics are null unless an explicitly labeled fixture was supplied.',
-                     'Legacy attention comparison uses the stated fraction; K/G, keep bands and runtime budget are unchanged.'],
+                     'Legacy Query attention comparison uses the stated fraction; K/G and runtime budget are unchanged.',
+                     'V1 captures retain their original Mean-K denominator; replay cannot reconstruct aligned V2 Mean-K seeds.',
+                     'Pressure arms use native pressure selection over every recorded working candidate, including zeros.'],
         weights=dict(locality=args.locality_weight,attention=args.attention_weight,
                      cross_message=args.cross_message_weight,legacy_fraction=args.legacy_fraction),
         summary=summarize_records(results),records=results)
@@ -462,17 +606,19 @@ def main(argv=None):
     if args.synthetic:
         (args.output_dir/'synthetic-input.jsonl').write_text(json.dumps(causal_fixture(),allow_nan=False)+'\n')
     with (args.output_dir/'summary.csv').open('w',newline='') as stream:
-        columns=['record','arm','selected_tokens','added_blocks','displaced_blocks',
-                 'retained_raw_mean_k_mass','observed_mass_coselection','required_evidence_coverage',
+        columns=['record','phase','scoring_version','arm','selected_tokens','added_blocks','displaced_blocks',
+                 'retained_raw_seed_mass','retained_raw_mean_k_mass','observed_mass_coselection','required_evidence_coverage',
                  'required_dependency_coselection','source_span_complete','dependency_span_complete',
                  'full_evidence_coselection','displaced_mean_k_evidence','duplicate_blocks',
                  'outdated_blocks','irrelevant_blocks','answer_correctness','propagation_ms']
         writer=csv.DictWriter(stream,fieldnames=columns);writer.writeheader()
         for index,record in enumerate(results):
             for arm,row in record['arms'].items():
-                writer.writerow(dict(record=index,arm=arm,selected_tokens=row['selected_tokens'],
+                writer.writerow(dict(record=index,phase=record['phase'],scoring_version=record['scoring_version'],
+                    arm=arm,selected_tokens=row['selected_tokens'],
                     added_blocks=len(row['added_starts']),displaced_blocks=len(row['displaced_starts']),
                     retained_raw_mean_k_mass=row['retained_raw_mean_k_mass'],
+                    retained_raw_seed_mass=row['retained_raw_seed_mass'],
                     observed_mass_coselection=row['observed_mass_coselection'],
                     required_evidence_coverage=row['quality']['required_evidence_coverage'],
                     required_dependency_coselection=row['quality']['required_dependency_coselection'],
@@ -487,7 +633,8 @@ def main(argv=None):
             for metric,value in summary.items():
                 if isinstance(value,dict):
                     writer.writerow(dict(arm=arm,metric=metric,**value))
-    print(json.dumps(dict(records=len(results),arms=len(ARMS),output=str(args.output_dir.resolve()))))
+    print(json.dumps(dict(records=len(results),arms=sorted({arm for result in results for arm in result['arms']}),
+                         output=str(args.output_dir.resolve()))))
     return output
 
 

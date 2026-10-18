@@ -41,6 +41,9 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
                          enforce_output_budget=True):
     """Validate frozen external traces without changing IDs, plans or quotas."""
     from vllm_kvmem.request_plan import FIELDS, RequestPlan
+    version = fixture.get('schema_version', 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError('Unsupported frozen agent trace schema version')
     for name, value in (('concurrency', concurrency), ('warmup_turns', warmup_turns),
                         ('epoch_turns', epoch_turns)):
         if type(value) is not int or value <= 0:
@@ -55,9 +58,13 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
     agent_fields = {'initial_tokens', 'query_plan', 'turns', 'source_task', 'source_turn',
                     'initial_tokens_sha256', 'canonical_initial_tokens', 'source_logical_initial_tokens',
                     'skipped_incomplete_candidates'}
+    if version == 2:
+        agent_fields.add('initial_assistant_begin')
     turn_fields = {'output_tokens', 'tool_tokens', 'tool_wait_seconds', 'source_turn',
                    'source_finish_reason', 'source_logical_prompt_tokens', 'tool_tokens_sha256',
                    'external_message_proof'}
+    if version == 2:
+        turn_fields.update(('tool_locality_spans', 'tool_locality_provenance', 'assistant_begin'))
 
     def tokens(value, label, *, nonempty=False):
         if (not isinstance(value, list) or (nonempty and len(value) < 2)
@@ -82,6 +89,9 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
         # This is the same semantic validator used by the source Planner. It
         # also checks mandatory spans, replay containment and mode conflicts.
         RequestPlan.parse(query, len(initial), 32, gen_budget or 131072)
+        header = plan.get('initial_assistant_begin')
+        if header is not None and (type(header) is not int or not 0 <= header < len(initial)):
+            raise ValueError('Invalid initial assistant header coordinate')
         turns = plan['turns']
         if not isinstance(turns, list) or len(turns) < epoch_turns:
             raise ValueError('Insufficient complete turns for the declared epoch')
@@ -95,6 +105,14 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
             if enforce_output_budget and gen_budget is not None and count > gen_budget:
                 raise ValueError('External output length exceeds configured gen_budget')
             tokens(row['tool_tokens'], 'external tool')
+            if version == 2:
+                from vllm_kvmem.prompt_spans import normalize_spans, normalize_provenance
+                normalize_spans(row.get('tool_locality_spans', []), len(row['tool_tokens']))
+                if row.get('tool_locality_provenance'):
+                    normalize_provenance(row['tool_locality_provenance'])
+                header = row.get('assistant_begin')
+                if header is not None and (type(header) is not int or not 0 <= header < len(row['tool_tokens'])):
+                    raise ValueError('Invalid appended assistant header coordinate')
             wait = row['tool_wait_seconds']
             if type(wait) not in (int, float) or not math.isfinite(wait) or wait < 0:
                 raise ValueError('tool_wait_seconds must be finite and nonnegative')
@@ -105,6 +123,29 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
             if 'source_turn' in row and (type(row['source_turn']) is not int or row['source_turn'] <= 0):
                 raise ValueError('source_turn must be a positive integer')
     return plans[:concurrency]
+
+
+def initial_locality(plan):
+    query = plan['query_plan'] if plan is not None else {}
+    return dict(locality_spans=list(query.get('kvmem_locality_spans', [])),
+                locality_provenance=dict(query.get('kvmem_locality_provenance', {})),
+                assistant_begin=plan.get('initial_assistant_begin') if plan is not None else None)
+
+
+def append_locality(state, turn):
+    base = len(state['tokens'])
+    state['locality_spans'].extend({**span, 'begin': base + span['begin'], 'end': base + span['end']}
+                                  for span in turn.get('tool_locality_spans', []))
+    if turn.get('tool_locality_provenance'):
+        state['locality_provenance'] = dict(turn['tool_locality_provenance'], history='actual_accepted_ids')
+    begin = turn.get('assistant_begin')
+    state['assistant_begin'] = None if begin is None else base + begin
+
+
+def accepted_locality(state, output_ids, eos):
+    begin = state.get('assistant_begin')
+    if begin is not None and output_ids and output_ids[-1] == eos:
+        state['locality_spans'].append(dict(begin=begin, end=len(state['tokens']) + len(output_ids), role='assistant'))
 
 
 def views_match(state, expected_views):
@@ -515,13 +556,18 @@ async def workload(client, profile, fixture, directory, args):
             count = settings['generation_limit']
             if len(tokens)+count > settings['max_model_len']:
                 raise ValueError('Natural turn would exceed complete context; no request was sent')
+        query_plan = dict(source['query_plan']) if source is not None else None
+        if query_plan is not None and (state['locality_spans'] or state['locality_provenance']):
+            query_plan['kvmem_locality_spans'] = list(state['locality_spans'])
+            if state['locality_provenance']:
+                query_plan['kvmem_locality_provenance'] = dict(state['locality_provenance'])
         return await stream_call(client, profile, tokens, state['session'],
             count,
             recorder, agent=i,
             epoch=state['epoch'], turn=state['turn'], kind=kind,
             request_id=f'timed-{tag}-{i}-{serial}-{kind}',
             new_input_tokens=new_input_tokens, query=query,
-            query_plan=source['query_plan'] if source is not None else None,
+            query_plan=query_plan,
             source_metadata=dict(source_task=source.get('source_task'),
                                  source_turn=source_turn.get('source_turn')) if source is not None else None,
             generation_mode=settings['generation_mode'] if query else 'fixed',
@@ -538,8 +584,11 @@ async def workload(client, profile, fixture, directory, args):
                 if next_tokens+settings['generation_limit'] > settings['max_model_len']:
                     raise ValueError('Natural warmup cannot complete two full turns within context capacity')
             if turn:
+                if plans is not None:
+                    append_locality(state, plans[i]['turns'][turn])
                 state['tokens'].extend(tool(i, turn))
             row = await request(i, state['tokens'], 'warmup')
+            accepted_locality(state, row['output_ids'], fixture['eos'])
             state['tokens'].extend(row['output_ids'])
         state['turn'] += 1
         recorder.phase(i, 'warmup_barrier', state['epoch'], state['turn'])
@@ -566,6 +615,7 @@ async def workload(client, profile, fixture, directory, args):
                     state['epoch'] += 1
                     state['turn'] = 0
                     state['tokens'] = initial(i)
+                    state.update(initial_locality(plans[i] if plans is not None else None))
                     if stop.is_set() or time.monotonic() >= deadline:
                         break
                 turn = state['turn']
@@ -581,12 +631,15 @@ async def workload(client, profile, fixture, directory, args):
                     if stop.is_set() or time.monotonic() >= deadline:
                         break
                     addition = tool(i, turn)
+                    if plans is not None:
+                        append_locality(state, plans[i]['turns'][turn])
                     state['tokens'].extend(addition)
                     added = len(addition)
                 else:
                     added = len(state['tokens'])
                 recorder.phase(i, 'ready', state['epoch'], turn)
                 row = await request(i, state['tokens'], 'workload', new_input_tokens=added)
+                accepted_locality(state, row['output_ids'], fixture['eos'])
                 state['tokens'].extend(row['output_ids'])
                 state['turn'] += 1
         except BaseException:
@@ -597,7 +650,8 @@ async def workload(client, profile, fixture, directory, args):
 
     try:
         for i in range(agents):
-            states.append(dict(session=f'timed-{tag}-{i}', serial=0, epoch=0, turn=0, tokens=initial(i)))
+            states.append(dict(session=f'timed-{tag}-{i}', serial=0, epoch=0, turn=0, tokens=initial(i),
+                               **initial_locality(plans[i] if plans is not None else None)))
         warm_results = await asyncio.gather(*(warm(i) for i in range(agents)), return_exceptions=True)
         failures = [r for r in warm_results if isinstance(r, BaseException)]
         if failures:

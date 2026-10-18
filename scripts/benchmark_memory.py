@@ -47,7 +47,12 @@ def wait_terminal(capture,rid,timeout=180):
 
 def run(args):
     cfg=json.loads(args.config.read_text());kv=cfg['kvmem']
-    assert kv['archive_backend']=='cpu' and kv['prefill_attention'] and kv['action_pressure']
+    graph_v2 = kv.get('graph_scoring_version', 'v1') == 'v2'
+    if graph_v2:
+        import graph_v2_protocol as graph_protocol
+        graph_protocol.validate_profile(cfg, graph_protocol.infer_arm(cfg), 'memoryagentbench')
+    else:
+        assert kv['archive_backend']=='cpu' and kv['prefill_attention'] and kv['action_pressure']
     assert kv['session_freeze_prompt'] and not kv['query_history']
     assert not kv['session_capture_terminal'] and not kv['session_capture_decode']
     reference=json.loads((args.reference/'cohort.json').read_text())
@@ -63,6 +68,10 @@ def run(args):
         'prefix_boundaries':prefixes,'gold_used_for_selection':False,
         'protocol':'Original full token IDs, no truncation; independent questions restore frozen P before Query selection. Input attention only; output/Query-history scores never transfer across questions.',
         'reference_protocol_difference':'qw3 uses named frozen-prefix ingest; vLLM captures the same 1024-aligned prefix while serving the first full question. No zero-output warmup request.'}
+    if graph_v2:
+        manifest.update(graph_protocol=graph_protocol.SCHEMA, graph_arm=graph_protocol.infer_arm(cfg),
+            score_domain_version=graph_protocol.SCORE_DOMAIN, pressure_policy=kv['pressure_policy'],
+            graph_scoring_version='v2', graph_alpha=kv['graph_alpha'])
     path=args.output/'manifest.json'
     if path.exists():assert args.resume and json.loads(path.read_text())==manifest
     else:save(path,manifest)
@@ -156,6 +165,10 @@ def run(args):
                             'seconds':seconds,'metrics':response.get('metrics'),
                             'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'prefix_reused':bool(completed),
                             'attention':q,'finish_reason':response['choices'][0]['finish_reason']}
+                        if graph_v2:
+                            record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
+                                [row['query_begin'], row['query_end']],
+                                require_pressure=not completed and len(tokens) > kv['select_budget'] + kv['gen_budget'])
                         save(directory/'events.json',refresh);save(directory/'terminal.json',terminal)
                         save(directory/'result.json',record);completed+=1
                         with lock:
@@ -167,6 +180,12 @@ def run(args):
                         save(directory/'result.json',{'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started})
                         with lock:summarize()
                         raise
+                if graph_v2:
+                    # Frozen P sessions retain their own namespace after the
+                    # last question. Release it before returning its CPU credit
+                    # or admitting the next group; release is never a retry.
+                    release = graph_protocol.release_owner(cfg, args.capture, session, tokens[-1])
+                    save(args.output/'releases'/(group+'.json'), release)
             finally:credits.release(group,amount)
     selected=list(groups.items())[:args.group_limit or None]
     assert not args.case_id or set(args.case_id)<=set(r['id'] for r in rows)

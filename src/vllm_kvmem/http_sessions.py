@@ -70,7 +70,8 @@ def normalize_query_plan(payload, session_header=None):
     if not session or plan.reselect == 'force':
         plan.validate_capacity(len(prompt), cfg['select_budget'], output_tokens=max_tokens,
             sink_blocks=cfg.get('sink_blocks', 0), recent_blocks=cfg.get('recent_blocks', 0),
-            rolling=cfg.get('rolling_active_window', False))
+            rolling=cfg.get('rolling_active_window', False),
+            pressure_policy=cfg.get('pressure_policy', 'recency'))
     # A session auto Query can disappear after exact-prefix validation. Its
     # combined capacity check belongs to that owner before any import/allocation.
     output_reserve = 0 if cfg.get('rolling_active_window', False) else max_tokens

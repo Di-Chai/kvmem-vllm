@@ -57,7 +57,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         capacity = min(capacity, options.cpu_read_cache_bytes // record_bytes)
         archive = MemoryArchive(str(directory), record_bytes, capacity,
                                io_max_bytes=options.archive_io_max_bytes,
-                               gather_workers=options.cpu_gather_workers)
+                               gather_workers=options.cpu_gather_workers,
+                               cpu_direct_record_seal=getattr(options, 'cpu_direct_record_seal', False))
         archive.async_seal = options.async_seal
         return archive
     if options.archive_io_max_bytes:
@@ -121,6 +122,7 @@ class AsyncArchive:
         self._entries = {}
         self._free_ids = list(reversed(range(capacity)))
         self._closed = False
+        self._seal_totals = None
 
     @staticmethod
     def key(namespace: str, lease):
@@ -163,7 +165,8 @@ class AsyncArchive:
             return dict(archive_io_max_bytes=self.io_max_bytes,
                         archive_io_pending_bytes=self._io_bytes,
                         archive_io_peak_bytes=self._io_peak_bytes,
-                        archive_io_deferrals=self._io_deferrals)
+                        archive_io_deferrals=self._io_deferrals,
+                        **(self._seal_totals or {}))
 
     def wait_for_capacity(self, timeout, *, size=None):
         """Host retirement may wait for I/O admission; model threads need not."""
@@ -251,24 +254,18 @@ class AsyncArchive:
                  for i, e in enumerate(entries)]
 
         def work():
-            snapshot = payload
+            nonlocal views
             try:
-                preparation = {}
                 if deferred:
-                    started = time.perf_counter()
-                    snapshot = _native.pack_record_views(views)
-                    packed = time.perf_counter()
-                    byte_view = memoryview(snapshot)
-                    digests = tuple(hashlib.sha256(byte_view[i*self.record_bytes:(i+1)*self.record_bytes])
-                                    .hexdigest() for i in range(len(keys)))
-                    hashed = time.perf_counter()
-                    with self._lock:
-                        self._cache_write(keys, snapshot)
-                    preparation = dict(record_digests=digests, seal_pack_seconds=packed-started,
-                        seal_hash_seconds=hashed-packed, seal_cache_seconds=time.perf_counter()-hashed)
-                stats = self.tier.io(spans, snapshot, True)
-                stats.update(preparation)
+                    stats = self._seal_views(keys, entries, spans, views)
+                else:
+                    stats = self.tier.io(spans, payload, True)
                 with self._lock:
+                    if deferred and self._seal_totals is not None:
+                        increments = {**stats, 'seal_batches': 1,
+                                      'seal_records': len(entries), 'seal_payload_bytes': size}
+                        self._seal_totals = {name: value + increments.get(name, 0)
+                                            for name, value in self._seal_totals.items()}
                     for entry in entries:
                         entry.ready = True
                 return stats
@@ -278,6 +275,7 @@ class AsyncArchive:
                         self._release(key)
                 raise
             finally:
+                views = None
                 owned.clear()
                 with self._lock:
                     self._complete(admitted_bytes)
@@ -292,6 +290,28 @@ class AsyncArchive:
                     self._release(key)
                 self._complete(admitted_bytes)
                 raise
+
+    def _seal_views(self, keys, entries, spans, views):
+        """The original whole-batch snapshot path, including cached/SSD writes."""
+        snapshot = byte_view = None
+        try:
+            started = time.perf_counter()
+            snapshot = _native.pack_record_views(views)
+            packed = time.perf_counter()
+            byte_view = memoryview(snapshot)
+            digests = tuple(hashlib.sha256(byte_view[i*self.record_bytes:(i+1)*self.record_bytes])
+                            .hexdigest() for i in range(len(keys)))
+            hashed = time.perf_counter()
+            with self._lock:
+                self._cache_write(keys, snapshot)
+            cached = time.perf_counter()
+            stats = self.tier.io(spans, snapshot, True)
+            stats.update(record_digests=digests, seal_pack_seconds=packed-started,
+                         seal_hash_seconds=hashed-packed, seal_cache_seconds=cached-hashed)
+            return stats
+        finally:
+            # A retained failed Future must not retain its source buffer exports.
+            views = snapshot = byte_view = None
 
     def _cache_write(self, keys, payload):
         """Optional cache admission under lock, before asynchronous publication."""

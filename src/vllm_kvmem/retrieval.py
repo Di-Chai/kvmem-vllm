@@ -3,7 +3,8 @@
 Source algorithm: qw3 src/kernels_cuda.cu, block_attn_score_softmax_pages_kernel.
 Queries/means are normalized content-frame tensors (before RoPE). Softmax runs
 over eligible pages for each layer/query/head. Heads/layers are averaged, query
-tokens summed. Always-kept bands are excluded before normalization.
+tokens summed. The native score frame supplies the exact softmax mask;
+additional mandatory blocks remain in its domain.
 """
 import math
 

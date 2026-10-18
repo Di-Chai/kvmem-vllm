@@ -416,12 +416,23 @@ class PromptCheckpointPool:
         return authority
 
     def prepare_claim_window(self, checkpoint, *, pressure=False, pressure_budget=None,
-                             mandatory_spans=(), wait=True, timing=None):
+                             mandatory_spans=(), wait=True, timing=None, metadata_binding=None):
         self._owned(checkpoint)
         if checkpoint.phase is not CheckpointPhase.CLAIMED or checkpoint.restore_started:
             raise ValueError('No unsubmitted checkpoint import')
         if not self.model_ready(checkpoint):
             raise RuntimeError('Claimed model checkpoint payload is not ready')
+        if metadata_binding is not None and getattr(checkpoint.authority, 'block_graph', None) is not None:
+            from .prompt_spans import graph_metadata
+            from .block_graph import _merge_spans
+            spans, _ = graph_metadata(metadata_binding)
+            saved = checkpoint.claim_graph_history or checkpoint.graph_history
+            if saved is None:
+                raise ValueError('Graph session checkpoint has no matching graph snapshot')
+            # Validate against the state we will actually restore, before
+            # rewind/graph restore mutate authority or its snapshot ownership.
+            _merge_spans(saved.message_spans, saved.message_end_known, spans,
+                max(checkpoint.position, checkpoint.claim_graph_end))
         memory = checkpoint.authority.memory
         if memory.history_end > checkpoint.position or checkpoint.rewind_started:
             deadline = checkpoint.restore_deadline
@@ -466,6 +477,10 @@ class PromptCheckpointPool:
                     action.replay_snapshot=(checkpoint.claim_action_end,original)
                 else:
                     action.restore(original,checkpoint.authority)
+        if graph is not None and metadata_binding is not None:
+            from .prompt_spans import install_graph_metadata
+            install_graph_metadata(graph, metadata_binding,
+                validated_prefix=checkpoint.authority._graph_validated_prefix)
         if pressure:
             if timing is None:
                 memory._validate_window_checkpoint(checkpoint.window)
@@ -477,15 +492,17 @@ class PromptCheckpointPool:
             # from the retired request is still resident in these physical pages.
             for slot, generation, *_ in memory._store.working_records():
                 memory._store.working_resident(memory._store.handle(slot), False)
-            from .request_plan import RequestPlan
-            cfg = memory.config
+            from .request_plan import RequestPlan, selection_config
+            policy_options = getattr(checkpoint.authority, 'graph_options', None) or getattr(action, 'options', None)
+            policy = getattr(policy_options, 'pressure_policy', None)
+            if policy is None:
+                policy = 'attention' if action is not None and getattr(action.options, 'action_pressure', False) else 'recency'
+            cfg = selection_config(memory.config,
+                memory.config.select_budget if pressure_budget is None else pressure_budget,
+                selection='pressure', pressure_policy=policy)
             fit = RequestPlan(None, block_tokens=cfg.block_tokens,
-                mandatory=mandatory_spans).mandatory_fit(checkpoint.position, cfg)
+                mandatory=mandatory_spans).mandatory_fit(checkpoint.position, cfg, preserve_tail=True)
             required = set(fit['hard_blocks'])
-            if checkpoint.position % cfg.block_tokens:
-                # Preserve the accepted partial tail, both for exact history
-                # identity and the next append into that same record.
-                required.add(checkpoint.position // cfg.block_tokens)
             mandatory = [r.handle for r in checkpoint.authority.records.values()
                          if r.history_begin // cfg.block_tokens in required]
             if len(mandatory) != len(required):

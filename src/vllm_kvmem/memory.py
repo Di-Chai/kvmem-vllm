@@ -152,7 +152,9 @@ class RequestMemory:
             raise ValueError("Retrieval scores must be finite")
         handles = [self._store.handle(slot) for slot in scores]
         self._store.scores(handles, list(scores.values()))
-        if max_tokens is not None:
+        previous_budget = self._store.runtime_select_budget
+        scoped_query_budget = max_tokens is not None and pressure_scores is None
+        if scoped_query_budget:
             self._store.set_runtime_select_budget(max_tokens)
         try:
             if pressure_scores is not None:
@@ -168,8 +170,8 @@ class RequestMemory:
             else:
                 selected = self._store.pick(list(mandatory_slots))
         finally:
-            if max_tokens is not None:
-                self._store.set_runtime_select_budget(0)
+            if scoped_query_budget:
+                self._store.set_runtime_select_budget(previous_budget)
         return tuple(selected)
 
     def commit_selection(self) -> bool:

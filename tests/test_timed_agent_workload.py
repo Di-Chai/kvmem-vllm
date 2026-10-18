@@ -562,3 +562,33 @@ def test_native_mode_requires_explicit_valid_quiescence_callback_before_http(tmp
         asyncio.run(timed.workload(client, dict(port=1, served_model_name='native', **profile),
                                   fixture(1), tmp_path, arguments(concurrency=1)))
     assert client.payloads == []
+
+
+def test_v2_trace_relative_spans_add_actual_history_once_and_use_accepted_output():
+    state = dict(tokens=[9]*13, **timed.initial_locality(None))
+    row = dict(tool_locality_spans=[dict(begin=1,end=4,role='tool'),dict(begin=4,end=7,role='tool')],
+               tool_locality_provenance=dict(schema_version=1,source='renderer'),assistant_begin=7)
+    timed.append_locality(state, row)
+    assert state['locality_spans'] == [dict(begin=14,end=17,role='tool'),dict(begin=17,end=20,role='tool')]
+    assert state['assistant_begin'] == 20
+    state['tokens'].extend([3]*10)
+    timed.accepted_locality(state, [7,8], eos=99)
+    assert len(state['locality_spans']) == 2
+    timed.accepted_locality(state, [7,8,99], eos=99)
+    assert state['locality_spans'][-1] == dict(begin=20,end=26,role='assistant')
+    assert row['tool_locality_spans'][0]['begin'] == 1
+
+
+def test_trace_versions_validate_relative_locality_and_reject_unknown_schema():
+    data = external_fixture(1)
+    data['schema_version'] = 2
+    row = data['agent_plans'][0]['turns'][1]
+    row['tool_locality_spans'] = [dict(begin=0,end=1,role='tool')]
+    row['tool_locality_provenance'] = dict(schema_version=1,source='renderer')
+    timed.validate_agent_plans(data,concurrency=1,warmup_turns=2,epoch_turns=4,gen_budget=131072)
+    row['tool_locality_spans'][0]['end'] = len(row['tool_tokens']) + 1
+    with pytest.raises(ValueError,match='locality span'):
+        timed.validate_agent_plans(data,concurrency=1,warmup_turns=2,epoch_turns=4,gen_budget=131072)
+    data['schema_version'] = 99
+    with pytest.raises(ValueError,match='schema version'):
+        timed.validate_agent_plans(data,concurrency=1,warmup_turns=2,epoch_turns=4,gen_budget=131072)

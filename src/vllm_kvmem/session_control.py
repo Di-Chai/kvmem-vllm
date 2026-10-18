@@ -58,6 +58,8 @@ class SessionBinding:
     query_span: tuple | None = None
     mandatory_spans: tuple = ()
     message_spans: tuple = ()
+    locality_spans: tuple = ()
+    locality_provenance: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -143,7 +145,7 @@ class _Entry:
 class SessionLedger:
     def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
                  select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None,
-                 preserve_history=False, require_owned=False):
+                 preserve_history=False, require_owned=False, pressure_policy='recency'):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -160,6 +162,7 @@ class SessionLedger:
         self.terminal_capture = terminal_capture
         self.checkpoint_policy = checkpoint_policy
         self.memory_config = memory_config
+        self.pressure_policy = pressure_policy
         self.select_budget, self.gen_budget = select_budget, gen_budget
         self.hits = self.misses = self.waits = 0
         self.preserve_history = preserve_history
@@ -364,7 +367,7 @@ class SessionLedger:
         plan.validate_capacity(request.num_prompt_tokens, self.select_budget,
             sink_blocks=getattr(config, 'sink_blocks', 0),
             recent_blocks=getattr(config, 'recent_blocks', 0),
-            resume_history=history, resume_window=window)
+            resume_history=history, resume_window=window, pressure_policy=self.pressure_policy)
 
     @staticmethod
     def set_plan(request, plan):
@@ -406,7 +409,9 @@ class SessionLedger:
             request.request_id, tuple(request.prompt_token_ids), entry.history,
             entry.restore_window or entry.window,entry.pressure_restore,
             plan.query if plan is not None else None,plan.mandatory if plan is not None else (),
-            plan.message_spans if plan is not None else ()))
+            plan.message_spans if plan is not None else (),
+            plan.locality_spans if plan is not None else (),
+            plan.locality_provenance if plan is not None else ()))
         self.hits += int(bool(external_tokens))
         self.misses += int(not external_tokens)
 

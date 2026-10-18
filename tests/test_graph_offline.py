@@ -255,3 +255,202 @@ def test_annotation_requires_local_tokenizer_and_complete_recorded_evidence():
     records[0]['starts'].remove(begin//32*32)
     with pytest.raises(ValueError,match='missing part'):
         analysis.annotate_fixture(records,fixture,traces,tokenizer)
+
+
+def v2_query_fixture():
+    record = analysis.causal_fixture()
+    record.update(version=2, phase='query', scoring_version='v2', alpha=.2,
+        score_domain_version='qw3-native-v2', seed_source='mean_k', accepted_boundary=24,
+        score_mask=[True]*6, transport_mask=[True]*6,
+        # Historical generation-qualified slots need not match offline slots.
+        handles=[[slot, 10+i] for i, slot in enumerate([9, 2, 5, 0, 13, 7])],
+        baseline_selected_starts=[8, 12, 20])
+    record['graph']['locality_provenance'] = {'source': 'renderer-offsets', 'tokenizer': 'fixture'}
+    return record
+
+
+def v2_pressure_fixture():
+    record = v2_query_fixture()
+    repository = [(slot, 10+i, 4*i, 4) for i, slot in enumerate([9, 2, 5, 0, 13, 7, 10, 11])]
+    candidates = [repository[i] + (4*j,) for j, i in enumerate([0, 2, 3, 5])]
+    record.update(phase='pressure', seed_source='output', pressure_policy='graph', alpha=.8,
+        starts=[r[2] for r in candidates], counts=[r[3] for r in candidates],
+        handles=[list(r[:2]) for r in candidates], raw_scores=[0., 0., .1, .9],
+        eligible=[True]*4, score_mask=[True]*4, transport_mask=[True]*4,
+        candidate_records=candidates, repository_records=repository,
+        accepted_boundary=32, budget=8, baseline_selected_starts=[12, 20])
+    # Recent Query keep bands must not become hard retention in pressure.
+    record['config']['recent_blocks'] = 2
+    record['graph'].update(accepted_through=32, completed_through=32,
+        rows=[dict(source=20, targets=[4, 8], weights=[.9, .01],
+                   samples=1, prefill_samples=0, output_samples=1)])
+    record['legacy_action_scores'] = {28: 999.}
+    record.pop('evidence')
+    return record
+
+
+def test_v2_query_uses_recorded_version_alpha_domain_and_provenance():
+    record = v2_query_fixture()
+    original = deepcopy(record)
+    result = analysis.analyze_record(record)
+    assert record == original
+    assert result['phase'] == 'query' and result['scoring_version'] == 'v2'
+    assert result['score_domain_version'] == 'qw3-native-v2'
+    assert result['alpha'] == .2 and result['input_version'] == 2
+    assert result['locality_provenance'] == record['graph']['locality_provenance']
+    assert result['recorded_handles'] == record['handles']
+    assert result['arms']['multi']['diagnostics']['locality_weight'] == .1
+    assert result['arms']['multi']['diagnostics']['attention_weight'] == .1
+    assert result['arms']['attention']['diagnostics']['attention_external_mass'] == pytest.approx(.12)
+    assert result['baseline_selected_starts'] == [8, 12, 20]
+
+
+def test_v2_export_can_explicitly_replay_v1_operator_with_recorded_weights():
+    record = v2_query_fixture()
+    record.update(scoring_version='v1', locality_weight=.03, attention_weight=.4,
+                  cross_message_weight=.5)
+    result = analysis.analyze_record(record)
+    assert result['scoring_version'] == 'v1' and result['alpha'] is None
+    assert result['arms']['multi']['diagnostics']['locality_weight'] == .03
+    assert result['arms']['multi']['diagnostics']['attention_weight'] == .4
+    assert result['arms']['attention']['diagnostics']['attention_external_mass'] == pytest.approx(.216)
+
+
+def test_v2_query_native_domain_includes_extra_mandatory_in_score_mask():
+    record = v2_query_fixture()
+    record.update(mandatory_starts=[8], baseline_selected_starts=[8, 12, 20])
+    record['eligible'][2] = record['transport_mask'][2] = False
+    result = analysis.analyze_record(record)
+    assert result['arms']['mean_k']['diagnostics']['raw_score_sum'] == pytest.approx(1.)
+    assert result['arms']['mean_k']['diagnostics']['raw_eligible_sum'] == pytest.approx(.85)
+    record['score_mask'][2] = False
+    with pytest.raises(ValueError, match='score mask'):
+        analysis.analyze_record(record)
+
+
+def test_v2_query_small_history_native_transport_is_all_identity():
+    record = v2_query_fixture()
+    record['config'].update(select_budget=24, gen_budget=8, sink_blocks=1, recent_blocks=1)
+    record.update(budget=24, eligible=[False]*6, transport_mask=[False]*6,
+                  baseline_selected_starts=record['starts'])
+    result = analysis.analyze_record(record)
+    assert result['arms']['multi']['selected_starts'] == record['starts']
+    assert result['arms']['multi']['diagnostics']['identity']
+
+
+def test_pressure_replay_uses_original_picker_complete_candidates_and_logical_identity(monkeypatch):
+    record = v2_pressure_fixture()
+    original = deepcopy(record)
+    native_history, calls = analysis._native_history, []
+    def tracked_history(*args):
+        memory, handles = native_history(*args)
+        preview = memory.preview_selection
+        def pressure_only(scores, mandatory=(), **kwargs):
+            assert scores == {} and kwargs['action'] is False
+            values = kwargs['pressure_scores']
+            assert [slot for slot, _score in values] == [handles[start].slot for start in record['starts']]
+            assert len(values) == len(record['candidate_records'])
+            calls.append(values)
+            return preview(scores, mandatory, **kwargs)
+        memory.preview_selection = pressure_only
+        return memory, handles
+    monkeypatch.setattr(analysis, '_native_history', tracked_history)
+    result = analysis.analyze_record(record)
+    assert record == original
+    assert len(calls) == len(analysis.PRESSURE_ARMS)
+    assert tuple(result['arms']) == analysis.PRESSURE_ARMS
+    assert result['arms']['attention_seed']['selected_starts'] == [12, 20]
+    assert result['arms']['attention']['selected_starts'] == [8, 20]
+    assert result['history_blocks'] == 8 and result['candidate_blocks'] == 4
+    assert all(24 not in row['selected_starts'] and 28 not in row['selected_starts']
+               for row in result['arms'].values())
+    assert result['arms']['attention']['retained_raw_mean_k_mass'] is None
+    assert result['arms']['attention']['retained_raw_seed_mass'] == .9
+
+
+@pytest.mark.parametrize('raw,source', [([0., 0., .1, .9], 'output'),
+                                      ([0., 0., 0., 0.], 'none'),
+                                      ([0., 0., 1., 0.], 'prefill')])
+def test_pressure_alpha_zero_is_exact_baseline_including_zero_candidates(raw, source):
+    record = v2_pressure_fixture()
+    record.update(raw_scores=raw, seed_source=source, alpha=0.)
+    result = analysis.analyze_record(record)
+    assert all(row['selected_starts'] == [12, 20] for row in result['arms'].values())
+    assert all(row['diagnostics']['identity'] for row in result['arms'].values())
+
+
+def test_pressure_allows_native_sink_and_mandatory_outside_working_candidates():
+    record = v2_pressure_fixture()
+    record['config'].update(sink_blocks=1, recent_blocks=0)
+    record.update(budget=12, mandatory_starts=[16], baseline_selected_starts=[0, 16, 20])
+    for name in ('starts', 'counts', 'raw_scores', 'eligible', 'score_mask', 'transport_mask',
+                 'handles', 'candidate_records'):
+        record[name] = record[name][1:]
+    result = analysis.analyze_record(record)
+    assert result['arms']['attention_seed']['selected_starts'] == [0, 16, 20]
+    assert all({0, 16} <= set(row['selected_starts']) for row in result['arms'].values())
+
+
+def test_pressure_partial_tail_and_preserved_future_graph_watermark():
+    record = v2_pressure_fixture()
+    record['repository_records'][-1] = (*record['repository_records'][-1][:3], 2)
+    record.update(accepted_boundary=30)
+    record['graph'].update(accepted_through=64, completed_through=64)
+    result = analysis.analyze_record(record)
+    assert result['arms']['attention_seed']['selected_starts'] == [12, 20]
+    assert result['arms']['attention']['diagnostics']['accepted_through'] == 64
+
+
+@pytest.mark.parametrize('change,match', [
+    (lambda r:r.update(version=3), 'version'),
+    (lambda r:r.update(scoring_version='v3'), 'scoring version'),
+    (lambda r:r.update(score_domain_version='unknown'), 'score-domain version'),
+    (lambda r:r.update(alpha=True), 'alpha'),
+    (lambda r:r.update(phase='future'), 'phase'),
+    (lambda r:r.update(baseline_selected_starts=[4, 8]), 'baseline'),
+    (lambda r:r['handles'][0].__setitem__(1, 0), 'handles'),
+    (lambda r:r['transport_mask'].__setitem__(0, False), 'masks'),
+    (lambda r:r['candidate_records'].__setitem__(0, (9, 999, 0, 4, 0)), 'candidate generation'),
+    (lambda r:r['candidate_records'].pop(), 'complete candidate'),
+    (lambda r:r['repository_records'].pop(), 'accepted boundary'),
+    (lambda r:r['score_mask'].__setitem__(0, False), 'complete scoring'),
+])
+def test_v2_replay_rejects_incomplete_or_conflicting_evidence(change, match):
+    record = v2_pressure_fixture()
+    change(record)
+    with pytest.raises(ValueError, match=match):
+        analysis.analyze_record(record)
+
+
+def test_cli_mixed_versions_and_pressure_have_separate_summaries(tmp_path):
+    recorded = tmp_path/'mixed.jsonl'
+    rows = [analysis.causal_fixture(), v2_query_fixture(), v2_pressure_fixture()]
+    recorded.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    output = tmp_path/'result'
+    result = analysis.main(['--input', str(recorded), '--output-dir', str(output)])
+    assert {'query:v1:multi', 'query:v2:multi', 'pressure:v2:multi'} <= set(result['summary'])
+    assert all(row['records'] == 1 for row in result['summary'].values())
+    assert len((output/'summary.csv').read_text().splitlines()) == 1+6+6+4
+    assert 'Pressure arms use native pressure selection' in result['limitations'][-1]
+
+
+def test_legacy_records_cannot_be_silently_relabelled_as_v2_or_pressure():
+    record = analysis.causal_fixture()
+    record['scoring_version'] = 'v2'
+    with pytest.raises(ValueError, match='version 1'):
+        analysis.analyze_record(record)
+    record.pop('scoring_version')
+    record['phase'] = 'pressure'
+    with pytest.raises(ValueError, match='version 1'):
+        analysis.analyze_record(record)
+    with pytest.raises(ValueError, match='Legacy weight overrides'):
+        analysis.analyze_record(v2_query_fixture(), attention_weight=.7)
+
+
+def test_offline_history_handle_values_do_not_retain_closed_native_store():
+    record = analysis.causal_fixture()
+    cfg, _ = analysis._validate_record(record)
+    memory, handles = analysis._native_history(cfg, record['starts'], record['counts'])
+    repository = memory.repository
+    assert memory.close()
+    assert handles and repository.stats['leases'] == 0
