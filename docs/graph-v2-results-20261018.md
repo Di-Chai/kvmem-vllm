@@ -190,6 +190,22 @@ pending 事务约束继续执行。MAB 的完整 1M 仓库另外按每逻辑块 
 八路执行、完整 MAB 容量、回答质量或吞吐证明。随后 MAB A 已自动启动；
 完整长历史容量和质量仍须由正式运行验收。
 
+r2 A 的首个完整 MAB 历史组（60 题、P=367,616 token）已完成并释放。逐题
+核对原始 source/Query 绑定，59 次续题均没有重复 pressure，action-history
+页数为零，P 的 prefill sample、graph source/edge 计数保持一致；绑定了全部
+首次回答、事件和释放文件校验值。释放时服务仍有两条其他请求，发布释放证明
+后才归还 CPU 额度，约 19 ms 后下一组获得额度。这是 CPU 准入补位时间，
+不能当作 GPU 恢复延迟、八路执行或吞吐收益。证据为同目录的
+`full-mab-A-r2-first-group.json`。实际 CPU 准入顺序会受并发竞争影响；不能
+用“完成题数超过 r1 的 69”代替原 544K 错误路径或 757K 容量验收。
+
+在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
+校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算
+的两个固定校准例也通过。实际返回模型为 `deepseek-flash`、`deepseek-v4-pro`。
+记录位于 `artifacts/graph-v2-judge-preflight-20261019/r1/results.json`，保存
+原始无凭据请求体、返回及校验值。密钥仅通过隐藏终端进入进程内存；请求头未
+保存。这不是正式回答评分，也没有覆盖摘要 JSON 裁判；完整原评分流程仍待完成。
+
 冷 NIAH 不覆盖跨轮 output seed。为此另核对了自然 agent r4 完整生命周期
 的图日志：基线含 129 次 prefill seed、117 次 output seed；异步元数据候选
 含 141/124 次，两类事件均实际执行非恒等传播并改变选页。这是现有真模型

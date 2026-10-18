@@ -497,3 +497,18 @@ comparison separately measures collection overhead. No tuning using answer gold.
   memory-capacity artifact directory. This is not C8/long-MAB capacity or
   quality/performance proof. Workflow39878 automatically started formal MAB-A;
   original r1 remains failed and preserved,all4194 r2 answers/judging pending.
+- First full MAB-A r2 group passed its source/query/frozen-P isolation audit:
+  group007,60questions,P367616;59continuations,no repeated pressure or inherited
+  action pages,constant prefill sample/graph source/edge counts. All first case
+  files bound in `full-mab-A-r2-first-group.json`. Release proof published before
+  CPU credit return,next group admitted18.98ms later while2other requests remain.
+  This is CPU credit refill,not GPU resume latency/C8/quality/performance proof.
+  Concurrent CPU admission order differs between attempts;passing69completed
+  answers is not proof that original544K/maximum757K failure paths were exercised.
+- Authorized frozen original judge preflight completed:Flash12/12calibration
+  cases passed;two Pro LongMem QA protocol probes passed at thinking enabled/
+  max1024. Returned models deepseek-flash/deepseek-v4-pro. Evidence under
+  `artifacts/graph-v2-judge-preflight-20261019/r1/`,including raw header-free
+  bodies/responses and source hashes. Credential entered hidden,memory-only.
+  No formal benchmark scores or summary-JSON judge calibration are claimed;
+  all original full judging remains pending after inference.
