@@ -478,3 +478,14 @@ comparison separately measures collection overhead. No tuning using answer gold.
   qualification remains pending; new runtime requires a fresh frozen attempt,
   not silent retry or stitching r1 NIAH with different-runtime memory answers.
   CPU log: `artifacts/graph-v2-memory-capacity-20261019/cpu-regression.log`.
+- Fresh full r2 prepared/validated from clean commit `fbfee4b26e9f6d137acfeb68fb8c3b0ba46d0c74`
+  at `/data/chaidi/kvmem-vllm-experiments/graph-v2-full-20261019-r2`,all9runtime
+  hashes equal,4194formal answers. Independent controls check verifies unchanged
+  original rows/model/all profile fields except declared MAB graph caps.
+  Evidence: `artifacts/graph-v2-memory-capacity-20261019/full-r2-controls.json`.
+  Root workflow session39878 is live: new frozen structured sync/async checks
+  first,then formal MAB A/C/D,then formal NIAH and independent LME A/C/D.
+  Sync is currently loading; this is not a GPU pass or a complete quality result.
+  Old failed session88261 is terminal and must never be restarted. Workflow
+  stops on technical failure and retains attempts;external original judging
+  is deliberately a separate pending step after inference completion.
