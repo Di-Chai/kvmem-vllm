@@ -121,13 +121,20 @@ token/s，包含 replay 工作，并非唯一输入率或独立 kernel 活跃时
 decode 峰值七路，363 个 pure-decode step、3,919 个 mixed step。最后确认
 所属进程和 GPU 进程均已清理；随后 C 组自动启动。
 
-C 组首个完整长度 64K 已完成：60/60 exact、100% 数值覆盖率，60/60 题
-完整覆盖全部 needle 区间，零输出触顶。与 A 组相同的 60 个输入、seed 和
-全部非 graph_mode 配置逐项核对一致；原 A 组首次答案校验值未改变。C 的
-60 题均发生图传播选页变化，说明实际启用了路径，但该长度没有观察到回答
-质量增益。请求耗时中位数 83.37 秒，不能从单次长度的中位数差异推断稳定
-性能收益。C128K 正在继续，D 尚未开始。证据为
-`artifacts/graph-v2-suite-preflight-20261018/full-niah-C-64k-first.json`。
+C 组 64K、128K 各 60 题已完成，逐题原评分复算通过；两组的输入、seed 和
+全部非 graph_mode 配置一致，A 组既存答案校验值保持不变。零输出触顶。
+两组仍共用旧 attention pressure，仅比较 Query 图传播。
+
+| C 组长度 | Exact | 数值覆盖率 | 所有 needle 区间完整入选：A → C | 请求耗时中位数 |
+| --- | ---: | ---: | ---: | ---: |
+| 64K | 60/60 | 100% | 60/60 → 60/60 | 83.37 s |
+| 128K | 60/60 | 100% | 40/60 → 60/60 | 182.51 s |
+
+C 的每题均实际发生图传播选页变化。128K 的完整区间保留指标改善，回答
+正确率与 A 保持相同；尚无完整矩阵的质量增益结论，也不能从单次长度的
+请求中位数差异推断稳定性能收益。C256K 正在继续，D 尚未开始。首次证据：
+`artifacts/graph-v2-suite-preflight-20261018/full-niah-C-64k-first.json` 和
+`artifacts/graph-v2-suite-preflight-20261018/full-niah-C-128k-first.json`。
 
 对已经完成的自然 agent r4 做了额外的只读分阶段统计：基线单请求首 token
 后输出流速度 p50/p95 为 40.89/87.00 token/s，按各请求生成时长加权为

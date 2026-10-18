@@ -404,3 +404,9 @@ comparison separately measures collection overhead. No tuning using answer gold.
   is also60/60,so no accuracy gain observed at this length; no speedup claim
   from one median difference. C128K continues; D and memory jobs still pending.
   Proof: `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-64k-first.json`.
+- Formal C128K60 completed:60/60exact,100%coverage,0cap hits,60/60actual graph
+  selection changes. Complete needle-range coverage A40/60 -> C60/60 while
+  answer exact stays60/60. All original scores/input/seed/profile controls and
+  retained A hashes verified;median request182.51s is descriptive,not a speedup
+  gate. C256K is running;D and both memory suites remain pending. First proofs:
+  `artifacts/graph-v2-suite-preflight-20261018/full-niah-C-128k-first.json`.
