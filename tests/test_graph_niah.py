@@ -73,6 +73,32 @@ def test_stream_sends_only_original_input_query_and_frozen_sampling(monkeypatch)
     assert result['output_ids'] == [9,10]
 
 
+def test_inference_stage_validates_original_ids_and_query_before_sending(tmp_path,monkeypatch):
+    import numpy as np
+    inputs=tmp_path/'inputs'
+    inputs.mkdir()
+    source=inputs/'case.i32'
+    np.array([1,2,3],dtype='<i4').tofile(source)
+    row=dict(id='case',task='niah_single_2',seed=1000,position_percent=10,
+             served_sha256=client.sha(source),served_input_tokens=3,
+             served_query=[1,2],question='query')
+    fixture=dict(input_directory=str(inputs),sampling=dict(max_tokens=8192),request_timeout_seconds=10)
+    profile=dict(kvmem=dict(gen_budget=16384))
+    args=SimpleNamespace(output=tmp_path/'output',arm='multi')
+    sent={}
+    def stream(profile,session,tokens,query,sampling,timeout):
+        sent.update(tokens=tokens,query=query,sampling=sampling)
+        return dict(response_id='cmpl-test',output_ids=[9])
+    monkeypatch.setattr(client,'stream',stream)
+    tokenizer=SimpleNamespace(decode=lambda ids,skip_special_tokens:'query' if ids==[2] else 'wrong')
+    result,response,tokens=client.infer_case(args,fixture,profile,row,tokenizer)
+    assert tokens==sent['tokens']==[1,2,3] and sent['query']==[1,2]
+    assert sent['sampling']==dict(seed=1000,max_tokens=8192)
+    assert response['response_id']=='cmpl-test' and result['input_sha256']==row['served_sha256']
+    assert (args.output/'cases/case/response.json').is_file()
+    assert not (args.output/'cases/case/result.json').exists()  # Retirement not yet acknowledged.
+
+
 def selection_events():
     owner = 'cmpl-owner-0-suffix'
     return dict(bounded_refresh=[dict(request_id=owner,selection='query',query_span=[96,99],

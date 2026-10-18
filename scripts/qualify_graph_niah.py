@@ -208,7 +208,7 @@ def history_bytes(row, fixture, profile):
     return ((extent+31)//32)*32*17*4*256*2
 
 
-def infer_case(args,fixture,profile,row):
+def infer_case(args,fixture,profile,row,tokenizer):
     directory = args.output/'cases'/row['id']
     directory.mkdir(parents=True,exist_ok=False)
     source = Path(fixture['input_directory'])/(row['id']+'.i32')
@@ -288,7 +288,7 @@ def main():
         with (args.output/'queue_events.jsonl').open('a') as output:
             output.write(json.dumps(dict(at=time.monotonic(),**{k:v for k,v in state.items() if k!='tasks'}))+'\n')
     def work(task):
-        return infer_case(args,fixture,profile,task.payload)
+        return infer_case(args,fixture,profile,task.payload,tokenizer)
     def finish(task,pending):
         return finish_case(args,profile,task.payload,scope['score'],tokenizer,pending)
     begin = time.monotonic()

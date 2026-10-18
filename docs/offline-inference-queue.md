@@ -49,5 +49,5 @@ vLLM 继续负责已准入请求的 continuous batching、chunked prefill 和 de
 `query_replay_budget + max_num_seqs × (draft_tokens+1)`；应在独立实验中分开评估总预算、
 每请求 chunk 与 CPU 图维护成本，避免把多个改动的收益混在一起。
 
-CPU 验证共 408 项通过，覆盖队列补位／失败、逐所有权释放门禁、会话生命周期、CPU 准入、
+CPU 验证共 409 项通过，覆盖队列补位／失败、逐所有权释放门禁、会话生命周期、CPU 准入、
 恢复协调、服务启动参数以及图评分原有证据门禁。真实模型的连续补位与三组质量对照单独记录。
