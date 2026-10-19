@@ -10,7 +10,8 @@ import urllib.request
 import uuid
 
 from benchmark_memory import source, wait_terminal
-from benchmark_niah import CpuCredits, save, read_events, sha
+from benchmark_niah import CpuCredits, save, sha
+from benchmark_client_io import CaptureSlice, CompactResults, VERSION as CLIENT_IO_VERSION
 
 SAMPLING = ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty', 'seed')
 
@@ -42,6 +43,7 @@ def run(args):
     manifest={'reference':str(args.reference),'source_cohort_sha256':sha(args.reference/'cohort.json'),
         'server_profile_sha256':sha(args.config),'workers':args.workers,'cases':102,'rows':rows,
         'bindings':bindings,'cpu_headroom_gib':args.cpu_headroom_gib,'gold_used_for_selection':False,
+        'client_bookkeeping_version':CLIENT_IO_VERSION,'capture_read_scope':'request-start-offsets',
         'original_max_tokens':32768,'served_max_tokens':kv['gen_budget'],
         'output_cap_difference':'Native vLLM requires single-turn max_tokens <= G. Retain original K=36864/G=16384 attention pressure geometry, cap output at 16384; audit that no answer reaches cap.',
         'thinking_token_budget':4096,'protocol':'Cold independent full original token IDs, no truncation, no recompute. Prefill attention and pressure then explicit public Query selection; no cross-case feedback.'}
@@ -59,6 +61,8 @@ def run(args):
         if (d/'attempt.json').exists():
             assert (d/'result.json').exists() and json.loads((d/'result.json').read_text())['status']=='completed', 'Preserve and investigate interrupted/failed attempts before resume'
     credits=CpuCredits(kv['cpu_read_cache_bytes']-args.cpu_headroom_gib*1024**3)
+    progress=CompactResults(rows,args.output/'cases',
+        ('id','status','prompt_tokens','usage','hit_output_cap','error'))
     def execute(row):
         extent=row['input_tokens']+2*kv['gen_budget'];amount=((extent+31)//32)*32*17*4*256*2
         enqueued=time.monotonic();credits.acquire(row['id'],amount)
@@ -76,6 +80,7 @@ def run(args):
             print(json.dumps({'event':'start','id':row['id'],'input_tokens':len(tokens)}),flush=True)
             http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
             req=urllib.request.Request(f"http://127.0.0.1:{cfg['port']}/v1/completions",data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+            capture_slice=CaptureSlice(args.capture/name for name in ('bounded_refresh.jsonl','block_graph.jsonl','action_attention.jsonl'))
             sent=time.monotonic()
             with http.open(req,timeout=args.timeout) as stream:response=json.load(stream)
             seconds=time.monotonic()-sent;save(directory/'response.json',response)
@@ -83,7 +88,7 @@ def run(args):
             assert response['choices'][0]['prompt_token_ids']==tokens
             rid=response['id'];terminal=wait_terminal(args.capture,rid)
             assert terminal.get('retirement_finished_at'), 'Independent history has not retired'
-            events=[e for e in read_events(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
+            events=[e for e in capture_slice.read(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
             queries=[e for e in events if e['selection']=='query'];assert len(queries)==1
             q=queries[0];assert q['query_span']==[row['query_begin'],row['query_end']]
             assert q['attention_source']=='prefill' and q['action_history_pages']==0
@@ -91,7 +96,7 @@ def run(args):
             assert q['mean_k_backend']=='qw3_cuda' and q['query_history_enabled'] is (not graph_v2)
             pressure=[e for e in events if e['selection']=='pressure']
             assert pressure and all(e['attention_source']=='prefill' for e in pressure)
-            action=[e for e in read_events(args.capture/'action_attention.jsonl') if e['request_id'].startswith(rid+'-')]
+            action=[e for e in capture_slice.read(args.capture/'action_attention.jsonl') if e['request_id'].startswith(rid+'-')]
             assert len(action)==1
             raw=response['choices'][0]['text'];answer=raw.split('</think>',1)[-1].strip()
             record={**src['info'],'id':row['id'],'suite':'longmemeval_s','status':'completed',
@@ -105,21 +110,23 @@ def run(args):
             if graph_v2:
                 import qualify_graph_niah as graph_client
                 record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
-                    [row['query_begin'], row['query_end']], require_pressure=True)
+                    [row['query_begin'], row['query_end']], require_pressure=True,event_reader=capture_slice.read)
                 record['release'] = graph_client.wait_owner_released(args.capture, session,
                     {'response_id': rid}, terminal)
             save(directory/'events.json',events);save(directory/'terminal.json',terminal)
             save(directory/'action_attention.json',action[0]);save(directory/'result.json',record)
+            progress.put(record)
             print(json.dumps({'event':'finish','id':row['id'],'seconds':seconds,'output_tokens':response['usage']['completion_tokens']}),flush=True)
             return record
         except BaseException as error:
             credits.cancel()
             detail=error.read().decode(errors='replace') if isinstance(error,urllib.error.HTTPError) else repr(error)
-            save(directory/'result.json',{'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started})
+            failed={'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started}
+            save(directory/'result.json',failed);progress.put(failed)
             raise
         finally:credits.release(row['id'],amount)
     def summarize():
-        records=[json.loads(p.read_text()) for r in rows if (p:=args.output/'cases'/r['id']/'result.json').exists()]
+        records=progress.snapshot()
         summary={'expected':102,'completed':sum(r['status']=='completed' for r in records),
             'errors':sum(r['status']!='completed' for r in records),
             'hit_output_cap':sum(r.get('hit_output_cap',False) for r in records),

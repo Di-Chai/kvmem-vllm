@@ -23,7 +23,7 @@ import graph_v2_protocol as protocol
 ROOT = Path(__file__).resolve().parents[1]
 HELPERS = ('benchmark_graph_v2.py', 'qualify_graph_v2.py', 'graph_v2_protocol.py',
     'benchmark_block_graph.py', 'benchmark_niah.py', 'qualify_graph_niah.py',
-    'qualify_block_graph.py', 'benchmark_memory.py', 'benchmark_longmemeval.py',
+    'qualify_block_graph.py', 'benchmark_memory.py', 'benchmark_longmemeval.py', 'benchmark_client_io.py',
     'analyze_graph_v2.py', 'graph_v2_evaluation.py', 'analyze_memory.py', 'analyze_longmemeval.py')
 sha, require, write = protocol.sha, protocol.require, bench.write
 

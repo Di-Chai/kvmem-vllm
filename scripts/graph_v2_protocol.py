@@ -264,12 +264,13 @@ def audit_events(refresh, graph, profile, arm, query, *, require_pressure=False)
         boundary_scope='Original frozen token IDs without invented message boundaries; unknown locality fallback.')
 
 
-def audit_case(capture, response_id, profile, query, *, require_pressure=False):
+def audit_case(capture, response_id, profile, query, *, require_pressure=False,event_reader=None):
     import qualify_block_graph as q
     response = {'response_id': response_id}
     matching = lambda event: q.native_matches(response, event)
-    return audit_events([e for e in q.records(Path(capture)/'bounded_refresh.jsonl') if matching(e)],
-        [e for e in q.records(Path(capture)/'block_graph.jsonl') if matching(e)],
+    reader = event_reader if event_reader is not None else q.records
+    return audit_events([e for e in reader(Path(capture)/'bounded_refresh.jsonl') if matching(e)],
+        [e for e in reader(Path(capture)/'block_graph.jsonl') if matching(e)],
         profile, infer_arm(profile), query, require_pressure=require_pressure)
 
 

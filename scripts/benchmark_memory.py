@@ -15,7 +15,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from benchmark_niah import CpuCredits, save, read_events, sha
+from benchmark_niah import CpuCredits, save, sha
+from benchmark_client_io import CaptureSlice, CompactResults, VERSION as CLIENT_IO_VERSION
 
 
 def digest_tokens(tokens):
@@ -65,6 +66,7 @@ def run(args):
     manifest={'reference':str(args.reference),'cohort_sha256':sha(args.reference/'cohort.json'),
         'profile_sha256':sha(args.config),'cases':1116,'groups':len(groups),'rows':rows,
         'workers':args.workers,'active_groups':args.active_groups,'cpu_headroom_gib':args.cpu_headroom_gib,
+        'client_bookkeeping_version':CLIENT_IO_VERSION,'capture_read_scope':'request-start-offsets',
         'prefix_boundaries':prefixes,'gold_used_for_selection':False,
         'protocol':'Original full token IDs, no truncation; independent questions restore frozen P before Query selection. Input attention only; output/Query-history scores never transfer across questions.',
         'reference_protocol_difference':'qw3 uses named frozen-prefix ingest; vLLM captures the same 1024-aligned prefix while serving the first full question. No zero-output warmup request.'}
@@ -84,14 +86,10 @@ def run(args):
     assert 1<=args.active_groups<=kv['session_capacity']
     credits=CpuCredits(kv['cpu_read_cache_bytes']-args.cpu_headroom_gib*1024**3)
     gate=Semaphore(args.active_groups);lock=Lock()
+    progress=CompactResults(rows,args.output/'cases',
+        ('id','status','source','prompt_tokens','usage','seconds','prefix_reused','error'))
     def summarize():
-        records=[]
-        for row in rows:
-            p=args.output/'cases'/row['id']/'result.json'
-            if p.exists():
-                record=json.loads(p.read_text())
-                records.append({k:v for k,v in record.items() if k in (
-                    'id','status','source','prompt_tokens','usage','seconds','prefix_reused','error')})
+        records=progress.snapshot()
         report={'expected':1116,'finished':len(records),
             'completed':sum(r['status']=='completed' for r in records),
             'errors':sum(r['status']!='completed' for r in records),
@@ -134,6 +132,7 @@ def run(args):
                         {'prompt_tokens':len(tokens),'token_sha256':row['token_sha256'],
                          'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'sampling_sha256':sha(old)})
                     save(directory/'attempt.json',{'started_at':time.time(),'session':session,'group':group})
+                    capture_slice=CaptureSlice(args.capture/name for name in ('bounded_refresh.jsonl','block_graph.jsonl'))
                     started=time.monotonic()
                     try:
                         http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -145,7 +144,7 @@ def run(args):
                         assert response['choices'][0]['prompt_token_ids']==tokens
                         rid=response['id'];terminal=wait_terminal(args.capture,rid)
                         assert terminal['checkpoint_kind']=='P' and terminal['checkpoint_tokens']==prefix
-                        refresh=[e for e in read_events(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
+                        refresh=[e for e in capture_slice.read(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
                         queries=[e for e in refresh if e['selection']=='query'];assert len(queries)==1
                         q=queries[0]
                         assert q['query_span']==[row['query_begin'],row['query_end']]
@@ -168,17 +167,22 @@ def run(args):
                         if graph_v2:
                             record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
                                 [row['query_begin'], row['query_end']],
-                                require_pressure=not completed and len(tokens) > kv['select_budget'] + kv['gen_budget'])
+                                require_pressure=not completed and len(tokens) > kv['select_budget'] + kv['gen_budget'],
+                                event_reader=capture_slice.read)
                         save(directory/'events.json',refresh);save(directory/'terminal.json',terminal)
                         save(directory/'result.json',record);completed+=1
                         with lock:
+                            progress.put(record)
                             summary=summarize()
                             print(json.dumps({'completed':summary['completed'],'id':row['id'],'seconds':seconds,'reused':completed>1}),flush=True)
                     except BaseException as error:
                         credits.cancel()
                         detail = error.read().decode(errors='replace') if isinstance(error,urllib.error.HTTPError) else str(error)
-                        save(directory/'result.json',{'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started})
-                        with lock:summarize()
+                        failed={'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started}
+                        save(directory/'result.json',failed)
+                        with lock:
+                            progress.put(failed)
+                            summarize()
                         raise
                 if graph_v2:
                     # Frozen P sessions retain their own namespace after the
