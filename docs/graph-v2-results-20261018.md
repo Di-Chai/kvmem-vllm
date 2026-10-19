@@ -400,9 +400,14 @@ r2 A 的首个完整长度 64K 已完成 60/60 exact、100% 数值覆盖，输�
 SSE 也未保存第二份完整 prompt IDs，未将其描述成返回 ID 的逐个核验。
 证据为 `artifacts/graph-v2-completion-20261019/NIAH-A-64K-first-controls-r1.json`，
 生成器为同目录 `audit_niah_completed.py`。该命令显式允许仍在运行的 A，
-只封存完整 60 题长度分组，`full_540_NIAH_complete=false`。128K 正在推进；
-最终还须对全部 A/C/D、三个长度运行该审计器的默认严格模式，验证全 540 题
-实际请求描述与原评分，不把此部分结果当作 A180 或整个矩阵完成。
+只封存完整 60 题长度分组，`full_540_NIAH_complete=false`。
+
+随后 A 的 128K 也完成 60/60 exact、100% 数值覆盖，零输出触顶。两种长度
+共 120 题再次通过同一实际请求／原评分审计，证据为
+`artifacts/graph-v2-completion-20261019/NIAH-A-64K-128K-first-controls-r1.json`。
+256K 正在运行；最终还须对全部 A/C/D、三个长度运行该审计器的默认严格
+模式，验证全 540 题实际请求描述与原评分，不把此部分结果当作 A180 或
+整个矩阵完成。
 
 C 的前 23 道首次回答另通过运行路径复核：23 道 Query 图事件实际改变选页，
 99 次 pressure 事件仍是旧 attention，未发生 pressure 图传播；Query 坐标、
