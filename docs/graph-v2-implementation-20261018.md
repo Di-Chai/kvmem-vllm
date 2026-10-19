@@ -78,6 +78,21 @@ comparison separately measures collection overhead. No tuning using answer gold.
 - Baseline verified; core implementation and structured sync/async model
   qualification are complete. Performance and full quality evaluation remain
   in progress; this is not a completion record for the overall goal.
+- Exact formal r2 CPU requalification: 249 passed in 7.45 s against the frozen
+  `fbfee4b` package (import path checked), with frozen test/helper hashes and
+  unchanged runtime hashes. Includes native Mean-K domain oracles, V2 math,
+  pressure and restore, spans, lifecycle, configuration and offline replay.
+  The separate r1 test-copy attempt failed collection because a relative-path
+  diagnostic helper was absent; no tests ran, and that log remains retained.
+  Evidence: `artifacts/graph-v2-completion-20261019/frozen-core-cpu-r2/`.
+  These overlap prior suites and are not an additive test total.
+- Read-only structured-source audit revalidated all 119 serving files in each
+  capacity-fixed sync/async qualification against formal r2, all first response
+  hashes, six graph-only request-plan invariants per mode, and real accepted
+  assistant prefixes across continuation and actual Query suffix edits. Each
+  mode has six Query / ten pressure events, four byte-equal M/P restores and
+  clean release. Evidence: `structured-core-audit-r1.json` in the same directory.
+  This remains two-owner functional evidence, not a native C8 decode gate.
 - Native score-frame binding and shared native fixed-keep extraction implemented.
   Actual authority mandatory reversal, exact scope/lease cleanup, generation reuse
   and transport masks pass. Imported `kvmem_store_test.cpp` compiled and returned OK.

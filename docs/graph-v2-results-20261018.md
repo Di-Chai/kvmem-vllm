@@ -30,6 +30,22 @@ r2 的独立 LongMemEval-S A 已完成生成与评分（86/102，84.31%），C �
 - `artifacts/graph-v2-locality-20261018/cpu-producer.json`
 - 详细门槛和限制见 `docs/graph-v2-implementation-20261018.md`。
 
+2026-10-19 又针对正式 r2 冻结运行时执行了核心 CPU 回归：249 项通过，
+7.45 s，实际导入路径确认来自 r2，测试／辅助模块副本与运行时代码校验值
+前后一致。覆盖实际 native Mean-K 排名反转、mask、V2 数学 oracle、pressure
+候选与恢复、graph-only spans、生命周期、配置和离线重放。记录位于
+`artifacts/graph-v2-completion-20261019/frozen-core-cpu-r2/`。r1 独立测试副本
+因未复制相对路径诊断脚本而在收集阶段失败，未执行测试；失败日志保留，
+补齐副本后才得到上述 r2 结果。249 与旧 695／352 项有重叠，不相加。
+
+只读复核同时逐文件验证了容量修复后同步／异步模型验收的全部 119 个核心
+文件与正式 r2 一致；逐请求重新解析六组计划，graph-only 字段未改变 Query、
+replay、mandatory 或 explicit_mandatory。两种模式各有 6 次 Query、10 次
+pressure、4 次 M/P 字节一致恢复；真实后缀编辑保留已接受的 assistant token
+前缀。所属资源均释放，原首次响应和证明校验值未变。证据为
+`artifacts/graph-v2-completion-20261019/structured-core-audit-r1.json`。
+这些是两 owner 的跨轮功能证据，不能替代尚待运行的持续 native C8 decode。
+
 ## 冷负载性能筛选
 
 共同配置为本地 27B NVFP4 模型、FP8 attention KV、原生 MTP(k=4)、编译及
