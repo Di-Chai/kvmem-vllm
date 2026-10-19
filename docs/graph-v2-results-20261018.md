@@ -428,6 +428,15 @@ SSE 也未保存第二份完整 prompt IDs，未将其描述成返回 ID 的逐�
 GPU idle。HTTP、首 token、退休与排队统计也都不是隔离 decode 吞吐。
 完整 needle 区间选中率为 64K 60/60、128K 39/60，与答案 exact 指标分开。
 
+### 正式 r2 采样与发布隔离补验
+
+正式 r2 另补验此前未在该冻结版执行的采样／发布隔离用例：56 passed，
+1.48 秒，JUnit 零失败／错误／跳过。验证公开 Query 重放不增加采样、
+拒绝及 EOS 后 token 不推进图水位、旧 epoch 反馈拒绝、跨线程发布和
+事务失败回滚。运行前后冻结实现与复制测试的摘要不变，未占用 GPU。
+证据为 `artifacts/graph-v2-completion-20261019/frozen-capture-cpu-r1/`；
+不能用这批 CPU 用例替代后续真实模型和持续八路 decode 验收。
+
 ### r2 NIAH A 完整 180 题
 
 A 已通过全部协议、原评分和最终释放核验；先前封存的 120 题首次结果文件

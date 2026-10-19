@@ -86,6 +86,17 @@ comparison separately measures collection overhead. No tuning using answer gold.
   diagnostic helper was absent; no tests ran, and that log remains retained.
   Evidence: `artifacts/graph-v2-completion-20261019/frozen-core-cpu-r2/`.
   These overlap prior suites and are not an additive test total.
+- Exact formal r2 capture/publication supplement: 56 passed in 1.48 s, with
+  JUnit confirming 10 capture, 11 archive-transaction and 35 BlockGraph cases,
+  zero failures/errors/skips. This closes suites absent from the 249-test run;
+  the older 695-test snapshot had different BlockGraph/transaction sources and
+  was not used as current-runtime proof. Checks include public Query replay
+  deduplication, rejected/after-EOS row exclusion, detached old-epoch feedback,
+  cross-thread publication, capacity/backpressure rollback and retained M-prefix
+  snapshots. All frozen runtime and copied test hashes remained unchanged.
+  Evidence: `artifacts/graph-v2-completion-20261019/frozen-capture-cpu-r1/`;
+  read-only producer: `verify_frozen_capture.py` in its parent directory.
+  These are CPU gates, not additional real-model or C8 evidence.
 - Read-only structured-source audit revalidated all 119 serving files in each
   capacity-fixed sync/async qualification against formal r2, all first response
   hashes, six graph-only request-plan invariants per mode, and real accepted
