@@ -44,8 +44,19 @@ passed (12 synthetic answers, eight byte-verified P restores, preserved prefill
 statistics and excluded prior output statistics). All use the same fixed source;
 original fixtures/profiles and strict gates remain unchanged. Evidence is in
 `artifacts/p-restore-prefix-fix-20261019/{long-tools-r2,remaining-gates-r2}/`.
-The new native C8 diagnostic is separate; these functional checks are not decode
-throughput or new answer-quality evidence. Do not rerun user-skipped NIAH-D.
+The first new native C8 attempt failed on the client SSE event limit: vLLM's
+first event echoed the complete 256K input IDs, exceeding the old 1 MiB limit.
+Preserve that failure and cleanup; it is not a zero-throughput model result.
+The bounded input-sized client repair passed 36 CPU tests. A new attempt using
+the identical serving core/profile/fixture then passed: 8/8 complete 16K outputs,
+145.398 s shared window, 751.82 accepted output tokens/s, 3,317 completed native
+rows all decode=8/prefill=0, 99.59% native snapshot coverage. Whole request-batch
+output rate 222.61 tokens/s over 588.794 s; GPU prefill model rate 5949.37 includes
+replay. These are fixed-output diagnostics, not real agent or quality results.
+All owned resources released; CPU historical KV used no disk. Evidence binds
+all five jobs to the same core in `completion-r1.json` under the repair directory.
+No native-vLLM comparison or stable performance improvement claim is made.
+Do not rerun user-skipped NIAH-D or relabel mixed-version quality as one runtime.
 
 ## Approved sequence
 

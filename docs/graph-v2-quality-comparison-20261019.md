@@ -39,4 +39,4 @@ MAB按来源在类别内平均，再将三类等权平均；16道摘要占总宏
 
 artifacts/graph-v2-completion-20261019/scope-change-skip-D-r1/quality-r1/final-comparison/comparison.json
 
-汇总JSON SHA-256：`87596095f92348dc3b7c0edba7c99c8435b9c2c8fefe942d2c82e84879e68198`。首轮540题的实际请求审计为同上级目录的`NIAH-r1-540-actual-request-controls.json`。本报告不替代仍在执行的跨轮恢复和持续原生C8 decode验收；整轮输出率也不能当作隔离decode吞吐。
+汇总JSON SHA-256：`87596095f92348dc3b7c0edba7c99c8435b9c2c8fefe942d2c82e84879e68198`。首轮540题的实际请求审计为同上级目录的`NIAH-r1-540-actual-request-controls.json`。后续 P 恢复修复、同步／异步跨轮及固定 P 复用、持续原生 C8 decode 均已完成，详见[修复后的独立验收](graph-v2-results-20261018.md#修复后持续-native-c8-decode-验收)。这些新功能／吞吐诊断不改变本表的冻结答题与评分版本；整轮输出率也不能当作隔离 decode 吞吐。

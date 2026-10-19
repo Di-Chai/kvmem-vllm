@@ -1,14 +1,16 @@
 # Graph V2 阶段性验收结果
 
-这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
+本页保留逐阶段记录，当前结论以开头及下述补充验收为准。核心实现、
+跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
 r2 的独立 LongMemEval-S A/C/D 已完成生成与评分（86/102、92/102、89/102）。
 r2 NIAH A/C 的 180 题均已全部完成（176/180、178/180 exact）。用户最新选择
 “完成当前 C，跳过 D 的重复测试”：r2 D 不启动；完整 r1 NIAH 与 r2 memory
-按套分别注明版本，不能称作单一运行时全矩阵。持续 native C8 decode 验收
-遇到客户端 SSE 消息上限错误，修复后须重新验收；跨 P 的 Query mandatory 已通过同步／异步
-长工具跨轮及固定 P 独立问题复用验收。尚无稳定的质量或吞吐提升结论。
+按套分别注明版本，不能称作单一运行时全矩阵。跨 P 的 Query mandatory
+修复已通过同步／异步长工具跨轮及固定 P 独立问题复用验收。持续 native C8
+decode 在修复客户端 SSE 消息上限后也已通过，稳态 751.82 token/s；这是
+固定输出回归验收，尚未证明稳定的图传播收益或相对原生 vLLM 的吞吐提升。
 
 两套原冻结记忆 cohort 的三臂共 3,654 个正式回答，现均完成原裁判评分：
 
@@ -160,6 +162,47 @@ output-seeded、非 identity 且改变选页的 graph pressure。所属会话和
 36 项通过，包括 256K 双路模拟流式传输、最大 uint32 ID 回显、超大消息
 拒绝及原 token/usage/时间窗口核对。记录为
 `artifacts/p-restore-prefix-fix-20261019/sse-long-prompt-r1.xml`。
+
+### 修复后持续 native C8 decode 验收
+
+新 `native-C8-r3/` 已通过。服务核心仍为 `08fe506`，客户端为 `2b71e87`；
+与失败尝试相比，仅更改 `scripts/qualify_decode.py`，全部服务源码、fixture、
+profile、原始输入和验收门槛校验值一致。未重新执行已经通过的四项功能任务。
+
+配置：27B NVFP4、FP8 KV、MTP(k=4)、compiled/CUDA Graph；K=36,864，
+G=16,384，batch=16,424，chunk=1,024，GPU memory utilization=.72，
+CPU 历史 100 GB。八个独立会话使用同一份原始 256K NIAH token 输入
+（262,101 token），每路温度 0、ignore_eos，固定接受 16,384 输出 token。
+这是独立固定输出诊断，不能当作题目准确率或真实带工具等待的 agent 吞吐。
+
+| 指标 | 实测与口径 |
+| --- | ---: |
+| 八路共同稳态 decode | 751.82 output token/s |
+| 同窗口每路算术平均 | 93.98 output token/s |
+| 共同窗口 | 145.398 s，实际接受 109,313 output token |
+| 完整模型步骤核对 | 3,317 步全部 decode=8、prefill=0 |
+| Native archive commit 旁证 | 751.86 token/s，覆盖共同窗口 99.59% |
+| 冷准备有效输入率 | 5,481.24 unique input token/s |
+| Prefill 模型执行率 | 5,949.37 model token/s，包含重放 |
+| 整批输出率 | 222.61 output token/s |
+| 整批完成 | 588.794 s，8/8 成功，接受输出共 131,072 token |
+
+冷准备输入率为 2,096,808 原始输入 token 除以从首路发送到八路均取得首
+token 的 382.543 s；包含排队、pressure、装配和少量先就绪请求的 decode，
+不是 GPU-only prefill。整批输出率包含全部 prefill、decode 和收尾，均不含
+服务加载。稳态按接受的 SSE token IDs 与最终 usage 逐路核对，每端裁去
+至少 64 token；不是 speculative proposal 数量或八个单路峰值的求和。
+
+全程 native 快照有 235 条采样错误，全部不与所选共同窗口重叠；原错误
+保留，没有删改日志。窗口内完整模型步骤另作独立核对，原 30 s、90%覆盖
+门槛未降低。最终 CPU 历史、checkpoint、图状态和 active request 均归零，
+所属进程/GPU PID 无残留，历史 KV disk read/write 均为 0。
+
+五项新尝试由同一核心源码逐文件审计，证据为
+`artifacts/p-restore-prefix-fix-20261019/completion-r1.json`，SHA-256 为
+`a3d7bdb367e099700480613dbf47fec7fe789ba300c7640ff6d040081a353317`。
+原失败的 C8 r2 仍保留为 failed；成功的新尝试没有覆盖旧答案或旧状态。
+本次未运行原生 vLLM 对照，不能从 751.82 token/s 推导相对原生的提升率。
 
 ## 冷负载性能筛选
 
