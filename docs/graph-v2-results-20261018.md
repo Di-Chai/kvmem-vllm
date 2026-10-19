@@ -66,8 +66,14 @@ Query/replay/mandatory 策略和每路八个精确 locality 区间均验证通�
 这些旧输出只供 CPU 编码预检，GPU 测试必须生成自己的输出和工具 ID。
 
 证据目录为 `artifacts/graph-v2-output-pressure-20261019/` 的
-`cpu-regression-r2.log` 与 `cpu-long-tools-r1/`。同步／异步 GPU 验收会作为
-独立任务冻结并排在现有测试后面，不计入 4,194 道正式质量回答。
+`cpu-regression-r2.log` 与 `cpu-long-tools-r1/`。同步／异步 GPU 两项已冻结在
+`qualification-r1/`，全部 119 个服务核心文件与正式 r2 一致，仅两个独立
+客户端／controller helper 更新为 `e88d531`；启动配置预检通过。为容纳多个
+长工具 P/M 元数据快照，单 owner 图上限设为 128 MiB、两 owner 总上限
+256 MiB；这是单独功能任务的记账上限，K/G、CPU 历史预算和正式参数均不改。
+`qualification-r1/queue-r1/` 已绑定现有 GPU 执行链的真实进程身份，排在其
+终止后执行，等待外部 GPU 用户与资源，不停止其他任务。GPU 结果尚待产生，
+这两项不计入 4,194 道正式质量回答，最终完成审计须另核对它们。
 
 ## 冷负载性能筛选
 
