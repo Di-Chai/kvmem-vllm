@@ -5,6 +5,30 @@ Starting commit: `c14c6bf822246a0af9c5af6739951bdf5fa5b19b`, initially clean.
 Specification: `/home/chaidi/qw3/docs/kvmem_graph_scoring_v2_handoff_20261018.md`.
 This ledger records implementation status; a planned check is not a passed check.
 
+## User scope adjustment after the first complete NIAH comparison
+
+On 2026-10-19 the user explicitly selected “完成当前 C，跳过 D 的重复测试”.
+The first r1 NIAH A/C/D comparison already contains all original 540 answers;
+the subsequent r2 rerun followed a metadata-staging/capacity repair, not a new
+scoring algorithm. Finish the running r2 C, retain completed r2 A/C as additional
+regression evidence, and do not start the still-prepared r2 NIAH-D.
+
+The authorized final quality comparison therefore uses the complete r1 NIAH
+cohort and complete r2 MAB/LME cohorts, with per-suite source versions explicit.
+It must not label these 4,194 answers a single-runtime matrix or mark skipped D
+passed. Keep the existing strict full-r2 report gates and all first results;
+their incomplete outcome remains valid under the superseded full-r2 scope.
+
+Authorization and the original unstarted D status are preserved in
+`artifacts/graph-v2-completion-20261019/scope-change-skip-D-r1/`. Only mutable
+D status changed to `skipped_by_user`; fixtures, profiles, source and answers did
+not change. The immutable old parent asserts D is prepared before starting it,
+so it will exit at that assertion after C passes. The successor distinguishes
+this expected user cancellation from any C/model failure and waits for the
+existing same-core output-pressure checks, then runs the prepared frozen-P
+sync/async and native C8 diagnostic. Its manifest, identity-bound waits, resource
+guards and logs are in `scope-change-skip-D-r1/continuation-r1/`.
+
 ## Approved sequence
 
 1. Freeze baseline; align Mean-K through the original native score frame. Separate
