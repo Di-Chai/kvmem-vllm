@@ -461,6 +461,10 @@ decode 峰值为七路；本组没有证明持续八路纯 decode，独立验收
 - `NIAH-AC-actual-worker-controls-r1.json`：A/C 实际 worker 字典仅
   `graph_mode` 为 collect／multi，其余字段逐项一致；C 仍在运行。
 
+C 的首个完整 64K 分组也已通过实际请求／原评分核验：60/60 exact、
+100% 数值覆盖、零输出触顶，与 A 该长度答案正确率相同。证据为同目录
+`NIAH-C-64K-first-controls-r1.json`；C 的 128K／256K 和整组仍在运行。
+
 ### 独立 LongMemEval-S 运行路径补充
 
 独立 LME C 的前 23 道首次回答另通过运行路径复核：23 道 Query 图事件实际改变选页，
@@ -717,6 +721,45 @@ D 的检索、冲突消解、长文理解三类分别为 68.2222、27.0000、23.
 优于旧 attention pressure 的稳定收益。旧 qw3 为 Q8_0，当前 vLLM 为 NVFP4，
 即使逐题输入、Query、标准答案和输出上限一致，历史差异也不能单独归因于图算法
 或推理框架。这里的 300 道 LongMem 是 MAB 子集，不代表独立 102 题 LME 已完成。
+
+### 与 10 月 14–15 日 vLLM attention 版本的 MAB 对比
+
+旧 vLLM 的三类宏平均为 35.42292，当前 A 为 39.04444，相差 +3.62152 分。
+新增逐题核验确认两次 1,116 个 source/prompt/Query/gold 绑定、原始输入、
+采样、thinking／输出上限、Query／replay 坐标及冻结 P 前缀均一致；冻结的
+两份原评分器代码校验值也相同。没有重新生成或补选旧答案。
+
+| 子任务 | 旧 vLLM attention | 当前 A |
+| --- | ---: | ---: |
+| EventQA | 87.80 | 90.00 |
+| RULER QA2 | 51.00 | 55.00 |
+| 单跳事实整合 | 43.00 | 54.00 |
+| 多跳事实整合 | 3.00 | 2.00 |
+| MAB 内 LongMem 问答 | 51.00 | 56.67 |
+| 摘要 F1×100 | 20.002 | 21.911 |
+| 三类宏平均 /100 | 35.423 | 39.044 |
+
+两版均为 NVFP4／FP8 KV／MTP4、K=36,864、G=16,384，但上下文管理基线
+并不相同：旧版 Query 的 `action_fraction=.5`，当前 A 为零；两者仍都保留
+attention 采集和 attention pressure。Mean-K 原生评分域已对齐，额外
+mandatory 页不再提前排除，图关闭也会改变旧基线。另有 raw-K 表示／缓存
+和执行代码变化，批处理预算为 4,224→16,424，不能把总分差归因于单一配额。
+
+按三类算术拆分，检索、冲突整合、摘要分别贡献 +1.31852、+1.66667、
++0.63634 分；不是因果贡献估计。745 个答案完全相同；149 个外部裁判项
+具有相同输入／答案绑定，其中 148 个得分相同，一个 LongMem 判断由 false
+变为 true，折合宏平均约 +0.03704 分。保留两次首次判断，不为使对照一致而
+重评；不同答案的裁判也可能有波动，不能将剩余差值全算为模型改善。
+
+50% attention quota 可能挤占当前 Query 高相关页，MAB 的 prefix attention
+也未必最适合每一个独立问题，但当前证据没有隔离验证这一因果解释。需要在
+相同当前版本仅改变 0／50% Query 配额的对照；现有 A/C/D 测量图传播收益，
+没有替代该配额消融。证据为
+`artifacts/graph-v2-mab-baseline-comparison-20261019/r1/comparison.json`，
+绑定全部两次题目结果／请求和原评分文件，生成器为 completion 目录
+`compare_previous_vllm_mab.py`。
+
+### qw3 历史启动参数补充
 
 进一步核对旧 `launches.json` 后补充历史对照限制：旧 attention 的
 `action_fraction=.5`，会把可选页约一半配额交给 attention；本轮 A/C/D 均为
