@@ -570,3 +570,13 @@ comparison separately measures collection overhead. No tuning using answer gold.
   Original token-only locality remains unknown fallback,no invented boundaries.
   Bind first case artifacts in `full-mab-C-r2-first-continuation.json`;not complete
   C-group release/quality/performance proof. Read audit took0.14s,no GPU work.
+- Added separate final-runtime C8 fixed-output qualifier in
+  `scripts/qualify_graph_v2_decode.py`;does not change inference source or frozen
+  formal jobs. Original256Kcase262101IDs/originalQuery,Dprofile unchanged,
+  8independent sessions/cache salts,16384output,temp0/ignoreEOS. Requires30s
+  shared window,64token trims,native90%coverage plus completed native C8-only
+  submission rows,exact final CPU history and full release. Explicitly separate
+  from quality/authentication and candidate performance promotion.
+  `tests/test_graph_v2_decode.py`:3direct CPU test functions passed in0.112s;
+  full pytest plus real GPU qualification deferred until inference AND judging
+  quiet. Input/profile/dependency process preflight passed,no GPU started.

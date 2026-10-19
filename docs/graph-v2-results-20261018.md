@@ -267,6 +267,24 @@ pressure，续题零次；P=367,616、prefill sample=11,453、图 source/edge �
 这是当前冻结运行时实际启用图评分及 P 恢复的证据，不扩展为完整 C 组、
 回答质量或吞吐收益。
 
+为补齐当前冻结版本的八路稳态 decode 证据，新增独立 client
+`scripts/qualify_graph_v2_decode.py`。它复用已验证的流式 token-ID/usage 计数，
+使用原始 256K NIAH 首题的全部 262,101 个输入 token、原 Query 坐标及原 D
+服务配置，八个独立 session/cache salt，各固定输出 16,384 token。诊断请求
+使用 temperature=0/ignore_eos，不计入原始质量矩阵，也不是新的性能候选对照。
+
+验收要求至少 30 秒共同窗口、两端各剔除至少 64 token、至少 90% native
+确认覆盖，以及对应 native 提交记录全部为八路 decode、零 prefill。窗口
+保留全部停顿，不把 MTP proposal 当接受输出；native 快照的绝对单调时间与
+流式相对时间绑定，CPU 提交边界不冒充精确 GPU kernel 边界。最终核对完整
+接受历史并要求所有会话释放。八个 client label 不作为身份认证验收。
+
+三个新增 CPU 测试函数已直接运行通过（0.112 秒，无 GPU），覆盖重复／缺失
+身份、时间原点冲突、输入／预算／Query 和窗口门槛。完整 pytest 和 GPU
+诊断仍待运行；排队驱动在正式推理及原裁判流程终止后，才运行 CPU 回归、
+复制同一冻结推理代码并申请空闲 GPU。不会中断外部 GPU 进程，也不修改
+现有 r2 输入、配置、运行时或答案。诊断与其初次失败记录另存新目录。
+
 在正式生成期间独立执行了已授权的轻量裁判预检：冻结的 Flash 原始 12 题
 校准全部通过，原 Pro LongMem QA 构造器／thinking=enabled／1024 输出预算
 的两个固定校准例也通过。实际返回模型为 `deepseek-flash`、`deepseek-v4-pro`。
