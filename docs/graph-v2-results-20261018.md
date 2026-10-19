@@ -27,8 +27,9 @@ C 相对 A 在这轮两套记忆集均较高，D 相对 C 未显示额外收益�
 `artifacts/graph-v2-completion-20261019/scope-change-skip-D-r1/`。D 仅改为
 `skipped_by_user`，没有改动冻结运行时、输入、参数或已有答案。旧冻结队列
 在 C 通过后会因 D 非 prepared 而退出；该预期退出另行记录为用户取消，
-不当成模型失败。接续队列等待既有 output-pressure 验收，然后执行已准备的
-frozen-P 同步／异步与持续原生 C8 decode，证据写入该目录的 `continuation-r1/`。
+不当成模型失败。接续队列在独立 output-pressure 同步验收失败后停止，
+没有启动 frozen-P 同步／异步或持续原生 C8 decode；首次失败证据保留在
+该目录的 `continuation-r1/`，修复必须使用新的冻结尝试重新验收。
 
 按新范围生成的完整质量表见 [按测试集注明版本的完整对照](graph-v2-quality-comparison-20261019.md)。
 它包含首轮 NIAH 540 份及 r2 两套 memory 3,654 份首次回答／原评分，
@@ -101,9 +102,32 @@ Query/replay/mandatory 策略和每路八个精确 locality 区间均验证通�
 客户端／controller helper 更新为 `e88d531`；启动配置预检通过。为容纳多个
 长工具 P/M 元数据快照，单 owner 图上限设为 128 MiB、两 owner 总上限
 256 MiB；这是单独功能任务的记账上限，K/G、CPU 历史预算和正式参数均不改。
-`qualification-r1/queue-r1/` 已绑定现有 GPU 执行链的真实进程身份，排在其
-终止后执行，等待外部 GPU 用户与资源，不停止其他任务。GPU 结果尚待产生，
+`qualification-r1/sync/` 的六个真实模型回答已经返回，但第三轮 Query 编辑
+未命中 P 恢复，严格字节恢复门槛因此失败；不是通过结果。两 owner 的
+第二轮均实际触发累计 output-seeded、非 identity 且改变选页的 pressure，
+但这不能替代完整跨轮通过。同步服务及所属会话已清理，异步尚未运行。
 这两项不计入 4,194 道正式质量回答，最终完成审计须另核对它们。
+
+### P 边界跨越 Query mandatory 的误失效修复
+
+失败请求的新旧 token 前缀相同到 180,290，保存的 P 为 180,288；新 Query
+的 mandatory envelope 从 180,287 开始。旧逻辑在退回 P 时丢弃整个跨 P
+envelope，再以完整三元组是否相等判断历史必留内容变化，导致 P 之前仅
+一个 token 的既有要求也被当成新增要求，丢弃检查点并重新 prefill。
+
+修复分两步：退回 P 时保留每个旧 mandatory 区间位于 P 之前的部分；
+比较新旧必留要求时，只比较验证过的历史前缀内、按 kind 合并后的覆盖范围。
+Query、replay、当前 mandatory 和预算检查不变；新增历史必留内容或真正
+改写 P 前缀仍失效，不能复用未来统计。原失败日志和冻结版本不修改。
+
+原失败请求及实际接受 output IDs 的 CPU 重放现返回 P=180,288，一次导入
+准备、零 eviction，当前 Query/mandatory 保持原样。回归为 182 项通过、
+1 项跳过（需要显式启用的 CUDA checkpoint gate），覆盖规划、会话、检查点、
+图恢复和容量准入；该 CPU 重放的 saved window=37,000 为合成值，不能充当
+真实 GPU 恢复证据。原失败与修复后记录分别保存在
+`artifacts/graph-v2-output-pressure-20261019/P-restore-miss-repro-r2.json` 和
+`artifacts/p-restore-prefix-fix-20261019/saved-case-fixed-r1.json`。
+修复后的同步／异步长工具真实模型验收及后续性能门槛仍须通过。
 
 ## 冷负载性能筛选
 

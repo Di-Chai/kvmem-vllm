@@ -51,6 +51,30 @@ def _range(value, limit, label):
     return tuple(value)
 
 
+def _adds_historical_mandatory(mandatory, previous, history):
+    """Only new requirements inside the verified prefix invalidate its view.
+
+    An envelope can extend into a new Query without adding a historical pin.
+    Compare interval coverage by kind, without expanding long token ranges or
+    conflating soft root/policy requirements with hard query/file requirements.
+    """
+    covered = {}
+    for begin, end, kind in previous:
+        if begin < history:
+            covered.setdefault(kind, []).append((begin, min(end, history)))
+    for kind, spans in covered.items():
+        merged = []
+        for begin, end in sorted(spans):
+            if merged and begin <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((begin, end))
+        covered[kind] = merged
+    return any(begin < history and not any(left <= begin and min(end, history) <= right
+                   for left, right in covered.get(kind, ()))
+               for begin, end, kind in mandatory)
+
+
 @dataclass(frozen=True)
 class RequestPlan:
     query: tuple[int, int] | None
@@ -183,7 +207,7 @@ class RequestPlan:
         if not self.explicit_mandatory:
             inherited = tuple(s for s in previous_mandatory if query is None or s[2] != 'query')
             mandatory = tuple(dict.fromkeys(inherited + mandatory))
-        changed = any(s[0] < history and s not in previous_mandatory for s in mandatory)
+        changed = _adds_historical_mandatory(mandatory, previous_mandatory, history)
         reserve = 0 if self.rolling_active_window else output_tokens
         fits = window + prompt_tokens - history + reserve <= capacity - self.block_tokens
         policy = self.prefill_window

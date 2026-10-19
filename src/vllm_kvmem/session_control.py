@@ -248,7 +248,10 @@ class SessionLedger:
                         # Only the verified P prefix survives a changed branch.
                         # Old Query/pin coordinates may point into replaced or
                         # truncated text and must not enter the new request.
-                        entry.mandatory = tuple(s for s in entry.mandatory if s[1] <= entry.history)
+                        # A pin can straddle P. Its verified historical part
+                        # still belongs to P; only the edited future is dropped.
+                        entry.mandatory = tuple((b, min(e, entry.history), kind)
+                            for b, e, kind in entry.mandatory if b < entry.history)
                         if entry.query is not None and entry.query[1] > entry.history:
                             entry.query = None
                     effective,changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
