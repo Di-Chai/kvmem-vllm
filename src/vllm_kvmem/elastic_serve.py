@@ -45,6 +45,7 @@ def build_launch(profile, base, run_dir):
         'action_attention':False,'action_scope':'tool-call','action_layers':'spread3',
         'action_interval':16,'action_fraction':.25,'action_decay':.5,'action_combine':'quota',
         'action_native_decode_commit':False,'action_commit_max_bytes':16777216,
+        'action_download_pool':False,'action_download_max_bytes':67108864,'action_download_max_slots':128,
         'archive_backend':'nvme','async_refresh':False,'refresh_quantum_tokens':256,
         'prefill_attention':False,'action_pressure':False,'pressure_policy':None,'prefill_attention_interval':1024,
         'prefill_attention_stride':32,'prefill_attention_half_life':8192,'prefill_chunk_tokens':0,
@@ -140,6 +141,7 @@ def build_launch(profile, base, run_dir):
                                'query_history','query_history_decay','guided_query_tokens','repository_gc',
                                'action_attention','action_scope','action_layers','action_interval',
                                'action_native_decode_commit','action_commit_max_bytes',
+                               'action_download_pool','action_download_max_bytes','action_download_max_slots',
                                'action_fraction','action_decay','action_combine','archive_backend','async_refresh',
                                'prefill_attention','action_pressure','pressure_policy','prefill_attention_stride','prefill_attention_half_life','prefill_chunk_tokens',
                                'sink_blocks','recent_blocks','cpu_history_coordination','cpu_progress_reserve',
@@ -227,6 +229,7 @@ def build_launch(profile, base, run_dir):
                 **{key:cfg[key] for key in ('action_attention','action_scope','action_layers',
                     'action_interval','action_fraction','action_decay','action_combine',
                     'action_native_decode_commit','action_commit_max_bytes',
+                    'action_download_pool','action_download_max_bytes','action_download_max_slots',
                     'prefill_attention','action_pressure','pressure_policy','prefill_attention_interval',
                     'prefill_attention_stride','prefill_attention_half_life')}}}
         backend['kvmem'] = canonical_policy_payload(backend['kvmem'], cfg)

@@ -248,7 +248,7 @@ class ActionMetadata:
     event: object
 
 
-def action_metadata(batch, local_positions, prefill_attention, profile=None):
+def action_metadata(batch, local_positions, prefill_attention, profile=None, pool=None):
     """Snapshot exact GPU coordinates before the target forward is enqueued.
 
     CPU scheduler counters are only upper bounds under speculative decoding.
@@ -268,7 +268,9 @@ def action_metadata(batch, local_positions, prefill_attention, profile=None):
         packed = torch.cat([torch.stack((batch.input_ids[a:b].long(), batch.positions[a:b],
                                         local_positions[a:b])) for a, b in slices], dim=1)
     event = None
-    if packed.device.type == 'cuda':
+    if packed.device.type == 'cuda' and pool is not None:
+        host,event=pool.copy(packed)
+    elif packed.device.type == 'cuda':
         with profile.stage('metadata.pinned_allocate', shape=list(packed.shape),
                            allocation_bytes=packed.numel()*packed.element_size()) if profile else nullcontext():
             host = torch.empty(packed.shape, dtype=packed.dtype, pin_memory=True)
@@ -295,6 +297,11 @@ class ActionRuntime:
         self.metadata_fallback_batches = 0
         self.metadata_wait_seconds = 0.0
         self.metadata_upload = None
+        self.download_pool = None
+        if getattr(self.options,'action_download_pool',False):
+            from .action_download_pool import ActionDownloadPool
+            self.download_pool=ActionDownloadPool(self.options.action_download_max_bytes,
+                self.options.action_download_max_slots)
         if getattr(self.options, 'async_action_metadata', False):
             from .action_metadata_upload import PackedActionMetadata
             self.metadata_upload = PackedActionMetadata()
@@ -345,6 +352,7 @@ class ActionRuntime:
             'async_action_metadata':getattr(self.options,'async_action_metadata',False),
             'prefill_q_dtype':{k:str(v) for k,v in self.prefill_q_dtypes.items()},
             'native_decode_commit':getattr(self.options,'action_native_decode_commit',False),
+            'download_pool':getattr(self.options,'action_download_pool',False),
             'implementation':'sampled target Q against native working K; original qw3 parser/fusion'},indent=2))
 
     def begin_response(self, state, request_id):
@@ -369,7 +377,8 @@ class ActionRuntime:
         # not overwrite the packet associated with a public native batch.
         profiler = getattr(self, 'profile', None)
         trace = profiler.begin_batch(batch) if profiler is not None else None
-        self.metadata = action_metadata(batch, local_positions, self.options.prefill_attention, trace)
+        self.metadata = action_metadata(batch, local_positions, self.options.prefill_attention, trace,
+            pool=getattr(self,'download_pool',None))
 
     def _window_segments(self, authority, history_begin, local_begin, count):
         store = authority.memory._store
@@ -406,7 +415,8 @@ class ActionRuntime:
         else:
             # The capture runtime is constructed after the first forward.
             # Standalone diagnostic callers also use this exact fallback.
-            metadata = action_metadata(batch, captured[0].positions, self.options.prefill_attention, trace)
+            metadata = action_metadata(batch, captured[0].positions, self.options.prefill_attention, trace,
+                pool=getattr(self,'download_pool',None))
             self.metadata_fallback_batches = getattr(self, 'metadata_fallback_batches', 0) + 1
         waited = time.perf_counter()
         with trace.stage('metadata.existing_fence') if trace else nullcontext():
@@ -503,13 +513,17 @@ class ActionRuntime:
                         total=mass if total is None else total+mass
                 with owner.stage('score.layer_mean', gpu=True) if owner else nullcontext():
                     total=total/len(self.layers)
-                with owner.stage('mass.pinned_allocate', shape=list(total.shape),
+                pool=getattr(self,'download_pool',None)
+                if pool is not None:
+                    host,event=pool.copy(total)
+                else:
+                    with owner.stage('mass.pinned_allocate', shape=list(total.shape),
                                  allocation_bytes=total.numel()*total.element_size()) if owner else nullcontext():
-                    host=torch.empty(total.shape,dtype=total.dtype,pin_memory=True)
-                with owner.stage('mass.d2h', gpu=True, transfer_bytes=total.numel()*total.element_size(),
+                        host=torch.empty(total.shape,dtype=total.dtype,pin_memory=True)
+                    with owner.stage('mass.d2h', gpu=True, transfer_bytes=total.numel()*total.element_size(),
                                  direction='D2H') if owner else nullcontext():
-                    host.copy_(total,non_blocking=True)
-                event=torch.cuda.Event();event.record()
+                        host.copy_(total,non_blocking=True)
+                    event=torch.cuda.Event();event.record()
                 if lease is not None:
                     # Covers every layer and recursive scoring chunk, not just
                     # the H2D. The runtime owns staging even if publication fails.
@@ -692,6 +706,8 @@ class ActionRuntime:
                       accept_event_wait_seconds=getattr(self,'accept_event_wait_seconds',0.))
         report.update(decode_commit_native_calls=getattr(self,'decode_commit_native_calls',0),
                       decode_commit_python_calls=getattr(self,'decode_commit_python_calls',0))
+        if getattr(self,'download_pool',None) is not None:
+            report['download_pool_total']=self.download_pool.snapshot()
         graph = getattr(authority,'block_graph',None)
         if graph is not None:
             rows = graph.rows
