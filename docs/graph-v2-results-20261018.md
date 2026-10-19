@@ -98,7 +98,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 排在 MAB 之后重新运行 |
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 已完成生成与释放，C 正在运行、D 同参数排队；全部生成结束后运行原裁判评分 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 已完成生成、释放与原裁判评分，86/102；C 正在运行、D 同参数排队 |
 
 ### 独立 LongMemEval-S 参数与运行记录
 
@@ -166,7 +166,22 @@ A 现已完成 102/102 个首次回答，技术错误与输出触顶均为零，
 GPU 资源释放通过。再次核对全部原始输入、Query 与采样配置，实际接受的
 73,670 个输出 token 与 response/usage/result 计数一致；最长回答为 4,220
 token。C 已自动启动，其首六题也通过同样的参数和完整输入核验。D 尚未运行。
-这项生成通过不是准确率：三组原裁判评分仍待执行。
+这项生成通过不代表全部答对。随后 A 提前完成原裁判评分，结果见下表；C/D 仍待完成。
+
+| 独立 LongMemEval-S 原裁判完整评分 | 答对／总题数 | 准确率 |
+| --- | --- | --- |
+| 当前 r2 A，无图传播 | 86／102 | 84.31% |
+| 历史 qw3 Query | 89／102 | 87.25% |
+| 历史 qw3 attention | 90／102 | 88.24% |
+
+A 的 102 题均有有效裁判结果，未评分项为零，原始 12 项校准全部通过。
+7 项仅在完整题目、答案和裁判请求均一致时复用历史评分，另 95 项使用冻结的
+原裁判接口评分；首次模型回答未更改，C/D 推理队列未中断或变更参数。
+评分绑定与完整结果保存在原 dataset 的 `scoring/`，副本为
+`artifacts/graph-v2-lme-efficiency-20261019/early-A-score-r1/summary.json`，
+SHA-256 为 `4fa0e408853352f15bf100464c264e1220d4a66ee4bce522a4d6a0af767c0af3`。
+当前 A 比历史 Query 少答对 3 题、比历史 attention 少 4 题；历史模型精度、
+执行方式、attention 配额和输出上限有上述已披露差异，不能归因为图方法。
 
 | A 全部 102 题的指标 | 结果与口径 |
 | --- | --- |
@@ -194,6 +209,22 @@ token。C 已自动启动，其首六题也通过同样的参数和完整输入�
 进程身份，脚本和依赖冻结于 `report-queue-r1/`；它会在执行链结束后深核验全部
 首次返回输入/输出、原评分绑定与阶段记录。未完成上游只能生成明确的未完成
 快照，不将未评分、未运行或失败项记作成功。最终仍需逐项完成整个目标的审计。
+
+NIAH 开始前另逐题复核了旧 qw3 Query/attention 两套共 360 个实际请求：
+当前 180 题的完整 token IDs、Query 范围、seed 和所有采样参数均匹配；没有
+删除 filler、截短输入或移动 Query。旧版 compact JSON IDs 哈希与当前 i32
+哈希采用不同编码，检查器从同一完整 ID 序列计算两者后比对，没有直接比较
+不同编码的哈希字符串。原上限 8,192、temperature=1、top-p=.95、top-k=20、
+thinking=4,096 均一致。模型精度、推测解码实现、attention 配额和并发方式的
+已知差异继续单独披露。证据为
+`artifacts/graph-v2-completion-20261019/niah-historical-controls-r1.json`。
+这是参数／输入预检，尚未把准备中的 r2 NIAH 计作已运行。
+
+C 的前 23 道首次回答另通过运行路径复核：23 道 Query 图事件实际改变选页，
+99 次 pressure 事件仍是旧 attention，未发生 pressure 图传播；Query 坐标、
+K 预算和 history/action 配额符合 C 组定义。该部分证明为
+`artifacts/graph-v2-lme-efficiency-20261019/baseline-C-r1/first-query-policy-audit-r1.json`。
+它不提供正确率，也不将选页变化等同质量提升。
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
 `graph_mode`，C/D 仅改变 `pressure_policy`；输入、seed 与其余服务参数相同。
