@@ -397,14 +397,16 @@ prefill/decode 步分类及 GPU 利用率；共同 warm 窗口不足 30 秒时�
 门控进程只持有正在等待 D 的顶层工作流，D 子进程继续运行；D 通过且
 释放历史、GPU 清空后执行短对照，成功或失败均在清理后恢复原工作流。
 原 NIAH、独立 LongMemEval-S、原评分与最终 C8 decode 队列保留。
-门控状态：`artifacts/graph-v2-idle-reading-20261019/efficiency-r3/gate-r2/status.json`；
+门控状态：`artifacts/graph-v2-idle-reading-20261019/efficiency-r3/gate-r3/status.json`；
 截至本次记录仍在等待安全边界，**尚无新客户端的 GPU 实测收益结论**。
 同步 frozen-P 恢复和 Query/装配成本仍未由本次客户端修改解决。
 直接附加采样受系统 ptrace 权限限制；已验证从采样器启动子进程的无特权
 方式，因此短对照将通过 49 Hz nonblocking 子进程采样记录主机 Python
 调用栈。该证据反映活跃 CPU 栈，不直接归因 GPU idle。首个纯等待门控
-已在加入采样后退出且确认恢复原等待者；当前门控 r2 接续，未启动或重跑
-任何模型题目。
+已在加入采样后退出且确认恢复原等待者。增加 frozen-P 功能验收后，r2 也在
+纯等待阶段退出并确认恢复等待者，当前由 r3 接续；两次交接均未启动或重跑
+任何正式模型题目。r3 在客户端对照后依次运行独立同步／异步 P 功能验收，
+成功或失败均清理所属资源并恢复原工作流。
 
 用户再次询问低利用率时，对运行中的 D 另取固定 180 秒只读窗口，证据为
 `artifacts/graph-v2-idle-reading-20261019/efficiency-r3/current-D-window-r1.json`，
