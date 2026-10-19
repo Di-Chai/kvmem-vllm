@@ -11,6 +11,7 @@
 #include "kvmem_action_attention.hpp"
 #include "prefill_attention_commit.hpp"
 #include "block_graph_accept.hpp"
+#include "decode_attention_commit.hpp"
 #include "restore_frame.hpp"
 #include "action_window_segments.hpp"
 #include <filesystem>
@@ -176,6 +177,7 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
 PYBIND11_MODULE(_native, m) {
     kvmem_prefill::bind(m);
     kvmem_graph::bind(m);
+    kvmem_decode::bind(m);
     using ActionParser = detail::ActionAttentionParser;
     py::class_<ActionParser>(m, "ActionParser")
         .def(py::init([](std::string scope, uint32_t interval, const std::vector<int32_t> &ids, bool thinking) {

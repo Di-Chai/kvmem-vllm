@@ -173,6 +173,8 @@ class RuntimeOptions:
     action_layers: str = 'spread3'
     action_interval: int = 16
     action_decay: float = 0.5
+    action_native_decode_commit: bool = False
+    action_commit_max_bytes: int = 16777216
     async_refresh: bool = False
     refresh_quantum_tokens: int = 256
     prefill_attention: bool = False
@@ -275,6 +277,10 @@ class RuntimeOptions:
             action_fraction=self.memory.action_fraction, pressure_policy=self.pressure_policy)
         if type(self.async_action_metadata) is not bool:
             raise ValueError('Asynchronous Action metadata must be boolean')
+        if type(self.action_native_decode_commit) is not bool:
+            raise ValueError('Native decode commit must be boolean')
+        if type(self.action_commit_max_bytes) is not int or self.action_commit_max_bytes < 4096:
+            raise ValueError('Action commit capacity must be at least 4096 bytes')
         if self.async_action_metadata and not self.memory.action_attention:
             raise ValueError('Asynchronous Action metadata requires action attention')
         if type(self.early_capture_slot_release) is not bool:
@@ -527,6 +533,7 @@ class RuntimeOptions:
         action = {name: payload.pop(name, default) for name, default in (
             ('action_scope', 'tool-call'), ('action_layers', 'spread3'),
             ('action_interval', 16), ('action_decay', 0.5),
+            ('action_native_decode_commit', False), ('action_commit_max_bytes', 16777216),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
             ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),

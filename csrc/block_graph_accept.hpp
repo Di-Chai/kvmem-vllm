@@ -65,14 +65,21 @@ double read(const py::buffer_info &b, ssize_t row, ssize_t column) {
 inline py::tuple prepare(const std::vector<int64_t> &positions,
         const std::vector<int64_t> &targets, py::buffer masses,
         int64_t accepted_through, int64_t end, int64_t block, size_t topk,
-        double min_mass, bool prefill, py::object old_partial) {
+        double min_mass, bool prefill, py::object old_partial,
+        py::object selected = py::none()) {
     const auto buffer = masses.request();
     const bool fp32 = buffer.format == py::format_descriptor<float>::format() && buffer.itemsize == 4;
     const bool fp64 = buffer.format == py::format_descriptor<double>::format() && buffer.itemsize == 8;
+    std::vector<size_t> accepted_rows;
+    if (!selected.is_none()) accepted_rows = selected.cast<std::vector<size_t>>();
     if (buffer.ndim != 2 || (!fp32 && !fp64) ||
-            buffer.shape[0] != static_cast<ssize_t>(positions.size()) ||
+            (selected.is_none() ? buffer.shape[0] != static_cast<ssize_t>(positions.size()) :
+                accepted_rows.size() != positions.size()) ||
             buffer.shape[1] != static_cast<ssize_t>(targets.size()))
         throw std::invalid_argument("Graph attention matrix shape/dtype mismatch");
+    for (const auto index : accepted_rows)
+        if (index >= static_cast<size_t>(buffer.shape[0]))
+            throw std::invalid_argument("Graph accepted row index is out of bounds");
     if (block <= 0 || topk == 0 || accepted_through < 0 || end < accepted_through ||
             !std::isfinite(min_mass) || min_mass < 0. || (!positions.empty() && targets.empty()))
         throw std::invalid_argument("Invalid dense graph geometry");
@@ -151,7 +158,7 @@ inline py::tuple prepare(const std::vector<int64_t> &positions,
         for (size_t row : order) {
             ExactSum sum;
             for (size_t col = 0; col < targets.size(); ++col) {
-                const double v = read_value(buffer,row,col);
+                const double v = read_value(buffer,selected.is_none() ? row : accepted_rows[row],col);
                 if (!std::isfinite(v) || v < 0.) throw std::invalid_argument("Invalid graph attention mass");
                 sum.add(v);
                 if (positions[row] >= accepted_through && targets[col] > positions[row] && v > 0.)
@@ -166,7 +173,7 @@ inline py::tuple prepare(const std::vector<int64_t> &positions,
             pending.source = source;
             std::fill(values.begin(),values.end(),0.);
             for (size_t col = 0; col < targets.size(); ++col) {
-                const double v = read_value(buffer,row,col);
+                const double v = read_value(buffer,selected.is_none() ? row : accepted_rows[row],col);
                 if (v != 0.) {
                     // Keep duplicate-segment accumulation and per-sample
                     // normalization in their original double operation order.
@@ -199,6 +206,9 @@ inline py::tuple prepare(const std::vector<int64_t> &positions,
 }
 
 inline void bind(py::module_ &module) {
-    module.def("prepare_block_graph",&prepare);
+    module.def("prepare_block_graph",&prepare, py::arg("positions"), py::arg("targets"),
+        py::arg("masses"), py::arg("accepted_through"), py::arg("end"), py::arg("block"),
+        py::arg("topk"), py::arg("min_mass"), py::arg("prefill"), py::arg("old_partial"),
+        py::arg("row_indices") = py::none());
 }
 }  // namespace kvmem_graph

@@ -80,12 +80,27 @@ class ActionHistory:
                 break
         self.parser=_native.ActionParser(self.options.action_scope,self.options.action_interval,
                                         self.token_ids[:4],thinking)
-        if getattr(self.options, 'graph_mode', 'off') != 'off':
+        if (getattr(self.options, 'graph_mode', 'off') != 'off' or
+                getattr(self.options, 'action_native_decode_commit', False)):
             self.parser = _AcceptanceParser(self.parser)
         self.request_id=request_id
         self.mass={};self.samples=0
 
     def accept(self, accepted, rows, history, masses):
+        if getattr(self.options, 'action_native_decode_commit', False):
+            mask = self.parser.preview(accepted)
+            indices = [i for i,row in enumerate(rows) if (mask >> row) & 1]
+            if hasattr(masses, 'numpy'):
+                masses = masses.numpy()
+            elif not hasattr(masses, 'shape'):
+                import numpy as np
+                masses = np.asarray([] if masses is None else masses, dtype='float64').reshape(len(rows),len(history))
+            updated, samples = _native.prepare_decode_attention(self.mass,self.samples,indices,
+                history,masses,getattr(self.options,'action_commit_max_bytes',16777216))
+            if self.parser.commit(accepted) != mask:
+                raise RuntimeError('Action transaction lost its accepted prefix')
+            self.mass, self.samples = updated, samples
+            return
         mask=self.parser.commit(accepted)
         for i,row in enumerate(rows):
             if not (mask>>row)&1:
@@ -208,12 +223,18 @@ class _PreparedActionAcceptance:
         self.runtime.graph_commit_seconds = getattr(self.runtime,'graph_commit_seconds',0.) + time.perf_counter()-started
         self.runtime.graph_commit_calls = getattr(self.runtime,'graph_commit_calls',0) + 1
         self.packet.action_inputs.pop(self.request_id, None)
+        if self.output is not None:
+            backend = 'native' if getattr(pending.state.options,'action_native_decode_commit',False) else 'python'
+            key = 'decode_commit_'+backend+'_calls'
+            setattr(self.runtime,key,getattr(self.runtime,key,0)+1)
         self.done = True
         if self.prefill is not None and self.prefill[2]:
             self.runtime._report_prefill(self.request_id, pending)
+        self.output = self.prefill = None
 
     def abort(self):
         if not self.done:
+            self.output = self.prefill = None
             self.graph_update.abort()
             self.done = True
 
@@ -323,6 +344,7 @@ class ActionRuntime:
             'native_action_metadata':getattr(self.options,'native_action_metadata',False),
             'async_action_metadata':getattr(self.options,'async_action_metadata',False),
             'prefill_q_dtype':{k:str(v) for k,v in self.prefill_q_dtypes.items()},
+            'native_decode_commit':getattr(self.options,'action_native_decode_commit',False),
             'implementation':'sampled target Q against native working K; original qw3 parser/fusion'},indent=2))
 
     def begin_response(self, state, request_id):
@@ -538,6 +560,7 @@ class ActionRuntime:
         output = prefill = None
         positions, masses, targets = (), (), ()
         kind = 'output'
+        dense_output = None
         if pending is not None:
             if pending.history_begin is not None and pending.history_begin != history_begin:
                 raise ValueError('Graph attention packet has stale source coordinates')
@@ -578,9 +601,20 @@ class ActionRuntime:
                     raise ValueError('Graph attention candidate row is out of bounds')
                 if mask & ~sum(1 << row for row in set(pending.rows)):
                     raise ValueError('Graph output packet omitted an accepted sampled row')
-                updated, samples = dict(pending.state.mass), pending.state.samples
+                native_decode = getattr(getattr(self,'options',pending.state.options),'action_native_decode_commit',False)
+                if native_decode:
+                    import numpy as np
+                    values = np.asarray(values).reshape(len(pending.rows),len(pending.history))
+                    selected = tuple(i for i,row in enumerate(pending.rows) if (mask >> row) & 1)
+                    positions = tuple(pending.source_positions[i] for i in selected)
+                    if any(pending.source_positions[i] != history_begin+pending.rows[i] for i in selected):
+                        raise ValueError('Graph output source differs from consumed Q position')
+                    dense_output = selected, (pending.state.mass,pending.state.samples,
+                        getattr(pending.state.options,'action_commit_max_bytes',16777216)), mask
+                    masses, targets = values, pending.history
+                updated, samples = (None,None) if native_decode else (dict(pending.state.mass),pending.state.samples)
                 kept_positions, kept_masses = [], []
-                for row, position, row_mass in zip(pending.rows,pending.source_positions,values):
+                for row, position, row_mass in (() if native_decode else zip(pending.rows,pending.source_positions,values)):
                     if not (mask >> row) & 1:
                         continue
                     if (len(row_mass) != len(pending.history) or
@@ -599,13 +633,18 @@ class ActionRuntime:
                     samples += 1
                     kept_positions.append(position)
                     kept_masses.append(row_mass)
-                output = mask, updated, samples
-                positions, masses, targets = kept_positions, kept_masses, pending.history
+                if not native_decode:
+                    output = mask, updated, samples
+                    positions, masses, targets = kept_positions, kept_masses, pending.history
         started = time.perf_counter()
         try:
             graph_begin = min(history_begin, graph.accepted_through) if not accepted else history_begin
             update = graph.prepare_accept(graph_begin, graph_begin+accepted,
-                source_positions=positions,target_starts=targets,mass_rows=masses,kind=kind)
+                source_positions=positions,target_starts=targets,mass_rows=masses,kind=kind,
+                **({} if dense_output is None else dict(row_indices=dense_output[0],output_state=dense_output[1])))
+            if dense_output is not None:
+                mass,samples = getattr(update,'output_state',dense_output[1][:2])
+                output = dense_output[2],mass,samples
         finally:
             self.graph_prepare_seconds = getattr(self,'graph_prepare_seconds',0.) + time.perf_counter()-started
             self.graph_prepare_calls = getattr(self,'graph_prepare_calls',0) + 1
@@ -623,7 +662,11 @@ class ActionRuntime:
                 self._report_prefill(request_id,pending)
             return
         pending.state.accept(accepted,pending.rows,pending.history,
-                             pending.masses.tolist() if pending.masses is not None else [])
+            pending.masses if getattr(pending.state.options,'action_native_decode_commit',False) else
+            pending.masses.tolist() if pending.masses is not None else [])
+        backend = 'native' if getattr(pending.state.options,'action_native_decode_commit',False) else 'python'
+        key = 'decode_commit_'+backend+'_calls'
+        setattr(self,key,getattr(self,key,0)+1)
 
     def finish(self, request_id, authority):
         profiler = getattr(self, 'profile', None)
@@ -647,6 +690,8 @@ class ActionRuntime:
                       prefill_commit_native_calls=getattr(self,'prefill_commit_native_calls',0),
                       prefill_commit_python_calls=getattr(self,'prefill_commit_python_calls',0),
                       accept_event_wait_seconds=getattr(self,'accept_event_wait_seconds',0.))
+        report.update(decode_commit_native_calls=getattr(self,'decode_commit_native_calls',0),
+                      decode_commit_python_calls=getattr(self,'decode_commit_python_calls',0))
         graph = getattr(authority,'block_graph',None)
         if graph is not None:
             rows = graph.rows

@@ -98,6 +98,8 @@ class _DenseSamples:
     masses: object
     kind: str
     native: object
+    indices: tuple | None = None
+    output_state: tuple | None = None
 
     def __len__(self):
         return len(self.positions)
@@ -300,6 +302,7 @@ class GraphUpdate:
                     graph._preserved.close()
                     graph._preserved = None
         finally:
+            self.__dict__.pop('output_state',None)
             graph._pending_update = None
             self.done = True
             self._locked = False
@@ -315,6 +318,7 @@ class GraphUpdate:
         elif self._thread != threading.get_ident():
             raise RuntimeError('Graph reservation abort crossed a held thread lock')
         try:
+            self.__dict__.pop('output_state',None)
             if self.charge is not None:
                 self.charge.close()
             self.data = None
@@ -458,8 +462,8 @@ class BlockGraph:
             self.runtime_epoch += 1
 
     def prepare_accept(self, begin, end, source_positions=(), target_starts=(),
-                       mass_rows=(), kind='output'):
-        if len(source_positions) != len(mass_rows):
+                       mass_rows=(), kind='output', *, row_indices=None, output_state=None):
+        if len(source_positions) != (len(mass_rows) if row_indices is None else len(row_indices)):
             raise ValueError('Graph source/mass row shape mismatch')
         targets = tuple(target_starts)
         # Captured CPU matrices already own this buffer. Keep it dense through
@@ -473,10 +477,13 @@ class BlockGraph:
             from . import _native
             native = getattr(_native, 'prepare_block_graph', None)
             if native is not None:
-                if view.shape != (len(source_positions), len(targets)):
+                if view.shape[1] != len(targets) or (row_indices is None and view.shape[0] != len(source_positions)):
                     raise ValueError('Graph attention matrix shape mismatch')
                 return self.prepare(begin, end, _DenseSamples(
-                    tuple(operator.index(p) for p in source_positions), targets, view, kind, native))
+                    tuple(operator.index(p) for p in source_positions), targets, view, kind, native,
+                    None if row_indices is None else tuple(row_indices), output_state))
+        if row_indices is not None or output_state is not None:
+            raise ValueError('Indexed output acceptance requires a dense float matrix')
         return self.prepare(begin, end, tuple(GraphSample(operator.index(position), targets, values, kind)
                             for position, values in zip(source_positions, mass_rows)))
 
@@ -500,6 +507,8 @@ class BlockGraph:
             scratch = 2048 + (maximum_row + target_bound) * 320 + len(rows) * 512
             if self.partial is not None:
                 scratch += len(self.partial.targets) * 320
+            if dense and rows.output_state is not None:
+                scratch += 4096 + (len(rows.output_state[0]) + len(rows.targets)) * 320
             if message_spans is not None:
                 scratch += (len(message_spans) + len(self.message_spans)) * 512
             if locality_provenance is not None:
@@ -558,7 +567,13 @@ class BlockGraph:
                     raise ValueError('Invalid dense graph sampled source/target rows')
                 dense_result = rows.native(rows.positions, rows.targets, rows.masses,
                     self.accepted_through, max(self.accepted_through, accepted_end),
-                    self.block_tokens, self.topk, self.min_mass, rows.kind == 'prefill', self.partial)
+                    self.block_tokens, self.topk, self.min_mass, rows.kind == 'prefill', self.partial,
+                    *(() if rows.indices is None else (rows.indices,)))
+                if rows.output_state is not None:
+                    from . import _native
+                    old, samples, maximum = rows.output_state
+                    staged_output = _native.prepare_decode_attention(old, samples, rows.indices,
+                        rows.targets, rows.masses, maximum)
             if metadata is None:
                 spans, ends_known = (self.message_spans, self.message_end_known) if message_spans is None else _merge_spans(
                     self.message_spans, self.message_end_known, message_spans,
@@ -632,7 +647,10 @@ class BlockGraph:
                 raise BufferError('Graph staging estimate exceeded before acceptance')
             # Keep scratch charged until commit, after this frame and its row
             # temporaries have gone; publication compacts the live reservation.
-            return GraphUpdate(self, data, charge, size)
+            update = GraphUpdate(self, data, charge, size)
+            if dense and rows.output_state is not None:
+                update.output_state = staged_output
+            return update
         except BaseException:
             if charge is not None:
                 charge.close()
