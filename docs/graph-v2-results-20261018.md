@@ -4,7 +4,7 @@
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
 r2 的独立 LongMemEval-S A/C/D 已完成生成与评分（86/102、92/102、89/102）。
-r2 NIAH A 的 180 题已全部完成（176/180 exact），C 仍在运行。用户最新选择
+r2 NIAH A/C 的 180 题均已全部完成（176/180、178/180 exact）。用户最新选择
 “完成当前 C，跳过 D 的重复测试”：r2 D 不启动；完整 r1 NIAH 与 r2 memory
 按套分别注明版本，不能称作单一运行时全矩阵。独立恢复／decode 验收仍待
 完成，尚无稳定的质量或吞吐提升结论。
@@ -29,6 +29,12 @@ C 相对 A 在这轮两套记忆集均较高，D 相对 C 未显示额外收益�
 在 C 通过后会因 D 非 prepared 而退出；该预期退出另行记录为用户取消，
 不当成模型失败。接续队列等待既有 output-pressure 验收，然后执行已准备的
 frozen-P 同步／异步与持续原生 C8 decode，证据写入该目录的 `continuation-r1/`。
+
+按新范围生成的完整质量表见 [按测试集注明版本的完整对照](graph-v2-quality-comparison-20261019.md)。
+它包含首轮 NIAH 540 份及 r2 两套 memory 3,654 份首次回答／原评分，
+来源绑定于 `scope-change-skip-D-r1/quality-r1/final-comparison/comparison.json`。
+首轮全部 540 题另通过严格实际请求／原输入／原评分审计，没有重新推理
+或调用裁判。报告明确 `single_runtime_matrix=false`；r2 D 不计作通过。
 
 ## 已实现与已验证
 
@@ -165,7 +171,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | --- | --- | --- |
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
-| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 A180 已通过并释放，C 运行中，D 按用户选择跳过复跑 |
+| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 A/C180 均已通过并释放，D 按用户选择跳过复跑 |
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
 | 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A/C/D 全部完成生成、释放与原评分，86/102、92/102、89/102 |
 
@@ -406,12 +412,14 @@ thinking=4,096 均一致。模型精度、推测解码实现、attention 配额�
 `artifacts/graph-v2-completion-20261019/niah-historical-controls-r1.json`。
 这是参数／输入预检；当前 r2 NIAH A 全组已完成，C 已启动，D 排队。
 
-最终历史对照表另由同目录 `assemble_final_quality.py` 生成：默认同时要求
+原完整 r2 计划的严格历史对照工具为同目录 `assemble_final_quality.py`：默认同时要求
 完整 4,194 题矩阵审计及本版全 540 题实际请求审计，不能接入 r1 NIAH。
 它已核对 3,654 份 memory 回答／原评分的完整结果文件绑定，并在真实的
 未完成快照上确认拒绝输出最终报告。两项验证见
 `final-comparison-memory-preflight-r1/preflight.json` 和
-`final-comparison-incomplete-rejection-r1.json`；尚未生成完整最终对照表。
+`final-comparison-incomplete-rejection-r1.json`。用户取消 r2 D 后，这个严格同版本
+门槛原样保留，不将 D 改成通过；新范围的逐测试集完整表改由
+`scope-change-skip-D-r1/quality-r1/assemble_scoped_quality.py` 生成，明确两套版本。
 
 单臂整组封存工具 `seal_niah_arm.py` 已用 A180 的真实证据验证：质量、
 错误分类、耗时、阶段指标和释放证明均与原封存一致，先前 120 题首次
@@ -494,7 +502,7 @@ C 的 64K 和 128K 已各完成 60/60 exact、100% 数值覆盖、零输出触�
 实际请求描述、首次答案、冻结原评分、消费水位及逐请求释放。证据为同目录
 `NIAH-C-64K-128K-first-controls-r1.json`，延迟证据为
 `NIAH-C-64K-128K-first-phase-reading-r1.json`。旧的 C64 首份证明保留。
-C 的 256K 和完整 180 题仍在运行；这些分组不能替代最终全 540 题审计。
+C 完整 180 题结果见下节；这些早期分组本身不能替代整组封存。
 
 | 已封存的同长度对照 | A HTTP 时长中位数 | C HTTP 时长中位数 | A/C 输出 token 中位数 |
 | --- | ---: | ---: | ---: |
@@ -523,6 +531,28 @@ HTTP 请求平均 215.46 秒、中位数 182.87 秒，不能把摊销间隔当�
 重新执行。它不是当前 NVFP4 Graph V2 长文自然回答的同版本 C1 对照。
 当前每题输入为 64K～256K、输出中位数约 200 token，工作量以长输入和
 短回答为主；当前整轮输出率不能与旧长输出稳态 decode 率直接比较。
+
+### r2 NIAH C 完整回归与用户跳过 D
+
+C 已完成全部 180 题并释放资源：64K 60/60、128K 60/60、256K 58/60，
+总计 178/180（98.89%），数值覆盖率为 100%／100%／99.17%，零输出触顶。
+三个长度均为 60/60 完整 needle 区间入选。两道错误各漏一个数字，均在
+256K multi-value 的90%深度，均已选全 needle 区间；这些观察不能单独证明
+错误原因，也未用于调整参数。此前封存的 120 题首次证据逐字段保持不变。
+
+C 整轮耗时 4,968.72 秒（82.81 分钟），原始有效输入率 5,538.15 token/s，
+pure-prefill 模型事件率 6,010.76 token/s；返回39,312 token，整轮输出率
+7.91 token/s，不能标为 decode。实际总 batch 达八路4次，decode峰值七路，
+没有持续原生C8证据。与A的回答、选页和batch组成不同，不能将10.17秒的
+耗时差全部归因于图传播，也不将其视作稳定吞吐变化。
+
+证据为同目录 `NIAH-C-all-180-first-controls-r1.json`、
+`NIAH-C-all-180-phase-reading-r1.json` 和 `NIAH-C-all-180-completion-r1.json`。
+原汇总队列的只读快照已核对4,014份完整r2回答／原评分，D明确为
+`skipped_by_user`，`complete_quality_matrix=false`。旧父队列在启动D前的
+prepared检查退出；`scope-change-skip-D-r1/continuation-r1/old-tail-user-skip.json`
+明确将其绑定为用户取消，而非模型失败。当前长工具output-pressure同步
+验收已启动，随后异步、frozen-P及固定输出原生C8继续按新队列执行。
 
 ### 独立 LongMemEval-S 运行路径补充
 
