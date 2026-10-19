@@ -1,0 +1,360 @@
+{
+  "schema": "kvmem-attention-graph-cost-20261019",
+  "workload": {
+    "model": "27B NVFP4",
+    "kv_dtype": "FP8",
+    "draft": "MTP(k=4)",
+    "execution": "compiled CUDA Graph",
+    "clients": 8,
+    "input_tokens_each": 262101,
+    "output_tokens_each": 16384,
+    "select_budget": 36864,
+    "gen_budget": 16384,
+    "cpu_history_bytes": 100000000000,
+    "pressure_policy": "recency for all three cost variants",
+    "query": "unpropagated original Mean-K for all three cost variants"
+  },
+  "comparison": {
+    "schema": "graph-cost-comparison-2",
+    "single_ordered_cold_screen": true,
+    "measurements": {
+      "disabled": {
+        "steady_decode_tokens_per_second": 743.2579579181115,
+        "steady_window_seconds": 133.57139192707837,
+        "cold_preparation_seconds": 348.23836089950055,
+        "effective_input_tokens_per_second": 6021.186162787867,
+        "pure_prefill_model_tokens_per_second": 6260.440835289299,
+        "model_step_mean_ms": 37.473209961203914,
+        "full_step_mean_ms": 37.58389953853916,
+        "model_steps_per_second": 26.585034031378697,
+        "end_to_end_output_tokens_per_second": 240.64927634997693,
+        "wall_seconds": 544.6598551552743,
+        "useful_output_per_native_owner_decode_step": 3.394648916055842,
+        "native_owner_decode_steps": 38609,
+        "mean_accepted_tokens_per_SSE_event": 3.3961755713323316,
+        "engine_inclusive_host_totals": {
+          "capture_host_seconds_total": 0,
+          "metadata_wait_seconds": 0,
+          "prefill_commit_host_seconds": 0,
+          "accept_event_wait_seconds": 0,
+          "graph_prepare_seconds": 0,
+          "graph_commit_seconds": 0,
+          "graph_prepare_calls": 0,
+          "graph_commit_calls": 0
+        },
+        "accepted_output_attention_samples": 0,
+        "accepted_prefill_attention_samples": 0,
+        "candidate_attention_rows": 0,
+        "final_per_owner_graph_bytes": [],
+        "identities": {
+          "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+          "query_selection_multiset": [
+            "5401b8ada8c18c8263fe4f71f347a402e0520dd9e362868e00a5f5d312f2e3c8",
+            "6d73f8aab7407f9bc9fa47086704f3e1c791c9ddb85a1bee5cbded435cfe19e4",
+            "6db00f2958ee1e5150def73200a6598db260276f6e88b6a4a0fc2e3064a9afc5",
+            "a52321abdcf31ef8b9daff6a33e462f0f3c7c34251916817f4b116032f2a69e7",
+            "bcc30a9868e9bc5f19fb5bd4c1913c61da9559b16d4169e51c1e91453a32b423",
+            "d42af3839459edc74150943356bba0f4504b22b71948174911a6442d1ecab6ab",
+            "ed47af67447a81faa0fccb507664b860aeec36bd773db415e25cd6977009cd6f",
+            "fa09045709982fbb7fab2dc73cd44ef3a5ec44dad015c31db0e71c3673e10daa"
+          ],
+          "pressure_selection_multiset": [
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b"
+          ],
+          "accepted_output_multiset": [
+            "04bb9cb5fca0dfb5f53b346ec64c2a49c729b63cda9c46177a1dd56672e11731",
+            "22a6d2bce4c19fb4f4ba1452c81f76dc728d1d1014d32d055ddbd52987431754",
+            "2398cb771ea3403e8fbc7e816494b74a1b0fe9db83e2a125e709019ba5757000",
+            "355486f0338b8b814e44c5daee6bd7c264adf304f292502215a80a37afbeb4ee",
+            "87c9d4e1e6629affee7da1acff7acc7a25db17ace56b136ae1f98664682d3f24",
+            "9fbd87817f2979a08dfb9f264c969d04e060012bcf5bde077ac28b2e1478e75b",
+            "c0f59ce1f85c8eed7cdbc403a837cc2f07e59e61ca26d813302cfec94224368d",
+            "c29e765c3cd2f801f2e7b5ef73ae24d22feb4eba3698d7c4f8bea4a5947f048e"
+          ]
+        },
+        "original_job_status": "failed",
+        "original_snapshot_status": "failed",
+        "original_snapshot_violations": [
+          {
+            "sample_index": 1391,
+            "read_started_at": 348.8453275738284,
+            "read_finished_at": 349.0975178135559,
+            "reasons": [
+              "prefill_increment_during_window"
+            ],
+            "prefill_delta": 2
+          }
+        ],
+        "independent_executed_overlap_steps": 3551,
+        "native_snapshot_coverage": 0.9935172920473814,
+        "audit_sha256": "de20e7a4bf71709778e6b5cdcfee6cb66600912052e74255902d86aec88c89e6",
+        "fixture_sha256": "563c58af4bed3f9e0faba95c2f676bc8c485617f6467d2ef88f26a7e6a7f5e03"
+      },
+      "attention": {
+        "steady_decode_tokens_per_second": 831.5944824210115,
+        "steady_window_seconds": 139.60049333423376,
+        "cold_preparation_seconds": 371.49274903535843,
+        "effective_input_tokens_per_second": 5644.277056402055,
+        "pure_prefill_model_tokens_per_second": 5948.827063865597,
+        "model_step_mean_ms": 40.67901653123322,
+        "full_step_mean_ms": 41.94050588463158,
+        "model_steps_per_second": 23.144617349340503,
+        "end_to_end_output_tokens_per_second": 231.57782146377286,
+        "wall_seconds": 565.9954790640622,
+        "useful_output_per_native_owner_decode_step": 4.377993786952601,
+        "native_owner_decode_steps": 29937,
+        "mean_accepted_tokens_per_SSE_event": 4.383825546004883,
+        "engine_inclusive_host_totals": {
+          "capture_host_seconds_total": 293.57544150482863,
+          "metadata_wait_seconds": 0.039625801146030426,
+          "prefill_commit_host_seconds": 9.970899103209376,
+          "accept_event_wait_seconds": 0.2888081166893244,
+          "graph_prepare_seconds": 0,
+          "graph_commit_seconds": 0,
+          "graph_prepare_calls": 0,
+          "graph_commit_calls": 0
+        },
+        "accepted_output_attention_samples": 4966,
+        "accepted_prefill_attention_samples": 65384,
+        "candidate_attention_rows": 72204,
+        "final_per_owner_graph_bytes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "identities": {
+          "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+          "query_selection_multiset": [
+            "18411a655160ee0430a2dbfef7beb25f9d690ea98dedb8639a2c58f5c4b2c3f3",
+            "263338c5c9c3fd759de6bc33502d64ff10ebace7efc245383aa10d4df6a8e904",
+            "610e1d25c47c7b1c3c08ab62e8d2dac71f94a5ba1468f63fedc29af9d47fc2f1",
+            "717129963720a7d56aee5e4a3860cf803c7ffa1652f99c77ab0d8c9c0277488d",
+            "ab7159c8e493470305fd78abe8441da99a3b5d84cabfc1b273e95325598866f1",
+            "ac91e4e6604dd5b003f31c06cff209dd671d92ff10fbadb6258144658b506e0e",
+            "d9406e9315d4f8a880a519c77309fec4826647cb9a7960aea5d8bf00e5ea7a7c",
+            "df6939fc1cc766c74884e09209269aed9b4554add5985f78f7fe6e7bf7cc4f56"
+          ],
+          "pressure_selection_multiset": [
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b"
+          ],
+          "accepted_output_multiset": [
+            "018dbbcfa91e1a79af6f7434be3d85fbcd4334e38f181ab855e51cf403ed7d32",
+            "2080ebe2d02c0ceeddc79ae8e1bf08d7bb613ec518745a255d43108523d19cd6",
+            "40bf075e8342b5215e60b714d59cbbe8f0bd7da6616becda1a842ce82f5f3bf5",
+            "57504e5c54a7cfbe2c09fa6d1725fa16e7db4879b4d3b6d5c2d9b43d17dddd17",
+            "5d1c21f60f58d0600b1356e87cb1917cd19148e7e4b3b415c509db47c0d9b6e2",
+            "5d6a42045fbc5d92c6999446d084cd294a1ed7d98f6c958a0def1be96f181858",
+            "7a4198f1f4d784469a28711b6f8fb817ad95d15a8c5b8cf663144be2f3c1beb8",
+            "999a779fc7ad7fba6ff90721623803559abbb9ea5dc5ae6524f18f522d421490"
+          ]
+        },
+        "original_job_status": "failed",
+        "original_snapshot_status": "failed",
+        "original_snapshot_violations": [
+          {
+            "sample_index": 1483,
+            "read_started_at": 371.94227335136384,
+            "read_finished_at": 372.19357926398516,
+            "reasons": [
+              "prefill_increment_during_window"
+            ],
+            "prefill_delta": 2
+          }
+        ],
+        "independent_executed_overlap_steps": 3231,
+        "native_snapshot_coverage": 0.9945713845282532,
+        "audit_sha256": "8bdf338d966a979bbedfd792aed95e425ca58a44daa616d81e47a6b4307e5067",
+        "fixture_sha256": "563c58af4bed3f9e0faba95c2f676bc8c485617f6467d2ef88f26a7e6a7f5e03"
+      },
+      "collect": {
+        "steady_decode_tokens_per_second": 663.5009719770478,
+        "steady_window_seconds": 153.04423699248582,
+        "cold_preparation_seconds": 374.4362236484885,
+        "effective_input_tokens_per_second": 5599.906920246134,
+        "pure_prefill_model_tokens_per_second": 5911.360265297864,
+        "model_step_mean_ms": 41.4748433695211,
+        "full_step_mean_ms": 42.81532412662479,
+        "model_steps_per_second": 22.64051275691044,
+        "end_to_end_output_tokens_per_second": 219.21809403247988,
+        "wall_seconds": 597.9068496990949,
+        "useful_output_per_native_owner_decode_step": 3.6107774533032124,
+        "native_owner_decode_steps": 36298,
+        "mean_accepted_tokens_per_SSE_event": 3.6109978511212737,
+        "engine_inclusive_host_totals": {
+          "capture_host_seconds_total": 267.94715496338904,
+          "metadata_wait_seconds": 0.04687465727329254,
+          "prefill_commit_host_seconds": 9.043610097840428,
+          "accept_event_wait_seconds": 0.37584980111569166,
+          "graph_prepare_seconds": 70.13491804152727,
+          "graph_commit_seconds": 0.990669340826571,
+          "graph_prepare_calls": 38482,
+          "graph_commit_calls": 38482
+        },
+        "accepted_output_attention_samples": 7325,
+        "accepted_prefill_attention_samples": 65384,
+        "candidate_attention_rows": 75806,
+        "final_per_owner_graph_bytes": [
+          4332806,
+          4456422,
+          4462506,
+          4449566,
+          4457986,
+          4458590,
+          4455702,
+          4458842
+        ],
+        "identities": {
+          "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+          "query_selection_multiset": [
+            "192cf218853e15c687249039756ba8f30996919d6c277a9fa8ddc164fe614c23",
+            "392432df24154e7b4bbb0cd3b8ab12b5a871486e413b453dc367dab354de76ec",
+            "3d7e530524c346e3bd5065f21faf8c3f9396569cacb3e798e31ace1c8e942cf1",
+            "42b3cd623b8f21b314cc4cf1f212bcdce9cf5bef7485cba5d019830afa4ae9c0",
+            "5080094ae2a51be2a147520e3655bade3c5f1b589b2f9954a093ef5df0ca185e",
+            "b08efaba5d8bd322e50474bdd87c7d3af59642546f814220f238f27c106da5de",
+            "b54b07bae94868d350767f513b9a2f7996bbc5a0d6bd85203795f898b83159d5",
+            "ff0f9973e84403df445100ca48873a8167481b852e9044e5e91f5722b88e99fa"
+          ],
+          "pressure_selection_multiset": [
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b",
+            "1515bf1f05d51bb768f6addf9d52978008ac41a37c30919e99b5a47d1b0a1d3b"
+          ],
+          "accepted_output_multiset": [
+            "1895b1e6a4275ac811b10ab797beeb79497c9a24c351ac7f7b809c43a19c7bfb",
+            "39a8dcf968898f1424bb2f02f0c61916216523c8213d6f77994f2df14d4c26ed",
+            "4bd71814534058dee2ed457b6689f901024306b91abf478eba44f54e748a2f9e",
+            "533ca684a9d44a672ca8e6278efe53b782af2f5467111eb05d64b2bcc9c529a7",
+            "5fd6ea6805f729da6686fc414b5c94d2482a716bd1b90dae7c75d6bde70aa8ef",
+            "cceb005bdd717de5b3462d60ecf4cc6ee0f4674fcad5c45d05169da1f783587f",
+            "e6378f9cd8fa71411e46e8ab2386ecd7b4ca9ada5cafc08e3b0c9cdd146f5cf5",
+            "e849c95d1fd93bc62bd7b5f39f6694ba02d38175bba4325481937ed7020e12ad"
+          ]
+        },
+        "original_job_status": "passed",
+        "original_snapshot_status": "passed",
+        "original_snapshot_violations": [],
+        "independent_executed_overlap_steps": 3465,
+        "native_snapshot_coverage": 0.9956744901669318,
+        "audit_sha256": "55d317f2984b4b8c01364e663fe67b39050368fa321ca25c6b6670ebe004b6c0",
+        "fixture_sha256": "563c58af4bed3f9e0faba95c2f676bc8c485617f6467d2ef88f26a7e6a7f5e03"
+      }
+    },
+    "pairs": {
+      "attention_statistics": {
+        "before": "disabled",
+        "after": "attention",
+        "identity": {
+          "input_sha256": true,
+          "query_selection_multiset": false,
+          "pressure_selection_multiset": true,
+          "accepted_output_multiset": false
+        },
+        "observed_changes": {
+          "cold_preparation_time_change_percent": 6.677721568580708,
+          "full_decode_step_change_percent": 11.59168260766843,
+          "model_decode_step_change_percent": 8.554929170328052,
+          "decode_throughput_change_percent": 11.88504254301337,
+          "whole_batch_time_change_percent": 3.9172382004738493
+        },
+        "exact_workload_identity_equal": false,
+        "limitation": "Single ordered cold screen. Selection/output/verification-step drift prevents pure causal attribution. Inclusive host timers overlap GPU/other threads and cannot be summed into GPU idle or net overhead."
+      },
+      "graph_collection": {
+        "before": "attention",
+        "after": "collect",
+        "identity": {
+          "input_sha256": true,
+          "query_selection_multiset": false,
+          "pressure_selection_multiset": true,
+          "accepted_output_multiset": false
+        },
+        "observed_changes": {
+          "cold_preparation_time_change_percent": 0.7923370296656573,
+          "full_decode_step_change_percent": 2.0858552455223833,
+          "model_decode_step_change_percent": 1.956357124997954,
+          "decode_throughput_change_percent": -20.21339895793861,
+          "whole_batch_time_change_percent": 5.638096383349511
+        },
+        "exact_workload_identity_equal": false,
+        "limitation": "Single ordered cold screen. Selection/output/verification-step drift prevents pure causal attribution. Inclusive host timers overlap GPU/other threads and cannot be summed into GPU idle or net overhead."
+      }
+    },
+    "status": "completed_initial_cost_screen_with_snapshot_outcomes_preserved"
+  },
+  "reference_full_D_graph_timings": {
+    "query": {
+      "calls": 8,
+      "propagation_seconds": 0.6145621882751584,
+      "selection_wrapper_seconds": 0.9106243690475821,
+      "median_propagation_ms": 76.85279939323664
+    },
+    "pressure": {
+      "calls": 104,
+      "propagation_seconds": 4.1760963927954435,
+      "selection_wrapper_seconds": 9.83282957971096,
+      "median_propagation_ms": 42.91533771902323
+    }
+  },
+  "auxiliary_two_owner_attention_intervals": {
+    "prefill_all": {
+      "samples": 43,
+      "mean_ms": 7.143497659716496,
+      "median_ms": 7.735360145568848,
+      "p95_ms": 7.92854380607605
+    },
+    "prefill_active_at_least32K": {
+      "samples": 35,
+      "mean_ms": 7.791843632289342,
+      "median_ms": 7.758271932601929,
+      "p95_ms": 7.982143878936768
+    },
+    "output_all": {
+      "samples": 8,
+      "mean_ms": 1.892807997763157,
+      "median_ms": 1.4969120174646378,
+      "p95_ms": 4.6570239663124084
+    },
+    "output_active_at_least32K": {
+      "samples": 8,
+      "mean_ms": 1.892807997763157,
+      "median_ms": 1.4969120174646378,
+      "p95_ms": 4.6570239663124084
+    }
+  },
+  "scope": "Initial measurement only. All KVMem enabled. Same full input, K/G, model, speculation and fixed output count. Pressure-selection multisets equal; Query selections, accepted outputs and verification counts drift. Step/time changes are observations, not isolated causal cost. No original quality reruns or native-vLLM comparison.",
+  "validation": "8/8 HTTP success and complete accepted CPU history per arm. All native steps overlapping full shared SSE windows pureC8, no prefill, contiguous sequences; snapshot coverage>=90%. Original failed delayed scheduling-histogram gates preserved for disabled/attention; collect original gate passed. No GPU/model retry; independent audit does not erase failures.",
+  "source_proof_sha256": {
+    "comparison-r1.json": "827fa77adbf186ffbf5b6d53f4122d079565e95e6fbba1591368fc77b00b8d28",
+    "existing-D-reading.json": "bf110dcbee2a29ee828e75d8562514824be2039109a8212e1fd619420c411893",
+    "existing-attention-three-layers.json": "28a057836c6d4536c4e05536f517bbae322110b31003010193ef3904e54e4456",
+    "disabled-executed-audit-r1.json": "de20e7a4bf71709778e6b5cdcfee6cb66600912052e74255902d86aec88c89e6",
+    "attention-executed-audit-r1.json": "8bdf338d966a979bbedfd792aed95e425ca58a44daa616d81e47a6b4307e5067",
+    "collect-executed-audit-r1.json": "55d317f2984b4b8c01364e663fe67b39050368fa321ca25c6b6670ebe004b6c0",
+    "cpu-final-r1.xml": "cfd1259e9b4b988031269371747cc03134b66fdf951358d79e43bc4778ad5c92"
+  }
+}
