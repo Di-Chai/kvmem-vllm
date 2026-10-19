@@ -90,6 +90,10 @@ class ActionHistory:
         if getattr(self.options, 'action_native_decode_commit', False):
             mask = self.parser.preview(accepted)
             indices = [i for i,row in enumerate(rows) if (mask >> row) & 1]
+            if not indices:
+                if self.parser.commit(accepted) != mask:
+                    raise RuntimeError('Action transaction lost its accepted prefix')
+                return
             if hasattr(masses, 'numpy'):
                 masses = masses.numpy()
             elif not hasattr(masses, 'shape'):
@@ -623,15 +627,21 @@ class ActionRuntime:
                     raise ValueError('Graph output packet omitted an accepted sampled row')
                 native_decode = getattr(getattr(self,'options',pending.state.options),'action_native_decode_commit',False)
                 if native_decode:
-                    import numpy as np
-                    values = np.asarray(values).reshape(len(pending.rows),len(pending.history))
                     selected = tuple(i for i,row in enumerate(pending.rows) if (mask >> row) & 1)
-                    positions = tuple(pending.source_positions[i] for i in selected)
-                    if any(pending.source_positions[i] != history_begin+pending.rows[i] for i in selected):
-                        raise ValueError('Graph output source differs from consumed Q position')
-                    dense_output = selected, (pending.state.mass,pending.state.samples,
-                        getattr(pending.state.options,'action_commit_max_bytes',16777216)), mask
-                    masses, targets = values, pending.history
+                    if selected:
+                        import numpy as np
+                        values = np.asarray(values).reshape(len(pending.rows),len(pending.history))
+                        positions = tuple(pending.source_positions[i] for i in selected)
+                        if any(pending.source_positions[i] != history_begin+pending.rows[i] for i in selected):
+                            raise ValueError('Graph output source differs from consumed Q position')
+                        dense_output = selected, (pending.state.mass,pending.state.samples,
+                            getattr(pending.state.options,'action_commit_max_bytes',16777216)), mask
+                        masses, targets = values, pending.history
+                    else:
+                        # Most decode frames have no accepted sampled row.
+                        # Advancing their graph/parser boundary needs no copy
+                        # or validation of the immutable published score map.
+                        output=mask,pending.state.mass,pending.state.samples
                 updated, samples = (None,None) if native_decode else (dict(pending.state.mass),pending.state.samples)
                 kept_positions, kept_masses = [], []
                 for row, position, row_mass in (() if native_decode else zip(pending.rows,pending.source_positions,values)):

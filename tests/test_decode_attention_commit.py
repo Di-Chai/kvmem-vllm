@@ -104,3 +104,16 @@ def test_dense_index_bounds_rejected_without_changing_graph():
                 row_indices=[2])
         assert (graph.binding,graph.bytes)==before and graph._pending_update is None
     finally:graph.close()
+
+
+def test_no_accepted_sample_does_not_copy_or_validate_rejected_rows(tmp_path,monkeypatch):
+    state,runtime,graph=setup(tmp_path,True)
+    try:
+        published=state.mass={0:.5,32:.5}
+        packet=output_packet(state,[12,20,20,13,20],64,[0,32],[[float('nan'),0.]])
+        def forbidden(*args):raise AssertionError('No sampled row may allocate a score candidate')
+        monkeypatch.setattr(_native,'prepare_decode_attention',forbidden)
+        prepared=runtime.prepare_accept(packet,'r',3,graph=graph,history_begin=64)
+        prepared.commit()
+        assert state.mass is published and state.samples==0 and graph.accepted_through==67
+    finally:graph.close()
