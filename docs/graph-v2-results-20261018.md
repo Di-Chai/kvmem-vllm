@@ -403,6 +403,14 @@ thinking=4,096 均一致。模型精度、推测解码实现、attention 配额�
 `final-comparison-memory-preflight-r1/preflight.json` 和
 `final-comparison-incomplete-rejection-r1.json`；尚未生成完整最终对照表。
 
+单臂整组封存工具 `seal_niah_arm.py` 已用 A180 的真实证据验证：质量、
+错误分类、耗时、阶段指标和释放证明均与原封存一致，先前 120 题首次
+证明不变；工具不预设 C/D 的正确率或漏答模式。真实的未完成 C120 输入
+和覆盖既有输出的尝试均被拒绝，没有产生伪整组结果。验证见同目录
+`generic-seal-preflight-r2.json`。首次预检调用方因相对／绝对路径摘要查找
+错误而退出，记录保留为 `generic-seal-preflight-r1-failure.json`；没有修改
+工具、冻结实现或首次答案。这是封存工具预检，不代表 C/D 或全矩阵完成。
+
 r2 A 的首个完整长度 64K 已完成 60/60 exact、100% 数值覆盖，输出触顶为零。
 另逐题复算冻结的原评分，核对完整原始 i32 文件、保存的请求描述中全部
 采样／Query／seed、API token usage、服务端消费水位和逐请求释放，60 题
