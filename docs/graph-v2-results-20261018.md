@@ -3,7 +3,7 @@
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
-r2 的独立 LongMemEval-S A 正在运行，C/D 顺序排队；r2 NIAH 尚待运行，完整矩阵未完成，
+r2 的独立 LongMemEval-S A 已完成生成，C 正在运行、D 排队；r2 NIAH 尚待运行，完整矩阵未完成，
 尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
@@ -98,7 +98,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 排在 MAB 之后重新运行 |
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 正在运行，C/D 同参数顺序排队；全部生成结束后运行原裁判评分 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 已完成生成与释放，C 正在运行、D 同参数排队；全部生成结束后运行原裁判评分 |
 
 ### 独立 LongMemEval-S 参数与运行记录
 
@@ -159,6 +159,41 @@ C8 decode 上限。纯 prefill 的 model-event 速率为 6,526 token/s，包含�
 遇技术错误保留首次文件并停止；外部 GPU 用户只等待，不停止。
 执行链为 `artifacts/graph-v2-completion-20261019/queue-r1/`，其中冻结了脚本、
 依赖及正式 campaign 校验值。该队列尚未完成，不作为完整 4,194 题通过证明。
+
+### 独立 LongMemEval-S A 完整生成验收
+
+A 现已完成 102/102 个首次回答，技术错误与输出触顶均为零，所属历史、进程和
+GPU 资源释放通过。再次核对全部原始输入、Query 与采样配置，实际接受的
+73,670 个输出 token 与 response/usage/result 计数一致；最长回答为 4,220
+token。C 已自动启动，其首六题也通过同样的参数和完整输入核验。D 尚未运行。
+这项生成通过不是准确率：三组原裁判评分仍待执行。
+
+| A 全部 102 题的指标 | 结果与口径 |
+| --- | --- |
+| 原始输入总量 | 11,111,103 token |
+| 整轮耗时 | 2,177.99 s，约 36.3 分钟 |
+| 原始有效输入／整轮时间 | 5,101.55 token/s，包含输出、选页与释放时间 |
+| 接受输出／整轮时间 | 33.82 token/s，包含长 prefill，非纯 decode |
+| pure-prefill／model event | 6,526.11 token/s，包含重放与模型流水工作 |
+| HTTP 平均／p95 | 167.84／307.66 s |
+| TTFT 平均／p95 | 105.76／141.04 s |
+| 观测 GPU 平均利用率 | 85.04%；覆盖原生提交区间的 96.65%，首 72.29 s 未采到 |
+| 实际 native 峰值 | batch 八；仅三步为八路 pure-decode，无持续 C8 窗口证明 |
+
+完整阶段记录为同目录 `baseline-A-r1/phase-reading-complete-r1.json`，逐题控制
+证明为 `controls-and-first-answers-A-complete-r1.json`。原始 Python 栈采样文件
+严格 UTF-8/JSON 解码失败，校验值和错误位置保存在
+`baseline-A-r1/host-profile-integrity-r1.json`；未修补标签或据此声称 Python
+热点归因。原生 step/NVML 记录有效并用于以上统计，C/D 保持相同采样设置。
+
+完整矩阵核验器已按当前文件格式只读复核 MAB 三组的 3,348 个首次回答和原
+评分，宏平均重算一致；实际服务启动记录中的全部 worker 选项也与配置逐项
+一致。快照只计入已经通过、释放的完整组，不把 LME 在途部分算作完整组。
+证据为 `artifacts/graph-v2-completion-20261019/matrix-snapshot-r1/` 与
+`actual-launch-audit-r1.json`。最终 CPU 汇总队列已注册到后续 GPU 队列的实际
+进程身份，脚本和依赖冻结于 `report-queue-r1/`；它会在执行链结束后深核验全部
+首次返回输入/输出、原评分绑定与阶段记录。未完成上游只能生成明确的未完成
+快照，不将未评分、未运行或失败项记作成功。最终仍需逐项完成整个目标的审计。
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
 `graph_mode`，C/D 仅改变 `pressure_policy`；输入、seed 与其余服务参数相同。
