@@ -393,6 +393,13 @@ thinking=4,096 均一致。模型精度、推测解码实现、attention 配额�
 `artifacts/graph-v2-completion-20261019/niah-historical-controls-r1.json`。
 这是参数／输入预检；r2 NIAH A 已实际启动，其完成情况另行统计，C/D 排队。
 
+最终历史对照表另由同目录 `assemble_final_quality.py` 生成：默认同时要求
+完整 4,194 题矩阵审计及本版全 540 题实际请求审计，不能接入 r1 NIAH。
+它已核对 3,654 份 memory 回答／原评分的完整结果文件绑定，并在真实的
+未完成快照上确认拒绝输出最终报告。两项验证见
+`final-comparison-memory-preflight-r1/preflight.json` 和
+`final-comparison-incomplete-rejection-r1.json`；尚未生成完整最终对照表。
+
 r2 A 的首个完整长度 64K 已完成 60/60 exact、100% 数值覆盖，输出触顶为零。
 另逐题复算冻结的原评分，核对完整原始 i32 文件、保存的请求描述中全部
 采样／Query／seed、API token usage、服务端消费水位和逐请求释放，60 题
