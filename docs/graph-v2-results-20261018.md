@@ -322,6 +322,12 @@ C 整轮比 A 长约 0.86%，但回答、选页和 batch 组成已改变；不�
 约一秒，三组低于 20% 的样本比例为 3.97%／3.82%／4.27%。这些是同偏移
 窗口的样本均值，未提供固定输出、重复配对的因果吞吐比较或精确 GPU idle。
 
+后续 C8 诊断另通过启动容量预检：当前正式配置的实际日志估算 GPU KV
+为 1,158,059 token，八份 K+G 为 425,984 token，显存比例仍为 0.72。
+这只核对 token 容量级别的可行性，不能替代 MTP/recurrent、准入与持续
+native C8 执行验证；独立测试继续使用原冻结配置。证据为
+`artifacts/graph-v2-completion-20261019/C8-capacity-preflight-r1.json`。
+
 与 A 不同，C 的 Python 采样文件通过严格 UTF-8、JSON、57 个 profile 及
 41,510 个 stack 样本的结构校验。主要叶节点包括同步 Action metadata 上传
 以及后台历史 SHA-256／封存；这些是采样栈权重，不是额外 CPU 墙钟或 GPU
@@ -386,6 +392,17 @@ thinking=4,096 均一致。模型精度、推测解码实现、attention 配额�
 已知差异继续单独披露。证据为
 `artifacts/graph-v2-completion-20261019/niah-historical-controls-r1.json`。
 这是参数／输入预检；r2 NIAH A 已实际启动，其完成情况另行统计，C/D 排队。
+
+r2 A 的首个完整长度 64K 已完成 60/60 exact、100% 数值覆盖，输出触顶为零。
+另逐题复算冻结的原评分，核对完整原始 i32 文件、保存的请求描述中全部
+采样／Query／seed、API token usage、服务端消费水位和逐请求释放，60 题
+均通过。NIAH 的请求文件保存的是来源 i32 摘要，非完整 HTTP body hash；
+SSE 也未保存第二份完整 prompt IDs，未将其描述成返回 ID 的逐个核验。
+证据为 `artifacts/graph-v2-completion-20261019/NIAH-A-64K-first-controls-r1.json`，
+生成器为同目录 `audit_niah_completed.py`。该命令显式允许仍在运行的 A，
+只封存完整 60 题长度分组，`full_540_NIAH_complete=false`。128K 正在推进；
+最终还须对全部 A/C/D、三个长度运行该审计器的默认严格模式，验证全 540 题
+实际请求描述与原评分，不把此部分结果当作 A180 或整个矩阵完成。
 
 C 的前 23 道首次回答另通过运行路径复核：23 道 Query 图事件实际改变选页，
 99 次 pressure 事件仍是旧 attention，未发生 pressure 图传播；Query 坐标、
