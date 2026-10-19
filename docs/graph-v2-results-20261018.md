@@ -3,7 +3,7 @@
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
-r2 的独立 LongMemEval-S A 已完成生成，C 正在运行、D 排队；r2 NIAH 尚待运行，完整矩阵未完成，
+r2 的独立 LongMemEval-S A 已完成生成与评分（86/102，84.31%），C 正在运行、D 排队；r2 NIAH 尚待运行，完整矩阵未完成，
 尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
@@ -182,6 +182,23 @@ A 的 102 题均有有效裁判结果，未评分项为零，原始 12 项校准
 SHA-256 为 `4fa0e408853352f15bf100464c264e1220d4a66ee4bce522a4d6a0af767c0af3`。
 当前 A 比历史 Query 少答对 3 题、比历史 attention 少 4 题；历史模型精度、
 执行方式、attention 配额和输出上限有上述已披露差异，不能归因为图方法。
+
+进一步逐题配对核对全部 question/gold/input/Query 与评分绑定：A 相比旧 Query
+修正 3 题、退步 6 题；相比旧 attention 修正 5 题、退步 9 题。分类型统计中，
+multi-session 为 A 9/17、旧 Query 12/17、旧 attention 13/17；其余五类的 A
+总答对数与旧 Query 相同，但不表示逐题结果完全相同。该分析只描述已有首次
+回答，不据此更改 C/D 参数。证据为
+`artifacts/graph-v2-lme-efficiency-20261019/A-original-pairs-r1/` 的
+`comparison.json`、`comparison.md` 与 `paired-correctness.csv`；分析脚本为上一级
+`analyze_lme_pairs.py`，只读且不调用模型或额外裁判。
+
+等待 C/D 时，对执行链冻结副本的 C8 客户端验收进行了 CPU 预检：两个测试
+文件共 31 项通过（0.42 s），包含重复／缺失原生 request 拒绝、单调时钟映射、
+完整输入和共同窗口门槛。只使用一个低优先级 CPU 核，GPU 不可见；没有改动
+冻结文件。证据为
+`artifacts/graph-v2-completion-20261019/decode-cpu-preflight-r1.json`，绑定了四个
+客户端 helper、两个测试文件和原队列 manifest 的 SHA-256。它仅证明测试
+入口与负面门槛可运行，不代表尚未执行的 GPU C8 decode 已通过。
 
 | A 全部 102 题的指标 | 结果与口径 |
 | --- | --- |
