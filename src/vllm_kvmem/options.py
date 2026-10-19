@@ -16,6 +16,7 @@ GRAPH_DEFAULTS = {
     'graph_max_bytes_per_session': 33554432,
     'graph_max_total_bytes': 268435456,
     'graph_trace': False,
+    'graph_native_propagation': False,
 }
 GRAPH_SCORING_MODES = frozenset(('locality', 'attention', 'multi'))
 _UNSET = object()
@@ -109,6 +110,8 @@ def validate_graph_options(values, *, context_mode='meank', request_planning=Fal
         raise ValueError('Per-session graph capacity must fit the global graph capacity')
     if type(cfg['graph_trace']) is not bool:
         raise ValueError('graph_trace must be boolean')
+    if type(cfg['graph_native_propagation']) is not bool:
+        raise ValueError('graph_native_propagation must be boolean')
     if policy == 'graph':
         if version != 'v2' or mode not in GRAPH_SCORING_MODES:
             raise ValueError('pressure_policy=graph requires graph_scoring_version=v2 and a scoring graph_mode')
@@ -236,6 +239,7 @@ class RuntimeOptions:
     graph_max_bytes_per_session: int = 33554432
     graph_max_total_bytes: int = 268435456
     graph_trace: bool = False
+    graph_native_propagation: bool = False
     graph_scoring_version: str = 'v1'
     graph_alpha: float = _UNSET
     pressure_policy: str = _UNSET

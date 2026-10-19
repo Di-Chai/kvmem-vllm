@@ -16,12 +16,15 @@ _MAX_REPLAY_RECORD_BYTES = 2 * 1024 * 1024
 
 
 def propagation_options(options):
-    return dict(mode=options.graph_mode,
+    result = dict(mode=options.graph_mode,
         scoring_version=getattr(options, 'graph_scoring_version', 'v1'),
         alpha=getattr(options, 'graph_alpha', .2),
         locality_weight=options.graph_locality_weight,
         attention_weight=options.graph_attention_weight,
         cross_message_weight=options.graph_cross_message_weight)
+    if getattr(options,'graph_native_propagation',False):
+        result['native']=True
+    return result
 
 
 @contextmanager

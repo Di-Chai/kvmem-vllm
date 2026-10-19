@@ -71,5 +71,6 @@
   "graph_cross_message_weight": 0.25,
   "graph_max_bytes_per_session": 33554432,
   "graph_max_total_bytes": 268435456,
-  "graph_trace": false
+  "graph_trace": false,
+  "graph_native_propagation": false
 }

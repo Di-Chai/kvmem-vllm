@@ -10,6 +10,7 @@ import math
 import operator
 import sys
 import threading
+import weakref
 
 
 MASS_TOLERANCE = .005
@@ -155,6 +156,7 @@ class GraphSnapshot:
 
     def __init__(self, graph, data=None):
         self._data = graph._data if data is None else data
+        self._graph_owner = weakref.ref(graph)
         self.owner = graph.owner
         self._account = graph._account
         self.block_tokens = graph.block_tokens
@@ -227,6 +229,9 @@ class GraphSnapshot:
         return result
 
     def close(self):
+        cache=getattr(self,'_native_scoring_cache',None)
+        if cache is not None:
+            cache.close()
         self._charge.close()
         self._data = None
 
@@ -740,6 +745,9 @@ class BlockGraph:
                     self._pending_update.abort()
                 self.runtime_epoch += 1
                 self.closed = True
+                cache=getattr(self,'_native_scoring_cache',None)
+                if cache is not None:
+                    cache.close()
                 self._charge.close()
                 if self._preserved is not None:
                     self._preserved.close()

@@ -110,7 +110,7 @@ def _operator_weights(mode, scoring_version, alpha, locality_weight,
 def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                 scoring_version='v1', alpha=.2,
                 locality_weight=.1, attention_weight=.2, cross_message_weight=.25,
-                block_tokens=None, trace=False, trace_targets=()):
+                block_tokens=None, trace=False, trace_targets=(), native=False):
     """Propagate Query or pressure seeds; ``eligible`` is the transport mask.
 
     Ineligible seeds remain exactly unchanged, including nonzero mandatory
@@ -129,14 +129,25 @@ def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
             any(bool(keep) and value > 0 for keep, value in zip(eligible, raw_scores)))
     charge = None
     try:
+        use_native=native and scoring_version=='v2' and not trace and work
         if reserve is not None and work:
-            charge = reserve(scoring_scratch_bytes(len(starts), len(snapshot.rows),
-                len(snapshot.message_spans), trace=trace))
-        result = _score_graph(raw_scores, starts, eligible, snapshot, mode=mode,
+            charge = reserve((65536+len(starts)*320) if use_native else
+                scoring_scratch_bytes(len(starts),len(snapshot.rows),len(snapshot.message_spans),trace=trace))
+        if use_native:
+            if snapshot is None or snapshot.closed:
+                raise ValueError('Graph scoring requires a live immutable snapshot')
+            from .native_graph_scoring import score_native
+            result=score_native(raw_scores,starts,eligible,snapshot,mode=mode,alpha=alpha,
+                cross_message_weight=cross_message_weight,block_tokens=block_tokens)
+        else:
+            result = _score_graph(raw_scores, starts, eligible, snapshot, mode=mode,
             scoring_version=scoring_version, alpha=alpha,
             locality_weight=locality_weight, attention_weight=attention_weight,
             cross_message_weight=cross_message_weight, block_tokens=block_tokens,
             trace=trace, trace_targets=trace_targets)
+            if native:
+                result.diagnostics.update(backend='python_reference',native_fallback=
+                    'trace' if trace else 'scoring_version' if scoring_version!='v2' else 'identity')
         object.__setattr__(result, '_charge', charge)
         charge = None
         return result
