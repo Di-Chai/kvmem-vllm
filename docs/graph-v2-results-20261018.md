@@ -2,8 +2,8 @@
 
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
-新 r2 已通过工具跨轮复验，正式 MAB A/C 均已完成 1,116 题生成与原评分，
-D 正在运行。r2 的 NIAH 与独立 LongMemEval-S 尚待运行，完整矩阵未完成，
+新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
+r2 的独立 LongMemEval-S A 正在运行，C/D 顺序排队；r2 NIAH 尚待运行，完整矩阵未完成，
 尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
@@ -97,8 +97,68 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 排在 MAB 之后重新运行 |
-| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C 各 1,116 题生成、释放与原评分完成，D 测试中 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | 已冻结并校验，排在 MAB 后运行 |
+| MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 正在运行，C/D 同参数顺序排队；全部生成结束后运行原裁判评分 |
+
+### 独立 LongMemEval-S 参数与运行记录
+
+2026-10-19 12:19（Asia/Shanghai）的只读审计通过了冻结 controller 的完整验证，
+再次核对全部 102 个原始输入、Query 范围和逐题采样配置。三组 fixture 校验值
+相同；A→C 仅 `graph_mode: collect → multi`，C→D 仅
+`pressure_policy: attention → graph`。全部 132 个冻结运行时文件保持一致，
+没有在正式臂中替换客户端或性能候选。
+
+| 三组共同参数 | 固定值 |
+| --- | --- |
+| 模型与 KV | 相同本地 27B NVFP4 权重；FP8 E4M3 KV |
+| 执行 | 编译与 CUDA Graph；MTP(k=4) |
+| 客户端并发／原生最大并发 | 8／8；实际 batch 另行记录 |
+| K／G | 36,864／16,384 |
+| prefill chunk／每步总 token 预算 | 1,024／16,424 |
+| sink／recent／块大小 | 1,312／0／32 token |
+| CPU 历史 | 100 GB；不用 SSD、截断或重算 |
+| 逐题采样 | 原始题目各自的 temperature、top-p、top-k、min-p、penalty 和 seed |
+| thinking／输出上限 | 4,096／16,384 token |
+| action 配额／历史 Q／guided Query | 0／关闭／关闭 |
+
+此时 A 已完成的 42 道首次回答均核对了实际 request 参数、返回的完整原始
+prompt token IDs，以及 accepted output IDs 与 usage/result 计数一致，零输出
+触顶。C/D 尚未运行，不能把参数准备通过当作实际生成通过。历史 qw3 输出上限
+为 32,768，与本轮三组统一 16,384 的差异继续单独披露，不宣称历史参数完全相同。
+审计脚本与首次证明为
+`artifacts/graph-v2-lme-efficiency-20261019/{audit_controls.py,controls-and-first-answers-r1.json}`；
+后续应另存完整三组的审计结果，不覆盖这一快照。
+
+运行期间同一只读 observer 记录 GPU 利用率、公开 prefill 计数、接受输出指标
+及原生 batch。A 的一个早期 120 秒窗口平均 GPU 利用率约 87.13%，公开 prefill
+约 5,417 token/s，输出计数约 16.62 token/s。后两项以相同混合工作窗口为分母；
+前者包含重放，后者受到长 prefill 干扰，均不能当作隔离的 pure-decode 速度。
+这些短窗口不构成 A/C/D 完整性能比较，也没有触发正式参数变更。
+快照及原始采样前缀校验值为
+`artifacts/graph-v2-lme-efficiency-20261019/baseline-A-r1/observed-window-r2.json`。
+
+随后对前 60 个完成回答及已完成的 3,238 个原生 step 作只读阶段复核：题目
+输入平均 108,976 token、输出平均 498 token。358 步 pure-prefill、2,650 步
+mixed、230 步 pure-decode；约 99.28% 的累计模型 event 计时落在含 prefill
+的批次中。pure-decode 只有三步为 batch 八，不能用这轮混合输出率检验持续
+C8 decode 上限。纯 prefill 的 model-event 速率为 6,526 token/s，包含重放。
+已观测到的 1,258 秒内 GPU 平均利用率 85.38%，覆盖同期原生提交区间的
+94.55%；混合输出计数率为 24.46 token/s。未完成题仍在途，以上不是整轮吞吐。
+这类长输入、短输出负载的输出率与孤立长生成压测的分母和工作组成不同。
+响应落盘到结果校验落盘的间隔平均 0.830 秒、p95 1.259 秒；请求可重叠，
+不能将间隔总和解释为 GPU idle。绑定原始日志前缀和首次响应校验值的证据为
+`artifacts/graph-v2-lme-efficiency-20261019/baseline-A-r1/phase-reading-r1.json`。
+同一日志前缀绘制的阶段图为同目录 `phase-timeline-r1.png`，图、分析记录和
+绘图脚本的绑定为 `phase-timeline-r1.proof.json`；图中的批次数是执行采样，
+不作为按时间加权的占用率。
+
+后续执行链已实际注册到当前 LME 生成／原评分队列的进程身份，状态为等待
+该队列完成。LME 三组全部生成、评分和释放后，先再次审计全部实际请求参数，
+再依次运行同一 r2 的 NIAH A/C/D；最后运行独立 frozen-P 同步／异步功能验收
+和独立 C8 固定输出诊断。每个任务仅消费 `prepared` 状态，不重跑已有尝试，
+遇技术错误保留首次文件并停止；外部 GPU 用户只等待，不停止。
+执行链为 `artifacts/graph-v2-completion-20261019/queue-r1/`，其中冻结了脚本、
+依赖及正式 campaign 校验值。该队列尚未完成，不作为完整 4,194 题通过证明。
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
 `graph_mode`，C/D 仅改变 `pressure_policy`；输入、seed 与其余服务参数相同。
@@ -303,13 +363,66 @@ C 先完成 1,005 题截止快照的评分，其中一个裁判把 1,024-token �
 输入与回答绑定完全相同，这 170 个的得分全部一致；其余回答分别保留原评分。
 对应审计为 `AC-full-common-external-answer-audit.json`。
 
+### MAB r2 D 完整评分与五组对比（2026-10-19）
+
+D 的 1,116 题原始回答全部完成评分，未判定项与裁判失败均为零。补评时旧
+progressive 评分进程已经退出；保留中断记录和原有 300 条 LongMem 判断，
+仅补齐缺失的 16 道摘要。使用相同冻结评分器、官方 rubric、DeepSeek 模型及
+原预算；已核对全部 316 条裁判配置，原有 300 条判断逐项保持不变，未重生成回答。
+
+| 子任务 | 题数 | A | C | D | 旧 qw3 Query | 旧 qw3 attention |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| EventQA | 500 | 90.00 | 89.20 | 91.00 | 89.20 | 86.00 |
+| RULER QA2 | 100 | 55.00 | 60.00 | 57.00 | 56.00 | 54.00 |
+| 单跳事实整合 | 100 | 54.00 | 49.00 | 51.00 | 54.00 | 48.00 |
+| 多跳事实整合 | 100 | 2.00 | 3.00 | 3.00 | 2.00 | 1.00 |
+| MAB 内 LongMem 问答 | 300 | 56.67 | 56.00 | 56.67 | 54.33 | 56.33 |
+| InfBench 摘要 F1 | 16 | 21.91 | 24.28 | 23.25 | 24.36 | 19.96 |
+| **原三类宏平均 /100** | **1,116** | **39.04** | **39.56** | **39.49** | **39.62** | **36.63** |
+
+前五项为正确率百分数，摘要为 F1×100；先在类内等权平均来源，再对三类等权。
+D 的检索、冲突消解、长文理解三类分别为 68.2222、27.0000、23.2479，独立
+重算宏平均为 39.49004569。D 比 A 高 0.44560 分、比 C 低 0.06902 分，
+比旧 qw3 Query 低 0.13347 分，比旧 attention 高 2.85506 分。
+
+按 1,100 道二元问答计数，A/C/D/旧 Query/旧 attention 分别答对
+731/726/736/721/702 题。A→D 修正 35、新增错误 30；C→D 修正 41、新增
+错误 31。该计数混合原 substring 与 LLM 正确性标准，是辅助诊断，不替代正式
+宏平均。D 相比 C 的问答子项宏平均贡献为 +0.27407 分，摘要贡献为 -0.34309
+分，因此答对更多问答却没有更高的正式宏平均。相对 A，问答各子项加权贡献恰好
+抵消，宏平均净增来自摘要；不能把题数较多的 EventQA 增益直接解释为总分增益。
+
+16 道摘要占正式宏平均的三分之一。单次原样本结果没有建立 graph pressure
+优于旧 attention pressure 的稳定收益。旧 qw3 为 Q8_0，当前 vLLM 为 NVFP4，
+即使逐题输入、Query、标准答案和输出上限一致，历史差异也不能单独归因于图算法
+或推理框架。这里的 300 道 LongMem 是 MAB 子集，不代表独立 102 题 LME 已完成。
+
+进一步核对旧 `launches.json` 后补充历史对照限制：旧 attention 的
+`action_fraction=.5`，会把可选页约一半配额交给 attention；本轮 A/C/D 均为
+`.0`，没有相同的 attention 配额选页。旧版为 Q8_0/FP8 KV/DFlash（最大草稿
+7 token），关闭 continuous batching 并串行请求；本轮是 NVFP4/FP8 KV/MTP4，
+八 worker 上限。因此历史分数比较是整体方案比较，不是相同参数下对图算法的
+单变量消融。旧版启动时 guided 配置为 both、Query4096，但逐题汇总 MAB 的
+实际 guided_events 为零，不能把启动配置当成这些题实际发生 guided 生成的证据。
+旧 MAB 的全部 1,116 次语义选页都标记 `attention_source=prefill`，累计 3,819
+个 pressure 事件使用 prefill fallback；107 个保留原冷启动回答，1,009 个使用
+冻结前缀恢复。原模型输入、Query、输出上限及已发布评分仍保持不变。
+
+证据均位于 `artifacts/graph-v2-early-scoring-20261019/`：
+
+- `D-complete-r1/{manifest.json,status.json,summary.json,analyzer.log}`：补评、旧判断
+  不变与原配置审计；中断记录和补评前缓存另外保留。
+- `D-full-comparison-r1/{comparison.json,comparison.md,paired-records.json}`：五组
+  完整来源审计、逐题输入/回答绑定、宏平均复算、各来源贡献和配对变化。
+
 后续采用按完整分组就绪即评分的原裁判队列，状态和无凭据 runner 副本位于
 `/data/chaidi/kvmem-vllm-experiments/graph-v2-progressive-scoring-20261019-r1`。
 依次处理完整 C/D 与独立 LME A/C/D，等待时验证主推理进程仍为绑定的同一
 进程；每组先确认 passed 与 GPU 清理，再运行冻结原评分器。原最终评分进程
 在该流程拥有评分期间临时挂起，完成或失败后恢复，最后复用同一答案绑定缓存
 做全矩阵检查。评分保持单核低优先级，未变更模型、评分协议或预算，也不再
-让已经完成的分组等待全部九项推理结束。C 现已完整评分，D 正在真实推理。
+让已经完成的分组等待全部九项推理结束。上述为提前评分队列的历史设计；D 最新
+完整补评分及接管记录见上一节，不把已退出旧队列的状态文件视作实时进程证据。
 
 C 的全部首次回答与原始来源/Query 绑定也已核对：29 组历史、1,087 次 P
 复用，全 1,116 题实际为 Query multi/.2/两图等权；743 次旧 attention
@@ -393,20 +506,23 @@ manifest 记录新版本，不能用它悄悄续跑旧尝试。21 项针对性 C
 prefill/decode 步分类及 GPU 利用率；共同 warm 窗口不足 30 秒时不作
 稳定利用率结论。单次旧/新顺序对照也不能作为普遍吞吐改善的证明。
 
-该实验已通过启动前检查并排入当前 D 完整退场后的边界。
-门控进程只持有正在等待 D 的顶层工作流，D 子进程继续运行；D 通过且
-释放历史、GPU 清空后执行短对照，成功或失败均在清理后恢复原工作流。
-原 NIAH、独立 LongMemEval-S、原评分与最终 C8 decode 队列保留。
-门控状态：`artifacts/graph-v2-idle-reading-20261019/efficiency-r3/gate-r3/status.json`；
-截至本次记录仍在等待安全边界，**尚无新客户端的 GPU 实测收益结论**。
-同步 frozen-P 恢复和 Query/装配成本仍未由本次客户端修改解决。
-直接附加采样受系统 ptrace 权限限制；已验证从采样器启动子进程的无特权
-方式，因此短对照将通过 49 Hz nonblocking 子进程采样记录主机 Python
-调用栈。该证据反映活跃 CPU 栈，不直接归因 GPU idle。首个纯等待门控
-已在加入采样后退出且确认恢复原等待者。增加 frozen-P 功能验收后，r2 也在
-纯等待阶段退出并确认恢复等待者，当前由 r3 接续；两次交接均未启动或重跑
-任何正式模型题目。r3 在客户端对照后依次运行独立同步／异步 P 功能验收，
-成功或失败均清理所属资源并恢复原工作流。
+这项独立真实模型对照现已完成并释放资源：每臂 18 个新回答、其中 16 个续问。
+逐题复核完整输入、Query、采样配置和 119 个模型核心文件一致。观测到的
+响应落盘到下一题 attempt 的平均间隔从 1.245 秒降为 0.077 秒，下降 93.81%；
+这是本次单次有序配对的主机间隔结果，不代表普遍 GPU 加速。
+整轮耗时 301.89 → 290.76 秒，表面缩短 3.69%，但续问输出为 141 → 235 token，
+共同两 owner warm 窗口不存在，实际 pure-decode 均只有 batch 一，因此不能
+将其作为受控吞吐提升。旧／新 NVML 覆盖率分别为 99.66%／52.26%；不完整的
+新臂采样不能参与整轮利用率比较。完整证明为
+`artifacts/graph-v2-idle-reading-20261019/efficiency-r3/client-diagnostic-audit-r1/audit.json`。
+
+旧门控 `gate-r3/status.json` 未发布终态，不能据其旧的 running 字样认定进程
+仍在运行或原工作流已经恢复。独立实验自身的通过与释放记录均已复核。
+目前 LME 与剩余 NIAH／独立验收由上文的新执行链继续，原正式配置未替换。
+同步 frozen-P 恢复和 Query/装配成本仍未由客户端修改解决。49 Hz nonblocking
+子进程采样的原始输出有 UTF-8 元数据损坏，严格 JSON 解码失败，保留原文件，
+不以替换损坏字符后的栈标签作 CPU/GPU 归因。当前 LME 三组采用相同的另一次
+采样方式，完成后仍需单独验证文件有效性。
 
 用户再次询问低利用率时，对运行中的 D 另取固定 180 秒只读窗口，证据为
 `artifacts/graph-v2-idle-reading-20261019/efficiency-r3/current-D-window-r1.json`，
