@@ -48,7 +48,8 @@ def _segment_mass(P, Starts, Counts, Out, HEADS: tl.constexpr, WIDTH: tl.constex
 
 
 def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
-                   starts, counts, length, *, scale, q_dtype, q_scale, block_tokens, profile=None):
+                   starts, counts, length, *, scale, q_dtype, q_scale, block_tokens, profile=None,
+                   fused=False, complete_partition=False):
     """Return [sampled rows, historical segments], averaged over Q heads."""
     if (raw_q.ndim!=3 or key.ndim!=4 or raw_q.shape[-1]!=key.shape[-1] or
             raw_q.shape[1]%key.shape[2] or not 0<length<=table.numel()*key.shape[1] or
@@ -59,11 +60,16 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
         # Sampling density must not depend on whether vLLM admitted an ordinary
         # chunk or a complete explicit Query. Only split independent Q rows;
         # every row still sees the entire original causal active context.
-        return torch.cat([page_attention(raw_q[i:i+64],positions[i:i+64],key,table,
+        chunks=[page_attention(raw_q[i:i+64],positions[i:i+64],key,table,
             cos_sin,key_scale,starts,counts,length,scale=scale,q_dtype=q_dtype,
             q_scale=q_scale,block_tokens=block_tokens,
+            fused=fused,complete_partition=complete_partition,
             profile=profile.child(row_tile=i, sample_rows=min(64,raw_q.shape[0]-i)) if profile else None)
-            for i in range(0,raw_q.shape[0],64)],dim=0)
+            for i in range(0,raw_q.shape[0],64)]
+        result=torch.cat(chunks,dim=0)
+        result._action_scoring_backend=('fused' if all(getattr(x,'_action_scoring_backend','reference')=='fused'
+            for x in chunks) else 'reference')
+        return result
     if profile:
         profile = profile.child(query_shape=list(raw_q.shape), key_shape=list(key.shape),
                                 position_shape=list(positions.shape))
@@ -81,6 +87,11 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
             q=q.to(q_dtype)
             effective_scale=key_scale
     rows,heads,dim=q.shape
+    if fused and complete_partition and 0<starts.numel() and block_tokens<=128:
+        from .action_scoring_fused import fused_page_attention
+        with profile.stage('score.fused',gpu=True) if profile else nullcontext():
+            return fused_page_attention(q,positions,key,table,effective_scale,starts,counts,length,
+                scale=scale,block_tokens=block_tokens)
     # Length/segment count change every accepted step. Specializing on either
     # would trigger JIT compilation during decode. Only bucket scratch width.
     width=max(32,triton.next_power_of_2(length))
@@ -100,4 +111,5 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
     with profile.stage('score.segment_mass', gpu=True) if profile else nullcontext():
         _segment_mass[(rows,starts.numel())](probabilities,starts,counts,mass,heads,width,
             starts.numel(),triton.next_power_of_2(heads),triton.next_power_of_2(block_tokens))
+    mass._action_scoring_backend='reference'
     return mass

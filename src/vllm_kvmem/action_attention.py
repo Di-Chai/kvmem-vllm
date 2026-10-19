@@ -353,6 +353,7 @@ class ActionRuntime:
             'prefill_q_dtype':{k:str(v) for k,v in self.prefill_q_dtypes.items()},
             'native_decode_commit':getattr(self.options,'action_native_decode_commit',False),
             'download_pool':getattr(self.options,'action_download_pool',False),
+            'fused_scoring':getattr(self.options,'action_fused_scoring',False),
             'implementation':'sampled target Q against native working K; original qw3 parser/fusion'},indent=2))
 
     def begin_response(self, state, request_id):
@@ -508,7 +509,12 @@ class ActionRuntime:
                             module.rotary_emb.cos_sin_cache,module.attn._k_scale,starts_gpu,counts_gpu,
                             local_begin+count,scale=module.attn.impl.scale,
                             q_dtype=(self.prefill_q_dtypes if prefill else self.q_dtypes)[module.attn.layer_name],q_scale=module.attn._q_scale,
-                            block_tokens=self.runtime.config.block_tokens, **({'profile': layer} if layer else {}))
+                            block_tokens=self.runtime.config.block_tokens, **({'profile': layer} if layer else {}),
+                            **(dict(fused=True,complete_partition=True)
+                               if getattr(self.options,'action_fused_scoring',False) else {}))
+                        counts_by_backend=self.__dict__.setdefault('scoring_backend_counts',{})
+                        backend=getattr(mass,'_action_scoring_backend','reference')
+                        counts_by_backend[backend]=counts_by_backend.get(backend,0)+1
                     with layer.stage('score.layer_add', gpu=True) if layer else nullcontext():
                         total=mass if total is None else total+mass
                 with owner.stage('score.layer_mean', gpu=True) if owner else nullcontext():
@@ -708,6 +714,7 @@ class ActionRuntime:
                       decode_commit_python_calls=getattr(self,'decode_commit_python_calls',0))
         if getattr(self,'download_pool',None) is not None:
             report['download_pool_total']=self.download_pool.snapshot()
+        report['scoring_backend_counts']=dict(getattr(self,'scoring_backend_counts',{}))
         graph = getattr(authority,'block_graph',None)
         if graph is not None:
             rows = graph.rows

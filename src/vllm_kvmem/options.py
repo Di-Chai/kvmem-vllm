@@ -178,6 +178,7 @@ class RuntimeOptions:
     action_download_pool: bool = False
     action_download_max_bytes: int = 67108864
     action_download_max_slots: int = 128
+    action_fused_scoring: bool = False
     async_refresh: bool = False
     refresh_quantum_tokens: int = 256
     prefill_attention: bool = False
@@ -284,6 +285,8 @@ class RuntimeOptions:
             raise ValueError('Native decode commit must be boolean')
         if type(self.action_download_pool) is not bool:
             raise ValueError('Action download pool must be boolean')
+        if type(self.action_fused_scoring) is not bool:
+            raise ValueError('Fused Action scoring must be boolean')
         if (type(self.action_download_max_bytes) is not int or self.action_download_max_bytes<256 or
                 type(self.action_download_max_slots) is not int or self.action_download_max_slots<1):
             raise ValueError('Action download pool requires bounded positive byte/event capacity')
@@ -544,6 +547,7 @@ class RuntimeOptions:
             ('action_native_decode_commit', False), ('action_commit_max_bytes', 16777216),
             ('action_download_pool', False), ('action_download_max_bytes', 67108864),
             ('action_download_max_slots', 128),
+            ('action_fused_scoring', False),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
             ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),
