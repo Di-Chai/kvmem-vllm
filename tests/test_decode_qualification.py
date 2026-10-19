@@ -199,8 +199,9 @@ def test_token_digest_does_not_depend_on_speculative_chunk_boundaries():
     assert a['_token_digest'].hexdigest() == b['_token_digest'].hexdigest()
 
 
-@pytest.mark.parametrize('token_prompt', [False, True])
-def test_async_streaming_batch_keeps_exact_ids_and_concurrent_lifecycle(tmp_path, monkeypatch, token_prompt):
+@pytest.mark.parametrize('token_count', [None, 81, 262101])
+def test_async_streaming_batch_keeps_exact_ids_and_concurrent_lifecycle(tmp_path, monkeypatch, token_count):
+    token_prompt, input_count = token_count is not None, token_count or 81
     active, peak = 0, 0
     prompts = []
 
@@ -217,12 +218,13 @@ def test_async_streaming_batch_keeps_exact_ids_and_concurrent_lifecycle(tmp_path
                 return ('data: ' + json.dumps({'id': self.request_id, **data}) + '\n\n').encode()
 
             try:
-                yield event({'choices': [{'delta': {'role': 'assistant'}}]})
+                yield event({'prompt_token_ids': list(range(input_count)),
+                             'choices': [{'delta': {'role': 'assistant'}}]})
                 for index in range(0, 64, 4):
                     await asyncio.sleep(.004)
                     yield event({'choices': [{'token_ids': list(range(index, index + 4)),
                                                'finish_reason': 'length' if index == 60 else None}]})
-                yield event({'choices': [], 'usage': {'prompt_tokens': 81, 'completion_tokens': 64}})
+                yield event({'choices': [], 'usage': {'prompt_tokens': input_count, 'completion_tokens': 64}})
                 yield b'data: [DONE]\n\n'
             finally:
                 active -= 1
@@ -247,7 +249,7 @@ def test_async_streaming_batch_keeps_exact_ids_and_concurrent_lifecycle(tmp_path
                            '--min-window-seconds', '.01', '--min-events-per-request', '2'] +
                            (['--prompt-token-file', 'unused.json'] if token_prompt else []))
     batch = asyncio.run(gate.run_batch(args, [{'api_key': 'secret-one'}, {'api_key': 'secret-two'}],
-                                      2, list(range(81)) if token_prompt else gate.DEFAULT_PROMPT))
+                                      2, list(range(input_count)) if token_prompt else gate.DEFAULT_PROMPT))
     assert batch['status'] == 'passed' and peak == 2 and active == 0
     assert prompts[0] == prompts[1]
     for request in batch['requests']:
@@ -266,6 +268,35 @@ def test_cli_rejects_empty_decode_windows_and_nonfinite_timings(tmp_path):
                   ['--min-native-coverage', 'nan']):
         with pytest.raises(SystemExit):
             gate.parse_args(common + extra)
+
+
+def test_long_prompt_echo_exceeds_default_limit_without_becoming_generated_output():
+    prompt = [2**32-1] * 262101
+    event = {'id': 'cmpl-long', 'prompt_token_ids': prompt,
+        'choices': [{'token_ids': [11, 22], 'finish_reason': 'length'}],
+        'usage': {'prompt_tokens': len(prompt), 'completion_tokens': 2}}
+    raw = ('data: ' + json.dumps(event) + '\n\ndata: [DONE]\n\n').encode()
+    async def collect(limit):
+        response = httpx.Response(200, content=raw)
+        return [value async for value in gate.stream_events(response, max_event_chars=limit)]
+    with pytest.raises(gate.DecodeError, match='sse_event_too_large'):
+        asyncio.run(collect(1024*1024))
+    values = asyncio.run(collect(1024*1024 + 12*len(prompt)))
+    assert values == [event, None]
+    value = empty_trace()
+    gate.consume_event(value, values[0], 1)
+    gate.finish_trace(value, 2)
+    assert value['observed_tokens'] == 2 and value['prompt_tokens'] == len(prompt)
+    assert value['timeline'][0]['token_ids'] == [11, 22]
+
+
+def test_long_prompt_event_limit_still_rejects_unbounded_metadata():
+    limit = 1024*1024 + 12*262101
+    async def collect():
+        response = httpx.Response(200, content=('data: ' + 'x'*limit + '\n\n').encode())
+        return [value async for value in gate.stream_events(response, max_event_chars=limit)]
+    with pytest.raises(gate.DecodeError, match='sse_event_too_large'):
+        asyncio.run(collect())
 
 
 def test_exact_token_prompt_uses_completions_and_records_source_hash(tmp_path):

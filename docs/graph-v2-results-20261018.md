@@ -6,8 +6,9 @@
 r2 的独立 LongMemEval-S A/C/D 已完成生成与评分（86/102、92/102、89/102）。
 r2 NIAH A/C 的 180 题均已全部完成（176/180、178/180 exact）。用户最新选择
 “完成当前 C，跳过 D 的重复测试”：r2 D 不启动；完整 r1 NIAH 与 r2 memory
-按套分别注明版本，不能称作单一运行时全矩阵。独立恢复／decode 验收仍待
-完成，尚无稳定的质量或吞吐提升结论。
+按套分别注明版本，不能称作单一运行时全矩阵。持续 native C8 decode 验收
+遇到客户端 SSE 消息上限错误，修复后须重新验收；跨 P 的 Query mandatory 已通过同步／异步
+长工具跨轮及固定 P 独立问题复用验收。尚无稳定的质量或吞吐提升结论。
 
 两套原冻结记忆 cohort 的三臂共 3,654 个正式回答，现均完成原裁判评分：
 
@@ -127,7 +128,38 @@ Query、replay、当前 mandatory 和预算检查不变；新增历史必留内�
 真实 GPU 恢复证据。原失败与修复后记录分别保存在
 `artifacts/graph-v2-output-pressure-20261019/P-restore-miss-repro-r2.json` 和
 `artifacts/p-restore-prefix-fix-20261019/saved-case-fixed-r1.json`。
-修复后的同步／异步长工具真实模型验收及后续性能门槛仍须通过。
+修复提交 `08fe506` 已在全新冻结目录完成同步／异步长工具真实模型验收，
+两种模式均为两 owner、各三轮，共 12 个真实回答、8 次 M/P 恢复。
+每次均核对 17 个 attention 层（含 1 个 MTP）及 96 个 recurrent tensor，
+全部字节一致。第三轮两 owner 均命中 P=180,288，工作窗口 36,864，
+没有重新出现长文 prefill pressure；第二轮每 owner 各有 3 次实际累计
+output-seeded、非 identity 且改变选页的 graph pressure。所属会话和 GPU
+进程均释放。fixture 和 profile 与失败 r1 完全相同，更新的是冻结核心；
+使用原严格恢复门槛，没有把冷重算当作恢复通过。
+
+同一修复核心又完成独立固定 P 同步／异步复用验收：每种模式两 owner，
+每 owner 三个独立问题，各 6 个回答、4 次真实 P 恢复，实际 native batch
+峰值为 2。所有恢复的 target/MTP/recurrent 状态字节一致，prefill 统计
+保留、旧题 output 统计排除。同步捕获 6 次 P，异步只捕获初始 2 次 P；
+这是功能兼容证据，不代表异步模式已有吞吐收益或被默认启用。
+
+新证据位于 `artifacts/p-restore-prefix-fix-20261019/long-tools-r2/` 和
+`remaining-gates-r2/{frozen-P-sync,frozen-P-async}/`，两个旧 prepared
+固定 P 尝试保持未运行，旧失败记录也不修改。此修复未改变图评分算法，
+没有重跑正式 NIAH/MAB/LME；最终持续 native C8 decode 另行验收。
+
+第一项 fixed-core C8 尝试在 prefill 后被客户端中断：八路均报
+`sse_event_too_large`，零有效生成计数。原因是 vLLM 首个 SSE 消息会回传
+完整 256K prompt token IDs，超过客户端固定的 1 MiB 字符上限。此结果
+不能解释为 decode 速度为零，也不能标记并发通过；失败及清理记录保留在
+`remaining-gates-r2/native-C8/`，所属进程已释放。
+
+客户端改为原 1 MiB 基础余量加已知输入的有界 token ID 回显空间，仍拒绝
+超出输入界限的大消息。没有改变服务核心、fixture、采样、16K 输出或
+30 s／90% native coverage 门槛；prompt IDs 不计入生成量。CPU 回归
+36 项通过，包括 256K 双路模拟流式传输、最大 uint32 ID 回显、超大消息
+拒绝及原 token/usage/时间窗口核对。记录为
+`artifacts/p-restore-prefix-fix-20261019/sse-long-prompt-r1.xml`。
 
 ## 冷负载性能筛选
 

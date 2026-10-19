@@ -27,7 +27,25 @@ so it will exit at that assertion after C passes. The successor distinguishes
 this expected user cancellation from any C/model failure and waits for the
 existing same-core output-pressure checks, then runs the prepared frozen-P
 sync/async and native C8 diagnostic. Its manifest, identity-bound waits, resource
-guards and logs are in `scope-change-skip-D-r1/continuation-r1/`.
+guards and logs are in `scope-change-skip-D-r1/continuation-r1/`. That successor
+stopped on the real long-tool sync P-restore failure; it did not run the remaining
+prepared jobs. Preserve this failed attempt separately from the expected D skip.
+
+The user subsequently authorized repairing the P miss. Commit `08fe506` clips
+old mandatory spans to the verified P prefix and compares historical interval
+coverage by kind, so extending a Query envelope after P does not evict an
+unchanged checkpoint. Actual prefix edits and new historical requirements still
+invalidate it. Focused CPU regression: 182 passed, one opt-in CUDA test skipped;
+the saved real failure inputs now prepare P import with zero evictions.
+
+Fresh fixed-core long-tool sync/async checks both passed (12 real answers,
+eight byte-verified M/P restores). Independent frozen-P sync/async checks also
+passed (12 synthetic answers, eight byte-verified P restores, preserved prefill
+statistics and excluded prior output statistics). All use the same fixed source;
+original fixtures/profiles and strict gates remain unchanged. Evidence is in
+`artifacts/p-restore-prefix-fix-20261019/{long-tools-r2,remaining-gates-r2}/`.
+The new native C8 diagnostic is separate; these functional checks are not decode
+throughput or new answer-quality evidence. Do not rerun user-skipped NIAH-D.
 
 ## Approved sequence
 

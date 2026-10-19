@@ -35,11 +35,11 @@ class DecodeError(ValueError):
     pass
 
 
-async def stream_events(response):
+async def stream_events(response, *, max_event_chars=1024 * 1024):
     lines, size = [], 0
     async for line in response.aiter_lines():
         size += len(line)
-        if size > 1024 * 1024:
+        if size > max_event_chars:
             raise DecodeError('sse_event_too_large')
         if not line:
             if lines:
@@ -382,7 +382,13 @@ async def run_batch(args, users, concurrency, prompt):
                         if response.headers.get('content-type', '').split(';')[0].strip() != 'text/event-stream':
                             raise DecodeError('unexpected_content_type')
                         done = False
-                        async for event in stream_events(response):
+                        # vLLM can echo all prompt IDs in the first SSE event.
+                        # Bound that known input separately from generated output;
+                        # 12 chars covers a uint32 ID plus JSON separators. Text
+                        # inputs reserve at most one token per UTF-8 input byte.
+                        prompt_capacity = len(prompt) if isinstance(prompt, list) else len(prompt.encode('utf-8'))
+                        event_limit = 1024 * 1024 + 12 * prompt_capacity
+                        async for event in stream_events(response, max_event_chars=event_limit):
                             if event is None:
                                 done = True
                                 break
