@@ -105,6 +105,22 @@ def test_native_lifecycle_gate_requires_each_query_and_both_restore_byte_oracles
         qual.event_evidence(tmp_path, rows, profile())
 
 
+def test_v2_pressure_reports_are_separate_from_the_single_query_proof(tmp_path):
+    current=profile();current['kvmem'].update(pressure_policy='graph',graph_scoring_version='v2',graph_alpha=.2)
+    row=dict(response_id='first',agent=0,turn=0,query_span=[100,120],input_tokens=160,output_ids=[1,2,3])
+    write_events(tmp_path/'bounded_refresh.jsonl',[dict(request_id='first-0-id',selection='query',
+        query_span=[100,120],selected_tokens=2048)])
+    query=dict(request_id='first-0-id',phase='query',mode='multi',accepted_through=160)
+    pressure=dict(request_id='first-0-id',phase='pressure',mode='multi',scoring_version='v2',alpha=.2,accepted_through=80)
+    write_events(tmp_path/'block_graph.jsonl',[pressure,query,dict(pressure,accepted_through=120)])
+    proof,=qual.event_evidence(tmp_path,[row],current)
+    assert proof['graph']==[query] and len(proof['pressure_graph'])==2
+    write_events(tmp_path/'block_graph.jsonl',[query,dict(pressure,alpha=.3)])
+    with pytest.raises(ValueError,match='policy'):qual.event_evidence(tmp_path,[row],current)
+    write_events(tmp_path/'block_graph.jsonl',[query,dict(pressure,accepted_through=999)])
+    with pytest.raises(ValueError,match='future'):qual.event_evidence(tmp_path,[row],current)
+
+
 def test_step_summary_does_not_call_mixed_prefill_or_speculative_counts_pure_decode(tmp_path):
     write_events(tmp_path / 'model_step_latency.jsonl', [
         dict(started_at=10, prefill_tokens=100, decode_requests=0, model_ms=20),

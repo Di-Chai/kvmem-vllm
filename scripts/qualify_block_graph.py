@@ -280,7 +280,17 @@ def event_evidence(capture, rows, profile):
             0 < selected[0]['selected_tokens'] <= profile['kvmem']['select_budget'],
             'Query span or fixed selection budget changed')
         proof = dict(turn=row['turn'], agent=row['agent'], response_id=row['response_id'], query=selected[0],
-            graph=[e for e in graph if native_matches(row, e)])
+            graph=[e for e in graph if native_matches(row, e) and e.get('phase','query') == 'query'])
+        pressure = [e for e in graph if native_matches(row,e) and e.get('phase') == 'pressure']
+        if pressure or profile['kvmem'].get('pressure_policy') == 'graph':
+            for event in pressure:
+                require(event.get('mode') == profile['kvmem']['graph_mode'] and
+                    event.get('scoring_version') == 'v2' and event.get('alpha') == profile['kvmem']['graph_alpha'],
+                    'Pressure graph report differs from declared V2 policy')
+                require(type(event.get('accepted_through')) is int and
+                    0 <= event['accepted_through'] <= row['input_tokens']+len(row['output_ids'])-1,
+                    'Pressure graph contains an unaccepted future suffix')
+            proof['pressure_graph'] = pressure
         if row['turn']:
             kv_rows = [e for e in target if native_matches(row, e)]
             state_rows = [e for e in recurrent if native_matches(row, e)]
