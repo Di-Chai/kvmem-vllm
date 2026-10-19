@@ -4,13 +4,84 @@ These helpers change client bookkeeping only. Full case results remain the
 authoritative artifacts; callers retain their retirement and validation barriers.
 """
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 from threading import RLock
+import time
 
-VERSION = 'incremental-client-1'
+VERSION = 'incremental-client-2'
+
+
+class PreparedSequence:
+    """Prepare at most one next input while the caller serves the current one.
+
+    The caller must acquire its history credit before entering this context.
+    Preparation never sends requests or changes their order. Exceptions surface
+    at the affected item, so no later input is dispatched after a failed check.
+    """
+    def __init__(self, items, prepare):
+        self._items = iter(items)
+        self._prepare = prepare
+        self._executor = None
+        self._pending = None
+
+    def __enter__(self):
+        if self._executor is not None:
+            raise RuntimeError('Preparation context already entered')
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='benchmark-input')
+        self._advance()
+        return self
+
+    def _advance(self):
+        try:
+            item = next(self._items)
+        except StopIteration:
+            self._pending = None
+        else:
+            self._pending = (item, self._executor.submit(self._prepare, item))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._executor is None:
+            raise RuntimeError('Preparation context is not active')
+        if self._pending is None:
+            raise StopIteration
+        item, future = self._pending
+        prepared = future.result()
+        self._advance()
+        return item, prepared
+
+    def __exit__(self, *exc):
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._executor = self._pending = None
+
+
+class ClientTiming:
+    """Request-local host evidence; concurrent stages are not GPU idle time."""
+    def __init__(self):
+        self.started_at = time.time()
+        self.started = time.perf_counter()
+        self.stages = []
+
+    @contextmanager
+    def stage(self, name):
+        start, cpu = time.perf_counter(), time.thread_time()
+        try:
+            yield
+        finally:
+            self.stages.append(dict(name=name, started_seconds=start-self.started,
+                wall_seconds=time.perf_counter()-start, thread_cpu_seconds=time.thread_time()-cpu))
+
+    def summary(self):
+        return dict(started_at=self.started_at, wall_seconds=time.perf_counter()-self.started,
+            stages=list(self.stages), scope='Client host intervals; not GPU kernel or idle attribution. '
+                'Prepare wait excludes work already overlapped with the previous request.')
 
 
 class CompactResults:

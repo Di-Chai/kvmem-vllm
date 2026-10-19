@@ -16,7 +16,8 @@ import urllib.request
 import uuid
 
 from benchmark_niah import CpuCredits, save, sha
-from benchmark_client_io import CaptureSlice, CompactResults, VERSION as CLIENT_IO_VERSION
+from benchmark_client_io import (CaptureSlice, ClientTiming, CompactResults, PreparedSequence,
+                                 VERSION as CLIENT_IO_VERSION)
 
 
 def digest_tokens(tokens):
@@ -108,88 +109,105 @@ def run(args):
         amount=((extent+31)//32)*32*17*4*256*2
         session='mab-'+uuid.uuid4().hex
         prefix=prefixes[group];prefix_sha=None;completed=0
+        def prepare(row):
+            timing=ClientTiming()
+            with timing.stage('source_verify_and_prefix_hash'):
+                src=source(row)
+                current=digest_tokens(src['tokens'][:prefix])
+                old=args.reference/'results/attention/cases/memoryagentbench'/row['id']/'request_config.json'
+                sampling=json.loads(old.read_text())
+                assert sampling['max_tokens']==src['max_tokens'] and not src['thinking']
+            return src,current,sampling,timing
         with gate:
             credits.acquire(group,amount)
             try:
-                for row in pending:
-                    if credits.cancelled:raise RuntimeError('Another group failed')
-                    directory=args.output/'cases'/row['id'];directory.mkdir(parents=True,exist_ok=True)
-                    assert not (directory/'attempt.json').exists(), 'Archive an interrupted attempt before resuming'
-                    src=source(row);tokens=src['tokens']
-                    current=digest_tokens(tokens[:prefix])
-                    if prefix_sha is None:prefix_sha=current
-                    assert current==prefix_sha,'Shared prefix changed'
-                    old=args.reference/'results/attention/cases/memoryagentbench'/row['id']/'request_config.json'
-                    sampling=json.loads(old.read_text())
-                    payload={k:sampling[k] for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed','max_tokens')}
-                    assert sampling['max_tokens']==src['max_tokens'] and not src['thinking']
-                    assert len(tokens)+payload['max_tokens']<=cfg['max_model_len']
-                    payload.update(model=cfg['served_model_name'],prompt=tokens,session_id=session,cache_salt=session,
-                        return_token_ids=True,thinking_token_budget=0,
-                        kvmem_query_span=[row['query_begin'],row['query_end']],
-                        kvmem_replay_span=[prefix,row['query_end']],kvmem_reselect='force')
-                    save(directory/'request.json',{k:v for k,v in payload.items() if k!='prompt'}|
-                        {'prompt_tokens':len(tokens),'token_sha256':row['token_sha256'],
-                         'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'sampling_sha256':sha(old)})
-                    save(directory/'attempt.json',{'started_at':time.time(),'session':session,'group':group})
-                    capture_slice=CaptureSlice(args.capture/name for name in ('bounded_refresh.jsonl','block_graph.jsonl'))
-                    started=time.monotonic()
-                    try:
-                        http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                        req=urllib.request.Request(f"http://127.0.0.1:{cfg['port']}/v1/completions",
-                            data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
-                        with http.open(req,timeout=args.timeout) as stream:response=json.load(stream)
-                        seconds=time.monotonic()-started;save(directory/'response.json',response)
-                        assert response['usage']['prompt_tokens']==len(tokens)
-                        assert response['choices'][0]['prompt_token_ids']==tokens
-                        rid=response['id'];terminal=wait_terminal(args.capture,rid)
-                        assert terminal['checkpoint_kind']=='P' and terminal['checkpoint_tokens']==prefix
-                        refresh=[e for e in capture_slice.read(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
-                        queries=[e for e in refresh if e['selection']=='query'];assert len(queries)==1
-                        q=queries[0]
-                        assert q['query_span']==[row['query_begin'],row['query_end']]
-                        assert q['attention_source']=='prefill' and q['action_history_pages']==0
-                        assert q['prefill_attention_samples']>0 and q['selected_tokens']<=kv['select_budget']
-                        # Subsequent questions must restore their prefix. A full
-                        # cold prefill would emit pressure events again.
-                        pressure=[e for e in refresh if e['selection']=='pressure']
-                        if completed:assert not pressure,'Frozen prefix was not reused'
-                        text=response['choices'][0]['text']
-                        answer=text.split('</think>',1)[-1].strip()
-                        record={**src['info'],'suite':'memoryagentbench','id':row['id'],'status':'completed',
-                            'answer':answer,'raw_completion':text,'usage':response['usage'],
-                            'token_sha256':row['token_sha256'],'source_token_sha256':row['token_sha256'],
-                            'prompt_sha256':row['prompt_sha256'],'query_sha256':row['query_sha256'],
-                            'prompt_tokens':len(tokens),'source_prompt_tokens':len(tokens),'original_input_intact':True,
-                            'seconds':seconds,'metrics':response.get('metrics'),
-                            'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'prefix_reused':bool(completed),
-                            'attention':q,'finish_reason':response['choices'][0]['finish_reason']}
-                        if graph_v2:
-                            record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
-                                [row['query_begin'], row['query_end']],
-                                require_pressure=not completed and len(tokens) > kv['select_budget'] + kv['gen_budget'],
-                                event_reader=capture_slice.read)
-                        save(directory/'events.json',refresh);save(directory/'terminal.json',terminal)
-                        save(directory/'result.json',record);completed+=1
-                        with lock:
-                            progress.put(record)
-                            summary=summarize()
-                            print(json.dumps({'completed':summary['completed'],'id':row['id'],'seconds':seconds,'reused':completed>1}),flush=True)
-                    except BaseException as error:
-                        credits.cancel()
-                        detail = error.read().decode(errors='replace') if isinstance(error,urllib.error.HTTPError) else str(error)
-                        failed={'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started}
-                        save(directory/'result.json',failed)
-                        with lock:
-                            progress.put(failed)
-                            summarize()
-                        raise
+                with PreparedSequence(pending,prepare) as prepared:
+                    for row,(src,current,sampling,timing) in prepared:
+                        if credits.cancelled:raise RuntimeError('Another group failed')
+                        directory=args.output/'cases'/row['id'];directory.mkdir(parents=True,exist_ok=True)
+                        assert not (directory/'attempt.json').exists(), 'Archive an interrupted attempt before resuming'
+                        tokens=src['tokens']
+                        if prefix_sha is None:prefix_sha=current
+                        assert current==prefix_sha,'Shared prefix changed'
+                        old=args.reference/'results/attention/cases/memoryagentbench'/row['id']/'request_config.json'
+                        payload={k:sampling[k] for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed','max_tokens')}
+                        assert sampling['max_tokens']==src['max_tokens'] and not src['thinking']
+                        assert len(tokens)+payload['max_tokens']<=cfg['max_model_len']
+                        payload.update(model=cfg['served_model_name'],prompt=tokens,session_id=session,cache_salt=session,
+                            return_token_ids=True,thinking_token_budget=0,
+                            kvmem_query_span=[row['query_begin'],row['query_end']],
+                            kvmem_replay_span=[prefix,row['query_end']],kvmem_reselect='force')
+                        save(directory/'request.json',{k:v for k,v in payload.items() if k!='prompt'}|
+                            {'prompt_tokens':len(tokens),'token_sha256':row['token_sha256'],
+                             'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'sampling_sha256':sha(old)})
+                        save(directory/'attempt.json',{'started_at':time.time(),'session':session,'group':group})
+                        capture_slice=CaptureSlice(args.capture/name for name in ('bounded_refresh.jsonl','block_graph.jsonl'))
+                        started=time.monotonic()
+                        try:
+                            http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                            req=urllib.request.Request(f"http://127.0.0.1:{cfg['port']}/v1/completions",
+                                data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+                            with timing.stage('http'):
+                                with http.open(req,timeout=args.timeout) as stream:response=json.load(stream)
+                            seconds=time.monotonic()-started;save(directory/'response.json',response)
+                            assert response['usage']['prompt_tokens']==len(tokens)
+                            assert response['choices'][0]['prompt_token_ids']==tokens
+                            rid=response['id']
+                            with timing.stage('terminal_wait'):
+                                terminal=wait_terminal(args.capture,rid)
+                            assert terminal['checkpoint_kind']=='P' and terminal['checkpoint_tokens']==prefix
+                            with timing.stage('capture_and_validation'):
+                                refresh=[e for e in capture_slice.read(args.capture/'bounded_refresh.jsonl') if e['request_id'].startswith(rid+'-')]
+                                queries=[e for e in refresh if e['selection']=='query'];assert len(queries)==1
+                                q=queries[0]
+                                assert q['query_span']==[row['query_begin'],row['query_end']]
+                                assert q['attention_source']=='prefill' and q['action_history_pages']==0
+                                assert q['prefill_attention_samples']>0 and q['selected_tokens']<=kv['select_budget']
+                                # Subsequent questions must restore their prefix. A full
+                                # cold prefill would emit pressure events again.
+                                pressure=[e for e in refresh if e['selection']=='pressure']
+                                if completed:assert not pressure,'Frozen prefix was not reused'
+                                text=response['choices'][0]['text']
+                                answer=text.split('</think>',1)[-1].strip()
+                                record={**src['info'],'suite':'memoryagentbench','id':row['id'],'status':'completed',
+                                    'answer':answer,'raw_completion':text,'usage':response['usage'],
+                                    'token_sha256':row['token_sha256'],'source_token_sha256':row['token_sha256'],
+                                    'prompt_sha256':row['prompt_sha256'],'query_sha256':row['query_sha256'],
+                                    'prompt_tokens':len(tokens),'source_prompt_tokens':len(tokens),'original_input_intact':True,
+                                    'seconds':seconds,'metrics':response.get('metrics'),
+                                    'prefix_tokens':prefix,'prefix_sha256':prefix_sha,'prefix_reused':bool(completed),
+                                    'attention':q,'finish_reason':response['choices'][0]['finish_reason']}
+                                if graph_v2:
+                                    record['graph_v2'] = graph_protocol.audit_case(args.capture, rid, cfg,
+                                        [row['query_begin'], row['query_end']],
+                                        require_pressure=not completed and len(tokens) > kv['select_budget'] + kv['gen_budget'],
+                                        event_reader=capture_slice.read)
+                            save(directory/'events.json',refresh);save(directory/'terminal.json',terminal)
+                            save(directory/'result.json',record);completed+=1
+                            with timing.stage('progress_publish'):
+                                with lock:
+                                    progress.put(record)
+                                    summary=summarize()
+                                    print(json.dumps({'completed':summary['completed'],'id':row['id'],'seconds':seconds,'reused':completed>1}),flush=True)
+                            save(directory/'client_timing.json',timing.summary())
+                        except BaseException as error:
+                            credits.cancel()
+                            detail = error.read().decode(errors='replace') if isinstance(error,urllib.error.HTTPError) else str(error)
+                            failed={'id':row['id'],'status':'error','error':detail,'seconds':time.monotonic()-started}
+                            save(directory/'result.json',failed)
+                            with lock:
+                                progress.put(failed)
+                                summarize()
+                            raise
                 if graph_v2:
                     # Frozen P sessions retain their own namespace after the
                     # last question. Release it before returning its CPU credit
                     # or admitting the next group; release is never a retry.
                     release = graph_protocol.release_owner(cfg, args.capture, session, tokens[-1])
                     save(args.output/'releases'/(group+'.json'), release)
+            except BaseException:
+                credits.cancel()
+                raise
             finally:credits.release(group,amount)
     selected=list(groups.items())[:args.group_limit or None]
     assert not args.case_id or set(args.case_id)<=set(r['id'] for r in rows)

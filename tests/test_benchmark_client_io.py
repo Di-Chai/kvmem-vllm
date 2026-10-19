@@ -3,6 +3,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -140,3 +141,59 @@ def test_graph_audit_uses_scoped_reader_with_original_response_matching(tmp_path
         reads.append(path);return [wanted,foreign] if path==refresh else [equal,foreign]
     assert protocol.audit_case(tmp_path,'r',{},[1,2],require_pressure=True,event_reader=scoped)=='audited'
     assert reads==[refresh,graph] and seen==dict(events=[wanted],graphs=[equal],kwargs=dict(require_pressure=True))
+
+
+def test_input_preparation_overlaps_current_request_without_running_ahead():
+    next_started=threading.Event()
+    release=threading.Event()
+    prepared=[]
+    def prepare(item):
+        prepared.append(item)
+        if item==1:
+            next_started.set()
+            assert release.wait(3)
+        return {'tokens':[item,17]}
+    with io.PreparedSequence(range(4),prepare) as sequence:
+        assert next(sequence)==(0,{'tokens':[0,17]})
+        # Simulate a current HTTP request: the next input is already being
+        # checked, but no third input may consume memory or prepare early.
+        assert next_started.wait(3)
+        assert prepared==[0,1]
+        release.set()
+        assert list(sequence)==[(i,{'tokens':[i,17]}) for i in range(1,4)]
+    assert prepared==[0,1,2,3]
+
+
+def test_failed_preparation_preserves_order_and_never_dispatches_later_items():
+    called=[]
+    def prepare(item):
+        called.append(item)
+        if item==1:raise ValueError('source token hash differs')
+        return item
+    dispatched=[]
+    with pytest.raises(ValueError,match='token hash'):
+        with io.PreparedSequence(range(5),prepare) as sequence:
+            for item,value in sequence:dispatched.append((item,value))
+    assert dispatched==[(0,0)] and called==[0,1]
+
+
+def test_preparation_shutdown_waits_for_its_only_borrowed_input():
+    worker_started=threading.Event()
+    worker_finished=threading.Event()
+    release=threading.Event()
+    def prepare(item):
+        if item:
+            worker_started.set()
+            assert release.wait(3)
+            worker_finished.set()
+        return item
+    # A consumer failure must still join its one input producer and propagate
+    # the original failure; no orphan producer may access a released owner.
+    with pytest.raises(RuntimeError,match='HTTP failed'):
+        with io.PreparedSequence([0,1],prepare) as sequence:
+            assert next(sequence)==(0,0)
+            assert worker_started.wait(3)
+            release.set()
+            raise RuntimeError('HTTP failed')
+    assert worker_finished.is_set()
+    with pytest.raises(RuntimeError,match='not active'):next(sequence)
