@@ -3,7 +3,7 @@
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
-r2 的独立 LongMemEval-S A 已完成生成与评分（86/102，84.31%），C 正在运行、D 排队；r2 NIAH 尚待运行，完整矩阵未完成，
+r2 的独立 LongMemEval-S A/C 已完成生成与评分（86/102、92/102），D 正在运行；r2 NIAH 尚待运行，完整矩阵未完成，
 尚无稳定的质量或吞吐提升结论。
 
 ## 已实现与已验证
@@ -112,9 +112,9 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | --- | --- | --- |
 | 持续 256K 负载 | 八槽持续补位，至少八次完整 warmup，固定 300 s 后独立 drain | 配对完成，比较 inconclusive，未进入 decode |
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
-| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；r2 排在 MAB 之后重新运行 |
+| NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；同运行时 r2 排在 LME 完整评分之后运行 |
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A 已完成生成、释放与原裁判评分，86/102；C 正在运行、D 同参数排队 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A/C 完成生成、释放与原评分，86/102、92/102；D 同参数运行中 |
 
 ### 独立 LongMemEval-S 参数与运行记录
 
@@ -181,8 +181,8 @@ C8 decode 上限。纯 prefill 的 model-event 速率为 6,526 token/s，包含�
 A 现已完成 102/102 个首次回答，技术错误与输出触顶均为零，所属历史、进程和
 GPU 资源释放通过。再次核对全部原始输入、Query 与采样配置，实际接受的
 73,670 个输出 token 与 response/usage/result 计数一致；最长回答为 4,220
-token。C 已自动启动，其首六题也通过同样的参数和完整输入核验。D 尚未运行。
-这项生成通过不代表全部答对。随后 A 提前完成原裁判评分，结果见下表；C/D 仍待完成。
+token。A 完成时 C 自动启动，其首六题也通过同样的参数和完整输入核验。
+这项生成通过不代表全部答对。随后 A 提前完成原裁判评分，结果见下表；最新 C 结果另列于后。
 
 | 独立 LongMemEval-S 原裁判完整评分 | 答对／总题数 | 准确率 |
 | --- | --- | --- |
@@ -233,6 +233,66 @@ multi-session 为 A 9/17、旧 Query 12/17、旧 attention 13/17；其余五类�
 严格 UTF-8/JSON 解码失败，校验值和错误位置保存在
 `baseline-A-r1/host-profile-integrity-r1.json`；未修补标签或据此声称 Python
 热点归因。原生 step/NVML 记录有效并用于以上统计，C/D 保持相同采样设置。
+
+### 独立 LongMemEval-S C 完整评分与性能
+
+C 已完成全部 102 个首次回答、原裁判评分及所属资源释放；技术错误、未评分
+项、输出触顶、thinking 未闭合均为零。原 12 项校准通过，8 项仅在完整裁判
+请求与答案绑定相同时复用旧评分，另 94 项使用冻结原裁判接口。D 已自动启动。
+
+| 完整原裁判评分 | 正确／总题数 | 准确率 |
+| --- | --- | --- |
+| 当前 A，无 Query 传播／旧 attention pressure | 86／102 | 84.31% |
+| 当前 C，V2 multi Query／旧 attention pressure | 92／102 | 90.20% |
+| 历史 qw3 Query | 89／102 | 87.25% |
+| 历史 qw3 attention | 90／102 | 88.24% |
+
+A→C 仅修改 Query 的 `graph_mode`；逐题配对为修正 8 题、退步 2 题，净增
+6 题（5.88 个百分点）。multi-session 从 9/17 到 14/17，knowledge-update
+14/17 到 15/17，temporal-reasoning 16/17 到 17/17；preference 从 13/17
+到 12/17，另外两类均为 17/17。这是一次完整同样本实验的描述性结果，不
+据此宣称稳定普遍提升；历史执行／量化／配额／输出上限差异继续单独披露。
+原始 token 输入仍使用 unknown locality，不能把此结果当作真实消息边界的
+质量验收。D 的 pressure 传播效果尚未完成评分。
+
+| 相同整轮口径 | A | C |
+| --- | ---: | ---: |
+| 全部 102 题耗时 | 2,177.99 s | 2,196.74 s |
+| 原始有效输入／整轮时间 | 5,101.55 token/s | 5,058.00 token/s |
+| 接受输出／整轮时间，含长 prefill | 33.82 token/s | 33.40 token/s |
+| pure-prefill／model event，含重放 | 6,526.11 token/s | 6,626.25 token/s |
+| 接受输出总数 | 73,670 | 73,362 |
+
+C 整轮比 A 长约 0.86%，但回答、选页和 batch 组成已改变；不能把整轮差值
+全部归为图开销或称为受控的吞吐收益。两组约 98.6%／98.5% 累计模型计时
+位于含 prefill 批次；均没有持续 native C8 pure-decode 窗口，纯 decode 上限
+仍由排队的独立诊断验证。A/C 观测均值约 85%，各自采样覆盖 96.65%／99.93%，
+跨臂 GPU 利用率比较待 D 完成后使用共同观测偏移窗口。
+
+与 A 不同，C 的 Python 采样文件通过严格 UTF-8、JSON、57 个 profile 及
+41,510 个 stack 样本的结构校验。主要叶节点包括同步 Action metadata 上传
+以及后台历史 SHA-256／封存；这些是采样栈权重，不是额外 CPU 墙钟或 GPU
+idle。CUDA tensor 上传可能正在等待 GPU，后台封存也可与 GPU 重叠。
+C 的完整 102 次 Query 事件累计传播函数耗时 3.85 s，含该函数的选页 wrapper
+为 5.29 s，两者嵌套不能相加，也不覆盖全部图相关工作。当前材料不能把
+同步上传的 228.59 个采样权重秒解释为同等 GPU 空闲。既有异步元数据候选
+仍以其独立实验为准，未因采样热点而更换正式参数。
+
+完整证据：
+
+- `artifacts/graph-v2-lme-efficiency-20261019/early-C-score-r1/summary.json`，
+  SHA-256 `5716bdfdf17e1d3af77519c6fee146cf3ed4a59d577c3044a366e5c0d2724183`。
+- 同目录 `AC-original-pairs-r1/{comparison.json,comparison.md,paired-correctness.csv}`。
+- `baseline-C-r1/phase-reading-complete-r1.json` 与 `host-profile-summary-r1.json`。
+- A 完整图为 `baseline-A-r1/phase-timeline-complete-r2.png`，C 完整图为
+  `baseline-C-r1/phase-timeline-complete-r1.png`；对应 `.proof.json` 绑定图片、
+  读取记录、脚本及不可变日志前缀。旧 A complete-r1 图的标题误标 partial，
+  保留原图但以 r2 为准；这没有改变任何模型结果或测量记录。
+
+绘图副本已修正硬编码的 A／partial 标签。原冻结汇总队列不修改，新增只读
+`artifacts/graph-v2-completion-20261019/final-render-queue-r1/` 在完整矩阵报告
+成功后生成 A/C/D 正确标签的图和完整逐题对比；上游不完整就明确保留未完成
+状态，不调用推理或裁判，也不自行宣布整个目标完成。
 
 完整矩阵核验器已按当前文件格式只读复核 MAB 三组的 3,348 个首次回答和原
 评分，宏平均重算一致；实际服务启动记录中的全部 worker 选项也与配置逐项
