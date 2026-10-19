@@ -3,8 +3,21 @@
 这是进行中的结果记录。核心实现、跨轮功能验收和持续性能筛选已经完成；
 首轮 NIAH 三臂共 540 题完成；MAB 遇到图配额技术失败，修复通过 CPU 回归，
 新 r2 已通过工具跨轮复验，正式 MAB A/C/D 均已完成 1,116 题生成与原评分。
-r2 的独立 LongMemEval-S A/C 已完成生成与评分（86/102、92/102），D 正在运行；r2 NIAH 尚待运行，完整矩阵未完成，
+r2 的独立 LongMemEval-S A/C/D 已完成生成与评分（86/102、92/102、89/102），r2 NIAH A 已启动，完整矩阵未完成，
 尚无稳定的质量或吞吐提升结论。
+
+两套原冻结记忆 cohort 的三臂共 3,654 个正式回答，现均完成原裁判评分：
+
+| 已完成记忆集 | 当前 A | 当前 C | 当前 D | 历史 qw3 Query | 历史 qw3 attention |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MemoryAgentBench，1,116 题，三类宏平均／100 | 39.044 | 39.559 | 39.490 | 39.624 | 36.635 |
+| 独立 LongMemEval-S，102 题，准确率 | 84.31% | 90.20% | 87.25% | 87.25% | 88.24% |
+
+MAB 宏平均并非 1,116 题的简单正确率，16 道摘要占三类宏平均的三分之一。
+当前三臂为相同 NVFP4／FP8 KV／MTP4 运行版本；历史 qw3 使用 Q8_0、DFlash、
+串行执行，attention 配额及独立 LME 输出上限也有已披露差异，只作参考。
+C 相对 A 在这轮两套记忆集均较高，D 相对 C 未显示额外收益；仍需完成
+同一 r2 的 NIAH 和独立功能／decode 验收，不能将旧 r1 NIAH 拼成同版本全矩阵。
 
 ## 已实现与已验证
 
@@ -143,7 +156,7 @@ decode 性能。窗口外最终 16 个请求全部完成并释放；NVML 窗内�
 | 自然工具调用轨迹 | 原始八路 agent fixture，保留自己的完整输出和工具等待 | r4 两臂完整通过；比较 inconclusive，未采用候选 |
 | NIAH A/C/D | 64K/128K/256K 各 60 题，180/arm，共 540 | r1 三组全部通过；同运行时 r2 排在 LME 完整评分之后运行 |
 | MemoryAgentBench A/C/D | 原始 1,116/arm，共 3,348；问题间恢复冻结 P，防止输出统计泄漏 | r1 错误保留；r2 A/C/D 各 1,116 题生成、释放与原评分完成，未判定项为零 |
-| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A/C 完成生成、释放与原评分，86/102、92/102；D 同参数运行中 |
+| 独立 LongMemEval-S A/C/D | 原始 102/arm，共 306 | r2 A/C/D 全部完成生成、释放与原评分，86/102、92/102、89/102 |
 
 ### 独立 LongMemEval-S 参数与运行记录
 
@@ -263,16 +276,20 @@ multi-session 为 A 9/17、旧 Query 12/17、旧 attention 13/17；其余五类�
 `baseline-A-r1/host-profile-integrity-r1.json`；未修补标签或据此声称 Python
 热点归因。原生 step/NVML 记录有效并用于以上统计，C/D 保持相同采样设置。
 
-### 独立 LongMemEval-S C 完整评分与性能
+### 独立 LongMemEval-S A/C/D 完整评分与性能
 
-C 已完成全部 102 个首次回答、原裁判评分及所属资源释放；技术错误、未评分
-项、输出触顶、thinking 未闭合均为零。原 12 项校准通过，8 项仅在完整裁判
-请求与答案绑定相同时复用旧评分，另 94 项使用冻结原裁判接口。D 已自动启动。
+三组均完成 102 个首次回答、原裁判评分及所属资源释放；技术错误、未评分
+项、输出触顶、thinking 未闭合均为零。每组原 12 项校准通过，A/C/D 分别
+复用 7/8/9 项完整裁判请求与答案绑定完全一致的旧评分，其余使用冻结原接口。
+原队列再次汇总 A/C 时，其已发布 summary 校验值不变。全部 306 题的完整
+返回输入、Query、采样、接受输出与实际 worker 参数核验通过：A→C 只改
+`graph_mode`，C→D 只改 `pressure_policy`。r2 NIAH A 已自动启动。
 
 | 完整原裁判评分 | 正确／总题数 | 准确率 |
 | --- | --- | --- |
 | 当前 A，无 Query 传播／旧 attention pressure | 86／102 | 84.31% |
 | 当前 C，V2 multi Query／旧 attention pressure | 92／102 | 90.20% |
+| 当前 D，V2 multi Query／graph pressure | 89／102 | 87.25% |
 | 历史 qw3 Query | 89／102 | 87.25% |
 | 历史 qw3 attention | 90／102 | 88.24% |
 
@@ -282,21 +299,28 @@ A→C 仅修改 Query 的 `graph_mode`；逐题配对为修正 8 题、退步 2 
 到 12/17，另外两类均为 17/17。这是一次完整同样本实验的描述性结果，不
 据此宣称稳定普遍提升；历史执行／量化／配额／输出上限差异继续单独披露。
 原始 token 输入仍使用 unknown locality，不能把此结果当作真实消息边界的
-质量验收。D 的 pressure 传播效果尚未完成评分。
+质量验收。D 相对 C 修正 3 题、退步 6 题，净少 3 题；相对 A 修正 7 题、
+退步 4 题，净多 3 题。C→D 的 multi-session 从 14/17 降到 12/17，
+temporal-reasoning 从 17/17 到 15/17，knowledge-update 从 15/17 到 16/17，
+另外三类不变。本轮该套独立 LME 中 C 最好，pressure 图传播未叠加收益。
 
-| 相同整轮口径 | A | C |
-| --- | ---: | ---: |
-| 全部 102 题耗时 | 2,177.99 s | 2,196.74 s |
-| 原始有效输入／整轮时间 | 5,101.55 token/s | 5,058.00 token/s |
-| 接受输出／整轮时间，含长 prefill | 33.82 token/s | 33.40 token/s |
-| pure-prefill／model event，含重放 | 6,526.11 token/s | 6,626.25 token/s |
-| 接受输出总数 | 73,670 | 73,362 |
+| 相同整轮口径 | A | C | D |
+| --- | ---: | ---: | ---: |
+| 全部 102 题耗时 | 2,177.99 s | 2,196.74 s | 2,198.96 s |
+| 原始有效输入／整轮时间 | 5,101.55 token/s | 5,058.00 token/s | 5,052.89 token/s |
+| 接受输出／整轮时间，含长 prefill | 33.82 token/s | 33.40 token/s | 34.76 token/s |
+| pure-prefill／model event，含重放 | 6,526.11 token/s | 6,626.25 token/s | 6,421.70 token/s |
+| 接受输出总数 | 73,670 | 73,362 | 76,432 |
+| 共同观测 120～2,160 s 的 GPU 利用率样本均值 | 84.89% | 84.30% | 84.81% |
 
 C 整轮比 A 长约 0.86%，但回答、选页和 batch 组成已改变；不能把整轮差值
-全部归为图开销或称为受控的吞吐收益。两组约 98.6%／98.5% 累计模型计时
-位于含 prefill 批次；均没有持续 native C8 pure-decode 窗口，纯 decode 上限
-仍由排队的独立诊断验证。A/C 观测均值约 85%，各自采样覆盖 96.65%／99.93%，
-跨臂 GPU 利用率比较待 D 完成后使用共同观测偏移窗口。
+全部归为图开销或称为受控的吞吐收益。D 比 C 多输出 3,070 token（约 4.18%），
+整轮输出率的增加也不能视为固定工作量下的加速。三组约 98.6%／98.5%／98.8%
+累计模型计时位于含 prefill 批次；A 仅三步 native C8 pure-decode，C/D 为零，
+均没有持续 C8 窗口，纯 decode 上限仍由排队的独立诊断验证。
+共同观测区间从各自首个 native 提交后第 120 到 2,160 秒；利用率样本间隔
+约一秒，三组低于 20% 的样本比例为 3.97%／3.82%／4.27%。这些是同偏移
+窗口的样本均值，未提供固定输出、重复配对的因果吞吐比较或精确 GPU idle。
 
 与 A 不同，C 的 Python 采样文件通过严格 UTF-8、JSON、57 个 profile 及
 41,510 个 stack 样本的结构校验。主要叶节点包括同步 Action metadata 上传
@@ -307,14 +331,32 @@ C 的完整 102 次 Query 事件累计传播函数耗时 3.85 s，含该函数�
 同步上传的 228.59 个采样权重秒解释为同等 GPU 空闲。既有异步元数据候选
 仍以其独立实验为准，未因采样热点而更换正式参数。
 
+D 的 Python 栈文件同样严格 UTF-8 解码失败，保留其 18,912,570 字节与
+SHA-256 `c2caea954d5bebeb2d986e70cfd50d656bcfc0a34d308f1d118cc7021f640334`，
+不修补标签或做 A/C/D 栈归因比较。D 有效的原始图日志则确认了全部 434 次
+pressure 均为 prefill seed、非 identity 传播，424 次改变选页。传播函数
+累计 16.78 s，包含它的 pressure wrapper 累计 35.35 s；这是嵌套且可重叠的
+主机区间，不等于相对 C 的额外墙钟或 GPU 空闲。C 的旧 pressure 没有对应
+wrapper 计时字段，未记录不能当作零成本。
+
 完整证据：
 
 - `artifacts/graph-v2-lme-efficiency-20261019/early-C-score-r1/summary.json`，
   SHA-256 `5716bdfdf17e1d3af77519c6fee146cf3ed4a59d577c3044a366e5c0d2724183`。
-- 同目录 `AC-original-pairs-r1/{comparison.json,comparison.md,paired-correctness.csv}`。
+- D 完整原评分为 `queue-r1/D-score-summary.json`，SHA-256 为
+  `57c6c4d93d54a3a152cb9999f26c1b46f2be85d8380474476aea0595dcef36e4`。
+- 同目录 `ACD-original-pairs-r1/{comparison.json,comparison.md,paired-correctness.csv}`。
 - `baseline-C-r1/phase-reading-complete-r1.json` 与 `host-profile-summary-r1.json`。
+- `baseline-D-r1/phase-reading-complete-r1.json`、
+  `LME-common-observed-window-complete-r1.json`、`CD-graph-host-cost-complete-r1.json`。
+- 全部 306 题完整参数／输入证明位于
+  `artifacts/graph-v2-completion-20261019/queue-r1/LME-final-controls.json`。
+- 实际完整 worker 配置差异与这 306 题证明的绑定为同 LME efficiency 目录
+  `ACD-actual-worker-controls-complete-r1.json`：A/C 仅 `graph_mode`、C/D 仅
+  `pressure_policy`，其余实际传入 worker 的字段逐项一致。
 - A 完整图为 `baseline-A-r1/phase-timeline-complete-r2.png`，C 完整图为
-  `baseline-C-r1/phase-timeline-complete-r1.png`；对应 `.proof.json` 绑定图片、
+  `baseline-C-r1/phase-timeline-complete-r1.png`，D 为
+  `baseline-D-r1/phase-timeline-complete-r1.png`；对应 `.proof.json` 绑定图片、
   读取记录、脚本及不可变日志前缀。旧 A complete-r1 图的标题误标 partial，
   保留原图但以 r2 为准；这没有改变任何模型结果或测量记录。
 
@@ -343,13 +385,22 @@ NIAH 开始前另逐题复核了旧 qw3 Query/attention 两套共 360 个实际�
 thinking=4,096 均一致。模型精度、推测解码实现、attention 配额和并发方式的
 已知差异继续单独披露。证据为
 `artifacts/graph-v2-completion-20261019/niah-historical-controls-r1.json`。
-这是参数／输入预检，尚未把准备中的 r2 NIAH 计作已运行。
+这是参数／输入预检；r2 NIAH A 已实际启动，其完成情况另行统计，C/D 排队。
 
 C 的前 23 道首次回答另通过运行路径复核：23 道 Query 图事件实际改变选页，
 99 次 pressure 事件仍是旧 attention，未发生 pressure 图传播；Query 坐标、
 K 预算和 history/action 配额符合 C 组定义。该部分证明为
 `artifacts/graph-v2-lme-efficiency-20261019/baseline-C-r1/first-query-policy-audit-r1.json`。
 它不提供正确率，也不将选页变化等同质量提升。
+
+D 的前 77 道完成回答已进一步与 `block_graph`／`bounded_refresh` 原始日志
+的不可变前缀逐项复核，实际事件与首次结果内的报告完全一致。328 次 pressure
+均使用 prefill seed、执行非 identity V2 multi 传播，其中 320 次改变选页；
+所有选页均满足各事件当次的 runtime K 预算。Query 使用 Mean-K 起点，未
+启用旧 Q 缓存或直接 action 页配额，raw-token locality 为 unknown。
+证据为 `baseline-D-r1/first-runtime-policy-audit-r1.json`（位于同一 LME
+efficiency 目录），绑定了日志前缀、77 个首次结果及其响应校验值。这是
+运行路径复核，不是这 77 题的准确率或 D 整组完成证明。
 
 三组原始 180 题均通过逐题协议、原评分复算和最终释放审计。A/C 仅改变
 `graph_mode`，C/D 仅改变 `pressure_policy`；输入、seed 与其余服务参数相同。
