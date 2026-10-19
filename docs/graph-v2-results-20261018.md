@@ -436,9 +436,30 @@ token。因此已经实现“一次历史准备、多次独立问题复用”，
 `SessionWorker.before_attention()` 在公共计算前执行同步 `_restore()`，
 其中包含 checkpoint 准备、active KV 装配和完成栅栏等待，可能拖延同一计算
 轮中其他请求。`async_refresh=true` 只覆盖重选，不代表该恢复已经异步。
-当前异步恢复要求 P/M 生命周期；不能直接开关替换独立问题的 sealed-P
+该冻结运行时的异步恢复要求 P/M 生命周期；不能直接开关替换独立问题的 sealed-P
 语义。其独立成本和阻塞比例仍需短对照的主机采样及进一步阶段测量，
 目前不把这部分等待量化为全部 GPU idle。
+
+随后在主线实现了显式 frozen-P 异步恢复候选。复用已有的带配额后台装配和
+native row/page lease；仅在 `session_freeze_prompt=true`、sealed P-only、
+无 terminal/decode 捕获和无 Query history 时扩展异步恢复的配置契约。
+后台完成的 P 保持原检查点所有权，调度器对已经验证的同一 token 前缀不再
+重复捕获；取消发生在恢复完成但尚未运行下一 token 时，也能退场到同一 P。
+普通 P/M 和原同步 frozen-P 路径不改，正式 r2 配置和运行时仍保持冻结。
+
+395 项受影响的 options/launcher/session/checkpoint/scheduler/async/graph 评估
+CPU 回归通过，用时 8.56 秒，包含 13 项新测试：精确前缀、跨题 graph/action
+重置、模型 snapshot 复用、未完成 fence 不发布、其他请求可继续、取消后的
+再次复用以及最终配额释放。CPU 假设备测试不等同于真实 GPU KV 字节检查。
+日志：`artifacts/graph-v2-frozen-p-async-20261019/cpu-regression.log`。
+
+独立真实模型功能验收已准备在
+`/data/chaidi/kvmem-vllm-experiments/graph-v2-frozen-p-async-20261019-r1`：
+两个合成 16K 历史、各三道独立问题，分别验证同步与异步路径，开启
+target/MTP/recurrent 状态字节 oracle，并要求旧分数不泄漏、P 不重算、
+异步仅首次捕获 P 和完整释放。该小几何验收不替代原始 MAB 样本、质量评分、
+全长度容量或吞吐测试。默认开关与正式 A/C/D 配置暂不采用新候选；
+截至记录仅通过 CPU 与启动配置检查，GPU 验收仍待执行。
 
 为补齐当前冻结版本的八路稳态 decode 证据，新增独立 client
 `scripts/qualify_graph_v2_decode.py`。它复用已验证的流式 token-ID/usage 计数，

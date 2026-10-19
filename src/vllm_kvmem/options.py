@@ -368,10 +368,14 @@ class RuntimeOptions:
                 self.prefill_min_tokens % self.memory.block_tokens or self.prefill_max_tokens % self.memory.block_tokens or
                 self.prefill_max_tokens > self.memory.gen_budget - self.memory.block_tokens):
             raise ValueError('Adaptive prefill requires timing, explicit planning and aligned chunks within G headroom')
+        frozen_prompt = (self.session_checkpoint_policy == 'sealed' and self.session_freeze_prompt and
+                         not self.session_capture_terminal and not self.session_capture_decode and
+                         not self.query_history)
         if type(self.async_restore) is not bool or (self.async_restore and (
                 not self.async_refresh or not self.maintenance_max_steps or not self.session_capacity or
-                self.repository_gc or self.archive_backend != 'cpu' or self.session_checkpoint_policy != 'pm')):
-            raise ValueError('Asynchronous restore requires CPU P/M sessions, non-GC async refresh and maintenance budgets')
+                self.repository_gc or self.archive_backend != 'cpu' or
+                (self.session_checkpoint_policy != 'pm' and not frozen_prompt))):
+            raise ValueError('Asynchronous restore requires CPU P/M or frozen-P sessions, non-GC async refresh and maintenance budgets')
         if type(self.cpu_history_coordination) is not bool or type(self.cpu_progress_reserve) is not bool:
             raise ValueError('CPU history coordination settings must be boolean')
         if self.cpu_history_coordination and (self.archive_backend != 'cpu' or self.repository_gc or

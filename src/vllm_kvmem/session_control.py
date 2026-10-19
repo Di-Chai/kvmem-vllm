@@ -145,7 +145,7 @@ class _Entry:
 class SessionLedger:
     def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
                  select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None,
-                 preserve_history=False, require_owned=False, pressure_policy='recency'):
+                 preserve_history=False, require_owned=False, pressure_policy='recency', freeze_prompt=False):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -161,6 +161,10 @@ class SessionLedger:
         self.commands = SessionCommands()
         self.terminal_capture = terminal_capture
         self.checkpoint_policy = checkpoint_policy
+        if type(freeze_prompt) is not bool or (freeze_prompt and
+                (checkpoint_policy != 'sealed' or terminal_capture)):
+            raise ValueError('Frozen prompt ledger requires sealed P-only checkpoints')
+        self.freeze_prompt = freeze_prompt
         self.memory_config = memory_config
         self.pressure_policy = pressure_policy
         self.select_budget, self.gen_budget = select_budget, gen_budget
@@ -427,6 +431,13 @@ class SessionLedger:
         if (entry is None or entry.phase != 'active' or entry.candidate_position or
                 not 0 < position < request.num_prompt_tokens or position % self.block_tokens or
                 (position + query_tokens < request.num_prompt_tokens and not (at_query or at_point))):
+            return
+        if self.freeze_prompt and entry.retained_position == position:
+            # An asynchronous import already owns the exact immutable P model,
+            # window and input statistics. Recapturing it would duplicate DMA
+            # and replace the snapshot needed if this request is cancelled.
+            if token_bytes(request.prompt_token_ids, position) != entry.retained_tokens:
+                raise ValueError('Retained frozen prompt differs from the current token prefix')
             return
         entry.candidate_position = position
         entry.candidate_tokens = token_bytes(request.prompt_token_ids, position)

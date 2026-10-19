@@ -158,7 +158,8 @@ class KVMemScheduler(Scheduler):
                                                     checkpoint_policy=options.session_checkpoint_policy,memory_config=config,
                                                     preserve_history=options.cpu_history_coordination,
                                                     require_owned=options.graph_mode != 'off',
-                                                    pressure_policy=options.pressure_policy)
+                                                    pressure_policy=options.pressure_policy,
+                                                    freeze_prompt=options.session_freeze_prompt)
         if options.cpu_history_coordination:
             from .coordination import HistoryAdmission
             from .cache_manifest import archive_bytes_per_token

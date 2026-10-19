@@ -68,9 +68,9 @@ def profiles(base, port, suite='niah'):
         offline_prefill_coalescing=False, active_resident_pressure_only=False,
         active_resident_ttl_ms=0., adaptive_prefill=False, step_latency_interval=1)
     if memory:
-        # Existing frozen-P mode deliberately has no M capture. The async
-        # restore implementation requires P/M terminal capture, so retain the
-        # supported synchronous frozen-P import for every MAB arm.
+        # Keep the formal accuracy profile on the original synchronous P
+        # import. Async frozen-P reuse is a separate opt-in performance
+        # candidate; do not silently change all three benchmark controls.
         kv['async_restore'] = False
         kv['graph_max_bytes_per_session'], kv['graph_max_total_bytes'] = frozen_prefix_graph_capacity(
             kv['repository_blocks'], kv['session_capacity'])
