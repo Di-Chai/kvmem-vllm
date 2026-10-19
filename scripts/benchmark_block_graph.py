@@ -118,7 +118,7 @@ def prepare(args):
     protocol = getattr(args, 'protocol', None)
     if structured:
         fixture = json.loads(args.fixture.read_text())
-        if fixture.get('kind') != 'graph_v2_structured_sessions_v1':
+        if fixture.get('kind') not in ('graph_v2_structured_sessions_v1', 'graph_v2_structured_sessions_v2'):
             raise ValueError('Structured session qualifier requires its versioned fixture')
         if protocol is None or not protocol.is_file():
             raise ValueError('Structured session qualifier requires --protocol pointing to protocol.so')

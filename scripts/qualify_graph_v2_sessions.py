@@ -130,11 +130,47 @@ def next_payload(payload, response):
     return result, [c['id'] for c in calls]
 
 
+def prepare_continuation(planner, payload, response, state, minimum_append_tokens=0):
+    """Exercise output-seeded pressure with complete, real-ID tool results.
+
+    The v1 default follows the original short-tool fixture exactly. V2 expands
+    only the deterministic tool-result bodies, measures the complete actual
+    suffix encoding, and preserves the accepted assistant prefix and Query text.
+    """
+    q.require(type(minimum_append_tokens) is int and minimum_append_tokens >= 0,
+              'Invalid continuation append quota')
+    result, calls = next_payload(payload, response)
+    prefix = state.tokens + state.output
+    prepared = planner.prepare(result, state)
+    if not minimum_append_tokens:
+        return result, calls, prepared
+    tools = [part for part in result['messages'][-1]['content'] if part['type'] == 'tool_result']
+    bodies = [part['content'] for part in tools]
+    unit = '\nImmutable tool evidence: ownership and generation remain stable across this inspection. 历史记录🙂\n'
+    unit_tokens = max(1, len(planner.encode(unit)))
+    repeats = 0
+    for _ in range(4):
+        q.require(prepared[5] and prepared[0][:len(prefix)] == prefix,
+                  'Long tool continuation lost actual accepted assistant IDs')
+        appended = len(prepared[0])-len(prefix)
+        if appended >= minimum_append_tokens:
+            return result, calls, prepared
+        missing = minimum_append_tokens-appended
+        repeats += max(1, (missing+len(tools)*unit_tokens-1)//(len(tools)*unit_tokens))
+        for part, body in zip(tools, bodies):
+            part['content'] = body + unit*repeats
+        prepared = planner.prepare(result, state)
+    q.require(prepared[5] and prepared[0][:len(prefix)] == prefix and
+              len(prepared[0])-len(prefix) >= minimum_append_tokens,
+              'Complete tool continuation did not reach the frozen append quota')
+    return result, calls, prepared
+
+
 def first_difference(left, right):
     return next((i for i,(a,b) in enumerate(zip(left,right)) if a != b), min(len(left),len(right)))
 
 
-def check_evidence(capture, rows, profile, concurrency):
+def check_evidence(capture, rows, profile, concurrency, *, require_output_pressure=False):
     archive = q.wait_terminal_publication(capture,rows)
     graphs = q.records(capture/'block_graph.jsonl')
     target = q.records(capture/'verified_restores.jsonl')
@@ -183,6 +219,14 @@ def check_evidence(capture, rows, profile, concurrency):
         q.require(len(initial) >= 2, 'Initial long structured history did not exercise two graph pressure events')
         q.require(all(e.get('seed_source') in ('output','prefill','none') for e in initial),
                   'Pressure used an undeclared seed source')
+        if require_output_pressure:
+            first, = [row for row in rows if row['agent'] == agent and row['turn'] == 0]
+            q.require(first['expected_output_samples'] > 0, 'No accepted output attention before tool continuation')
+            continued = [e for item in proof if item['agent'] == agent and item['turn'] == 1 for e in item['pressure']]
+            output = [e for e in continued if e.get('seed_source') == 'output']
+            q.require(output, 'Long tool continuation did not use restored output attention for pressure')
+            q.require(any(e.get('identity') is False and e.get('added_blocks', 0) > 0 for e in output),
+                      'Restored output seed did not exercise nonidentity, selection-changing graph pressure')
     q.require(not (capture/'restore_mismatch.json').exists(), 'Restore byte mismatch exists')
     return proof
 
@@ -191,8 +235,17 @@ def load_fixture(args):
     fixture = None
     if getattr(args, 'fixture', None):
         fixture = json.loads(args.fixture.read_text())
-        q.require(fixture.get('kind') == 'graph_v2_structured_sessions_v1' and not set(fixture) - {
-            'kind','prompt_tokens','output_tokens','concurrency','timeout','initial_token_sha256'}, 'Unsupported structured session fixture')
+        kind = fixture.get('kind')
+        allowed = {'kind','prompt_tokens','output_tokens','concurrency','timeout','initial_token_sha256'}
+        if kind == 'graph_v2_structured_sessions_v2':
+            allowed.add('continuation_append_tokens')
+            minimum = fixture.get('continuation_append_tokens')
+            q.require(type(minimum) is int and minimum > 0, 'Invalid structured continuation_append_tokens')
+        else:
+            q.require(kind == 'graph_v2_structured_sessions_v1', 'Unsupported structured session fixture')
+            minimum = 0
+        q.require(not set(fixture)-allowed, 'Unsupported structured session fixture')
+        args.continuation_append_tokens = minimum
         for field in ('prompt_tokens','output_tokens','concurrency'):
             q.require(type(fixture.get(field)) is int and fixture[field] > 0, 'Invalid structured fixture ' + field)
             setattr(args,field,fixture[field])
@@ -208,6 +261,12 @@ def run(args):
     q.require(args.protocol is not None and args.protocol.is_file(), 'Provide a frozen --protocol library')
     profile = json.loads(args.config.read_text())
     kv = profile['kvmem']
+    minimum_append = getattr(args, 'continuation_append_tokens', 0)
+    q.require(type(minimum_append) is int and minimum_append >= 0, 'Invalid continuation append quota')
+    q.require(not minimum_append or minimum_append >= 2*kv['gen_budget'],
+              'Output-pressure fixture must append at least two full G budgets')
+    q.require(not minimum_append or minimum_append+args.prompt_tokens+args.output_tokens < profile['max_model_len'],
+              'Complete output-pressure fixture exceeds the model context')
     if getattr(args, 'arm', None):
         q.require(args.arm == kv.get('graph_mode'), 'Frozen comparison arm differs from profile graph mode')
     q.require(kv.get('graph_scoring_version') == 'v2' and kv.get('pressure_policy') == 'graph' and
@@ -235,6 +294,7 @@ def run(args):
         producer=str(ROOT/'benchmarks/deepswe/claude_bridge.py'),
         requested_prompt_tokens=args.prompt_tokens, actual_prompt_tokens=[len(p[1][0]) for p in fixtures],
         output_quota=args.output_tokens,thinking_token_budget=0,min_tokens=0,temperature=0,
+        continuation_append_tokens=minimum_append, require_output_pressure=bool(minimum_append),
         concurrency=args.concurrency,async_restore=kv.get('async_restore',False),
         fixture_rule='Long historical tool_result; real returned tool IDs; changed final user Query after a shared accepted prefix'))
     if getattr(args, 'prepare_only', False):
@@ -270,9 +330,9 @@ def run(args):
             if turn == 0:
                 q.require(row['output_ids'][-1] == planner.end, 'Tool answer lacks accepted message EOS; cannot prove exact reuse')
                 branch = copy.deepcopy(state)
-                payload, calls = next_payload(payload,response)
+                payload, calls, prepared = prepare_continuation(planner,payload,response,state,minimum_append)
                 row['real_tool_use_ids'] = calls
-                prepared = planner.prepare(payload,state)
+                row['following_tool_append_tokens'] = len(prepared[0])-len(state.tokens)-len(state.output)
                 q.require(prepared[5] and prepared[0][:len(state.tokens)+len(state.output)] == state.tokens+state.output,
                           'Tool continuation did not preserve real accepted assistant IDs')
             elif turn == 1:
@@ -293,7 +353,7 @@ def run(args):
                 except Exception as error:
                     failures.append(f'{type(error).__name__}: {error}')
         q.require(not failures,'; '.join(failures))
-        proof = check_evidence(args.capture,rows,profile,args.concurrency)
+        proof = check_evidence(args.capture,rows,profile,args.concurrency,require_output_pressure=bool(minimum_append))
         result = dict(status='passed',scope='Structured producer, accepted-token and restore lifecycle; no quality/throughput claim',
             evidence=proof,owners=args.concurrency,turns=len(rows))
     except BaseException as error:
@@ -331,6 +391,8 @@ def main():
     parser.add_argument('--concurrency',type=int,default=2)
     parser.add_argument('--prompt-tokens',type=int,default=131072)
     parser.add_argument('--output-tokens',type=int,default=257)
+    parser.add_argument('--continuation-append-tokens',type=int,default=0,
+                        help='Independent v2 fixture: minimum full tool-result suffix tokens; zero retains v1')
     parser.add_argument('--timeout',type=float,default=1200)
     parser.add_argument('--prepare-only',action='store_true',help='Validate/freeze real structured inputs on CPU without contacting the server')
     run(parser.parse_args())

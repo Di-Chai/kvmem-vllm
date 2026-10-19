@@ -46,6 +46,29 @@ pressure、4 次 M/P 字节一致恢复；真实后缀编辑保留已接受的 a
 `artifacts/graph-v2-completion-20261019/structured-core-audit-r1.json`。
 这些是两 owner 的跨轮功能证据，不能替代尚待运行的持续 native C8 decode。
 
+### 同版本累计 output attention 的长工具返回验收
+
+覆盖复核发现，独立记忆题和短工具续接主要证明 prefill-seeded pressure；
+既有真实 output-seed 功能证据来自容量修复前的自然 agent r4。为补齐当前
+冻结核心上的执行证据，结构化验收客户端新增独立 v2 fixture：两 owner，
+三轮，先生成真实工具调用，再追加至少 49,152 个完整工具返回 token，最后
+编辑 Query。K/G 仍为 36,864/16,384，输出仍自然 EOS、上限 257；真实接受
+的 assistant IDs、工具 ID、原 Query 文本和 graph-only 边界必须保留。
+旧 v1 fixture 的短工具负载和全部正式 A/C/D 冻结文件均不变。
+
+新 gate 要求每个 owner 在工具续接时，实际出现使用累计 output 分数的
+非 identity、改变选页的 graph pressure；另保留原有 P/M、MTP、recurrent
+字节恢复与释放检查。客户端／controller CPU 回归为 45 项通过（0.45 s），
+并非新增 GPU 通过。真实 renderer/tokenizer CPU 预检已用
+旧验收中真实返回的调用验证完整编码：两路初始均 131,063 token，新后缀
+均 49,171 token，完整续接 180,313 token；接受前缀、Query token 内容、
+Query/replay/mandatory 策略和每路八个精确 locality 区间均验证通过。
+这些旧输出只供 CPU 编码预检，GPU 测试必须生成自己的输出和工具 ID。
+
+证据目录为 `artifacts/graph-v2-output-pressure-20261019/` 的
+`cpu-regression-r2.log` 与 `cpu-long-tools-r1/`。同步／异步 GPU 验收会作为
+独立任务冻结并排在现有测试后面，不计入 4,194 道正式质量回答。
+
 ## 冷负载性能筛选
 
 共同配置为本地 27B NVFP4 模型、FP8 attention KV、原生 MTP(k=4)、编译及
