@@ -3,6 +3,12 @@ from dataclasses import dataclass
 from threading import RLock
 import numpy as np
 import torch
+from . import _native
+
+_CAPSULE=getattr(_native,'leased_download_capsule',None)
+_FROM_DLPACK=torch.utils.dlpack.from_dlpack
+_DTYPES={torch.float32:(np.float32,2,32),torch.float64:(np.float64,2,64),torch.int64:(np.int64,0,64),
+         torch.int32:(np.int32,0,32),torch.float16:(np.float16,2,16),torch.uint8:(np.uint8,1,8)}
 
 
 class _Array(np.ndarray):
@@ -15,9 +21,11 @@ class _Entry:
     backing: object
     event: object
     capacity: int
+    pointer: int = 0
     active: bool = False
     cpu_done: bool = True
     recorded: bool = False
+    dma_done: bool = False
     poisoned: bool = False
 
 
@@ -36,10 +44,13 @@ class _Event:
         self._lease = lease
 
     def query(self):
-        return self._lease.entry.event.query()
+        ready=self._lease.entry.event.query()
+        if ready:self._lease.entry.dma_done=True
+        return ready
 
     def synchronize(self):
         self._lease.entry.event.synchronize()
+        self._lease.entry.dma_done=True
 
 
 class TorchDownloads:
@@ -72,7 +83,7 @@ class ActionDownloadPool:
         for entry in self.entries:
             if entry.active and entry.cpu_done and entry.recorded and not entry.poisoned:
                 try:
-                    if entry.event.query():
+                    if entry.dma_done or entry.event.query():
                         entry.active = False
                 except BaseException:
                     entry.poisoned = True
@@ -85,9 +96,7 @@ class ActionDownloadPool:
         Torch views, detach(), and numpy() aliases therefore keep the lease,
         including after the original packet and tensor objects are destroyed.
         """
-        dtypes={torch.float32:np.float32,torch.float64:np.float64,torch.int64:np.int64,
-                torch.int32:np.int32,torch.float16:np.float16,torch.uint8:np.uint8}
-        if source.dtype not in dtypes or source.numel()==0:
+        if source.dtype not in _DTYPES or source.numel()==0:
             raise ValueError('Unsupported action download dtype or empty shape')
         size=source.numel()*source.element_size()
         capacity=max(256,1 << (size-1).bit_length())
@@ -108,12 +117,22 @@ class ActionDownloadPool:
                     self.exhaustions+=1
                     raise BufferError('Action download pool capacity exhausted; no batch wait or unbudgeted allocation')
                 entry=_Entry(self.backend.allocate(capacity),self.backend.event(),capacity)
+                entry.pointer=entry.backing.data_ptr()
                 self.entries.append(entry);self.allocations+=1
             entry.active,entry.cpu_done,entry.recorded=True,False,False
+            entry.dma_done=False
             lease=_Lease(self,entry)
-            array=entry.backing.numpy()[:size].view(dtypes[source.dtype]).view(_Array)
-            array._lease=lease
-            host=torch.from_numpy(array).reshape(source.shape)
+            dtype,code,bits=_DTYPES[source.dtype]
+            try:
+                if _CAPSULE is not None:
+                    host=_FROM_DLPACK(_CAPSULE(entry.pointer,entry.capacity,entry.backing,lease,source.shape,code,bits))
+                else:
+                    array=entry.backing.numpy()[:size].view(dtype).view(_Array)
+                    array._lease=lease
+                    host=torch.from_numpy(array).reshape(source.shape)
+            except BaseException:
+                entry.active=False
+                raise
             event=_Event(lease)
             self.peak_active_bytes=max(self.peak_active_bytes,sum(e.capacity for e in self.entries if e.active))
         try:
@@ -136,4 +155,5 @@ class ActionDownloadPool:
                 active_pinned_bytes=sum(e.capacity for e in self.entries if e.active),
                 peak_active_pinned_bytes=self.peak_active_bytes,event_count=len(self.entries),
                 max_pinned_bytes=self.max_bytes,max_events=self.max_slots,
+                storage_carrier='dlpack' if _CAPSULE is not None else 'numpy_reference',
                 quarantined_slots=sum(e.poisoned for e in self.entries))

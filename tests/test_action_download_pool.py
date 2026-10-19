@@ -74,6 +74,21 @@ def test_owner_data_remains_unchanged_while_other_owner_downloads():
     assert a.data_ptr()!=b.data_ptr()
 
 
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64,torch.float16,torch.int64,torch.int32,torch.uint8])
+def test_storage_carrier_preserves_shape_and_dtype(dtype):
+    pool=ActionDownloadPool(512,2,backend=Backend())
+    source=torch.arange(24).reshape(2,3,4).to(dtype)
+    host,event=pool.copy(source)
+    assert host.dtype==dtype and host.shape==source.shape and torch.equal(host,source)
+
+
+def test_capsule_rejects_shape_beyond_reserved_storage():
+    from vllm_kvmem import _native
+    backing=torch.empty(256,dtype=torch.uint8)
+    with pytest.raises(ValueError,match='exceeds'):
+        _native.leased_download_capsule(backing.data_ptr(),256,backing,object(),[129],2,32)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
 def test_real_pinned_pool_after_graph_replay_preserves_retained_numpy():
     pool=ActionDownloadPool(512,2)
@@ -88,3 +103,11 @@ def test_real_pinned_pool_after_graph_replay_preserves_retained_numpy():
     pointer=a.data_ptr();del a,ea,old;gc.collect()
     c,ec=pool.copy(source);ec.synchronize()
     assert c.data_ptr()==pointer and pool.snapshot()['event_count']==2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
+def test_pooled_coordinate_download_keeps_int64_bits():
+    pool=ActionDownloadPool(256,1)
+    source=torch.tensor([[2**40,2**40+1],[2**41,2**41+17]],dtype=torch.int64,device='cuda')
+    host,event=pool.copy(source);event.synchronize()
+    assert host.tolist()==[[2**40,2**40+1],[2**41,2**41+17]] and host.is_pinned()
