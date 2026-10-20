@@ -77,10 +77,17 @@ def measure(root,name):
 
 
 def analyze_combined(root,manifest):
-    """One all-on cohort against the predeclared complete all-off reference."""
-    if len(manifest['order'])!=1:raise ValueError('Combined plan requires only one new all-on cohort')
-    name=manifest['order'][0];job=root/name;reference=Path(manifest['reference'])
+    """One all-on cohort against the predeclared reused or fresh all-off reference."""
+    fresh_reference=manifest.get('fresh_reference',False)
+    expected_order=(['combined-reference-1','combined-optimized-1'] if fresh_reference
+        else ['combined-optimized-1'])
+    if manifest['order']!=expected_order:raise ValueError('Combined cohort order differs from its declared plan')
+    name=manifest['order'][-1];job=root/name;reference=Path(manifest['reference'])
     if sha(job/'manifest.json')!=manifest['jobs'][name]:raise ValueError('Frozen all-on job changed')
+    if fresh_reference:
+        if reference!=root/'combined-reference-1':raise ValueError('Fresh reference differs from the declared cohort')
+        if sha(reference/'manifest.json')!=manifest['jobs'][reference.name]:
+            raise ValueError('Frozen all-off job changed')
     old=read(reference/'manifest.json');new=read(job/'manifest.json')
     if old.get('overhead_mode')!='reference' or new['overhead_component']!='combined':
         raise ValueError('Require declared all-off and combined all-on modes')
@@ -108,7 +115,7 @@ def analyze_combined(root,manifest):
             repeats.append({key:value[key] for key in ('job','shared_decode_output_tokens_per_second',
                 'full_decode_step_mean_ms','shared_decode_mtp_mean_acceptance_length',
                 'original_job_status','original_snapshot_status')})
-    return dict(combined=True,analyzer_sha256=sha(Path(__file__)),reference=str(reference),
+    return dict(combined=True,fresh_reference=fresh_reference,analyzer_sha256=sha(Path(__file__)),reference=str(reference),
         measurements=dict(all_off=left,all_on=right),
         observed_percent_change={key:100*(right[key]/left[key]-1) for key in metrics},
         changed_switches=list(manifest['switches'].values()),serving_sources_identical=True,native_qk_reuse=False,
@@ -116,8 +123,10 @@ def analyze_combined(root,manifest):
             for key in left['identities']},query_history_overlap=query_overlap(reference,job),
             verification_count_equal=left['owner_verifications']==right['owner_verifications']),
         existing_all_off_repetitions=repeats,
-        limitation='User requested one combined all-off/all-on comparison and cancellation of remaining individual cohorts. '
-        'Primary all-off reference was declared before all-on launch and reuses a completed strict-passed full C8 run. '
+        limitation='User requested one combined all-off/all-on comparison. '
+        +('Both primary cohorts are fresh and their all-off/all-on order was declared before launch. '
+          if fresh_reference else
+          'Primary all-off reference was declared before all-on launch and reuses a completed strict-passed full C8 run. ')+
         'A single pair cannot establish stable causal throughput improvement. Generation/selection and MTP differences '
         'are reported separately. Step CUDA-event intervals and wall throughput cover different scopes; startup includes '
         'first-use cache/JIT effects. Resource observations are sampled at 1Hz, process RSS/PSS at 5s. '
@@ -126,7 +135,7 @@ def analyze_combined(root,manifest):
 
 def analyze(root):
     manifest=read(root/'manifest.json')
-    if read(root/'status.json')['status']!='completed':raise ValueError('All 16 cohorts must finish before comparison')
+    if read(root/'status.json')['status']!='completed':raise ValueError('All declared cohorts must finish before comparison')
     if manifest.get('combined'):return analyze_combined(root,manifest)
     values={};sources=None
     for name in manifest['order']:

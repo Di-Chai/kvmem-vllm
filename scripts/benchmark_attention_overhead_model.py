@@ -1,4 +1,4 @@
-"""Four independent, alternating full C8 comparisons; native QK reuse is off."""
+"""Independent or combined full C8 comparisons; native QK reuse is off."""
 import argparse
 from copy import deepcopy
 import json
@@ -27,6 +27,9 @@ def prepare(args):
     reference=args.reference.resolve();base=read(reference/'profile.json');old=read(reference/'manifest.json')
     if read(reference/'status.json')['status']!='passed':raise ValueError('Require original passed full C8 reference')
     combined=getattr(args,'combined',False)
+    fresh_reference=getattr(args,'fresh_reference',False)
+    if fresh_reference and not combined:
+        raise ValueError('A fresh reference is only supported for combined comparisons')
     if combined:
         if old.get('overhead_mode')!='reference' or any(base['kvmem'].get(key,False) for key in SWITCHES.values()):
             raise ValueError('Combined comparison requires a completed all-off reference')
@@ -43,7 +46,7 @@ def prepare(args):
     comparisons=[('combined','all_four')] if combined else list(SWITCHES.items())
     for component,flag in comparisons:
         for repetition in ((1,) if combined else (1,2)):
-            for mode in (('optimized',) if combined else ('reference','optimized')):
+            for mode in (('optimized',) if combined and not fresh_reference else ('reference','optimized')):
                 name=f'{component}-{mode}-{repetition}';order.append(name)
                 profile=deepcopy(base)
                 profile.update(port=args.port,served_model_name='kvmem-attention-overhead')
@@ -56,7 +59,7 @@ def prepare(args):
                     profile['kvmem']['action_native_scores']='off'
                 else:
                     profile['kvmem'].pop('action_native_scores',None)
-                if combined:profile['kvmem'].update({key:True for key in SWITCHES.values()})
+                if combined:profile['kvmem'].update({key:mode=='optimized' for key in SWITCHES.values()})
                 else:profile['kvmem'][flag]=mode=='optimized'
                 validate_profile(profile,'D','niah')
                 path=root/(name+'-profile.json');save(path,profile);job=root/name
@@ -72,14 +75,18 @@ def prepare(args):
                 save(job/'manifest.json',manifest);jobs[name]=sha(job/'manifest.json')
     frozen=root/'frozen';frozen.mkdir()
     for p in (ROOT/'scripts').glob('*.py'):shutil.copy2(p,frozen/p.name)
-    save(root/'manifest.json',dict(order=order,jobs=jobs,switches=SWITCHES,reference=str(reference),
+    save(root/'manifest.json',dict(order=order,jobs=jobs,switches=SWITCHES,
+        reference=str(root/'combined-reference-1' if fresh_reference else reference),
+        template_reference=str(reference),fresh_reference=fresh_reference,
         frozen_sha256={p.name:sha(p) for p in frozen.iterdir()},created_at=time.time(),
         source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
         cpp_sha256={str(p.relative_to(ROOT)):sha(p) for folder in ('csrc','third_party/qw3')
             for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.cpp','.hpp','.cuh')},
         start_cpu_available_bytes=105620439040,minimum_cpu_available_bytes=8589934592,minimum_gpu_free_mib=4096,
         combined=combined,
-        scope=('User-requested combined all-off/all-on comparison, reusing the declared completed all-off reference. '
+        scope=(('User-requested fresh combined all-off/all-on repeat; run the declared all-off cohort before all-on. '
+                if fresh_reference else
+                'User-requested combined all-off/all-on comparison, reusing the declared completed all-off reference. ')
               if combined else 'Four independent A/B comparisons with two fresh cohorts per arm. ')+
               'Original V2 D multi/alpha.2/graph-pressure '
               'policy and full256K+16K C8 workload are fixed; '+
@@ -195,7 +202,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=('prepare','run'));parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--reference',type=Path);parser.add_argument('--port',type=int,default=18836)
-    parser.add_argument('--combined',action='store_true',help='Prepare only all-on; reuse an existing complete all-off reference')
+    parser.add_argument('--combined',action='store_true',help='Compare all four switches together; reuse all-off unless --fresh-reference')
+    parser.add_argument('--fresh-reference',action='store_true',help='With --combined, run a fresh all-off cohort followed by all-on')
     args=parser.parse_args();(prepare if args.action=='prepare' else run)(args)
 
 
