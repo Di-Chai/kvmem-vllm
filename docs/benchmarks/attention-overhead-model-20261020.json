@@ -1,0 +1,323 @@
+{
+  "combined": true,
+  "analyzer_sha256": "4a5885d6e902d34e841e77b6cf545ad8270a64ca535db612c4aab461c5539a91",
+  "reference": "/home/chaidi/kvmem-freetoken/kvmem-vllm/artifacts/attention-overhead-20261020/model-c8-r3/decode-reference-2",
+  "measurements": {
+    "all_off": {
+      "job": "decode-reference-2",
+      "component": "decode",
+      "mode": "reference",
+      "engine_startup_seconds": 80.79876041412354,
+      "cold_preparation_seconds": 408.4565979447216,
+      "effective_input_tokens_per_second": 5133.490340346445,
+      "pure_prefill_model_tokens_per_second": 5549.723440248432,
+      "full_decode_step_mean_ms": 42.76519059679638,
+      "model_decode_step_mean_ms": 41.31381490511787,
+      "shared_decode_output_tokens_per_second": 743.115531964266,
+      "whole_batch_seconds": 623.7120522027835,
+      "whole_batch_output_tokens_per_second": 210.1482559733917,
+      "observed_process_lifetime_seconds": 713.0231840610504,
+      "observed_output_tokens_per_second_including_startup": 183.82571973813597,
+      "shared_decode_mtp_mean_acceptance_length": 4.1091098169717135,
+      "shared_decode_draft_acceptance_rate": 0.7772774542429285,
+      "mtp": {
+        "mean_acceptance_length": 4.1091098169717135,
+        "draft_acceptance_rate": 0.7772774542429285,
+        "proposals": 96160.0,
+        "accepted_draft_tokens": 74743.0,
+        "drafts": 24040.0,
+        "samples": 27,
+        "scope": "Counter deltas inside common C8 decode with two-second guards for 1Hz publication; length includes bonus token."
+      },
+      "owner_verifications": 33400,
+      "output_per_owner_verification": 3.924071856287425,
+      "accepted_output_samples": 6492,
+      "accepted_prefill_samples": 65384,
+      "candidate_samples": 74074,
+      "metadata_early_batches": 6024,
+      "metadata_fallback_batches": 1,
+      "gpu_peak_allocated_bytes": 89177570816,
+      "gpu_peak_reserved_bytes": 92960456704,
+      "observed_peak_gpu_used_mib": 74252.0,
+      "observed_peak_owned_process_rss_bytes": 93958004736,
+      "observed_peak_owned_process_pss_bytes": 93547652096,
+      "graph_scoring_seconds": 5.502400740049779,
+      "graph_selection_seconds": 11.51371587626636,
+      "decode_commit_native_calls": 0,
+      "decode_commit_python_calls": 33400,
+      "download_pool": null,
+      "scoring_backend_counts": {
+        "reference": 32238
+      },
+      "graph_backends": {
+        "cpp_v2": 0,
+        "python_reference": 112
+      },
+      "native_graph_indexes": {},
+      "native_qk_reuse": false,
+      "identities": {
+        "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+        "query_selection_multiset": [
+          "22004bd5516da02610ec582ca6f0c28541d51e31f6fffcecc6dcdebc66a65209",
+          "4abd1f69d46db29b7bad5812f10fd8e371ff610ba7f9a8d603516c31fa7af4b5",
+          "815373b60126adc2bdeecfc607001f00fb257da9c6a49f84a1c902f5ad61a70d",
+          "84981c1b72938061bfa3b52bca2b097e6ef4aac0c8c4130572e1ccc227d5981b",
+          "a1ee9ba16e161e3030a8050186f6675cd1676c3782540ac93ee2a6c4e6133309",
+          "cbe42cc4ee1dff9195aedb306970f4691b63a9fe222e991a1fb20813b56b2303",
+          "e6614f7f1bab90f5db14ba52c543e0a013032bb45d3a503179a273743d3c8643",
+          "fb64cff8c4ac6d9529d5a0333df13f6fd687796ce9f9227dcb376d415de46e67"
+        ],
+        "pressure_selection_multiset": [
+          "0c72ccc78e579d35754329785937f81bef8798a7933079c5177190f9d071a110",
+          "21cb39d9b5abbfb01242438a686c12839e7f8807b4bac7cc6acd02744df7bf1a",
+          "261a93d76029d543e4ecb593da5a86e265c244aa3089b43372b540bd03f1b9d3",
+          "3d828a80b1ac3b8603cb70ae0b3b6138a28bbb25fb266f0fbc4728ea736a84a1",
+          "4dfd061598ceb040e2bd463873360ae933822196fb6ce0f3503516e630fe5835",
+          "646773ce47c4a2a49c09ad1845ed6eecd6eee484e1bd52f9af32947250e15e96",
+          "bddc1527f285c896aee396f2b63a45155cd54459327adf076a9c4cb07abf7ac7",
+          "d6e9798237ebe7fd193e98a43911ba0b501c28a37dbc409df9cf8a0ced82a7e3"
+        ],
+        "accepted_output_multiset": [
+          "0c17e433bc8083a44816eaef484791225768a15789400005c71cda37657925de",
+          "1a474e58879bc0b63bdbf84b3d5af34df65eae230216e9961b6ac38b9b8be912",
+          "3cd2546d0b7f734d574b01b521a6633a1ec6d6a77612e80f9da721a7962399d5",
+          "4b1fc7f9990f69c28d3643c7d598f9dc7a27e293a511f36d56a8a29cdb96f270",
+          "5ee4e9e310544e965a6a1c89d1003664438166d478b8cc660de1d4244937ae54",
+          "67958a9e065992929ce2fe21d583ca785d5ab469768cceba0ceeba421b6533d1",
+          "840366fc7fc5ee503e9f7ea5bec70e3ebc1a7b9257cdc9558129f68a3ac4ae3a",
+          "965b1d108f02d624fdd2e3b70df012a0fc75cbf1a790c2ea0d6788f289059fd7"
+        ]
+      },
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed",
+      "original_snapshot_violations": [],
+      "audit_sha256": "deb1481077209ed063f81bca3757442561a1b7833c7461a8b2ff2dff43134607"
+    },
+    "all_on": {
+      "job": "combined-optimized-1",
+      "component": "combined",
+      "mode": "optimized",
+      "engine_startup_seconds": 75.50824785232544,
+      "cold_preparation_seconds": 404.16283471044153,
+      "effective_input_tokens_per_second": 5188.027745060323,
+      "pure_prefill_model_tokens_per_second": 5535.887687874425,
+      "full_decode_step_mean_ms": 43.099172875210705,
+      "model_decode_step_mean_ms": 41.77032337979012,
+      "shared_decode_output_tokens_per_second": 669.6346377042362,
+      "whole_batch_seconds": 623.9854825390503,
+      "whole_batch_output_tokens_per_second": 210.05616904203737,
+      "observed_process_lifetime_seconds": 707.8639845848083,
+      "observed_output_tokens_per_second_including_startup": 185.16551605161715,
+      "shared_decode_mtp_mean_acceptance_length": 3.7059176809737346,
+      "shared_decode_draft_acceptance_rate": 0.6764794202434337,
+      "mtp": {
+        "mean_acceptance_length": 3.7059176809737346,
+        "draft_acceptance_rate": 0.6764794202434337,
+        "proposals": 99904.0,
+        "accepted_draft_tokens": 67583.0,
+        "drafts": 24976.0,
+        "samples": 28,
+        "scope": "Counter deltas inside common C8 decode with two-second guards for 1Hz publication; length includes bonus token."
+      },
+      "owner_verifications": 36156,
+      "output_per_owner_verification": 3.624958513109857,
+      "accepted_output_samples": 7804,
+      "accepted_prefill_samples": 65384,
+      "candidate_samples": 76252,
+      "metadata_early_batches": 5916,
+      "metadata_fallback_batches": 1,
+      "gpu_peak_allocated_bytes": 89177570816,
+      "gpu_peak_reserved_bytes": 92960456704,
+      "observed_peak_gpu_used_mib": 74252.0,
+      "observed_peak_owned_process_rss_bytes": 93792948224,
+      "observed_peak_owned_process_pss_bytes": 93381862400,
+      "graph_scoring_seconds": 1.8343717409297824,
+      "graph_selection_seconds": 7.823330273851752,
+      "decode_commit_native_calls": 36156,
+      "decode_commit_python_calls": 0,
+      "download_pool": {
+        "allocations": 36,
+        "reuses": 18805,
+        "exhaustions": 0,
+        "allocated_pinned_bytes": 3104768,
+        "active_pinned_bytes": 12288,
+        "peak_active_pinned_bytes": 1835008,
+        "event_count": 36,
+        "max_pinned_bytes": 67108864,
+        "max_events": 128,
+        "storage_carrier": "dlpack",
+        "quarantined_slots": 0
+      },
+      "scoring_backend_counts": {
+        "fused": 38772
+      },
+      "graph_backends": {
+        "cpp_v2": 112,
+        "python_reference": 0
+      },
+      "native_graph_indexes": {
+        "cmpl-9d7af271290ad7a7-0-87c8840b": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-8620366fe792dc49-0-a7df4f34": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-b5c82f3945c729a3-0-b8d8a8a5": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-a747c51a8e862590-0-af4a55c8": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-be437a7c6a962cf7-0-9a896e77": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-8be33124eca52005-0-aa35320b": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-aef4ed26ba528fdd-0-a3db4b9d": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-88ebce7c34e888b9-0-af7cb161": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        }
+      },
+      "native_qk_reuse": false,
+      "identities": {
+        "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+        "query_selection_multiset": [
+          "27be52ccab64d244093ba77a053dfd9877ffc44eec92e62cf0998b26af33658a",
+          "39aa8e7beb76f9927a6b85bd47613a1a97ca56bd419791f6f136e585de4221c4",
+          "4fcd7d8c745e86068d0f43aeb09b849dd07ebbf4802ce5e5e0f98198cf51fdc3",
+          "55282f64bd6b4355344eb0adeeeb8487b3ec06d3d7353a0ec9b2cff3bd8f1f2a",
+          "8d2343bbb793cda49b9722dd02415c7d5ac502fbb054a7a2f8049377e5a5dbb7",
+          "d78ca7008a2a96bbe4519c1f2db3d6707aef7eb11327954018c65a21b6e0d788",
+          "e3b6ed81d219c34d14d70bca8ffbc1e3db0ecc1bfc48afcfdc006de319776975",
+          "ebfdd435912027ac99751467603762ec8220f884e47c0205e6d25377e5e58f7d"
+        ],
+        "pressure_selection_multiset": [
+          "15a5e485a7944adedfaddce2e845a397060cfba5657b7a6be3b437ac37dd85fa",
+          "226c1f25c379012d80294a0c34138df94ce46c84f2da52b906f8ea0e26f7efc5",
+          "4af70956723eed3877dd2342671ecb3f0106dfbd6623b793e38abb3b67f93701",
+          "717b42f32662389b29047dc959b4dc68849c20625c3f9d8c080647014b463e0f",
+          "7570590215defc83516915895803db03f2bd0cecd4b12d22b647e3e2dbf34db5",
+          "82eebc074b7b8fd1fd99f6b805fbc05e218f2c04ec252660909c77c2e2621ef4",
+          "8cf00ed97377ecf919a8fb5ec8f04eb195631576e74380b5ae7de72ce1146a46",
+          "b4f59c7f9a3de0f4628c22968c23e2bdbaaac07137d1902e732a7e380865e40e"
+        ],
+        "accepted_output_multiset": [
+          "074454217ce43a9ae8fec5f3356bc313591fb916ad1920dcd5c2e268f258b24c",
+          "0cc95ccb1fd397eac93e926b5baec511f857f20cbf7e381a88a51d7e6655055b",
+          "0e8a8513058a1deda494ab018dff3173ec186ff5fff91c8e493238502e85cfbd",
+          "2a8329de537b305487d84150da605a29e1bf5a14a40096167f5d87f6df943ae7",
+          "57935e9c1eaa44be44604847f0d499fa6248b3634d4e6b056d6241c2402a90c1",
+          "5b960eb29db727ab3e0ead16cdc667d6bea24633636f3f44776fabf1d0e43481",
+          "78bb2d58dfafe75bee44e529e6ed81b30fd944008355b8bc02f3fa0e509e602e",
+          "a848c4d747aca79b6eec1d59790e46f793ae3baa73cbfcd50bbb5a5f400527d9"
+        ]
+      },
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed",
+      "original_snapshot_violations": [],
+      "audit_sha256": "2433f70852a660f5727268380b8aa22272458b05339d697e58eeae79aa09c309"
+    }
+  },
+  "observed_percent_change": {
+    "engine_startup_seconds": -6.547764513567111,
+    "cold_preparation_seconds": -1.0512165199155765,
+    "effective_input_tokens_per_second": 1.0623844810857763,
+    "pure_prefill_model_tokens_per_second": -0.2493052585947897,
+    "full_decode_step_mean_ms": 0.7809675901206958,
+    "model_decode_step_mean_ms": 1.1049777797588423,
+    "shared_decode_output_tokens_per_second": -9.888219408602438,
+    "whole_batch_seconds": 0.04383919395192226,
+    "whole_batch_output_tokens_per_second": -0.04381998362432693,
+    "observed_process_lifetime_seconds": -0.7235668617193713,
+    "observed_output_tokens_per_second_including_startup": 0.728840510125428,
+    "shared_decode_mtp_mean_acceptance_length": -9.812152849570687,
+    "shared_decode_draft_acceptance_rate": -12.968089251691028,
+    "owner_verifications": 8.251497005988018,
+    "output_per_owner_verification": -7.622524615554815,
+    "accepted_output_samples": 20.209488601355517,
+    "accepted_prefill_samples": 0.0,
+    "candidate_samples": 2.9403029403029413,
+    "metadata_early_batches": -1.7928286852589626,
+    "metadata_fallback_batches": 0.0,
+    "gpu_peak_allocated_bytes": 0.0,
+    "gpu_peak_reserved_bytes": 0.0,
+    "observed_peak_gpu_used_mib": 0.0,
+    "observed_peak_owned_process_rss_bytes": -0.17567051627348507,
+    "observed_peak_owned_process_pss_bytes": -0.17722486057679676,
+    "graph_scoring_seconds": -66.66233835754414,
+    "graph_selection_seconds": -32.05208155276554,
+    "decode_commit_python_calls": -100.0
+  },
+  "changed_switches": [
+    "action_native_decode_commit",
+    "action_download_pool",
+    "action_fused_scoring",
+    "graph_native_propagation"
+  ],
+  "serving_sources_identical": true,
+  "native_qk_reuse": false,
+  "trajectory": {
+    "identity_equal": {
+      "input_sha256": true,
+      "query_selection_multiset": false,
+      "pressure_selection_multiset": false,
+      "accepted_output_multiset": false
+    },
+    "query_history_overlap": {
+      "mean": 0.9449568127681618,
+      "minimum": 0.9246231155778895,
+      "maximum": 0.9574105621805792,
+      "mandatory_fits_equal": true,
+      "scope": "All cross-owner history-page Jaccards; first inputs identical for all eight owners."
+    },
+    "verification_count_equal": false
+  },
+  "existing_all_off_repetitions": [
+    {
+      "job": "decode-reference-1",
+      "shared_decode_output_tokens_per_second": 603.0766918323708,
+      "full_decode_step_mean_ms": 42.9055480868152,
+      "shared_decode_mtp_mean_acceptance_length": 3.324165029469548,
+      "original_job_status": "failed",
+      "original_snapshot_status": "failed"
+    },
+    {
+      "job": "decode-reference-2",
+      "shared_decode_output_tokens_per_second": 743.115531964266,
+      "full_decode_step_mean_ms": 42.76519059679638,
+      "shared_decode_mtp_mean_acceptance_length": 4.1091098169717135,
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed"
+    }
+  ],
+  "limitation": "User requested one combined all-off/all-on comparison and cancellation of remaining individual cohorts. Primary all-off reference was declared before all-on launch and reuses a completed strict-passed full C8 run. A single pair cannot establish stable causal throughput improvement. Generation/selection and MTP differences are reported separately. Step CUDA-event intervals and wall throughput cover different scopes; startup includes first-use cache/JIT effects. Resource observations are sampled at 1Hz, process RSS/PSS at 5s. Raw snapshot-gate failures remain unchanged; complete executed-window and terminal/release audits are independent.",
+  "provenance": {
+    "frozen_source_commit": "e7a084d73b6fe601b4de519d9a7483d5149ed2fc",
+    "combined_manifest_sha256": "bb866f033df7f292f077fe0621b055c5e08164ee2a18ac7efe1f1ea629dfb6e5",
+    "all_off_manifest_sha256": "c4acf699db5a4d8ba6a2ca4d3f33ef9be1b9c9678d7f60da44dd9c8b441c7992",
+    "all_on_manifest_sha256": "fc1a08c46d7ce61ad237811b31d2d8125845af5c8541afb8e0bdfa09e55e3e40",
+    "analysis_raw_path": "artifacts/attention-overhead-20261020/model-c8-combined-r1-analysis.json",
+    "analysis_raw_sha256": "f89026dcb54e5f9bc533cc915c45ff4737b0d1ee1f1763c07e153b935bb6c556",
+    "serving_source_digest": "9c178a367b1155a845892ec001cd32437785171f6c139a826e8bb73e5a8ba431",
+    "cpp_source_digest": "d04d944ca1b95735d04fe29689630497135e3c672f78c4221bacb381460f36f2"
+  }
+}

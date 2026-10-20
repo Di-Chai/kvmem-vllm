@@ -2,8 +2,10 @@
 
 All four switches remain **default off**. Implementation, fixed-input component
 correctness, six real-model cross-turn state runs and component measurements are
-complete. The four independent full-C8 performance comparisons are running;
-end-to-end performance acceptance is pending.
+complete. The user-requested combined all-off/all-on full-C8 comparison is also
+complete: both primary runs pass the original strict gate, complete executed
+window, terminal-history and release audits. **Whole-batch throughput is flat;
+this experiment does not establish an end-to-end speedup.**
 
 This work optimizes the **existing bypass scorer** and its consumers. It is
 separate from the experimental native FlashInfer/XQA QK reuse route.
@@ -144,9 +146,10 @@ in [`attention-overhead-state-20261020.json`](benchmarks/attention-overhead-stat
 ## Independent component costs
 
 Ten repetitions alternate reference/optimized order, with fixed operands and
-acceptance masks. Values below are mean **per eight-owner component invocation**,
-not accumulated durations or per-output-token costs. Different rows measure
-different scopes and must not be added or extrapolated into model throughput.
+acceptance masks. Values below are means **per component invocation**: decode,
+pool and fusion cover eight owners; propagation covers one 8,192-node graph.
+They are not accumulated durations or per-output-token costs. Different rows
+measure different scopes and must not be added or extrapolated into model throughput.
 
 | Component | Reference | Optimized | Scope |
 | --- | ---: | ---: | --- |
@@ -183,18 +186,40 @@ diagnostic, not used as the model-matched performance result. The first NumPy
 pool carrier's decode regression is also retained; it motivated the DLPack
 follow-up rather than default enablement.
 
-## Full C8 comparisons
+## Full C8 combined comparison
 
-`model-c8-r3` freezes 16 fresh cohorts: reference/optimized/reference/optimized for
-each switch. Exactly one switch changes within each comparison; the other three
-and native QK reuse are off. All arms keep the original passed V2 D scoring and
-context policy: multi, alpha .2, graph pressure, identical capture density and
-Mean-K Query configuration.
+The final plan is **all four switches off versus all four on**, as requested by
+the user after component qualification. `model-c8-combined-r1` ran only one new
+all-on cohort. The primary all-off reference was declared before that launch:
+`model-c8-r3/decode-reference-2`, a completed run whose original strict gate,
+complete executed-window audit, eight terminal publications and resource release
+all passed. Serving source/extension and C++ source hashes must match the reused
+reference exactly; profiles may differ only in the four declared booleans.
+Native QK reuse remains off.
+
+The original 16-cohort independent plan was stopped after three complete cohorts
+(two all-off references and one decode-only optimization). The fourth cohort was
+interrupted at the user's scope change; its cleanup confirms no owned process
+or GPU worker remains. The 12 subsequent individual cohorts were not run. The
+completed decode-only pair is diagnostic, not the combined performance result.
+All individual component results above remain independently measured.
+
+The already completed identical all-off repetitions are reported as trajectory
+noise diagnostics, without additional GPU work. Their shared decode rates were
+603.08 and 743.12 output token/s, with native MTP mean lengths 3.324 and 4.109;
+full step intervals were 42.906 and 42.765 ms. Query history overlap between these
+same-path repetitions averaged 0.9433 and mandatory contents matched. This is
+why an output-rate difference alone cannot be assigned to the optimization.
+
+All arms retain the original passed V2 D scoring and context policy: multi,
+alpha .2, graph pressure, identical capture density and Mean-K Query configuration.
 
 Each request has the full original 262,101-token input and 16,384 accepted output
 tokens. All arms use NVFP4, FP8 KV, MTP(k=4), K=36,864, G=16,384,
 batch=16,424, chunk=1,024, 100 GB CPU history, no historical SSD I/O and disabled
-prefix caching. No acceptance mask, sampling/graph parameter or profile capacity
+prefix caching. Hardware is one NVIDIA RTX PRO 6000 Blackwell Server Edition
+(97,887 MiB reported device memory), driver 580.159.03. No acceptance mask,
+sampling/graph parameter or profile capacity
 is reduced for an optimized arm. The original strict streamed-ID/native-window
 qualifier and an independent complete executed-step audit are retained.
 
@@ -216,19 +241,133 @@ and excluded from the final comparison.
 strict snapshot failure. It preserves that failure, the original input/output
 checks and every strict gate. Thirty-nine related unit tests pass, including
 failure-path cleanup and rejected terminal/checkpoint evidence. No serving
-source or numerical path changes. `model-c8-r3` starts all 16 fresh cohorts using
-the corrected client.
+source or numerical path changes. `model-c8-r3` started the independent cohorts using
+the corrected client; the later user-requested combined plan reuses its completed
+all-off reference and keeps the same correction.
 
-Results remain pending. The final analysis must separately report engine
-startup/JIT, request cold preparation/input wall rate, model-prefill event rate,
-shared C8 output rate, full/model step event intervals, whole ready-batch wall
-throughput, native MTP acceptance, CPU RSS/PSS, GPU allocation/reservation/device
-memory, actual modes and resource fallbacks. Step events do not cover every
-inter-step CPU task; shared/whole-batch wall rates include those costs. CPU memory
-is sampled every five seconds and device memory every second, equally in all
-arms. Generation/Query/pressure identities and verification counts must be
-compared explicitly. Two repetitions per arm cannot establish a stable causal
-throughput estimate, and per-component savings cannot be summed.
+## Combined result
 
-The all-four state case establishes compatibility. No combined full-C8
-performance number is inferred from the independent comparisons.
+Primary evidence is in
+[`attention-overhead-model-20261020.json`](benchmarks/attention-overhead-model-20261020.json).
+All-off is the predeclared `model-c8-r3/decode-reference-2`; all-on is
+`model-c8-combined-r1/combined-optimized-1`. Both complete eight requests with
+262,101 prompt and 16,384 accepted output tokens each, pass the **original**
+strict native gate and independent complete executed-window audit, publish all
+eight terminal histories and release all owned history/checkpoint/graph state.
+Historical SSD read/write bytes are zero. No further model test is scheduled.
+
+| Metric | All off | All on | Observed change |
+| --- | ---: | ---: | ---: |
+| Engine startup/JIT, s | 80.799 | 75.508 | -6.55% |
+| Cold request preparation / last first-token, s | 408.457 | 404.163 | -1.05% |
+| Effective input wall rate, token/s | 5,133.49 | 5,188.03 | +1.06% |
+| Pure-prefill model event rate, token/s | 5,549.72 | 5,535.89 | -0.25% |
+| Shared C8 accepted output rate, token/s | 743.12 | 669.63 | -9.89% |
+| Full decode step event interval, ms | 42.765 | 43.099 | +0.78% |
+| Model decode step event interval, ms | 41.314 | 41.770 | +1.10% |
+| Whole ready-batch wall time, s | 623.712 | 623.985 | +0.04% |
+| Whole ready-batch output rate, token/s | 210.148 | 210.056 | -0.04% |
+| Observed controller lifetime, s | 713.023 | 707.864 | -0.72% |
+| Observed output rate including startup, token/s | 183.826 | 185.166 | +0.73% |
+
+The effective input wall rate divides all input by the maximum first-token delay;
+it includes preparation, model prefill and initial Query/pressure work. The
+prefill model rate uses executed prefill tokens divided by corresponding model
+CUDA-event intervals, including the existing model/replay and statistics hooks.
+Step events may include CPU submission gaps and exclude some inter-step work;
+shared/whole-batch wall rates include those costs. Startup includes first-use
+cache/JIT effects and was lower in this all-on run; its difference is not assigned
+to the four optimizations. The observed controller endpoints have about two
+seconds of sampling uncertainty.
+
+### Trajectory and MTP differences
+
+| Metric | All off | All on |
+| --- | ---: | ---: |
+| Native MTP mean accepted length, including bonus | 4.109 | 3.706 |
+| Native draft acceptance rate | 77.73% | 67.65% |
+| Total owner verification calls | 33,400 | 36,156 |
+| Accepted scoped output observations | 6,492 | 7,804 |
+| Accepted prefill observations | 65,384 | 65,384 |
+| Candidate observations, including proposals | 74,074 | 76,252 |
+
+Inputs match. Query, pressure-selection and accepted-output hash multisets differ.
+Query history-page Jaccard is 0.9450 on average
+(range 0.9246–0.9574); mandatory contents match. The
+same-path all-off repetition overlap is 0.9433, so the mean overlaps are similar.
+This does not prove causal identity: fixed-input component and state tests establish the intended scoring,
+mask and history semantics, while closed-loop model trajectories can differ.
+
+Shared decode output rate falls 9.89% while native MTP mean length falls
+9.81%. Owner verification calls and accepted scoped sample counts increase;
+the capture intervals and scoring/graph parameters remain unchanged. The output
+rate change therefore cannot be reported as a measured net regression caused by
+the optimization. Conversely, the lower cold/startup time cannot establish a net
+optimization benefit. **Whole-batch output rate is essentially unchanged**
+(210.148 → 210.056 token/s), and full step intervals are slightly higher.
+
+### Actual graph, pool and backend costs
+
+Across the same 112 Query/pressure graph calls, scoring takes
+5.502 → 1.834 s
+(-66.7%). The surrounding graph-selection block, including scoring, takes
+11.514 → 7.823 s
+(-32.1%). Native scoring builds 112 indexes (14 per owner) and has
+**zero cache hits** because graph versions advance. These timings include index
+construction and budget reservation. The hot-cache component reduction of 89.2%
+is not the full-model graph reduction. Each owner's maximum reserved index is
+2,623,072 bytes; the sum of per-owner maxima is 20,984,576 bytes, not an observed
+concurrent process-memory peak. Graph selection does not overlap the audited
+shared decode window, so its saving is not a direct shared-decode speedup.
+
+All-on actually executes:
+
+- 36,156 native decode commit-path calls, zero Python commit-path calls.
+- 38,772 fused bypass scorer calls, zero reference-scorer fallbacks.
+- 112 native V2 graph reports, zero reference-propagation fallbacks.
+- The native DLPack pool carrier: 36 allocations, 18,805 reuses, 36 event slots;
+  3,104,768 retained pinned bytes and 1,835,008 peak active pinned bytes, within
+  the 64 MiB / 128-slot caps. Exhaustions and quarantined slots are both zero.
+- Native QK reuse off. The existing early-metadata fallback occurs once in each
+  arm; it is not a fallback from any of these four new optimizations.
+
+### Memory
+
+| Observed peak, GiB | All off | All on |
+| --- | ---: | ---: |
+| CUDA allocator allocated | 83.053 | 83.053 |
+| CUDA allocator reserved | 86.576 | 86.576 |
+| Owned process RSS, 5s sampling | 87.505 | 87.351 |
+| Owned process PSS, 5s sampling | 87.123 | 86.969 |
+| Device used, 1Hz sampling | 72.512 | 72.512 |
+
+Allocator cumulative peaks and sampled device peaks are different measurements;
+1Hz sampling can miss short-lived peaks. No overall GPU-memory reduction is
+observed in this full run despite the separately measured scorer scratch
+reduction. The roughly 0.18% process-memory difference is descriptive, not a
+proven optimization benefit. Cached/in-flight pool payload and immutable indexes
+have their own explicit budgets in addition to these process observations.
+
+### Acceptance and retained evidence
+
+Implementation and correctness qualification are complete. Component CPU costs
+and scorer scratch allocation improve; this single combined pair does **not**
+demonstrate a net end-to-end throughput improvement. All four defaults stay off.
+The single-pair scope follows the user's reduced test plan; no extra repetitions
+or per-feature full-model runs were started after that change.
+
+Raw failed coordinator/client attempts and the user-interrupted independent
+cohort retain their original statuses and logs. They are excluded from the
+primary combined comparison. Existing all-off repetitions are shown only as
+trajectory-noise diagnostics. The main pair needs no exception to the original
+strict gate: both original statuses are `passed`.
+
+The final source-ownership audit confirms that 71 of the 76 initially dirty files
+remain byte-identical. The other five contain separately committed additions in
+shared files; the pre-existing modifications remain outside these commits. No
+unexpected initial-file changes were found. Current serving source/extension and
+C++ headers match the frozen off/on snapshots. Detailed hashes, original outcomes,
+resource timelines and cleanup records remain under
+`artifacts/attention-overhead-20261020/`; the compact tracked JSON includes raw
+analysis, manifest and audit hashes. GPU/CPU component and state qualification
+are independent of the earlier experimental native-QK route.
