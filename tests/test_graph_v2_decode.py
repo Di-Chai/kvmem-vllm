@@ -51,3 +51,39 @@ def test_fixture_preserves_complete_original_input_and_shared_window_gate(tmp_pa
         with pytest.raises(ValueError):gate.validate_fixture({**fixture,field:value},profile)
     path.write_bytes(path.read_bytes()[:-4])
     with pytest.raises(ValueError,match='input changed'):gate.validate_fixture(fixture,profile)
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_completed_streams_retire_before_strict_failure_or_success(failed):
+    sessions = [f's-{index}' for index in range(8)]
+    responses = [dict(client_index=index,response_id=f'r-{index}') for index in range(8)]
+    report = dict(status='failed' if failed else 'passed',batches=[{'steady_decode_window':{}}])
+    events = []
+    def retire(response_id):
+        events.append(response_id)
+        return dict(history_end=262101+16384-1)
+    def release():
+        events.append('released')
+        return {'archive':{'retiring_requests':0}}
+    args = (int(failed),report,sessions,responses,262101,retire,release)
+    if failed:
+        with pytest.raises(RuntimeError,match='Exact shared C8'):gate.retire_completed_streams(*args)
+    else:
+        batch,released = gate.retire_completed_streams(*args)
+        assert batch is report['batches'][0] and released['archive']['retiring_requests']==0
+    assert events==[f'r-{index}' for index in range(8)]+['released']
+
+
+@pytest.mark.parametrize('damage', ['history','checkpoint','retire'])
+def test_bad_terminal_or_retirement_still_releases_and_preserves_failure(damage):
+    sessions = [f's-{index}' for index in range(8)]
+    responses = [dict(client_index=index,response_id=f'r-{index}') for index in range(8)]
+    released = []
+    def retire(response_id):
+        if damage=='retire':raise TimeoutError('Missing terminal')
+        return dict(history_end=278483 if damage=='history' else 278484,
+            checkpoint_tokens=32 if damage=='checkpoint' else 0)
+    with pytest.raises((RuntimeError,TimeoutError)):
+        gate.retire_completed_streams(0,dict(status='passed',batches=[{}]),sessions,responses,
+            262101,retire,lambda: released.append(True))
+    assert released==[True]

@@ -61,6 +61,28 @@ def absolute_window(batch):
     return origins[0]+window['start'], origins[0]+window['end']
 
 
+def retire_completed_streams(code, report, sessions, responses, input_tokens, retire, release):
+    """Drain completed HTTP requests even when the strict snapshot gate failed.
+
+    The original gate still fails after retirement. Otherwise the controller can
+    stop the engine while its last asynchronous retirement is still publishing.
+    """
+    if len(report['batches']) != 1:
+        raise RuntimeError('Exact shared C8 decode/native qualification failed;retain first attempt')
+    validate_identities(sessions, responses)
+    try:
+        terminals = [retire(row['response_id']) for row in responses]
+    finally:
+        released = release()
+    if any(row['history_end'] != input_tokens+16384-1 for row in terminals):
+        raise RuntimeError('Final complete CPU accepted history differs')
+    if any(row.get('checkpoint_tokens') for row in terminals):
+        raise RuntimeError('Independent diagnostic retained a checkpoint')
+    if code or report['status'] != 'passed':
+        raise RuntimeError('Exact shared C8 decode/native qualification failed;retain first attempt')
+    return report['batches'][0], released
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('config', 'capture', 'output', 'fixture'):
@@ -122,22 +144,15 @@ def main(argv=None):
             '--min-window-seconds','30','--min-native-coverage','.9','--timeout','1800'])
         ended = time.monotonic()
         report = json.loads((args.output/'decode/results.json').read_text())
-        if code or report['status'] != 'passed' or len(report['batches']) != 1:
-            raise RuntimeError('Exact shared C8 decode/native qualification failed;retain first attempt')
-        batch = report['batches'][0]
+        batch, released = retire_completed_streams(code, report, sessions, responses, len(tokens),
+            lambda response_id: retired.wait_retired(args.capture, response_id),
+            lambda: lifecycle.wait_released(args.capture, sessions, timeout=180))
         window = batch['steady_decode_window']
         start, end = absolute_window(batch)
         steps = [row for row in lifecycle.records(args.capture/'model_step_latency.jsonl')
             if start <= row['started_at'] and row['submitted_at'] <= end]
         if not steps or any(row['prefill_tokens'] or row['prefill_requests'] or row['decode_requests'] != 8 for row in steps):
             raise RuntimeError('Native completed rows do not independently corroborate C8 decode')
-        validate_identities(sessions, responses)
-        terminals = [retired.wait_retired(args.capture, row['response_id']) for row in responses]
-        if any(row['history_end'] != len(tokens)+16384-1 for row in terminals):
-            raise RuntimeError('Final complete CPU accepted history differs')
-        if any(row.get('checkpoint_tokens') for row in terminals):
-            raise RuntimeError('Independent diagnostic retained a checkpoint')
-        released = lifecycle.wait_released(args.capture, sessions, timeout=180)
         result = dict(status='passed', cases=8, arm=args.arm, schema=SCHEMA,
             all_owned_sessions_released=True, input_tokens=len(tokens), output_tokens_each=16384,
             source_fixture_sha256=digest(args.fixture), actual_concurrency=protocol.audit_actual_concurrency(steps),
