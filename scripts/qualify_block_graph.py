@@ -75,8 +75,14 @@ def validate_profile(profile, arm, concurrency, output_tokens, minimum_output):
     require(arm in ARMS, 'Unknown comparison arm')
     require(type(concurrency) is int and concurrency >= 2, 'Use at least two concurrent owned sessions')
     kv = profile.get('kvmem', {})
-    require(profile.get('draft_method') == 'mtp' and profile.get('draft_tokens') == 4 and
-        profile.get('execution_mode') == 'compiled_graph', 'Require compiled native MTP(k=4)')
+    mtp=(profile.get('draft_method') == 'mtp' and profile.get('draft_tokens') == 4 and
+        profile.get('execution_mode') == 'compiled_graph')
+    dflash=(profile.get('draft_method') == 'dflash' and profile.get('draft_tokens') == 7 and
+        profile.get('execution_mode') == 'full_graph' and
+        profile.get('experimental_dflash_query_planning') is True and
+        not kv.get('async_refresh',False) and not kv.get('async_restore',False) and
+        kv.get('recent_blocks',0)*kv.get('block_tokens',0)>=2047)
+    require(mtp or dflash, 'Require compiled native MTP(k=4) or explicitly experimental synchronous DFlash2(k=7)')
     require(profile.get('verify_session_restore') is True,
         'Enable verify_session_restore for actual P/M byte evidence')
     require(profile.get('max_num_seqs', 0) >= concurrency and kv.get('session_capacity', 0) >= concurrency,
@@ -295,9 +301,11 @@ def event_evidence(capture, rows, profile):
             kv_rows = [e for e in target if native_matches(row, e)]
             state_rows = [e for e in recurrent if native_matches(row, e)]
             require(kv_rows and state_rows and all(e.get('byte_equal') is True and
-                e.get('working_attention_layers', 0) > 0 and e.get('mtp_attention_layers', 0) > 0
+                e.get('working_attention_layers', 0) > 0 and
+                (e.get('draft_layers') == 5 if profile.get('draft_method') == 'dflash'
+                 else e.get('mtp_attention_layers', 0) > 0)
                 for e in kv_rows) and all(e.get('recurrent_byte_equal') is True for e in state_rows),
-                'Every continuation/edit requires target, MTP and recurrent byte-equal restore evidence')
+                'Every continuation/edit requires target, draft/MTP and recurrent byte-equal restore evidence')
             proof.update(target_restore=kv_rows, recurrent_restore=state_rows)
         proofs.append(proof)
     require(not (capture / 'restore_mismatch.json').exists(), 'Model restore mismatch exists')
@@ -364,7 +372,8 @@ def assert_real_graph_checks(rows, evidence, action_events, completions, profile
     selection_changed = any(p['query'].get('added_blocks', 0) > 0 for p in reports)
     return dict(mode=mode, accepted_sample_oracle_checked=bool(kv.get('action_attention')),
         graph_terminals=reports, rejected_tokens=rejection_total,
-        mtp_rejections_observed=rejection_total > 0,
+        speculative_rejections_observed=rejection_total > 0,
+        mtp_rejections_observed=rejection_total > 0 and profile.get('draft_method') == 'mtp',
         selection_changed_observed=selection_changed if mode in SCORING_MODES else None,
         complete=rejection_total > 0 and (mode not in SCORING_MODES or selection_changed),
         limitation='Rejection exclusion follows the independent accepted-token parser oracle plus '

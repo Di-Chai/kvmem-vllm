@@ -105,6 +105,27 @@ def test_native_lifecycle_gate_requires_each_query_and_both_restore_byte_oracles
         qual.event_evidence(tmp_path, rows, profile())
 
 
+def test_dflash_continuation_requires_all_five_draft_layers_even_without_mtp(tmp_path):
+    current=profile();current.update(draft_method='dflash',draft_tokens=7,
+        execution_mode='full_graph',experimental_dflash_query_planning=True)
+    current['kvmem']['recent_blocks']=64
+    qual.validate_profile(current,'multi',2,257,129)
+    row=dict(response_id='draft',agent=0,turn=1,query_span=[140,160])
+    write_events(tmp_path/'bounded_refresh.jsonl',[dict(request_id='draft-0-id',selection='query',
+        query_span=row['query_span'],selected_tokens=2048)])
+    target=dict(request_id='draft-0-id',byte_equal=True,working_attention_layers=16,
+        mtp_attention_layers=0,draft_layers=5)
+    write_events(tmp_path/'verified_restores.jsonl',[target])
+    write_events(tmp_path/'verified_state_restores.jsonl',[dict(request_id='draft-0-id',recurrent_byte_equal=True)])
+    assert len(qual.event_evidence(tmp_path,[row],current))==1
+    for bad in [dict(target,draft_layers=4),dict(target,byte_equal=False)]:
+        write_events(tmp_path/'verified_restores.jsonl',[bad])
+        with pytest.raises(ValueError,match='byte-equal'):qual.event_evidence(tmp_path,[row],current)
+    current['experimental_dflash_query_planning']=False
+    with pytest.raises(ValueError,match='explicitly experimental'):
+        qual.validate_profile(current,'multi',2,257,129)
+
+
 def test_v2_pressure_reports_are_separate_from_the_single_query_proof(tmp_path):
     current=profile();current['kvmem'].update(pressure_policy='graph',graph_scoring_version='v2',graph_alpha=.2)
     row=dict(response_id='first',agent=0,turn=0,query_span=[100,120],input_tokens=160,output_ids=[1,2,3])

@@ -21,6 +21,7 @@ DEFAULTS = {
     'model_format': 'gguf',
     'execution_mode': 'eager',
     'verify_session_restore': False,
+    'experimental_dflash_query_planning': False,
     'draft_tokens': 7,
     'draft_method': 'dflash',
     'draft_quantization': None,
@@ -108,6 +109,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('execution_mode must be eager, full_graph or compiled_graph')
     if type(cfg['verify_session_restore']) is not bool:
         raise ValueError('verify_session_restore must be boolean')
+    if type(cfg['experimental_dflash_query_planning']) is not bool:
+        raise ValueError('experimental_dflash_query_planning must be boolean')
     if cfg['draft_method'] not in ('dflash', 'mtp'):
         raise ValueError('draft_method must be dflash or mtp')
     allowed_depths = (1, 3, 7) if cfg['draft_method'] == 'dflash' else (1, 2, 3, 4, 7)
@@ -189,6 +192,9 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
+    if cfg['experimental_dflash_query_planning'] and (
+            cfg['draft_method'] != 'dflash' or not options.request_planning):
+        raise ValueError('experimental_dflash_query_planning requires DFlash2 and request planning')
     from .options import canonical_policy_payload
     payload = canonical_policy_payload(payload, options)
     cfg['kvmem'] = payload
@@ -224,7 +230,14 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('Reasoning end string must be nonempty text')
     if options.request_planning:
         if cfg['draft_method'] != 'mtp':
-            raise ValueError('Explicit Query planning currently requires native Qwen MTP')
+            if not cfg['experimental_dflash_query_planning']:
+                raise ValueError('Explicit Query planning currently requires native Qwen MTP; '
+                                 'DFlash2 needs explicit experimental opt-in')
+            if (cfg['draft_method'] != 'dflash' or cfg['draft_tokens'] != 7 or cfg['execution_mode'] != 'full_graph' or
+                    options.async_refresh or options.async_restore or options.guided_query_tokens or
+                    options.memory.recent_blocks * options.memory.block_tokens < 2047):
+                raise ValueError('Experimental DFlash2 planning requires k=7, FULL graphs, synchronous '
+                                 'refresh/restore, no guided Query and a 2048-token recent band')
         if (options.session_capacity and not options.session_freeze_prompt and options.session_checkpoint_policy!='pm'
                 and (options.session_capture_terminal or not options.session_capture_decode)):
             raise ValueError('Explicit Query sessions require sealed decode checkpoints, not terminal checkpoints')
