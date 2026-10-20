@@ -57,3 +57,21 @@ def test_graph_replay_changes_operands_without_reading_old_lse():
     args[3].copy_(args[3].flip(0));graph.replay()
     expected=page_attention(*args,**kwargs)
     torch.testing.assert_close(actual,expected,rtol=2e-5,atol=2e-6)
+
+
+def test_fused_native_page_stride_past_two_gib_uses_wide_addressing():
+    physical,page,kv,heads,dim=650,1616,4,8,256
+    cache=torch.empty((physical,kv,page,dim*2),device='cuda',dtype=torch.float8_e4m3fn)
+    cache[649].fill_(.5);cache[648].fill_(-.5)
+    key=cache.transpose(1,2)[...,:dim]
+    assert 649*key.stride(0)>2**31
+    length=page+1
+    q=torch.full((1,heads,dim),.125,device='cuda',dtype=torch.bfloat16)
+    position=torch.tensor([length-1],device='cuda');table=torch.tensor([649,648],device='cuda',dtype=torch.int32)
+    trig=torch.cat((torch.ones(length,dim//4,device='cuda'),torch.zeros(length,dim//4,device='cuda')),dim=-1)
+    unit=torch.ones((),device='cuda');starts=torch.arange(0,length,32,device='cuda',dtype=torch.int32)
+    kwargs=dict(scale=dim**-.5,q_dtype=torch.bfloat16,q_scale=unit,block_tokens=32)
+    args=(q,position,key,table,trig,unit,starts,(length-starts).clamp(max=32),length)
+    expected=page_attention(*args,**kwargs)
+    actual=page_attention(*args,**kwargs,fused=True,complete_partition=True)
+    torch.testing.assert_close(actual,expected,rtol=2e-5,atol=2e-6)
