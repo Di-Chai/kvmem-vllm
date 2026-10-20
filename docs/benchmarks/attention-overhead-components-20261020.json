@@ -1,0 +1,895 @@
+{
+  "native_qk_reuse": false,
+  "switches_default": false,
+  "scope": "Independent fixed-input components, not whole-model or per-token costs.",
+  "raw_reports": {
+    "decode": {
+      "report": {
+        "component": "decode_native_commit",
+        "shape": [
+          8,
+          1,
+          1662
+        ],
+        "accepted_prefix": 3,
+        "candidates": 5,
+        "bit_exact_scores_and_graph": true,
+        "measurements": {
+          "reference": {
+            "mean_ms": 20.392451621592045,
+            "peak_gpu_scratch_bytes": 0,
+            "median_ms": 20.325378514826298,
+            "min_ms": 20.116722211241722,
+            "max_ms": 20.98968345671892
+          },
+          "optimized": {
+            "mean_ms": 14.230464957654476,
+            "peak_gpu_scratch_bytes": 0,
+            "median_ms": 14.154312666505575,
+            "min_ms": 13.991867192089558,
+            "max_ms": 14.63489979505539
+          }
+        },
+        "samples": [
+          {
+            "mode": "reference",
+            "repetition": 0,
+            "ms": 20.98968345671892
+          },
+          {
+            "mode": "optimized",
+            "repetition": 0,
+            "ms": 14.398782514035702
+          },
+          {
+            "mode": "optimized",
+            "repetition": 1,
+            "ms": 14.63489979505539
+          },
+          {
+            "mode": "reference",
+            "repetition": 1,
+            "ms": 20.19190602004528
+          },
+          {
+            "mode": "reference",
+            "repetition": 2,
+            "ms": 20.116722211241722
+          },
+          {
+            "mode": "optimized",
+            "repetition": 2,
+            "ms": 14.144597575068474
+          },
+          {
+            "mode": "optimized",
+            "repetition": 3,
+            "ms": 13.991867192089558
+          },
+          {
+            "mode": "reference",
+            "repetition": 3,
+            "ms": 20.276864990592003
+          },
+          {
+            "mode": "reference",
+            "repetition": 4,
+            "ms": 20.336544141173363
+          },
+          {
+            "mode": "optimized",
+            "repetition": 4,
+            "ms": 14.144648797810078
+          },
+          {
+            "mode": "optimized",
+            "repetition": 5,
+            "ms": 14.056645333766937
+          },
+          {
+            "mode": "reference",
+            "repetition": 5,
+            "ms": 20.325868390500546
+          },
+          {
+            "mode": "reference",
+            "repetition": 6,
+            "ms": 20.14939207583666
+          },
+          {
+            "mode": "optimized",
+            "repetition": 6,
+            "ms": 14.181804843246937
+          },
+          {
+            "mode": "optimized",
+            "repetition": 7,
+            "ms": 14.163976535201073
+          },
+          {
+            "mode": "reference",
+            "repetition": 7,
+            "ms": 20.75220365077257
+          },
+          {
+            "mode": "reference",
+            "repetition": 8,
+            "ms": 20.32488863915205
+          },
+          {
+            "mode": "optimized",
+            "repetition": 8,
+            "ms": 14.493035152554512
+          },
+          {
+            "mode": "optimized",
+            "repetition": 9,
+            "ms": 14.094391837716103
+          },
+          {
+            "mode": "reference",
+            "repetition": 9,
+            "ms": 20.460442639887333
+          }
+        ],
+        "includes": "Runtime prepare_accept + capacity/validation + legacy staging + graph preparation + commit.",
+        "excludes": "Scope preparation, GPU scoring/download and raw archive publication.",
+        "repeats": 10,
+        "scope": "Fixed inputs and interleaved independent component comparison, not model throughput.",
+        "driver_sha256": "14974239e69f5b6375cbb823fb91c740aca05ff916d8d5ffc39eaef2ecf67521"
+      },
+      "raw_path": "artifacts/attention-overhead-20261020/component-decode-final.json",
+      "raw_sha256": "07e94e154813a3d9028f3a61290531e67ec000502ba2cb87e58c3c2a549c4e02"
+    },
+    "pool": {
+      "report": {
+        "component": "pinned_download_pool",
+        "results": [
+          {
+            "phase": "prefill",
+            "shape": [
+              8,
+              32,
+              1661
+            ],
+            "metadata_shape": [
+              3,
+              8192
+            ],
+            "exact_downloads": true,
+            "measurements": {
+              "reference": {
+                "mean_ms": 0.5607451312243938,
+                "peak_gpu_scratch_bytes": 0,
+                "median_ms": 0.42553385719656944,
+                "min_ms": 0.41161198168992996,
+                "max_ms": 1.7813239246606827
+              },
+              "optimized": {
+                "mean_ms": 0.4200202412903309,
+                "peak_gpu_scratch_bytes": 0,
+                "median_ms": 0.4189787432551384,
+                "min_ms": 0.403059646487236,
+                "max_ms": 0.45775156468153
+              }
+            },
+            "samples": [
+              {
+                "mode": "reference",
+                "repetition": 0,
+                "ms": 1.7813239246606827
+              },
+              {
+                "mode": "optimized",
+                "repetition": 0,
+                "ms": 0.45775156468153
+              },
+              {
+                "mode": "optimized",
+                "repetition": 1,
+                "ms": 0.42192917317152023
+              },
+              {
+                "mode": "reference",
+                "repetition": 1,
+                "ms": 0.45063067227602005
+              },
+              {
+                "mode": "reference",
+                "repetition": 2,
+                "ms": 0.4252232611179352
+              },
+              {
+                "mode": "optimized",
+                "repetition": 2,
+                "ms": 0.4316940903663635
+              },
+              {
+                "mode": "optimized",
+                "repetition": 3,
+                "ms": 0.403059646487236
+              },
+              {
+                "mode": "reference",
+                "repetition": 3,
+                "ms": 0.4268251359462738
+              },
+              {
+                "mode": "reference",
+                "repetition": 4,
+                "ms": 0.41391607373952866
+              },
+              {
+                "mode": "optimized",
+                "repetition": 4,
+                "ms": 0.41319429874420166
+              },
+              {
+                "mode": "optimized",
+                "repetition": 5,
+                "ms": 0.41641946882009506
+              },
+              {
+                "mode": "reference",
+                "repetition": 5,
+                "ms": 0.42075756937265396
+              },
+              {
+                "mode": "reference",
+                "repetition": 6,
+                "ms": 0.41935499757528305
+              },
+              {
+                "mode": "optimized",
+                "repetition": 6,
+                "ms": 0.4089483991265297
+              },
+              {
+                "mode": "optimized",
+                "repetition": 7,
+                "ms": 0.42153801769018173
+              },
+              {
+                "mode": "reference",
+                "repetition": 7,
+                "ms": 0.4319632425904274
+              },
+              {
+                "mode": "reference",
+                "repetition": 8,
+                "ms": 0.41161198168992996
+              },
+              {
+                "mode": "optimized",
+                "repetition": 8,
+                "ms": 0.42217783629894257
+              },
+              {
+                "mode": "optimized",
+                "repetition": 9,
+                "ms": 0.4034899175167084
+              },
+              {
+                "mode": "reference",
+                "repetition": 9,
+                "ms": 0.4258444532752037
+              }
+            ],
+            "pool": {
+              "allocations": 9,
+              "reuses": 90,
+              "exhaustions": 0,
+              "allocated_pinned_bytes": 2359296,
+              "active_pinned_bytes": 2359296,
+              "peak_active_pinned_bytes": 2359296,
+              "event_count": 9,
+              "max_pinned_bytes": 67108864,
+              "max_events": 128,
+              "storage_carrier": "dlpack",
+              "quarantined_slots": 0
+            }
+          },
+          {
+            "phase": "decode",
+            "shape": [
+              8,
+              1,
+              1661
+            ],
+            "metadata_shape": [
+              3,
+              40
+            ],
+            "exact_downloads": true,
+            "measurements": {
+              "reference": {
+                "mean_ms": 0.19486909732222557,
+                "peak_gpu_scratch_bytes": 0,
+                "median_ms": 0.18948689103126526,
+                "min_ms": 0.18267612904310226,
+                "max_ms": 0.24072453379631042
+              },
+              "optimized": {
+                "mean_ms": 0.18130019307136536,
+                "peak_gpu_scratch_bytes": 0,
+                "median_ms": 0.18038274720311165,
+                "min_ms": 0.1709694042801857,
+                "max_ms": 0.199122354388237
+              }
+            },
+            "samples": [
+              {
+                "mode": "reference",
+                "repetition": 0,
+                "ms": 0.24072453379631042
+              },
+              {
+                "mode": "optimized",
+                "repetition": 0,
+                "ms": 0.199122354388237
+              },
+              {
+                "mode": "optimized",
+                "repetition": 1,
+                "ms": 0.18047261983156204
+              },
+              {
+                "mode": "reference",
+                "repetition": 1,
+                "ms": 0.19856076687574387
+              },
+              {
+                "mode": "reference",
+                "repetition": 2,
+                "ms": 0.18539093434810638
+              },
+              {
+                "mode": "optimized",
+                "repetition": 2,
+                "ms": 0.1901565119624138
+              },
+              {
+                "mode": "optimized",
+                "repetition": 3,
+                "ms": 0.18029287457466125
+              },
+              {
+                "mode": "reference",
+                "repetition": 3,
+                "ms": 0.19117910414934158
+              },
+              {
+                "mode": "reference",
+                "repetition": 4,
+                "ms": 0.18267612904310226
+              },
+              {
+                "mode": "optimized",
+                "repetition": 4,
+                "ms": 0.1815352588891983
+              },
+              {
+                "mode": "optimized",
+                "repetition": 5,
+                "ms": 0.17340201884508133
+              },
+              {
+                "mode": "reference",
+                "repetition": 5,
+                "ms": 0.19868183881044388
+              },
+              {
+                "mode": "reference",
+                "repetition": 6,
+                "ms": 0.18407870084047318
+              },
+              {
+                "mode": "optimized",
+                "repetition": 6,
+                "ms": 0.17971079796552658
+              },
+              {
+                "mode": "optimized",
+                "repetition": 7,
+                "ms": 0.1709694042801857
+              },
+              {
+                "mode": "reference",
+                "repetition": 7,
+                "ms": 0.18997769802808762
+              },
+              {
+                "mode": "reference",
+                "repetition": 8,
+                "ms": 0.1889960840344429
+              },
+              {
+                "mode": "optimized",
+                "repetition": 8,
+                "ms": 0.1839781180024147
+              },
+              {
+                "mode": "optimized",
+                "repetition": 9,
+                "ms": 0.17336197197437286
+              },
+              {
+                "mode": "reference",
+                "repetition": 9,
+                "ms": 0.1884251832962036
+              }
+            ],
+            "pool": {
+              "allocations": 9,
+              "reuses": 90,
+              "exhaustions": 0,
+              "allocated_pinned_bytes": 66560,
+              "active_pinned_bytes": 66560,
+              "peak_active_pinned_bytes": 66560,
+              "event_count": 9,
+              "max_pinned_bytes": 67108864,
+              "max_events": 128,
+              "storage_carrier": "dlpack",
+              "quarantined_slots": 0
+            }
+          }
+        ],
+        "includes": "One int64 metadata and eight mass D2H submissions, allocations/leases/events, completion fences and CPU NumPy consumption.",
+        "excludes": "QK computation and archive publication.",
+        "repeats": 10,
+        "scope": "Fixed inputs and interleaved independent component comparison, not model throughput.",
+        "driver_sha256": "14974239e69f5b6375cbb823fb91c740aca05ff916d8d5ffc39eaef2ecf67521"
+      },
+      "raw_path": "artifacts/attention-overhead-20261020/component-pool-final.json",
+      "raw_sha256": "aa98b00554396702c25ff9dc1662c2162d579a9fe82644bcd04ae15d7c40ea49"
+    },
+    "fused": {
+      "report": {
+        "component": "fused_bypass_scoring",
+        "active_tokens": 53152,
+        "q_heads": 24,
+        "kv_heads": 4,
+        "head_dim": 256,
+        "native_page_tokens": 1616,
+        "key_scale": 1.0,
+        "q_scale": 1.0,
+        "results": [
+          {
+            "phase": "prefill",
+            "batch": 8,
+            "sampled_rows": 32,
+            "layers": 3,
+            "q_dtype": "bfloat16",
+            "max_absolute_error": 3.4924596548080444e-10,
+            "measurements": {
+              "reference": {
+                "mean_ms": 57.27670453488827,
+                "peak_gpu_scratch_bytes": 403701760,
+                "median_ms": 57.317500468343496,
+                "min_ms": 56.65833316743374,
+                "max_ms": 57.68857151269913
+              },
+              "optimized": {
+                "mean_ms": 47.33638074249029,
+                "peak_gpu_scratch_bytes": 6154240,
+                "median_ms": 47.24413622170687,
+                "min_ms": 46.65712360292673,
+                "max_ms": 47.905972227454185
+              }
+            },
+            "samples": [
+              {
+                "mode": "reference",
+                "repetition": 0,
+                "ms": 56.65833316743374,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "optimized",
+                "repetition": 0,
+                "ms": 46.65712360292673,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "optimized",
+                "repetition": 1,
+                "ms": 47.173263505101204,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "reference",
+                "repetition": 1,
+                "ms": 57.33743030577898,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "reference",
+                "repetition": 2,
+                "ms": 56.960269808769226,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "optimized",
+                "repetition": 2,
+                "ms": 47.19272255897522,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "optimized",
+                "repetition": 3,
+                "ms": 47.613770700991154,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "reference",
+                "repetition": 3,
+                "ms": 57.46684595942497,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "reference",
+                "repetition": 4,
+                "ms": 56.97604455053806,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "optimized",
+                "repetition": 4,
+                "ms": 47.047833912074566,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "optimized",
+                "repetition": 5,
+                "ms": 47.680181451141834,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "reference",
+                "repetition": 5,
+                "ms": 57.68857151269913,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "reference",
+                "repetition": 6,
+                "ms": 57.07987118512392,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "optimized",
+                "repetition": 6,
+                "ms": 47.25514817982912,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "optimized",
+                "repetition": 7,
+                "ms": 47.905972227454185,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "reference",
+                "repetition": 7,
+                "ms": 57.66688846051693,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "reference",
+                "repetition": 8,
+                "ms": 57.29757063090801,
+                "gpu_scratch_bytes": 403701760
+              },
+              {
+                "mode": "optimized",
+                "repetition": 8,
+                "ms": 47.233124263584614,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "optimized",
+                "repetition": 9,
+                "ms": 47.60466702282429,
+                "gpu_scratch_bytes": 6154240
+              },
+              {
+                "mode": "reference",
+                "repetition": 9,
+                "ms": 57.635219767689705,
+                "gpu_scratch_bytes": 403701760
+              }
+            ]
+          },
+          {
+            "phase": "decode",
+            "batch": 8,
+            "sampled_rows": 1,
+            "layers": 3,
+            "q_dtype": "bfloat16",
+            "max_absolute_error": 2.3283064365386963e-10,
+            "measurements": {
+              "reference": {
+                "mean_ms": 4.55162450671196,
+                "peak_gpu_scratch_bytes": 12615680,
+                "median_ms": 4.547099582850933,
+                "min_ms": 4.507959820330143,
+                "max_ms": 4.625456407666206
+              },
+              "optimized": {
+                "mean_ms": 4.559306334704161,
+                "peak_gpu_scratch_bytes": 193024,
+                "median_ms": 4.562292248010635,
+                "min_ms": 4.5069679617881775,
+                "max_ms": 4.672539420425892
+              }
+            },
+            "samples": [
+              {
+                "mode": "reference",
+                "repetition": 0,
+                "ms": 4.604445770382881,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "optimized",
+                "repetition": 0,
+                "ms": 4.558607004582882,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "optimized",
+                "repetition": 1,
+                "ms": 4.508961923420429,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "reference",
+                "repetition": 1,
+                "ms": 4.533468745648861,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "reference",
+                "repetition": 2,
+                "ms": 4.507959820330143,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "optimized",
+                "repetition": 2,
+                "ms": 4.5722173526883125,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "optimized",
+                "repetition": 3,
+                "ms": 4.5693414285779,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "reference",
+                "repetition": 3,
+                "ms": 4.563492722809315,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "reference",
+                "repetition": 4,
+                "ms": 4.560730420053005,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "optimized",
+                "repetition": 4,
+                "ms": 4.5931171625852585,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "optimized",
+                "repetition": 5,
+                "ms": 4.5069679617881775,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "reference",
+                "repetition": 5,
+                "ms": 4.517043009400368,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "reference",
+                "repetition": 6,
+                "ms": 4.518925212323666,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "optimized",
+                "repetition": 6,
+                "ms": 4.565977491438389,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "optimized",
+                "repetition": 7,
+                "ms": 4.50966227799654,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "reference",
+                "repetition": 7,
+                "ms": 4.561619833111763,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "reference",
+                "repetition": 8,
+                "ms": 4.523103125393391,
+                "gpu_scratch_bytes": 12615680
+              },
+              {
+                "mode": "optimized",
+                "repetition": 8,
+                "ms": 4.672539420425892,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "optimized",
+                "repetition": 9,
+                "ms": 4.5356713235378265,
+                "gpu_scratch_bytes": 193024
+              },
+              {
+                "mode": "reference",
+                "repetition": 9,
+                "ms": 4.625456407666206,
+                "gpu_scratch_bytes": 12615680
+              }
+            ]
+          }
+        ],
+        "includes": "Existing RoPE/Q codec, three bypass QK calls, full causal normalization, page/head/layer reductions, allocations and pinned D2H.",
+        "excludes": "Unchanged native model attention, CPU window/metadata preparation and archive publication.",
+        "repeats": 10,
+        "scope": "Fixed inputs and interleaved independent component comparison, not model throughput.",
+        "driver_sha256": "14974239e69f5b6375cbb823fb91c740aca05ff916d8d5ffc39eaef2ecf67521"
+      },
+      "raw_path": "artifacts/attention-overhead-20261020/component-fused-final.json",
+      "raw_sha256": "50559594c6fca2e8c5739895a6027147935725c14dffb8e35d1771be6b7ead7b"
+    },
+    "propagation": {
+      "report": {
+        "component": "native_graph_propagation",
+        "nodes": 8192,
+        "edges": 32734,
+        "cold_index_and_propagation_ms": 16.4959654211998,
+        "index_reserved_bytes": 2628000,
+        "exact_scores": true,
+        "measurements": {
+          "reference": {
+            "mean_ms": 57.314000837504864,
+            "peak_gpu_scratch_bytes": 0,
+            "median_ms": 57.3610058054328,
+            "min_ms": 56.56886659562588,
+            "max_ms": 58.29632095992565
+          },
+          "optimized": {
+            "mean_ms": 6.2170833349227905,
+            "peak_gpu_scratch_bytes": 0,
+            "median_ms": 6.236345041543245,
+            "min_ms": 6.11964613199234,
+            "max_ms": 6.294502876698971
+          }
+        },
+        "samples": [
+          {
+            "mode": "reference",
+            "repetition": 0,
+            "ms": 56.81158509105444
+          },
+          {
+            "mode": "optimized",
+            "repetition": 0,
+            "ms": 6.174711510539055
+          },
+          {
+            "mode": "optimized",
+            "repetition": 1,
+            "ms": 6.11964613199234
+          },
+          {
+            "mode": "reference",
+            "repetition": 1,
+            "ms": 57.818188332021236
+          },
+          {
+            "mode": "reference",
+            "repetition": 2,
+            "ms": 58.29632095992565
+          },
+          {
+            "mode": "optimized",
+            "repetition": 2,
+            "ms": 6.246770732104778
+          },
+          {
+            "mode": "optimized",
+            "repetition": 3,
+            "ms": 6.248012185096741
+          },
+          {
+            "mode": "reference",
+            "repetition": 3,
+            "ms": 57.83473327755928
+          },
+          {
+            "mode": "reference",
+            "repetition": 4,
+            "ms": 57.73263797163963
+          },
+          {
+            "mode": "optimized",
+            "repetition": 4,
+            "ms": 6.268923170864582
+          },
+          {
+            "mode": "optimized",
+            "repetition": 5,
+            "ms": 6.17408100515604
+          },
+          {
+            "mode": "reference",
+            "repetition": 5,
+            "ms": 57.166812010109425
+          },
+          {
+            "mode": "reference",
+            "repetition": 6,
+            "ms": 56.56886659562588
+          },
+          {
+            "mode": "optimized",
+            "repetition": 6,
+            "ms": 6.225919350981712
+          },
+          {
+            "mode": "optimized",
+            "repetition": 7,
+            "ms": 6.1653368175029755
+          },
+          {
+            "mode": "reference",
+            "repetition": 7,
+            "ms": 56.64455238729715
+          },
+          {
+            "mode": "reference",
+            "repetition": 8,
+            "ms": 56.71111214905977
+          },
+          {
+            "mode": "optimized",
+            "repetition": 8,
+            "ms": 6.294502876698971
+          },
+          {
+            "mode": "optimized",
+            "repetition": 9,
+            "ms": 6.2529295682907104
+          },
+          {
+            "mode": "reference",
+            "repetition": 9,
+            "ms": 57.55519960075617
+          }
+        ],
+        "includes": "Budget preflight, per-call seed/mask filtering and normalization, V2 propagation, output/diagnostics.",
+        "cache": "One immutable owner/version CSR; changing masks on each repetition. First build reported separately.",
+        "repeats": 10,
+        "scope": "Fixed inputs and interleaved independent component comparison, not model throughput.",
+        "driver_sha256": "14974239e69f5b6375cbb823fb91c740aca05ff916d8d5ffc39eaef2ecf67521"
+      },
+      "raw_path": "artifacts/attention-overhead-20261020/component-propagation-final.json",
+      "raw_sha256": "8c6499707a4b276c8ac543da92b39326676bbdc3b2a2c0cef79fae6548ec1a0a"
+    }
+  }
+}

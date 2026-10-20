@@ -1,0 +1,206 @@
+{
+  "status": "passed",
+  "native_qk_reuse": false,
+  "combined_compatibility": true,
+  "scope": "Fixed two-owner three-turn synthetic real-model state qualification, not a general model quality estimate.",
+  "jobs": {
+    "reference": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1082,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "python_reference"
+      ],
+      "cleanup": {
+        "controller_pid": 3557379,
+        "server_pid": 3557382,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454359.9760654
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/reference-proof.json",
+      "proof_sha256": "f18fc1d9837319a6b0c9062d6203d7eab14e96cc2d3da5b86c1e751661da18f5",
+      "result_sha256": "e4fde8f5cbb25b14d4d414038d3e46d64f06bbb923e6c71140f8d6015f81d931"
+    },
+    "decode": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1101,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "python_reference"
+      ],
+      "cleanup": {
+        "controller_pid": 3558213,
+        "server_pid": 3558216,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454460.4163072
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/decode-proof.json",
+      "proof_sha256": "4c98739885d4a3b4395dc143d6b80b90c02ce5070d369bce0e5b9c2c99fc2535",
+      "result_sha256": "62b5c486b5c4768a16031c606d01012fcf20c1bda47d760811b9185d266991d3"
+    },
+    "pool": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1057,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "python_reference"
+      ],
+      "cleanup": {
+        "controller_pid": 3559061,
+        "server_pid": 3559064,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454560.0193973
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/pool-proof.json",
+      "proof_sha256": "8e6547d82fc8aba25eaf9b433dc7f3a7c263321cb568448e876ee7e185f160d9",
+      "result_sha256": "f70602130ef56409a3e69db443d2f2a26ef40b1276c2ee45462a2702fdb1b746"
+    },
+    "fused": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1101,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "python_reference"
+      ],
+      "cleanup": {
+        "controller_pid": 3559877,
+        "server_pid": 3559880,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454661.6521604
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/fused-proof.json",
+      "proof_sha256": "d95f7e8c6c5168bb76a84d77cdbddfc670b24468ed9527a27e3b292c67a55064",
+      "result_sha256": "3dc234fabc68b1305913807c865be6ab898d08d4d8e5fbd2f6df7952684e7a36"
+    },
+    "propagation": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1101,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "cpp_v2"
+      ],
+      "cleanup": {
+        "controller_pid": 3560802,
+        "server_pid": 3560805,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454761.2629461
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/propagation-proof.json",
+      "proof_sha256": "190d611d3d4b0d34f72875d06b6430c7a35e0b789034c87dedbbc81a295fdba2",
+      "result_sha256": "3d76538f033e498506310f26da90a2a66a8ecbf11f5a123ae9143ae7673e4497"
+    },
+    "all": {
+      "status": "passed",
+      "quality": {
+        "correct": 6,
+        "total": 6,
+        "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+      },
+      "graph_checks": {
+        "mode": "multi",
+        "accepted_sample_oracle_checked": true,
+        "rejected_tokens": 1101,
+        "mtp_rejections_observed": true,
+        "selection_changed_observed": true,
+        "complete": true,
+        "limitation": "Rejection exclusion follows the independent accepted-token parser oracle plus terminal graph counts; no proposed token is counted as observed output. A false mtp_rejections_observed or selection_changed_observed needs another coverage fixture."
+      },
+      "target_mtp_byte_restores": 4,
+      "recurrent_byte_restores": 4,
+      "query_backends": [
+        "cpp_v2"
+      ],
+      "cleanup": {
+        "controller_pid": 3561728,
+        "server_pid": 3561731,
+        "server_returncode": 0,
+        "remaining_owned_process_groups": {},
+        "remaining_gpu_pids": [],
+        "at": 1792454861.8729599
+      },
+      "proof_path": "artifacts/attention-overhead-20261020/state-r2/all-proof.json",
+      "proof_sha256": "05a90f9a0002f7667eeb694e143ea364f80a74e6c8adcc4eeaf8efb32628f289",
+      "result_sha256": "e0bcdbce2eef5b2d9b110fa4a8e13b833c2f0292d531c1db33fec497142aaa2b"
+    }
+  }
+}
