@@ -25,6 +25,18 @@ def manager():
     return obj
 
 
+def test_first_eager_refresh_initializes_window_mapping_and_keeps_existing_neighbours():
+    obj = manager()
+    obj.options.memory = SimpleNamespace(select_budget=32, gen_budget=32)
+    obj.runner._kvmem_window_adapter = None
+    obj._ensure_window_adapter(command())
+    adapter = obj.runner._kvmem_window_adapter
+    adapter.commit('peer', 80, 32)
+    obj._ensure_window_adapter(command('new'))
+    assert obj.runner._kvmem_window_adapter is adapter
+    assert adapter.offsets == {'peer':48}
+
+
 def test_refresh_removes_only_owner_and_public_replay_does_not_refresh_twice(monkeypatch,tmp_path):
     from vllm_kvmem.admission import QueryPolicy
     scheduler,request,_=setup_scheduler()

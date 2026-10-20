@@ -17,11 +17,15 @@ def read_packed_records(authority, handles, *, destination=None, region=None):
     records = [authority.records[record_key(handle)] for handle in handles]
     if any(not record.archived or record.count != authority.shape[1] for record in records):
         raise ValueError("Packed assembly requires fully sealed, published records")
-    leases = [authority.memory.repository.pin(handle) for handle in handles]
+    admitted = [authority.memory.admitted_read(handle) for handle in handles]
+    leases = [entry[0] for entry in admitted]
     try:
         if not all(leases):
             raise ValueError("Stale archive generation")
         kwargs = {}
+        sources = [entry[1] for entry in admitted]
+        if sources and all(sources):
+            kwargs['_sources'] = sources
         if destination is not None:
             if (destination.device.type != 'cpu' or destination.dtype != torch.uint8 or
                     destination.ndim != 1 or not destination.is_contiguous()):
@@ -84,7 +88,14 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     sin = tl.load(trig + position * TRIG_STRIDE + HALF + freq).to(tl.float32)
     rotated = tl.where(d < HALF, x*cos - mate*sin, x*cos + mate*sin)
     rotated = tl.where(d < 2*HALF, rotated, x).to(ROPE_TYPE).to(tl.float32)
-    quantized = tl.minimum(tl.maximum(rotated / tl.load(scale), -448.0), 448.0)
+    # FP8 source reconstruction is byte-qualified against the CPU oracle.
+    # Approximate reciprocal division can cross an FP8 midpoint at real model
+    # scales such as 0.04052734375 even when the rotation is identical.
+    if RAW_BYTES == 1:
+        scaled = tl.div_rn(rotated, tl.load(scale))
+    else:
+        scaled = rotated / tl.load(scale)
+    quantized = tl.minimum(tl.maximum(scaled, -448.0), 448.0)
     tl.store(kcache + page*k0 + cache_offset*k1 + head*k2 + d, quantized, mask=mask)
     value_base = record * raw_elements * (RAW_BYTES + 1) + raw_elements * RAW_BYTES + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
     value = tl.load(payload + value_base + d, mask=mask, other=0)

@@ -91,6 +91,16 @@ class SessionNotice:
     active_records: tuple = ()
     retained: bool = False
     resident_ready: bool = False
+    allocated_records: int = 0
+    protected_records: int = 0
+
+
+@dataclass(frozen=True)
+class HistoryCapacityRequest:
+    namespace: tuple[str, str]
+    generation: int
+    ready_records: int = 0
+    retained_records: int | None = None
 
 
 @dataclass
@@ -103,6 +113,7 @@ class SessionCommands:
     # intentionally create no replacement binding/checkpoint. Carry a narrow
     # allowlist so the worker does not confuse them with unowned graph traffic.
     release_requests: set[str] = field(default_factory=set)
+    history_capacity: list[HistoryCapacityRequest] = field(default_factory=list)
 
 
 @dataclass
@@ -120,6 +131,9 @@ class _Entry:
     terminal_position: int = 0
     terminal_tokens: bytes = b''
     ready_records: int = 0
+    allocated_records: int = 0
+    protected_records: int = 0
+    scope_history: int = 0
     retained_position: int = 0
     retained_tokens: bytes = b''
     pressure_restore: bool = False
@@ -384,7 +398,9 @@ class SessionLedger:
     def snapshot(self):
         return [{'namespace':list(e.namespace),'history':e.history,'window':e.window,
                  'prefix_sha256':e.prefix_fingerprint(),'query':e.query,
-                 'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records}
+                 'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records,
+                 'allocated_records':e.allocated_records,'protected_records':e.protected_records,
+                 'ready_records':e.ready_records}
                 for e in self.entries.values() if e.phase=='idle']
 
     def owner_snapshot(self):
@@ -499,8 +515,26 @@ class SessionLedger:
 
     def consume(self, notice):
         entry = self.entries.get(notice.namespace)
+        # Idle observations can already be in a worker result when the next
+        # scheduler iteration leases/evicts the scope. They are advisory and
+        # must never replace a running turn's fenced reservation.
+        if notice.kind == 'history_capacity' and (entry is None or
+                entry.generation != notice.generation or entry.phase not in ('idle', 'lookup')):
+            return False
         if entry is None or entry.generation != notice.generation:
             raise ValueError('Stale or foreign session completion')
+        if notice.kind == 'history_capacity':
+            if (entry.phase not in ('idle', 'lookup') or notice.request_id or
+                    notice.history != entry.scope_history or
+                    any(type(v) is not int or v < 0 for v in
+                        (notice.ready_records, notice.allocated_records, notice.protected_records)) or
+                    notice.protected_records > notice.allocated_records or
+                    notice.ready_records < entry.ready_records or
+                    notice.allocated_records > entry.allocated_records):
+                raise ValueError('Stale or consumed idle historical capacity')
+            entry.ready_records, entry.allocated_records = notice.ready_records, notice.allocated_records
+            entry.protected_records = notice.protected_records
+            return
         if notice.kind == 'evicted':
             if entry.phase != 'evicting' or notice.request_id or notice.history or notice.window:
                 raise ValueError('Unexpected session eviction completion')
@@ -544,6 +578,9 @@ class SessionLedger:
             if (notice.history != expected or not 0 < notice.window <= notice.history or
                     type(notice.ready_records) is not int or notice.ready_records < 0):
                 raise ValueError('Worker retained a different prompt checkpoint')
+            if (type(notice.allocated_records) is not int or notice.allocated_records < 0 or
+                    type(notice.protected_records) is not int or not 0 <= notice.protected_records <= notice.allocated_records):
+                raise ValueError('Worker retained invalid historical CPU capacity')
             if (notice.prompt_history and (not 0<notice.prompt_history<notice.history or
                     not 0<notice.prompt_window<=notice.prompt_history or
                     notice.prompt_tokens!=identity[:notice.prompt_history*4])):
@@ -552,6 +589,9 @@ class SessionLedger:
             entry.prompt_history,entry.prompt_window,entry.prompt_tokens = notice.prompt_history,notice.prompt_window,notice.prompt_tokens
             entry.active_records = notice.active_records
             entry.ready_records = notice.ready_records
+            entry.allocated_records = notice.allocated_records
+            entry.protected_records = notice.protected_records
+            entry.scope_history = notice.history
             entry.tokens = identity
             entry.candidate_position, entry.candidate_tokens = 0, b''
             entry.terminal_position, entry.terminal_tokens = 0, b''

@@ -32,7 +32,10 @@ def _assemble(raw, values, positions, slots, trig, kcache, vcache, kscale,
         sin = tl.load(trig + position*trig_stride + HALF + freq).to(tl.float32)
         rotated = tl.where(d < HALF, x*cos - mate*sin, x*cos + mate*sin)
         rotated = tl.where(d < 2*HALF, rotated, x).to(RAW_TYPE).to(tl.float32)
-        scaled = rotated / tl.load(kscale)
+        if RAW_TYPE == tl.float32:
+            scaled = tl.div_rn(rotated, tl.load(kscale))
+        else:
+            scaled = rotated / tl.load(kscale)
         scaled = tl.minimum(tl.maximum(scaled, -448.0), 448.0)
         page, offset = slot // PAGE, slot % PAGE
         tl.store(kcache + page*k0 + offset*k1 + head*k2 + d, scaled, mask=mask)

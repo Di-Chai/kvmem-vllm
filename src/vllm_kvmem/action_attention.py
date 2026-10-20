@@ -293,6 +293,10 @@ class ActionRuntime:
         self.runtime=runtime
         self.runner=runtime.runner
         self.options=runtime.options
+        self.native = getattr(self.runner, '_kvmem_native_attention', None)
+        self.native_plans = None
+        self.native_candidates = None
+        self.native_cache = {}
         self.capture_seconds=0.0
         self.candidate_samples=0
         self.packets=0
@@ -355,9 +359,12 @@ class ActionRuntime:
             'native_action_metadata':getattr(self.options,'native_action_metadata',False),
             'async_action_metadata':getattr(self.options,'async_action_metadata',False),
             'prefill_q_dtype':{k:str(v) for k,v in self.prefill_q_dtypes.items()},
+            'native_scores':getattr(self.options,'action_native_scores','off'),
             'native_decode_commit':getattr(self.options,'action_native_decode_commit',False),
             'download_pool':getattr(self.options,'action_download_pool',False),
             'fused_scoring':getattr(self.options,'action_fused_scoring',False),
+            'native_scales':{module.attn.layer_name:{name:getattr(module.attn,'_'+name+'_scale_float',None)
+                for name in ('q','k','v')} for _,module in self.layers},
             'implementation':'sampled target Q against native working K; original qw3 parser/fusion'},indent=2))
 
     def begin_response(self, state, request_id):
@@ -384,6 +391,91 @@ class ActionRuntime:
         trace = profiler.begin_batch(batch) if profiler is not None else None
         self.metadata = action_metadata(batch, local_positions, self.options.prefill_attention, trace,
             pool=getattr(self,'download_pool',None))
+        if getattr(self, 'native', None) is not None:
+            self.native_plans = None
+            self.native_candidates = None
+            if self.metadata is None or self.native.disabled:
+                self.native.disarm()
+                return
+            # One owner benefits from direct scope preparation; concurrent
+            # decode needs to retain overlap with prior owner publication.
+            if len(batch.req_ids)>1 and self._prepare_decode_candidates(batch):
+                self.native.counts['prepare:decode_candidates'] += 1
+                return
+            self.native.counts['prepare:eager'] += 1
+            # Native QK runs before capture(). Resolve exactly the SAME scope,
+            # stride and logical segments now, without committing acceptance.
+            if self.metadata.event is not None:
+                self.metadata.event.synchronize()
+            tokens, global_positions, local = self.metadata.host.tolist()
+            plans = {}; cursor = 0
+            for i, (begin, end) in zip(self.metadata.indices, self.metadata.slices):
+                request_id, count = batch.req_ids[i], end - begin
+                plan = self._plan_owner(request_id, bool(batch.is_prefilling_np[i]),
+                    tokens[cursor:cursor+count], global_positions[cursor:cursor+count],
+                    local[cursor:cursor+count], count)
+                cursor += count
+                plan.update(index=i, begin=begin, count=count)
+                if plan['rows']:
+                    starts, counts, history = self._window_segments(plan['authority'],
+                        plan['history_begin'], plan['local_begin'], count)
+                    plan.update(starts=starts, counts=counts, history=history)
+                plans[request_id] = plan
+            self.native_plans = (batch, plans)
+            self.native.arm(plans)
+
+    def _prepare_decode_candidates(self,batch):
+        # Decode scope depends on GPU draft IDs. Collect the bounded candidate
+        # rows now, and keep the original parser/publication fence after forward.
+        if (any(batch.is_prefilling_np) or not hasattr(batch,'num_computed_tokens_np') or
+                not hasattr(batch,'seq_lens_cpu_upper_bound') or self.native.disabled):
+            return False
+        offsets=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'offsets',{})
+        generations=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'generations',{})
+        cache={request_id:getattr(self,'native_cache',{}).get(request_id) for request_id in batch.req_ids}
+        if any(cache[request_id] is None or cache[request_id]['generation']!=generations.get(request_id,0)
+               or cache[request_id]['offset']!=offsets.get(request_id,0) for request_id in batch.req_ids):
+            return False
+        plans={}
+        for i,request_id in enumerate(batch.req_ids):
+            begin,end=map(int,batch.query_start_loc_np[i:i+2])
+            h=int(batch.num_computed_tokens_np[i]);local=h-offsets.get(request_id,0)
+            extent=int(batch.seq_lens_cpu_upper_bound[i])-offsets.get(request_id,0)
+            if local<0 or extent<local+end-begin:
+                return False
+            frozen=cache[request_id]
+            import numpy as np
+            last=int(np.searchsorted(frozen['starts'],extent-1,side='right'))-1
+            width=int(frozen['layout'][last,2]+(extent-1)//16-frozen['starts'][last]//16+1)
+            plans[request_id]=dict(index=i,begin=begin,rows=list(range(end-begin)),
+                local_begin=local,count=extent-local,starts=frozen['starts'],counts=frozen['counts'],
+                history=frozen['history'],_layout=frozen['layout'],_width=width,_segments=last+1)
+        self.native_candidates=(batch,plans)
+        self.native.arm(plans)
+        return True
+
+    def _plan_owner(self, request_id, prefill, tokens, global_positions, local_positions, count):
+        if not self.runtime.drain_requests((request_id,), wait=True):
+            raise RuntimeError('Action capture preceded scheduler confirmation')
+        authority = self.runtime.ensure_authority(request_id)
+        state = getattr(authority, 'action_history', None)
+        if state is None:
+            state = authority.action_history = ActionHistory(self.options, self.ids)
+        history_begin, local_begin = int(global_positions[0]), int(local_positions[0])
+        if prefill:
+            excluded = state.prefill_replay
+            replay = excluded is not None and history_begin < excluded[1] and history_begin+count > excluded[0]
+            if replay and not (excluded[0] <= history_begin and history_begin+count <= excluded[1]):
+                raise RuntimeError('Prefill chunk partly overlaps a public Query replay')
+            rows = state.prefill.rows(history_begin, count, local_begin, replay=replay)
+        else:
+            self.begin_response(state, request_id)
+            mask = state.parser.prepare(tokens)
+            rows = [r for r in range(count) if (mask >> r) & 1]
+        sources = (tuple(int(global_positions[r]) for r in rows)
+                   if getattr(authority, 'block_graph', None) is not None else ())
+        return dict(authority=authority, state=state, history_begin=history_begin,
+                    local_begin=local_begin, rows=rows, sources=sources)
 
     def _window_segments(self, authority, history_begin, local_begin, count):
         store = authority.memory._store
@@ -397,17 +489,37 @@ class ActionRuntime:
 
     def capture(self, captured, batch):
         profiler = getattr(self, 'profile', None)
-        if profiler is None:
-            return self._capture(captured, batch)
-        trace = profiler.begin_batch(batch)
+        trace = profiler.begin_batch(batch) if profiler is not None else None
         status = 'submitted'
         try:
-            return self._capture(captured, batch, trace)
+            metadata = getattr(self, 'metadata', None)
+            samples, packets = self.candidate_samples, self.packets
+            result = self._capture(captured, batch, trace)
+            native = getattr(self, 'native', None)
+            if native is not None:
+                started = time.perf_counter()
+                valid = native.validate()
+                self.capture_seconds += time.perf_counter() - started
+                if not valid:
+                    # No packet has escaped this method. Discard tentative
+                    # downloads, keep the exact pre-forward metadata/plans and
+                    # recompute this batch through the reference path. Scope
+                    # preparation and acceptance must each happen only once.
+                    self.metadata = metadata
+                    self.candidate_samples, self.packets = samples, packets
+                    result = self._capture(captured, batch, trace)
+            return result
         except BaseException:
             status = 'error'
             raise
         finally:
-            profiler.finish_batch(status=status)
+            if profiler is not None:
+                profiler.finish_batch(status=status)
+            if getattr(self, 'native', None) is not None:
+                self.native.disarm()
+                self.native.report()
+                self.native_plans = None
+                self.native_candidates = None
 
     def _capture(self, captured, batch, trace=None):
         indices=[i for i in range(batch.num_reqs) if not batch.is_prefilling_np[i] or self.options.prefill_attention]
@@ -433,6 +545,28 @@ class ActionRuntime:
             data = metadata.host.tolist()
         tokens,global_positions,local_positions=data
         packets={};cursor=0
+        candidates=getattr(self,'native_candidates',None)
+        if candidates is not None and candidates[0] is batch:
+            plans={}
+            for i,(begin,end) in zip(indices,slices):
+                count=end-begin;request_id=batch.req_ids[i]
+                plan=self._plan_owner(request_id,bool(batch.is_prefilling_np[i]),
+                    tokens[cursor:cursor+count],global_positions[cursor:cursor+count],
+                    local_positions[cursor:cursor+count],count)
+                cursor+=count
+                plan.update(index=i,begin=begin,count=count)
+                if plan['rows']:
+                    starts,counts,history=self._window_segments(plan['authority'],plan['history_begin'],
+                        plan['local_begin'],count)
+                    from .native_attention_planning import canonical_segments
+                    canonical=canonical_segments(starts,counts,history,plan['local_begin']+count,
+                        self.runtime.config.block_tokens)
+                    plan.update(starts=canonical[:,0],counts=canonical[:,1],history=canonical[:,2].tolist())
+                plans[request_id]=plan
+            self.native.resolve(plans)
+            self.native_plans=(batch,plans)
+            self.native_candidates=None
+            cursor=0
         from .action_scoring import page_attention
         for i,(begin,end) in zip(indices,slices):
             request_id=batch.req_ids[i]
@@ -443,32 +577,35 @@ class ActionRuntime:
             # still have an unrelated owner publishing CPU history. Admission
             # holds large unfinished owners out of this public batch; tiny
             # decode dependencies may finish through this request-local fence.
-            with owner.stage('publication.owner_drain') if owner else nullcontext():
-                if not self.runtime.drain_requests((request_id,), wait=True):
-                    raise RuntimeError('Action capture preceded scheduler confirmation')
             count=end-begin
-            authority=self.runtime.ensure_authority(request_id)
-            state=getattr(authority,'action_history',None)
-            if state is None:
-                state=authority.action_history=ActionHistory(self.options,self.ids)
-            history_begin=int(global_positions[cursor])
-            local_begin=int(local_positions[cursor])
-            if prefill:
-                excluded=state.prefill_replay
-                replay=excluded is not None and history_begin < excluded[1] and history_begin+count > excluded[0]
-                if replay and not (excluded[0]<=history_begin and history_begin+count<=excluded[1]):
-                    raise RuntimeError('Prefill chunk partly overlaps a public Query replay')
-                with owner.stage('prefill.rows') if owner else nullcontext():
-                    rows=state.prefill.rows(history_begin,count,local_begin,replay=replay)
+            prepared = getattr(self, 'native_plans', None)
+            if prepared is not None and prepared[0] is batch:
+                plan = prepared[1][request_id]
             else:
-                with owner.stage('output.begin_response') if owner else nullcontext():
-                    self.begin_response(state,request_id)
-                with owner.stage('output.parser_prepare') if owner else nullcontext():
-                    mask=state.parser.prepare(tokens[cursor:cursor+count])
-                    rows=[r for r in range(count) if (mask>>r)&1]
-            sources = (tuple(int(global_positions[cursor+r]) for r in rows)
-                       if getattr(authority, 'block_graph', None) is not None else ())
+                with owner.stage('publication.owner_drain') if owner else nullcontext():
+                    plan = self._plan_owner(request_id, prefill, tokens[cursor:cursor+count],
+                        global_positions[cursor:cursor+count], local_positions[cursor:cursor+count], count)
+            authority, state = plan['authority'], plan['state']
+            history_begin, local_begin = plan['history_begin'], plan['local_begin']
+            rows, sources = plan['rows'], plan['sources']
             cursor+=count
+            if getattr(self,'native',None) is not None and not self.native.disabled:
+                cache=self.__dict__.setdefault('native_cache',{})
+                generations=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'generations',{})
+                generation=generations.get(request_id,0)
+                offset=history_begin-local_begin
+                previous=cache.get(request_id)
+                if previous is None or previous['generation']!=generation or previous['offset']!=offset:
+                    if 'starts' not in plan:
+                        starts,counts,history=self._window_segments(authority,history_begin,local_begin,count)
+                        plan.update(starts=starts,counts=counts,history=history)
+                    if len(plan['starts'])<=self.native.max_segments and local_begin+count<=self.native.context:
+                        from .native_attention_planning import make_decode_frame
+                        cache[request_id]=dict(generation=generation,offset=offset,
+                            **make_decode_frame(plan['starts'],plan['counts'],plan['history'],history_begin,
+                                local_begin,count,self.native.context,self.runtime.config.block_tokens))
+                    else:
+                        cache.pop(request_id,None)
             if not rows:
                 if not prefill:
                     packets[request_id]=ActionPacket(state,[],[],None,None,
@@ -476,15 +613,22 @@ class ActionRuntime:
                 continue
             with owner.stage('metadata.window_segments', active_tokens=local_begin+count,
                              sample_rows=len(rows)) if owner else nullcontext():
-                starts,counts,history=self._window_segments(authority,history_begin,local_begin,count)
+                if 'starts' in plan:
+                    starts,counts,history=plan['starts'],plan['counts'],plan['history']
+                else:
+                    starts,counts,history=self._window_segments(authority,history_begin,local_begin,count)
             device=batch.input_ids.device
             if owner:
                 owner = owner.child(active_tokens=local_begin+count, sample_rows=len(rows), segments=len(starts))
+            native = getattr(self, 'native', None)
+            native_masses = [native.score(module.attn.layer_name,request_id,prefill,defer_validation=True)
+                             if native else None for _,module in self.layers]
+            needs_reference = native is None or native.mode == 'verify' or any(mass is None for mass in native_masses)
             upload = getattr(self, 'metadata_upload', None)
             staging = (upload.lease(starts,counts,rows,begin,local_begin,device,profile=owner)
-                       if upload is not None else nullcontext(None))
+                       if upload is not None and needs_reference else nullcontext(None))
             with staging as lease:
-                if lease is None:
+                if lease is None and needs_reference:
                     with owner.stage('metadata.starts_h2d', gpu=True, transfer_bytes=4*len(starts),
                                      direction='H2D', shape=[len(starts)], dtype='int32') if owner else nullcontext():
                         starts_gpu=torch.tensor(starts,device=device,dtype=torch.int32)
@@ -497,28 +641,32 @@ class ActionRuntime:
                     with owner.stage('metadata.positions_h2d', gpu=True, transfer_bytes=8*len(rows),
                                      direction='H2D', shape=[len(rows)], dtype='int64') if owner else nullcontext():
                         positions=torch.tensor([local_begin+r for r in rows],device=device,dtype=torch.int64)
-                else:
+                elif lease is not None:
                     starts_gpu,counts_gpu,row_ids,positions=lease.views
                 native_index=self.runner.req_states.req_id_to_index[request_id]
                 total=None
-                for index,module in self.layers:
+                for (index,module),mass in zip(self.layers,native_masses):
                     layer = owner.child(layer=module.attn.layer_name) if owner else None
-                    group=self.groups[module.attn.layer_name]
-                    table=self.runner.block_tables.block_tables[group].gpu[native_index]
-                    key,_=native_vllm_fp8_views(module.attn.kv_cache,module.num_kv_heads,module.head_dim)
                     with layer.stage('score.layer_total', gpu=True) if layer else nullcontext():
-                        with layer.stage('score.q_gather', gpu=True) if layer else nullcontext():
-                            query = captured[index].query.index_select(0,row_ids)
-                        mass=page_attention(query,positions,key,table,
-                            module.rotary_emb.cos_sin_cache,module.attn._k_scale,starts_gpu,counts_gpu,
-                            local_begin+count,scale=module.attn.impl.scale,
-                            q_dtype=(self.prefill_q_dtypes if prefill else self.q_dtypes)[module.attn.layer_name],q_scale=module.attn._q_scale,
-                            block_tokens=self.runtime.config.block_tokens, **({'profile': layer} if layer else {}),
-                            **(dict(fused=True,complete_partition=True)
-                               if getattr(self.options,'action_fused_scoring',False) else {}))
-                        counts_by_backend=self.__dict__.setdefault('scoring_backend_counts',{})
-                        backend=getattr(mass,'_action_scoring_backend','reference')
-                        counts_by_backend[backend]=counts_by_backend.get(backend,0)+1
+                        if mass is None or native.mode == 'verify':
+                            group=self.groups[module.attn.layer_name]
+                            table=self.runner.block_tables.block_tables[group].gpu[native_index]
+                            key,_=native_vllm_fp8_views(module.attn.kv_cache,module.num_kv_heads,module.head_dim)
+                            with layer.stage('score.q_gather', gpu=True) if layer else nullcontext():
+                                query = captured[index].query.index_select(0,row_ids)
+                            reference=page_attention(query,positions,key,table,
+                                module.rotary_emb.cos_sin_cache,module.attn._k_scale,starts_gpu,counts_gpu,
+                                local_begin+count,scale=module.attn.impl.scale,
+                                q_dtype=(self.prefill_q_dtypes if prefill else self.q_dtypes)[module.attn.layer_name],q_scale=module.attn._q_scale,
+                                block_tokens=self.runtime.config.block_tokens, **({'profile': layer} if layer else {}),
+                                **(dict(fused=True,complete_partition=True)
+                                   if getattr(self.options,'action_fused_scoring',False) else {}))
+                            counts_by_backend=self.__dict__.setdefault('scoring_backend_counts',{})
+                            backend=getattr(reference,'_action_scoring_backend','reference')
+                            counts_by_backend[backend]=counts_by_backend.get(backend,0)+1
+                            if mass is not None:
+                                native.compare(mass,reference)
+                            mass=reference
                     with layer.stage('score.layer_add', gpu=True) if layer else nullcontext():
                         total=mass if total is None else total+mass
                 with owner.stage('score.layer_mean', gpu=True) if owner else nullcontext():
@@ -699,6 +847,10 @@ class ActionRuntime:
         setattr(self,key,getattr(self,key,0)+1)
 
     def finish(self, request_id, authority):
+        getattr(self,'native_cache',{}).pop(request_id,None)
+        native = getattr(self, 'native', None)
+        if native is not None:
+            native.report(force=True)
         profiler = getattr(self, 'profile', None)
         if profiler is not None:
             # Publication already used its original accepted-score fence.
@@ -715,6 +867,9 @@ class ActionRuntime:
                       metadata_early_batches=getattr(self,'metadata_early_batches',0),
                       metadata_fallback_batches=getattr(self,'metadata_fallback_batches',0),
                       metadata_wait_seconds=getattr(self,'metadata_wait_seconds',0.0))
+        if torch.cuda.is_initialized():
+            report.update(gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+                          gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved())
         report.update(prefill_commit_host_seconds=getattr(self,'prefill_commit_host_seconds',0.),
                       prefill_commit_calls=getattr(self,'prefill_commit_calls',0),
                       prefill_commit_native_calls=getattr(self,'prefill_commit_native_calls',0),

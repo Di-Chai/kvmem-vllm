@@ -10,10 +10,11 @@ for name in ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_tiled.cuh', '
     copyfile(Path('csrc') / name, gpu_sources / name)
 
 setup(
-    package_data={'vllm_kvmem': ['cuda_sources/*.cu', 'cuda_sources/*.cuh', 'cuda_sources/*.json']},
+    package_data={'vllm_kvmem': ['cuda_sources/*.cu', 'cuda_sources/*.cuh', 'cuda_sources/*.json',
+                                'native*.cuh', 'native_attention_sources.json']},
     ext_modules=[Pybind11Extension(
         "vllm_kvmem._native",
-        ["csrc/bindings.cpp"] + [
+        ["csrc/bindings.cpp", "csrc/historical_payload.cpp", "csrc/historical_manager.cpp"] + [
             f"third_party/qw3/src/{name}.cpp" for name in
             ("kvmem_store", "kvmem_repository", "kvmem_repository_gc", "kvmem_gc")
         ],

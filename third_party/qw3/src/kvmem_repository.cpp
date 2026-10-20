@@ -10,7 +10,7 @@ namespace qw3 {
 namespace {
 constexpr unsigned phase_shift = 60;
 constexpr uint64_t ref_mask = (uint64_t{1} << phase_shift) - 1;
-enum class Phase : uint64_t { Free, Writing, Live, Retired, Releasing, Cancelled };
+enum class Phase : uint64_t { Free, Writing, Live, Retired, Releasing, Cancelled, Deleted };
 constexpr uint64_t state(Phase p, uint64_t refs = 0) {
     return (uint64_t(p) << phase_shift) | refs;
 }
@@ -180,6 +180,9 @@ KvMemRepository::Lease KvMemRepository::try_pin(KvMemBlockHandle h) const {
     if (lease && lease.handle() != h) lease.reset();
     return lease;
 }
+bool KvMemRepository::owns(const Lease &lease) const {
+    return bool(lease) && lease.shared_ == shared_;
+}
 bool KvMemRepository::retire(KvMemBlockHandle h) {
     auto lease = try_pin(h);
     if (!lease) return false;
@@ -190,6 +193,40 @@ bool KvMemRepository::retire(KvMemBlockHandle h) {
     } while (!control.compare_exchange_weak(prior, state(Phase::Retired, refs(prior)),
                  std::memory_order_acq_rel, std::memory_order_acquire));
     return true;
+}
+KvMemRepository::RetireResult KvMemRepository::retire_permanently(KvMemBlockHandle h) {
+    if (h.slot >= capacity() || !h.generation) return RetireResult::StaleHandle;
+    auto &entry = shared_->slots[h.slot];
+    auto prior = entry.control.load(std::memory_order_acquire);
+    // A control guard pins identity even when the generation is already
+    // deleted. Never read Record before this succeeds: a Ready slot may be
+    // initialized by the append producer at the same time as a stale intent.
+    bool guarded = false;
+    for (unsigned attempt = 0; attempt < 16; ++attempt) {
+        const auto p = phase(prior);
+        if (p != Phase::Live && p != Phase::Retired && p != Phase::Deleted && p != Phase::Cancelled)
+            return RetireResult::StaleHandle;
+        if (refs(prior) == ref_mask) return RetireResult::Retry;
+        if (entry.control.compare_exchange_weak(prior, prior + 1,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            guarded = true;
+            break;
+        }
+    }
+    if (!guarded) return RetireResult::Retry;
+    Lease guard(shared_, entry.record.handle);
+    if (guard.handle() != h) return RetireResult::StaleHandle;
+    prior = entry.control.load(std::memory_order_acquire);
+    for (unsigned attempt = 0; attempt < 16; ++attempt) {
+        if (phase(prior) == Phase::Deleted || phase(prior) == Phase::Cancelled)
+            return RetireResult::AlreadyRetired;
+        if (phase(prior) != Phase::Live && phase(prior) != Phase::Retired)
+            return RetireResult::StaleHandle;
+        if (entry.control.compare_exchange_weak(prior, state(Phase::Deleted, refs(prior)),
+                std::memory_order_acq_rel, std::memory_order_acquire))
+            return RetireResult::Committed;
+    }
+    return RetireResult::Retry;
 }
 bool KvMemRepository::rescue(const Lease &lease) {
     if (!lease || lease.shared_ != shared_) return false;
@@ -226,7 +263,7 @@ KvMemRepository::ReclaimResult KvMemRepository::try_reclaim(
     auto prior = entry.control.load(std::memory_order_acquire);
     // This thread is now the sole reclaimer. A retired record cannot be reused
     // underneath the checks; a reader rescue is resolved by the CAS below.
-    if (phase(prior) != Phase::Retired && phase(prior) != Phase::Releasing &&
+    if (phase(prior) != Phase::Retired && phase(prior) != Phase::Deleted && phase(prior) != Phase::Releasing &&
         phase(prior) != Phase::Cancelled)
         return ReclaimResult::NotRetired;
     if (entry.generation.load(std::memory_order_acquire) != h.generation)
@@ -248,7 +285,7 @@ KvMemBlockHandle KvMemRepository::retired_at(uint32_t slot) const {
     if (slot >= capacity()) return {};
     const auto &e = shared_->slots[slot];
     const auto p = phase(e.control.load(std::memory_order_acquire));
-    if (p != Phase::Retired && p != Phase::Releasing && p != Phase::Cancelled) return {};
+    if (p != Phase::Retired && p != Phase::Deleted && p != Phase::Releasing && p != Phase::Cancelled) return {};
     return {slot, e.generation.load(std::memory_order_acquire)};
 }
 KvMemRepository::Stats KvMemRepository::stats() const {
@@ -264,7 +301,8 @@ KvMemRepository::Stats KvMemRepository::stats() const {
         case Phase::Free: ++out.ready; break;
         case Phase::Writing: ++out.writing; break;
         case Phase::Live: ++out.live; break;
-        case Phase::Retired: ++out.retired; break;
+        case Phase::Retired:
+        case Phase::Deleted: ++out.retired; break;
         case Phase::Releasing: ++out.releasing; break;
         case Phase::Cancelled: ++out.cancelled; break;
         }

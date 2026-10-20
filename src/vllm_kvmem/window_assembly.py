@@ -283,6 +283,11 @@ class NativeWindowAssembler:
                     failed, (self, plan, authority), 0, 0, 0))
             raise
         finally:
+            # CPU record bytes have now been copied into completion-owned
+            # staging. Later GPU assembly/compute does not read the archive.
+            release_sources = getattr(plan, 'release_cpu_sources', None)
+            if release_sources is not None:
+                release_sources()
             self.staging.release(self, failed)
             if failed is not None and self.raw_cache is not None:
                 self.raw_cache.drop_namespace(authority.memory.request_id)

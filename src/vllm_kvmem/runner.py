@@ -53,6 +53,12 @@ def make_probe_runner(base):
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
             from .options import RuntimeOptions
             options = RuntimeOptions.from_vllm(self.vllm_config)
+            # Install before profiling/compilation/CUDA graph capture. Graphs
+            # retain these addresses, and read fresh sampling metadata each run.
+            self._kvmem_native_attention = None
+            if getattr(options, 'action_native_scores', 'off') != 'off':
+                from .native_attention import install_native_attention
+                self._kvmem_native_attention = install_native_attention(self, options, self._kvmem_probe_output)
             if self._kvmem_serving and options.mean_k_backend == 'qw3_cuda':
                 # Load before the engine becomes ready. A first Query must not
                 # compile the extension while other owners wait for the GPU.
@@ -70,7 +76,7 @@ def make_probe_runner(base):
             self._kvmem_cpu_history_coordination = options.cpu_history_coordination
             self._kvmem_repository_gc = options.repository_gc
             self._kvmem_prepared_archive = None
-            if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes:
+            if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes or options.historical_gc is not None:
                 from .storage import make_shared_archive
                 modules = dict(self.model.named_modules())
                 modules.update(getattr(self, '_kvmem_mtp_modules', {}))
@@ -184,6 +190,9 @@ def make_probe_runner(base):
                     archive = getattr(self, '_kvmem_prepared_archive', None)
                     if archive is not None and not archive.close():
                         raise RuntimeError('Unused startup archive retained I/O ownership')
+                native = getattr(self, '_kvmem_native_attention', None)
+                if native is not None:
+                    native.report(force=True)
             finally:
                 try:
                     work = getattr(self, '_kvmem_public_work', None)
@@ -264,6 +273,10 @@ def make_probe_runner(base):
             action = getattr(runtime, 'action', None)
             if action is not None and getattr(self, '_kvmem_public_action_forward', False):
                 action.prepare(batch, positions)
+            else:
+                native = getattr(self, '_kvmem_native_attention', None)
+                if native is not None:
+                    native.disarm()
 
         def sample(self, hidden_states, input_batch, grammar_output):
             timing = getattr(self, '_kvmem_step_timing', None)
@@ -404,7 +417,7 @@ def make_probe_runner(base):
                     if self._kvmem_capture_runtime is not None else set())
                 if getattr(self, '_kvmem_cpu_history_coordination', False):
                     connector.history_usage = lambda: (
-                        self._kvmem_capture_runtime.archive.tier.used_slots * self._kvmem_capture_runtime.archive.record_bytes
+                        self._kvmem_capture_runtime.archive.history_used_bytes()
                         if self._kvmem_capture_runtime is not None else 0)
                 if getattr(self, '_kvmem_repository_gc', False):
                     connector.archive_snapshot = lambda: (

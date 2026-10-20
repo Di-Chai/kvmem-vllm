@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-19",
+  "scope": "historical KV policy, irreversible retirement and CPU ownership components",
+  "goal_status": "active",
+  "serving_profile_enabled": false,
+  "real_model_qualified": false,
+  "decode_performance_measured": false,
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "base_commit": "f639acfc986f7e8b9ddaf24a667d078d07e737ac",
+  "source_sha256": {
+    "csrc/historical_kv_policy.hpp": "5c91bd03c7788858deb55b69d632feddd1f5bd5ec249b7e1a30bd7239f6945ec",
+    "csrc/historical_payload.hpp": "32d1e21e5b1230642f30f5b82523b0db4d0d879ea8100062b0ea04fa7ecc7949",
+    "csrc/historical_payload.cpp": "e96233f04aff417523cf1f3e00cf709be1558e482bd9be2c8c2f948a2be0d8da",
+    "csrc/bindings.cpp": "56c75a925c39491efb81dc861f2472fc685d072bceb559e1328e7fcdb007103f",
+    "third_party/qw3/include/qw3/kvmem_repository.hpp": "dc9e758041b26277400119a916942cc8b54c4a7574b746923f8c517e02256fa3",
+    "third_party/qw3/src/kvmem_repository.cpp": "ca2ef20afd6b5f43add6c91a3621c120737c814795a64a0f9a4c64660613cfc0",
+    "src/vllm_kvmem/native_memory_storage.py": "664b5bf95b3e9b1d5d7e6695ed3c3d923430335badc4b559a9dccefe3d28e25a",
+    "src/vllm_kvmem/memory_storage.py": "e86e4bf45689d809d4f3c9f131317f8e50b67970a8a8f31c8f83447ac9e40d4a",
+    "src/vllm_kvmem/storage.py": "5d1149ff8fc77be2bfe84a620bd1f0c501aa17458c7e47406cd0d2b5c8810e4b",
+    "csrc/tests/historical_kv_policy_test.cpp": "4d4435718677fa2420a9dc67b744cc399e804bf10a0c06f234d54a0c2dc56afe",
+    "csrc/tests/historical_payload_test.cpp": "737b8e4dd9b5eb0bababa9a600867376c3304093b008c2d55c3bf40df5ced570",
+    "tests/test_historical_retirement.py": "575a4632c8993d0811f74654ba4ae592b0ea221e8320ac9b62852f0666d003c4",
+    "tests/test_historical_payload.py": "66d61cb1c92c73a6fbceacd81521063b7dad26f6a9b1f520cdfe03c45b702783",
+    "tests/test_historical_payload_gpu.py": "a9590d7e752eb2b3a57f71f819266b1cb647deaebe62219d31ac4a69e3dc9382",
+    "tests/test_native_memory_storage.py": "6a1b85aece79d8393fa42a9f390f8d82f6965597378524968109948d3d0d3a04"
+  },
+  "python_and_gpu_components": {
+    "tests": 95,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "host_ctest": {
+    "tests": 7,
+    "failures": 0
+  },
+  "asan_ubsan_lsan": {
+    "tests": 7,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "tsan": {
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "sanitizer_execution": "Host execution outside ptrace sandbox; TSan children launched with setarch x86_64 -R",
+  "known_baseline_failure": {
+    "test": "tests/test_coordination_qualification.py::test_v2_requires_a_real_pm_restore_profile",
+    "expected_regex": "P/M sessions",
+    "actual_message": "Asynchronous restore requires CPU P/M or frozen-P sessions, non-GC async refresh and maintenance budgets",
+    "verified_in_HEAD": true
+  },
+  "remaining": [
+    "native policy manager",
+    "serving options and publication integration",
+    "async refresh/restore and P/M/GDN/MTP/cancellation integration",
+    "active request capacity reservation",
+    "full-model correctness and paired decode performance",
+    "task-quality comparison"
+  ]
+}

@@ -80,6 +80,68 @@ Scratch is bounded by the active window, query heads and sampled verifier rows.
 CPU readback and sampled GPU work have a measurable cost; enabling the feature
 does not claim zero overhead.
 
+### Experimental native QK reuse
+
+`action_native_scores` defaults to `"off"` and preserves the existing sampler.
+`"verify"` captures native statistics, compares them with the sampler, and commits
+the sampler's scores. `"reuse"` consumes native statistics and omits sampled QK,
+RoPE replay, Q conversion and token softmax for each supported layer/request.
+The elastic launcher forwards the same options. It remains experimental and
+default off; measured gains, cold-start costs and qualification limits are recorded
+in the qualification report linked below.
+
+The initial adapter supports the source-pinned FlashInfer FA2 prefill and SM12x
+warp-specialized XQA decode paths, including packed, ragged MTP verification.
+It builds isolated copies of FlashInfer sources; it does not edit installed
+packages. Unsupported versions/backends/layouts, unwarmed graph specializations,
+capacity overflow and missing/invalid native results fall back to the sampler.
+`capture/native_attention_stats.json` reports requested mode, actual per-layer,
+per-request scoring counts, fallback reasons, persistent buffer bytes and verify
+errors. Counts describe candidate scoring operations, not accepted samples;
+accepted samples still appear in the existing action/prefill reports.
+
+Native QK and online-softmax intermediates produce stable logsumexp pieces, split
+at both dense sixteen-token boundaries and **logical historical segment**
+boundaries. The producer reuses native FP32 `exp(logit-center)` weights before
+their P*V conversion and restores log units as `log(sum(weights))+center`.
+Aligned pieces have one producer and use direct writes; a logaddexp merge handles
+unaligned partition edges.
+The consumer normalizes every Q head over all visible pieces, sums probabilities
+over each original segment and then averages heads and selected layers. Physical
+KV page boundaries never define historical identities. Partial segments and
+several segments sharing one historical identity retain their original meaning.
+There are no Q/K reads or dot products in the statistics helper. Native tensor-core
+and quantization rounding may differ from the FP32 sampler; mathematical domain,
+causal visibility and scale equivalence are required, bitwise score equality is not.
+
+The runner allocates fixed-address per-layer LSE storage before compilation and
+graph capture. Before each public forward it freezes candidate rows/segments,
+clears the current LSE extent and uploads a fresh row map from bounded pinned
+metadata buffers. A DMA fence protects those host buffers from early reuse. Private Query replay
+and warmup disable that map; draft layers are never installed. Normalization runs
+after the target forward only for actual sampled rows. Action packets enqueue
+their existing pinned D2H before the next forward can reuse the buffers, on the
+single-batch runner stream. MTP rejection and terminal truncation continue to
+filter candidate rows at the scheduler-confirmed acceptance boundary.
+
+Concurrent pure decode uses an immutable logical-view layout and collects bounded
+MTP candidate rows, then applies the unchanged scope and interval after forward.
+Every view commit changes its generation, including commits with the same offset.
+The exact post-forward logical domain is checked before scoring. Adjacent fragments
+of one historical page are combined; page probability, exposure counting and
+graph aggregation retain their mathematical meaning. Cached future pieces outside
+the current row width are masked, and validity is fenced once at batch end. An
+invalid tentative result recomputes the same prepared frame through the reference
+scorer before acceptance.
+
+`action_native_max_rows=256` bounds candidate Q rows across a whole batch;
+`action_native_max_bytes=2147483648` bounds all persistent native-statistics
+buffers. Exceeding either bound preserves sampling density by falling back.
+Capacity is reserved before the native KV pool is profiled and remains allocated
+for the runner's lifetime. This has a memory cost even for sparsely sampled
+decode. Normal serving with `action_native_scores="off"` allocates none of it.
+See [the native-reuse qualification record](native-attention-20261019.md).
+
 The example reserves additional transient GPU memory with
 `gpu_memory_utilization=0.72`. This changes native KV pool preallocation, not the
 32K selection or 16K generation budget. On the 96 GB qualification GPU, 0.82

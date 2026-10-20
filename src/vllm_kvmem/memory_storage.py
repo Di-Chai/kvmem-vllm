@@ -6,6 +6,7 @@ The owner must reserve each request's complete history before admission.
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock, local
+from collections import Counter
 import hashlib
 import time
 
@@ -22,12 +23,19 @@ def gather_records_python(destination, sources, record_bytes, offset, length, be
             not 0 <= begin <= end <= len(sources) or
             view.readonly or view.ndim != 1 or view.itemsize != 1 or not view.c_contiguous or
             view.nbytes != len(sources)*length or
-            any(type(source) is not bytes or len(source) != record_bytes for source in sources[begin:end])):
+            any(not _immutable_record(source, record_bytes) for source in sources[begin:end])):
         raise ValueError('Invalid immutable CPU record gather')
     view = view.cast('B')
     for i in range(begin, end):
         view[i*length:(i+1)*length] = memoryview(sources[i])[offset:offset+length]
     return (end-begin)*length
+
+
+def _immutable_record(source, record_bytes):
+    if type(source) is bytes:
+        return len(source) == record_bytes
+    native_read = getattr(_native, 'HistoricalPayloadRead', ())
+    return isinstance(source, native_read) and bool(source) and memoryview(source).nbytes == record_bytes
 
 
 def gather_records_native(destination, sources, record_bytes, offset, length, begin, end):
@@ -37,7 +45,7 @@ def gather_records_native(destination, sources, record_bytes, offset, length, be
     native function's validation or copy error must propagate, never be hidden
     by retrying a partly written destination through another backend.
     """
-    if offset == 0 and length == record_bytes:
+    if offset == 0 and length == record_bytes and all(type(source) is bytes for source in sources[begin:end]):
         native = getattr(_native, 'gather_cached_records', None)
         if callable(native):
             return native(destination, sources, record_bytes, begin, end)
@@ -199,12 +207,18 @@ class MemoryTier:
 
 
 class MemoryArchive(AsyncArchive):
-    def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False, **kwargs):
+    def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False,
+                 native_payloads=False, **kwargs):
         if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
             raise ValueError('CPU gather workers must be between 1 and 16')
         if type(cpu_direct_record_seal) is not bool:
             raise ValueError('cpu_direct_record_seal must be boolean')
-        super().__init__(*args, **kwargs, memory_only=True)
+        super().__init__(*args, **kwargs, memory_only=True, native_cpu_payloads=native_payloads)
+        self._native_payload_arena = getattr(self.tier, 'payloads', None)
+        self._history_worker = None
+        self._history_scopes = {}
+        self._history_totals = Counter()
+        self._history_mode = None
         self.cpu_direct_record_seal = cpu_direct_record_seal
         self._seal_totals = dict(seal_batches=0, seal_records=0, seal_payload_bytes=0,
             seal_direct_records=0, seal_direct_bytes=0, seal_pack_seconds=0.,
@@ -223,6 +237,22 @@ class MemoryArchive(AsyncArchive):
         self.tier.gather = self._gather
 
     def _seal_views(self, keys, entries, spans, views):
+        if self._native_payload_arena is not None:
+            started = time.perf_counter()
+            allocations = [entry.allocation for entry in entries]
+            stats = self.tier.publish_record_views(allocations,
+                [views[2*i:2*i+2] for i in range(len(entries))])
+            copied = time.perf_counter()
+            sources = self.tier.borrow_records(allocations)
+            try:
+                digests = tuple(hashlib.sha256(source).hexdigest() for source in sources)
+            finally:
+                sources.clear()
+            stats.update(record_digests=digests, seal_pack_seconds=copied-started,
+                seal_hash_seconds=time.perf_counter()-copied, seal_cache_seconds=0.,
+                seal_record_copy_seconds=0., seal_record_publish_seconds=0.,
+                seal_direct_records=len(entries), seal_direct_bytes=len(entries)*self.record_bytes)
+            return stats
         if not self.cpu_direct_record_seal:
             return super()._seal_views(keys, entries, spans, views)
         records = []
@@ -324,17 +354,157 @@ class MemoryArchive(AsyncArchive):
     def _region_sources(self, keys):
         # Native region gather reads immutable record buffers directly, avoiding
         # a second cache copy or a full-record fallback slab.
+        if self._native_payload_arena is not None:
+            return self.tier.borrow_records([self._entries[key].allocation for key in keys])
         with self.tier.lock:
             return [self.tier.records[self._entries[key].allocation.slot] for key in keys]
 
+    def _admit_read_sources(self, entries):
+        if self._native_payload_arena is not None:
+            return self.tier.borrow_records([entry.allocation for entry in entries])
+        return None
+
+    def _validate_read_sources(self, entries, sources):
+        if self._native_payload_arena is None or len(entries) != len(sources):
+            raise ValueError('Invalid pre-admitted CPU read extent')
+        for entry, source in zip(entries, sources):
+            if (not isinstance(source, _native.HistoricalPayloadRead) or not source or
+                    (source.handle.slot, source.handle.generation) !=
+                    (entry.allocation.slot, entry.allocation.generation) or
+                    not self._native_payload_arena.owns(source)):
+                raise ValueError('Pre-admitted CPU read has a foreign allocation')
+        return [source.clone() for source in sources]
+
+    def enable_history_gc(self, config):
+        """Install one native manager for this CPU arena before serving."""
+        if self._native_payload_arena is None:
+            raise ValueError('Historical GC requires native CPU payload ownership')
+        if self._history_worker is not None:
+            raise RuntimeError('Historical GC manager is already installed')
+        with self._lock:
+            if self._pending or self._entries or self._closed:
+                raise RuntimeError('Historical GC must be configured before archive use')
+        self._history_worker = _native.HistoricalGcWorker(config, self._native_payload_arena)
+        self._history_background = config.background
+        self._history_mode = config.mode.name.lower()
+        return self._history_worker
+
+    def register_history_scope(self, namespace, repository):
+        if self._history_worker is None:
+            raise RuntimeError('Historical GC manager is not installed')
+        if not namespace:
+            raise ValueError('Historical namespace must be nonempty')
+        with self._lock:
+            if self._closed or namespace in self._history_scopes:
+                raise ValueError('Historical namespace is closed or already registered')
+        # No archive lock is held across native metadata allocation. Registration
+        # has bounded admission; a busy/full native registry returns no scope.
+        scope = self._history_worker.register_scope(repository)
+        if scope is None:
+            raise BufferError('Historical GC scope capacity is exhausted')
+        with self._lock:
+            if self._closed or namespace in self._history_scopes:
+                scope.close()
+                raise ValueError('Historical namespace changed during registration')
+            self._history_scopes[namespace] = scope
+        return scope
+
+    def unregister_history_scope(self, namespace, scope):
+        with self._lock:
+            if self._history_scopes.get(namespace) is scope:
+                self._history_totals.update(scope.stats)
+                del self._history_scopes[namespace]
+
+    def history_stats(self):
+        if self._history_worker is None:
+            return None
+        with self._lock:
+            totals = self._history_totals.copy()
+            for scope in self._history_scopes.values():
+                totals.update(scope.stats)
+            scopes = len(self._history_scopes)
+        return dict(mode=self._history_mode, active_scopes=scopes, **dict(totals),
+                    metadata=self._history_worker.storage_stats)
+
+    def allocate_index(self, shape, *, mean):
+        import math
+        import torch
+        elements = math.prod(shape)
+        owner = self._native_payload_arena._allocate_index(elements*(6 if mean else 4))
+        sums = torch.frombuffer(owner, dtype=torch.float32, count=elements).view(shape)
+        return sums, owner
+
+    def history_used_bytes(self):
+        if self._native_payload_arena is None:
+            return self.tier.used_slots*self.record_bytes
+        stats = self._native_payload_arena.stats
+        return stats['used_bytes'] + stats['external_bytes']
+
+    def _backing_context(self, namespace):
+        # Called under the archive admission lock. The I/O job captures this
+        # exact scope; it never discovers a replacement namespace on completion.
+        return self._history_scopes.get(namespace)
+
+    def _publish_backing(self, context, leases, entries):
+        sources = self.tier.borrow_records([entry.allocation for entry in entries])
+        try:
+            for lease, source in zip(leases, sources):
+                if not context.publish(lease, source, 0):
+                    raise RuntimeError('Historical backing publication must retry')
+        finally:
+            sources.clear()
+
+    def retire_cpu_record(self, namespace, handle):
+        """Backend-only CPU cleanup after irreversible repository retirement.
+
+        Existing GPU metadata leases do not delay these bytes. The arena itself
+        fences actual CPU readers; this method only polls and recycles small
+        allocation descriptors once native payload release is complete.
+        """
+        if self._native_payload_arena is None:
+            raise RuntimeError('Independent CPU retirement requires native payload ownership')
+        key = namespace, handle.slot, handle.generation
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            entry = self._entries.get(key)
+            if entry is None:
+                return True
+            if not entry.ready:
+                return False
+            self.tier.retire_payload(entry.allocation)
+            return self._release(key)
+        finally:
+            self._lock.release()
+
     def io_usage(self):
+        native = self._native_payload_arena.stats if self._native_payload_arena is not None else None
         return {**super().io_usage(), 'archive_backend':'cpu', 'disk_read_bytes':0,
-                'disk_write_bytes':0, 'cpu_authority_bytes':self.tier.used_slots*self.record_bytes}
+                'disk_write_bytes':0,
+                'cpu_authority_bytes':native['used_bytes'] if native else self.tier.used_slots*self.record_bytes,
+                **({'cpu_native_payloads': True, 'cpu_payload_readers': native['readers'],
+                    'cpu_payload_released_bytes': native['released_bytes'],
+                    'cpu_index_owners': native['external_owners'],
+                    'cpu_index_bytes': native['external_bytes'],
+                    'cpu_index_released_bytes': native['external_released_bytes']} if native else {})}
 
     def close(self):
         if getattr(self._gather_worker, 'active', False):
             raise RuntimeError('CPU gather worker cannot close its own pool')
+        if self._history_worker is not None:
+            with self._lock:
+                if self._pending:
+                    return False
+            self._history_worker.close()
+            for namespace, scope in tuple(self._history_scopes.items()):
+                if not scope.close():
+                    return False
+                self.unregister_history_scope(namespace, scope)
+            if not self._history_worker.close():
+                return False
         if not super().close():
             return False
         self._stop_gather_pool()
+        if self._native_payload_arena is not None and not self._native_payload_arena.close():
+            return False
         return True

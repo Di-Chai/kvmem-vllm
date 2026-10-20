@@ -250,6 +250,10 @@ class PromptCheckpointPool:
             raw, values = raw[:, :count].clone(), values[:, :count].clone()
             prefix = memory._store.checkpoint(begin, False)
             pending = _TailRollback(records, raw, values, pins, prefix)
+            try:
+                policy_hold = memory._protect_checkpoint(records[:-1])
+            except BufferError:
+                return False
         else:
             pending = None
         spans = authority.begin_rewind(prefix)
@@ -260,7 +264,7 @@ class PromptCheckpointPool:
             # A prior cancellation may have rebased this frame already. Its
             # explicit tail pin must retire too; pending.pins protects only
             # the unchanged complete records throughout this transaction.
-            checkpoint.window = replace(checkpoint.window, leases=())
+            checkpoint.window = replace(checkpoint.window, leases=(), policy_hold=policy_hold)
         return True
 
     def _poll_rewind(self, checkpoint):

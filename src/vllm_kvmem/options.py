@@ -182,6 +182,9 @@ class RuntimeOptions:
     action_download_max_bytes: int = 67108864
     action_download_max_slots: int = 128
     action_fused_scoring: bool = True
+    action_native_scores: str = 'off'
+    action_native_max_rows: int = 256
+    action_native_max_bytes: int = 2147483648
     async_refresh: bool = False
     refresh_quantum_tokens: int = 256
     prefill_attention: bool = False
@@ -246,6 +249,7 @@ class RuntimeOptions:
     _policy_explicit_fields: frozenset | None = field(default=None, repr=False, compare=False)
     _policy_resolved_values: tuple | None = field(default=None, repr=False, compare=False)
     cpu_direct_record_seal: bool = False
+    historical_gc: object = None
 
     @property
     def active_residency_enabled(self):
@@ -261,6 +265,16 @@ class RuntimeOptions:
     def __post_init__(self):
         import math
         from . import _native
+        from .historical_gc import HistoricalGcSettings
+        historical = HistoricalGcSettings.parse(self.historical_gc)
+        object.__setattr__(self, 'historical_gc', historical)
+        if historical is not None and (self.archive_backend != 'cpu' or self.repository_gc or
+                not self.request_planning or not self.async_archive_retirement or not self.async_seal or
+                not self.cpu_history_coordination or not self.session_capacity or self.graph_mode != 'off'):
+            raise ValueError('historical_gc requires CPU authority, planning, async seal/retirement, '
+                             'CPU history coordination and owned sessions; repository_gc and block graph must be disabled')
+        if historical is not None and historical.ready_high > self.memory.repository_blocks:
+            raise ValueError('historical_gc watermarks exceed repository capacity')
         supplied = {name: getattr(self, name) for name in _POLICY_FIELDS
                     if getattr(self, name) is not _UNSET}
         explicit = (frozenset(supplied) if self._policy_explicit_fields is None
@@ -296,6 +310,13 @@ class RuntimeOptions:
             raise ValueError('Action download pool requires bounded positive byte/event capacity')
         if type(self.action_commit_max_bytes) is not int or self.action_commit_max_bytes < 4096:
             raise ValueError('Action commit capacity must be at least 4096 bytes')
+        if self.action_native_scores not in ('off', 'verify', 'reuse'):
+            raise ValueError('Native Action scores must be off, verify or reuse')
+        if (type(self.action_native_max_rows) is not int or self.action_native_max_rows < 1 or
+                type(self.action_native_max_bytes) is not int or self.action_native_max_bytes < 1):
+            raise ValueError('Native Action buffer limits must be positive integers')
+        if self.action_native_scores != 'off' and not self.memory.action_attention:
+            raise ValueError('Native Action scores require action attention')
         if self.async_action_metadata and not self.memory.action_attention:
             raise ValueError('Asynchronous Action metadata requires action attention')
         if type(self.early_capture_slot_release) is not bool:
@@ -520,6 +541,7 @@ class RuntimeOptions:
         cadence = payload.pop('prefill_cadence', 1)
         retirement = payload.pop('async_archive_retirement', False)
         gc = payload.pop('repository_gc', False)
+        historical_gc = payload.pop('historical_gc', None)
         preallocate = payload.pop('nvme_preallocate', False)
         nvme_bytes = payload.pop('nvme_max_bytes', 0)
         io_bytes = payload.pop('archive_io_max_bytes', 0)
@@ -552,6 +574,8 @@ class RuntimeOptions:
             ('action_download_pool', True), ('action_download_max_bytes', 67108864),
             ('action_download_max_slots', 128),
             ('action_fused_scoring', True),
+            ('action_native_scores', 'off'), ('action_native_max_rows', 256),
+            ('action_native_max_bytes', 2147483648),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
             ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),
@@ -587,4 +611,4 @@ class RuntimeOptions:
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
                    gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy,
                    query_history,query_decay,guided_tokens,archive_backend,
-                   cpu_direct_record_seal=direct_record_seal,**action,**graph)
+                   cpu_direct_record_seal=direct_record_seal,historical_gc=historical_gc,**action,**graph)

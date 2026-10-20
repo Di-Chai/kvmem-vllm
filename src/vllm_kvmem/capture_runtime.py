@@ -910,6 +910,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 if req in busy and req in self._published_capacity else owner.history_end)
                 for req, owner in self.authorities.items()},
             "archive_used_slots": self.archive.tier.used_slots,
+            'historical_gc': self.archive.history_stats() if hasattr(self.archive, 'history_stats') else None,
             "pending_downloads": self._pending_download_count(),
             'split_capture_dma': getattr(self, 'split_capture_dma', False),
             'publication_metrics': self._publication_metrics_snapshot(),
@@ -1144,6 +1145,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                   "async_archive_retirement": self.options.async_archive_retirement,
                   "terminal_prefix_required": bool(getattr(self.runner, '_kvmem_bounded_target', False)),
                   "repository_gc": self.options.repository_gc,
+                  "historical_gc": self.archive.history_stats() if hasattr(self.archive, 'history_stats') else None,
                   "gc_wait_seconds": getattr(self, 'gc_wait_seconds', 0.0),
                   "gc_wait_count": getattr(self, 'gc_wait_count', 0),
                   "retiring_requests": len(getattr(self, 'retiring', {})),

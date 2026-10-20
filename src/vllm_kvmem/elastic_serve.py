@@ -47,6 +47,7 @@ def build_launch(profile, base, run_dir):
         'action_native_decode_commit':True,'action_commit_max_bytes':16777216,
         'action_download_pool':True,'action_download_max_bytes':67108864,'action_download_max_slots':128,
         'action_fused_scoring':True,
+        'action_native_scores':'off','action_native_max_rows':256,'action_native_max_bytes':2147483648,
         'archive_backend':'nvme','async_refresh':False,'refresh_quantum_tokens':256,
         'prefill_attention':False,'action_pressure':False,'pressure_policy':None,'prefill_attention_interval':1024,
         'prefill_attention_stride':32,'prefill_attention_half_life':8192,'prefill_chunk_tokens':0,
@@ -58,13 +59,18 @@ def build_launch(profile, base, run_dir):
         'prefill_min_tokens':128,'prefill_max_tokens':2048,'prefill_feedback_timeout_ms':5000.0,'prefill_batch_tokens':0,'active_resident_ttl_ms':0.0,'active_resident_max_fraction':0.5,
         'active_resident_pressure_only':False,
         'maintenance_transfer_bytes_per_second':0,'maintenance_transfer_burst_bytes':67108864,'offline_agent_policy':False,
-        'repository_gc':False, **GRAPH_DEFAULTS}
+        'repository_gc':False, 'historical_gc':None, **GRAPH_DEFAULTS}
     if not isinstance(profile, dict) or required - set(profile) or set(profile) - required - set(defaults):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
     cfg = resolve_graph_policy(cfg, explicit_fields=profile)
     if type(cfg['repository_gc']) is not bool:
         raise ValueError('repository_gc must be boolean')
+    if cfg['historical_gc'] is not None:
+        from .historical_gc import HistoricalGcSettings
+        HistoricalGcSettings.parse(cfg['historical_gc'])
+        if cfg['context_mode'] != 'meank':
+            raise ValueError('historical_gc requires MeanK context management')
     validate_graph_options({name: cfg[name] for name in GRAPH_DEFAULTS},
         context_mode=cfg['context_mode'], request_planning=cfg['request_planning'],
         session_capacity=cfg['max_sessions'], repository_gc=cfg['repository_gc'],
@@ -139,8 +145,9 @@ def build_launch(profile, base, run_dir):
                                'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
                                'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
-                               'query_history','query_history_decay','guided_query_tokens','repository_gc',
+                               'query_history','query_history_decay','guided_query_tokens','repository_gc','historical_gc',
                                'action_attention','action_scope','action_layers','action_interval',
+                               'action_native_scores','action_native_max_rows','action_native_max_bytes',
                                'action_native_decode_commit','action_commit_max_bytes',
                                'action_download_pool','action_download_max_bytes','action_download_max_slots',
                                'action_fused_scoring',
@@ -195,10 +202,13 @@ def build_launch(profile, base, run_dir):
             'gpu_memory_utilization': cfg['gpu_memory_utilization'],
             'kvmem': {'select_budget': cfg['active_context_tokens'], 'gen_budget': cfg['gen_budget_tokens'],
                 'block_tokens':cfg['block_tokens'],'sink_blocks':cfg['sink_blocks'],'recent_blocks':cfg['recent_blocks'],
-                'repository_blocks': (cfg['max_model_len'] + cfg['block_tokens'] - 1) // cfg['block_tokens'],
+                'repository_blocks': ((cfg['max_model_len'] + cfg['block_tokens'] - 1) // cfg['block_tokens'] +
+                    (2+2*((cfg['draft_tokens']+1+cfg['block_tokens']-1)//cfg['block_tokens'])
+                     if cfg['historical_gc'] is not None else 0)),
                 'cpu_read_cache_bytes': cfg['cpu_kv_bytes'],
                 'archive_backend': cfg['archive_backend'],
                 'repository_gc': cfg['repository_gc'],
+                'historical_gc': cfg['historical_gc'],
                 **{key: cfg[key] for key in GRAPH_DEFAULTS},
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'async_seal': cfg['async_seal'],
@@ -230,6 +240,7 @@ def build_launch(profile, base, run_dir):
                 'guided_query_tokens':cfg['guided_query_tokens'],
                 **{key:cfg[key] for key in ('action_attention','action_scope','action_layers',
                     'action_interval','action_fraction','action_decay','action_combine',
+                    'action_native_scores','action_native_max_rows','action_native_max_bytes',
                     'action_native_decode_commit','action_commit_max_bytes',
                     'action_download_pool','action_download_max_bytes','action_download_max_slots',
                     'action_fused_scoring',

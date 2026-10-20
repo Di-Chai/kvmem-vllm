@@ -36,6 +36,28 @@
 
 namespace qw3 {
 
+// Optional host-only observer. The Store remains the sole engine metadata
+// producer; implementations must neither call Python nor wait for a worker.
+struct KvMemCpuReadOwner { virtual ~KvMemCpuReadOwner() = default; };
+struct KvMemExecutionAdmission {
+    KvMemRepository::Lease lease;
+    std::shared_ptr<KvMemCpuReadOwner> cpu;
+};
+class KvMemHistoryObserver {
+public:
+    virtual ~KvMemHistoryObserver() = default;
+    virtual void observe(const KvMemRepository::Lease &, bool sealed, bool gpu, bool mandatory) = 0;
+    virtual void history_changed(uint64_t end, uint64_t recent_begin) = 0;
+    virtual void begin_step() = 0;
+    virtual bool observes(const std::shared_ptr<KvMemRepository> &) const = 0;
+    virtual KvMemExecutionAdmission admit(KvMemBlockHandle) = 0;
+};
+
+class KvMemAdmissionRetry : public std::runtime_error {
+public:
+    KvMemAdmissionRetry() : std::runtime_error("Historical generation changed during execution admission") {}
+};
+
 enum class KvTier : uint8_t { GPU = 0, CPU = 1, SSD = 2 };
 
 // Metadata for one context block, spanning all attention layers (a token range
@@ -160,6 +182,9 @@ std::vector<KvMemStoragePageSpan> kvmem_storage_page_spans(
 
 // Result of diffing a new selection against the current working set.
 struct KvMemPlan {
+    // Acquired as one new execution admission, never upgraded from old reads.
+    std::shared_ptr<std::vector<KvMemRepository::Lease>> repository_next_window;
+    std::vector<std::shared_ptr<KvMemCpuReadOwner>> cpu_sources;
     // Keep the previous window alive until the ordinary transfer/assembly plan
     // has finished. Checkpoints separately share the current window's lease.
     std::shared_ptr<KvMemGc::Lease> gc_previous_window;
@@ -430,6 +455,7 @@ public:
     bool has_repository() const { return bool(repository_); }
     const std::shared_ptr<KvMemRepository> &repository() const { return repository_; }
     void attach_repository_gc(std::shared_ptr<KvMemRepositoryGc>);
+    void attach_history_observer(std::shared_ptr<KvMemHistoryObserver>);
     // Executor publishes these only after all configured main/MTP raw-K/V and
     // index components have actually become authoritative for this generation.
     void set_repository_gc_flags(KvMemBlockHandle, uint32_t mask, uint32_t values);
@@ -696,13 +722,14 @@ private:
     void install_repository_block(KvMemRepository::Lease, uint32_t baked_pos,
                                   uint32_t valid_tokens);
     void require_no_repository_append() const;
-    KvMemRepository::Lease validate_repository_mutation(uint32_t, uint64_t) const;
+    KvMemRepository::Lease validate_repository_mutation(uint32_t, uint64_t, bool admitted_window = false) const;
     std::vector<uint32_t> chronological_ids() const;
     bool earlier(uint32_t a, uint32_t b) const;
     bool sink_block(uint32_t id) const;
     KvMemPlan set_selection_impl(std::vector<uint32_t>, bool);
     std::shared_ptr<KvMemRepository> repository_;
     std::shared_ptr<KvMemRepositoryGc> repository_gc_;
+    std::shared_ptr<KvMemHistoryObserver> history_observer_;
     std::vector<uint32_t> repository_gc_flags_;
     std::vector<KvMemBlockHandle> repository_score_handles_;
     uint64_t repository_score_sequence_ = 0;

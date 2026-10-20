@@ -65,6 +65,8 @@ class WindowBatchAdapter:
         self.capacity = capacity
         self.offsets: dict[str, int] = {}
         self.history_ends: dict[str, int] = {}
+        self.generations: dict[str, int] = {}
+        self._generation = 0
         self.buffers = None
 
     def reserve_graph_buffers(self, max_tokens, max_requests, device):
@@ -99,10 +101,13 @@ class WindowBatchAdapter:
             raise ValueError("Working window cannot precede the committed history")
         self.offsets[request_id] = offset
         self.history_ends[request_id] = history_end
+        self._generation += 1
+        self.generations[request_id] = self._generation
 
     def free(self, request_id):
         self.offsets.pop(request_id, None)
         self.history_ends.pop(request_id, None)
+        self.generations.pop(request_id, None)
 
     def prepare(self, batch) -> WindowBatch | None:
         offsets = [self.offsets.get(req, 0) for req in batch.req_ids]

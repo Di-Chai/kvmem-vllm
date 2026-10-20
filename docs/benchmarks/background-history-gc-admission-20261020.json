@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-20",
+  "goal_status": "active",
+  "scope": "Native LRU checkpoint policy holds, cancelled partial-tail rebase, whole-turn reservation ledger and connector ordering",
+  "serving_profile_enabled": false,
+  "scheduler_installs_new_ledger": false,
+  "real_model_qualified": false,
+  "decode_performance_measured": false,
+  "base_commit": "f639acfc986f7e8b9ddaf24a667d078d07e737ac",
+  "source_sha256": {
+    "csrc/bindings.cpp": "17de46c30dee8b9c9716a3282d908a08aca4904065dec479c312ab3206bbc1ba",
+    "csrc/historical_kv_policy.hpp": "25fd764637a698a7544affce18c72b214d4084e498b4388070faace0000fd3fb",
+    "csrc/historical_manager.cpp": "446336b98973ea37c33a88694a07eb3c3e4f62c7f92be0d71c06d45e1bcdf941",
+    "csrc/historical_manager.hpp": "daf82c3f11cfbf25016596babde9341564e460d42f7c087975ee2fca8152a16c",
+    "csrc/historical_payload.cpp": "b30104fc739ada1950f54b92c88562704d8cf237bcb70d47e72003308e038408",
+    "csrc/historical_payload.hpp": "cf5f8b9204673d9d18518f89c32cda469c1b6946d6f0371b953d5e7892f64857",
+    "csrc/tests/historical_manager_test.cpp": "e0500ff0cff731072ca75dd9691f894d29aaad1871574a82dd60c85eeb488a24",
+    "src/vllm_kvmem/authority.py": "96469eb4ff18e2a9106a3fb572ab175b3144067afc0c4547f38e729b58276c11",
+    "src/vllm_kvmem/connector.py": "d5fad337baec8bf886c18df1b35ea2e29b0ec92e94af3de61b201de2a525c157",
+    "src/vllm_kvmem/historical_admission.py": "9b890ab31f5f2e3d89148cfd0429765ff7dc07a4e9076cd0d6d251a169e0ce64",
+    "src/vllm_kvmem/historical_gc.py": "49e925b9f783280545b0999d45e26e69642ae059754db03aeec600ce868b29a6",
+    "src/vllm_kvmem/memory.py": "0313abca88177723882c7ab2767cc86278a8376596e8bfdd1b26e5aaf1b9517e",
+    "src/vllm_kvmem/memory_storage.py": "ff1cc0f1e93c3bd5898de4cf936e9437390a6e5077ff49e790fbcf429be8e9f9",
+    "src/vllm_kvmem/native_memory_storage.py": "664b5bf95b3e9b1d5d7e6695ed3c3d923430335badc4b559a9dccefe3d28e25a",
+    "src/vllm_kvmem/packed_assembly.py": "2f9d2df0e04c7d10f4df817ce5a3c318a876f51e7c080dba7657f1afa221af4c",
+    "src/vllm_kvmem/prompt_checkpoints.py": "a0c6218e13c30bbd93b00bfcf0881ac8f3e6cdf8bf2f847828c4ef245855a93e",
+    "src/vllm_kvmem/session_control.py": "5c91d5d194f7e5b76daf63b83add377720acc79a530ca77753cd5d1a2d419f4f",
+    "src/vllm_kvmem/session_worker.py": "4dd80b9815ce715f71aef04ed301fabd40d1be0366628816b79bb1f2d5490c73",
+    "src/vllm_kvmem/storage.py": "7fe5e4553e58c76555edca5aa76919bd62ad321a486ac28d6692105c21d854ac",
+    "src/vllm_kvmem/window_assembly.py": "2d0642781c02d8db63dbca06d3d83bf5cf80714f9f6320e52b5bc40c060af2e3",
+    "tests/test_historical_admission.py": "1bcd6925e1d07cc242e55c49d883d8b255216354477dc1206d4d89fb633121dd",
+    "tests/test_historical_admission_integration.py": "2e19a2c35556d87a474af8a79b258e2dd31b318d2fbe92a050b16f2d708424d6",
+    "tests/test_historical_assembly_gpu.py": "43f3da12ef282132f66a0ae152a3a18ec7c5c156dd2de04ad9414a739bfd1932",
+    "tests/test_historical_authority.py": "73409de2411dc39d9c8afb496ed0dd7737ef0f4a690315ba01aeeb98e2774eb9",
+    "tests/test_historical_manager.py": "8ddadaffbc69d33bbf7894ff9cf8c8c85b51a9973b2d72ed6d92f4388ff35239",
+    "tests/test_historical_pm.py": "864de830e2f42826710ada4f8350b6ce81af076c5e06466bbe7b7b87f5ce1420",
+    "third_party/qw3/include/qw3/kvmem_repository.hpp": "67212c787e53e7e1bd2cea97348f2445311a91d312113b9451b7bdc1e38fe263",
+    "third_party/qw3/include/qw3/kvmem_store.hpp": "05b436f2b518ee90339b0141f3803379dcefc26da182b94028cd3e0f4da70aaf",
+    "third_party/qw3/src/kvmem_repository.cpp": "7bda77441939aac4ceaf0a780b459416b5215df6b9392c6d7af3b2f43f68c600",
+    "third_party/qw3/src/kvmem_store.cpp": "483f45212df2e8a31d38ee046e3a2a65ed12c38d9be0a072cffd359d9cc3d956"
+  },
+  "reports": {
+    "reservations-pm": {
+      "path": "artifacts/background-history-gc-components/reservations-pm.xml",
+      "tests": 238,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "sha256": "7cb734634c1e0580969da7239ae91f8ba728be5f6ff8b046614f60094dea7ca1"
+    },
+    "assembly-gpu": {
+      "path": "artifacts/background-history-gc-components/assembly-gpu.xml",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "1d49e6ea96054304238467301eeb4c3bb5dcdb1dc0deb26cc65ac8ed73181c49"
+    },
+    "host": {
+      "path": "artifacts/background-history-gc-components/host.xml",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "b56e83693f3a6d960f704519e9238354f201edc3f3b0ae86356b3d33fdfe1f3c"
+    },
+    "asan": {
+      "path": "artifacts/background-history-gc-components/asan.xml",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "5070e2414e3a6f68b17277c4503cd24644b488a6db64f28c21ce181dcf4fdbf1"
+    },
+    "tsan": {
+      "path": "artifacts/background-history-gc-components/tsan.xml",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "1e880645d8db709b3268bdcf1ca856692748d4b9f5c8de45e2571580fadac9d1"
+    }
+  },
+  "verified": [
+    "LRU revalidates delayed intents after checkpoint policy holds are admitted; custom strategies and explicit retirement remain independent.",
+    "P/M windows survive native LRU and three cancelled successors rebuild only the old partial-tail generation using real native Store/archive and a CPU model-state fixture.",
+    "Complete-turn reservations account for actual retained allocations, all incoming input/output, P/M versions and in-flight packet envelopes.",
+    "EOS/cancellation intent does not release incoming reservation; only exact worker settlement/eviction/finished_sending ACK can release credits.",
+    "The real connector resolves the P/M prefix before checking reservation capacity; generation-qualified idle capacity notices unblock a lookup before allocation.",
+    "A complete admitted turn writes successfully with native GC paused, without waiting for GC capacity.",
+    "Scope close ACK now includes native metadata destruction and registry reuse."
+  ],
+  "remaining": [
+    "Install ledger/configuration in scheduler and archive factory; provide reachable per-scope retirement targets for larger waiting turns.",
+    "Defer Python MeanK index destruction and preallocate large scope metadata before active decode.",
+    "Full async refresh/restore, same-window fast path, hybrid GDN/native MTP and cancellation model qualification.",
+    "At least five interleaved off/shadow/delete decode comparisons, performance thresholds and task quality."
+  ],
+  "model_candidate": "/data/huggingface/models/unsloth/Qwen3.6-27B-NVFP4",
+  "caveat": "CPU model-state fixtures and GPU data-path gates do not prove full-model MTP or decode performance; public serving profiles remain disabled."
+}

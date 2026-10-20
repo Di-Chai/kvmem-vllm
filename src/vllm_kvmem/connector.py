@@ -225,7 +225,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             for notice in metadata.sessions:
                 if self.sessions is None:
                     raise RuntimeError('Unexpected session worker completion')
-                self.sessions.consume(notice)
+                if self.sessions.consume(notice) is False:
+                    continue
                 if self.history_admission is not None:
                     self.history_admission.consume(notice)
                 if self.active_residency is not None:
@@ -287,14 +288,21 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             return None, False
 
     def _get_matched_tokens(self, request, num_computed_tokens):
-        if self.history_admission is not None and not self.history_admission.allows(request):
+        matched = getattr(self.history_admission, 'matched_admission', False)
+        if self.history_admission is not None and not matched and not self.history_admission.allows(request):
             return None, False  # Native waiting loop skips only this request.
         if self.sessions is not None:
             tokens = self.sessions.lookup(request, num_computed_tokens)
+            if tokens is None:
+                return None, False
+            if matched and not self.history_admission.allows(request):
+                return None, False
             if tokens and self.restore_admission is not None and not self.restore_admission.lookup(
                     request, self.sessions.requests[request.request_id]):
                 return None, False
             return tokens, False
+        if matched and not self.history_admission.allows(request):
+            return None, False
         if self.request_plan_memory is not None:
             from .request_plan import request_plan
             config = self.request_plan_memory

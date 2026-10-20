@@ -3,6 +3,8 @@ project(kvmem_core LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 find_package(Threads REQUIRED)
 add_library(kvmem_core STATIC
+  csrc/historical_manager.cpp
+  csrc/historical_payload.cpp
   third_party/qw3/src/kvmem_store.cpp
   third_party/qw3/src/kvmem_repository.cpp
   third_party/qw3/src/kvmem_repository_gc.cpp
@@ -16,3 +18,18 @@ foreach(name kvmem_store kvmem_repository kvmem_repository_gc kvmem_gc nvme_kv_t
   add_test(NAME ${name} COMMAND ${name}_test)
   set_tests_properties(${name} PROPERTIES TIMEOUT 120)
 endforeach()
+add_executable(historical_kv_policy_test csrc/tests/historical_kv_policy_test.cpp)
+target_include_directories(historical_kv_policy_test PRIVATE csrc)
+target_link_libraries(historical_kv_policy_test PRIVATE kvmem_core)
+add_test(NAME historical_kv_policy COMMAND historical_kv_policy_test)
+set_tests_properties(historical_kv_policy PROPERTIES TIMEOUT 120)
+add_executable(historical_payload_test csrc/tests/historical_payload_test.cpp)
+target_include_directories(historical_payload_test PRIVATE csrc)
+target_link_libraries(historical_payload_test PRIVATE kvmem_core)
+add_test(NAME historical_payload COMMAND historical_payload_test)
+set_tests_properties(historical_payload PROPERTIES TIMEOUT 120)
+add_executable(historical_manager_test csrc/tests/historical_manager_test.cpp)
+target_include_directories(historical_manager_test PRIVATE csrc)
+target_link_libraries(historical_manager_test PRIVATE kvmem_core)
+add_test(NAME historical_manager COMMAND historical_manager_test)
+set_tests_properties(historical_manager PROPERTIES TIMEOUT 120)

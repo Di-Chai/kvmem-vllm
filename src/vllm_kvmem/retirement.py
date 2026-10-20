@@ -56,6 +56,7 @@ def retire_authority(authority, verify, timeout=180):
             if digest != record.digest:
                 raise RuntimeError('Archived raw K/V checksum differs from accepted capture')
             verified += 1
+        record = None  # Verification must release its last index owner before close.
     verified_at = time.perf_counter()
     result = {"history_end": authority.history_end, "records": len(authority.records),
               "sealed_records_archived": published, "sealed_records_verified": verified,

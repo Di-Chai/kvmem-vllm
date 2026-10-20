@@ -54,12 +54,20 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         # Immutable authority, not an evictable read cache. No file or mmap is
         # opened. Callers must admit full histories within this byte budget.
         from .memory_storage import MemoryArchive
-        capacity = min(capacity, options.cpu_read_cache_bytes // record_bytes)
+        charge = record_bytes
+        if getattr(options, 'historical_gc', None) is not None:
+            from .historical_gc import historical_record_charge
+            charge = historical_record_charge(record_bytes, options.memory.block_tokens)
+        capacity = min(capacity, options.cpu_read_cache_bytes // charge)
         archive = MemoryArchive(str(directory), record_bytes, capacity,
                                io_max_bytes=options.archive_io_max_bytes,
                                gather_workers=options.cpu_gather_workers,
-                               cpu_direct_record_seal=getattr(options, 'cpu_direct_record_seal', False))
+                               cpu_direct_record_seal=getattr(options, 'cpu_direct_record_seal', False),
+                               native_payloads=getattr(options, 'historical_gc', None) is not None)
         archive.async_seal = options.async_seal
+        archive.history_record_charge = charge
+        if getattr(options, 'historical_gc', None) is not None:
+            archive.enable_history_gc(options.historical_gc.native(options.memory, max_requests+options.session_capacity))
         return archive
     if options.archive_io_max_bytes:
         block = options.memory.block_tokens
@@ -91,7 +99,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
 class AsyncArchive:
     def __init__(self, directory: str, record_bytes: int, capacity: int,
                  workers: int = 2, max_pending: int = 4, *, preallocate: bool = False,
-                 max_bytes: int = 0, io_max_bytes: int = 0, memory_only: bool = False):
+                 max_bytes: int = 0, io_max_bytes: int = 0, memory_only: bool = False,
+                 native_cpu_payloads: bool = False):
         if min(record_bytes, capacity, workers, max_pending) <= 0:
             raise ValueError("Archive capacities must be positive")
         self.record_bytes = record_bytes
@@ -107,9 +116,15 @@ class AsyncArchive:
         self.preallocated = preallocate
         self.memory_only = memory_only
         self.span = _native.IoSpan
+        if type(native_cpu_payloads) is not bool or native_cpu_payloads and not memory_only:
+            raise ValueError('Native CPU payloads require the CPU archive backend')
         if memory_only:
             from .memory_storage import MemoryTier, MemorySpan
-            self.tier = MemoryTier(record_bytes, capacity)
+            if native_cpu_payloads:
+                from .native_memory_storage import NativeMemoryTier
+                self.tier = NativeMemoryTier(record_bytes, capacity)
+            else:
+                self.tier = MemoryTier(record_bytes, capacity)
             self.span = MemorySpan
         else:
             self.tier = (_native.NvmeTier(directory, self.capacity_bytes, record_bytes, True)
@@ -121,6 +136,7 @@ class AsyncArchive:
         self._capacity_changed = Condition(self._lock)
         self._entries = {}
         self._free_ids = list(reversed(range(capacity)))
+        self._namespace_counts = {}
         self._closed = False
         self._seal_totals = None
 
@@ -240,8 +256,10 @@ class AsyncArchive:
                         raise
                     entry = _Entry(allocation)
                     self._entries[key] = entry
+                    self._namespace_counts[namespace] = self._namespace_counts.get(namespace, 0) + 1
                     entries.append(entry)
                 owned = [lease.clone() for lease in leases]
+                backing_context = self._backing_context(namespace)
                 if not deferred:
                     self._cache_write(keys, payload)
             except BaseException:
@@ -254,12 +272,14 @@ class AsyncArchive:
                  for i, e in enumerate(entries)]
 
         def work():
-            nonlocal views
+            nonlocal views, backing_context
             try:
                 if deferred:
                     stats = self._seal_views(keys, entries, spans, views)
                 else:
                     stats = self.tier.io(spans, payload, True)
+                if backing_context is not None:
+                    self._publish_backing(backing_context, owned, entries)
                 with self._lock:
                     if deferred and self._seal_totals is not None:
                         increments = {**stats, 'seal_batches': 1,
@@ -277,6 +297,7 @@ class AsyncArchive:
             finally:
                 views = None
                 owned.clear()
+                backing_context = None
                 with self._lock:
                     self._complete(admitted_bytes)
         # Executor submission and close are serialized; close cannot shut down
@@ -290,6 +311,12 @@ class AsyncArchive:
                     self._release(key)
                 self._complete(admitted_bytes)
                 raise
+
+    def _backing_context(self, namespace):
+        return None
+
+    def _publish_backing(self, context, leases, entries):
+        raise NotImplementedError('Archive backing publication is not implemented')
 
     def _seal_views(self, keys, entries, spans, views):
         """The original whole-batch snapshot path, including cached/SSD writes."""
@@ -316,7 +343,7 @@ class AsyncArchive:
     def _cache_write(self, keys, payload):
         """Optional cache admission under lock, before asynchronous publication."""
 
-    def read(self, namespace: str, leases: list, *, destination=None) -> ArchiveJob | None:
+    def read(self, namespace: str, leases: list, *, destination=None, _sources=None) -> ArchiveJob | None:
         if not leases:
             raise ValueError("Empty read")
         destination = read_destination(destination, len(leases) * self.record_bytes)
@@ -328,9 +355,16 @@ class AsyncArchive:
                 raise KeyError("Archive record missing, stale, or not yet published")
             if not self._admit(size):
                 return None
+            sources = None
+            owned = []
             try:
                 owned = [lease.clone() for lease in leases]
+                sources = (self._admit_read_sources(entries) if _sources is None else
+                           self._validate_read_sources(entries, _sources))
             except BaseException:
+                if sources is not None:
+                    sources.clear()
+                owned.clear()
                 self._complete(size)
                 raise
         spans = [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
@@ -339,9 +373,12 @@ class AsyncArchive:
         def work():
             try:
                 payload = bytearray(len(entries) * self.record_bytes) if destination is None else destination
-                stats = self.tier.io(spans, payload, False)
+                stats = (self.tier.io(spans, payload, False) if sources is None else
+                         self.tier.read_from_sources(spans, payload, sources))
                 return payload, stats
             finally:
+                if sources is not None:
+                    sources.clear()
                 owned.clear()
                 with self._lock:
                     self._complete(size)
@@ -349,9 +386,17 @@ class AsyncArchive:
             try:
                 return ArchiveJob(self.executor.submit(work))
             except BaseException:
+                if sources is not None:
+                    sources.clear()
                 owned.clear()
                 self._complete(size)
                 raise
+
+    def _admit_read_sources(self, entries):
+        return None
+
+    def _validate_read_sources(self, entries, sources):
+        raise ValueError('Pre-admitted CPU reads require native payload ownership')
 
     def _release(self, key) -> bool:
         entry = self._entries.get(key)
@@ -361,7 +406,17 @@ class AsyncArchive:
             return False
         self._free_ids.append(entry.allocation.block_id)
         del self._entries[key]
+        remaining = self._namespace_counts[key[0]] - 1
+        if remaining:
+            self._namespace_counts[key[0]] = remaining
+        else:
+            del self._namespace_counts[key[0]]
         return True
+
+    def namespace_allocated_records(self, namespace):
+        """Includes retired/publishing descriptors until actual safe release."""
+        with self._lock:
+            return self._namespace_counts.get(namespace, 0)
 
     def _region_sources(self, keys):
         return [None] * len(keys)
@@ -371,7 +426,7 @@ class AsyncArchive:
                                      offset, length, 0, len(sources))
         return 1
 
-    def read_region(self, namespace, leases, offset, length, *, destination=None):
+    def read_region(self, namespace, leases, offset, length, *, destination=None, _sources=None):
         """Read only raw K or V from immutable CPU records.
 
         The unchanged NVMe tier reads whole records on a cache miss. Its bounded
@@ -388,7 +443,8 @@ class AsyncArchive:
             entries = [self._entries.get(key) for key in keys]
             if any(entry is None or not entry.ready for entry in entries):
                 raise KeyError('Archive record missing, stale, or not yet published')
-            sources = self._region_sources(keys)
+            sources = (self._region_sources(keys) if _sources is None else
+                       self._validate_read_sources(entries, _sources))
             misses = [i for i, source in enumerate(sources) if source is None]
             # A fallback record slab and immutable cache copies can coexist.
             admitted_bytes = size + 2 * len(misses) * self.record_bytes
@@ -426,6 +482,7 @@ class AsyncArchive:
                     cache_fill_seconds=time.perf_counter()-copied_at)
                 return data, stats
             finally:
+                sources.clear()
                 owned.clear()
                 with self._lock:
                     self._complete(admitted_bytes)
@@ -434,6 +491,7 @@ class AsyncArchive:
             try:
                 return ArchiveJob(self.executor.submit(work))
             except BaseException:
+                sources.clear()
                 owned.clear()
                 self._complete(admitted_bytes)
                 raise
@@ -458,6 +516,7 @@ class AsyncArchive:
             self._capacity_changed.notify_all()
             self.executor.shutdown(wait=False)
             self._entries.clear()
+            self._namespace_counts.clear()
             self._free_ids.clear()
             self.tier = None
             return True

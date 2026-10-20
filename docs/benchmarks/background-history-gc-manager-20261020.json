@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-20",
+  "goal_status": "active",
+  "scope": "Native background manager, accepted-token authority and execution/CPU read admission; real GPU assembly components",
+  "serving_profile_enabled": false,
+  "real_model_qualified": false,
+  "decode_performance_measured": false,
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "base_commit": "f639acfc986f7e8b9ddaf24a667d078d07e737ac",
+  "source_sha256": {
+    "csrc/historical_kv_policy.hpp": "d28491a9293e12ec0bc7cecc09b6866c0c6c51be13c25e7faf5d4349cc68660c",
+    "csrc/historical_payload.hpp": "cf5f8b9204673d9d18518f89c32cda469c1b6946d6f0371b953d5e7892f64857",
+    "csrc/historical_payload.cpp": "b30104fc739ada1950f54b92c88562704d8cf237bcb70d47e72003308e038408",
+    "csrc/historical_manager.hpp": "3370d39d3e6d2b409912df4c0f924f3ed6dc9e2eb85b8b9f62288cead554ca55",
+    "csrc/historical_manager.cpp": "233b68b3c78714d8eaf82233a2358910b6997940a630d9c07911044afa023da3",
+    "csrc/bindings.cpp": "4258489a6ce1c853349ed37bb892928c6720fae0daa059f22a372a6fb949353c",
+    "third_party/qw3/include/qw3/kvmem_repository.hpp": "67212c787e53e7e1bd2cea97348f2445311a91d312113b9451b7bdc1e38fe263",
+    "third_party/qw3/src/kvmem_repository.cpp": "7bda77441939aac4ceaf0a780b459416b5215df6b9392c6d7af3b2f43f68c600",
+    "third_party/qw3/include/qw3/kvmem_store.hpp": "05b436f2b518ee90339b0141f3803379dcefc26da182b94028cd3e0f4da70aaf",
+    "third_party/qw3/src/kvmem_store.cpp": "483f45212df2e8a31d38ee046e3a2a65ed12c38d9be0a072cffd359d9cc3d956",
+    "src/vllm_kvmem/historical_gc.py": "ef984ca7bb5e29ef55e272fc7f66df3ec4081b8e07e198ee408b6a844154ca1b",
+    "src/vllm_kvmem/native_memory_storage.py": "664b5bf95b3e9b1d5d7e6695ed3c3d923430335badc4b559a9dccefe3d28e25a",
+    "src/vllm_kvmem/memory_storage.py": "ff1cc0f1e93c3bd5898de4cf936e9437390a6e5077ff49e790fbcf429be8e9f9",
+    "src/vllm_kvmem/storage.py": "de5e0c4f4df0e6894a404d8cc401d2fe31c892fc346f12108409aada32658b9f",
+    "src/vllm_kvmem/authority.py": "96469eb4ff18e2a9106a3fb572ab175b3144067afc0c4547f38e729b58276c11",
+    "src/vllm_kvmem/memory.py": "2d6791de4805b3e18d33e92bf40dccae11fea8e2bc086177ba458291137a5387",
+    "src/vllm_kvmem/packed_assembly.py": "2f9d2df0e04c7d10f4df817ce5a3c318a876f51e7c080dba7657f1afa221af4c",
+    "src/vllm_kvmem/window_assembly.py": "2d0642781c02d8db63dbca06d3d83bf5cf80714f9f6320e52b5bc40c060af2e3",
+    "csrc/tests/historical_manager_test.cpp": "451b935b30fce3353fa64d68ac8caa5905559f2864e52579dafc4314ae5b141e",
+    "tests/test_historical_manager.py": "8ddadaffbc69d33bbf7894ff9cf8c8c85b51a9973b2d72ed6d92f4388ff35239",
+    "tests/test_historical_authority.py": "0d7df29bf7899bbf0e4095a8f794e949fe5391de72ec7cbb4ea470d5633d3b37",
+    "tests/test_historical_assembly_gpu.py": "43f3da12ef282132f66a0ae152a3a18ec7c5c156dd2de04ad9414a739bfd1932"
+  },
+  "reports": {
+    "manager-authority": {
+      "path": "artifacts/background-history-gc-components/manager-authority.xml",
+      "tests": 133,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "sha256": "6bd14515994f1329f9418b507f72535a2ba3d9d24e02e4fea8f0121d45339d05"
+    },
+    "assembly-gpu": {
+      "path": "artifacts/background-history-gc-components/assembly-gpu.xml",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "08c374095a034ccb002b7817c26a305301cd858030bae2f9d1fe25ba066f6e85"
+    },
+    "assembly-regression-gpu": {
+      "path": "artifacts/background-history-gc-components/assembly-regression-gpu.xml",
+      "tests": 43,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 10,
+      "sha256": "6048fae2d59a40191d192282d30dfcc44ea3669d1712c767e6564a519825a06e"
+    },
+    "host": {
+      "path": "artifacts/background-history-gc-components/host.xml",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "50b23b3b71e75d5737ba06db23e7d6b2ef2647b708a0ff3611400b98d476d907"
+    },
+    "asan": {
+      "path": "artifacts/background-history-gc-components/asan.xml",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "61100f7ffd7d2079c605661553426f7bbb7b60001263abc2acc63c4cc7f5a491"
+    },
+    "tsan": {
+      "path": "artifacts/background-history-gc-components/tsan.xml",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "sha256": "a40c87278dfd47538610fb470ee21ad90e3aefcaf4915ad3fc3121d2e6e8a856"
+    }
+  },
+  "sanitizer_execution": "Host execution outside ptrace sandbox; TSan children launched with setarch x86_64 -R",
+  "notes": [
+    "Manager modes off/shadow/delete are bound and tested but not exposed through public serving configuration.",
+    "An archive-wide policy worker uses per-scope observed-snapshot LRU; shared byte pressure does not imply globally exact LRU.",
+    "Repository retirement closes fresh execution admissions. Existing admitted CPU reads and GPU work remain valid.",
+    "CPU backing and complete metadata-slot releases have independent reliable acknowledgements.",
+    "The full repository test suite is not claimed green; a pre-existing coordination qualification message mismatch is recorded in the component-stage report."
+  ],
+  "remaining": [
+    "serving configuration and metrics",
+    "active request capacity reservation independent of GC supply",
+    "deferred/native MeanK index cleanup and scope metadata preallocation",
+    "P/M, async refresh/restore, same-window shortcuts, GDN/MTP and cancellation qualification",
+    "full-model correctness, at least five interleaved paired decode performance runs and task quality"
+  ]
+}

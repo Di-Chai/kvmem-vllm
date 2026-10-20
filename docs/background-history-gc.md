@@ -1,0 +1,187 @@
+# 后台异步历史 KV 管理
+
+首版将策略与释放机制分开：LRU 只提出删除某个 `(slot, generation)` 的意图；
+机制负责关闭新的使用入口，并等待各自已有使用者退出后释放资源。前台 decode
+继续使用已经准入的 GPU 窗口，GC 不提交 GPU 工作，也不强制换窗。
+
+首版实现与验收已完成。公开配置、CPU archive、scheduler 整轮容量预约和 P/M 会话
+均已接通。Qwen3.6-27B-NVFP4 的 P/M、GDN、原生 MTP、取消、160 MiB 共享
+历史配额，以及五组完整功能性能对照均通过。验收范围为 CPU archive + eager。
+
+## 使用
+
+示例配置：`examples/serve-qwen3.6-27b-historical-gc.json`。它使用本机模型路径、
+CPU archive、eager 执行、异步 refresh/restore 和 P/M；按机器修改模型路径与显存额度。
+
+```bash
+PYTHONPATH=src python -m vllm_kvmem serve \
+  --config examples/serve-qwen3.6-27b-historical-gc.json \
+  --run-dir artifacts/history-gc-serve
+```
+
+`kvmem.historical_gc` 为 null 或省略时保留原有路径；显式对象启用新的 native
+ownership、容量预约和共享 worker。对象中的 `mode` 支持：
+
+| 模式 | 行为 |
+| --- | --- |
+| off | 不运行删除策略；保留新 ownership 和正常退出释放，作为对照 |
+| shadow | 计算并统计 LRU 意图，不退休历史块 |
+| delete | 提交不可逆退休并在后台安全释放 |
+
+```json
+"historical_gc": {
+  "mode": "delete",
+  "poll_ms": 10,
+  "scan_blocks": 256,
+  "delete_blocks": 64,
+  "ready_low": 0,
+  "ready_high": 0
+}
+```
+
+`ready_low/high` 是每个 repository 可复用 metadata 槽位的水位。`0,0` 自动采用约
+5%/10%；显式值必须满足 `0 < low < high <= repository_blocks`。
+`scan_blocks` 限制每轮策略观察量，`delete_blocks` 限制每轮意图数量。
+示例中的较高水位用于在短历史中实际触发 GC，生产环境应结合保留需求调整。
+
+当前要求 CPU archive、request planning、async seal/retirement、CPU history
+coordination 和 owned sessions。与旧 `repository_gc`、block graph 的组合会在启动时
+拒绝。支持异步 refresh/restore 和原生 MTP；首版未验收 CUDA graph serving。
+请求须携带稳定的 `session_id` 与租户隔离的 `cache_salt`。
+
+## 资源与并发契约
+
+1. 策略候选是已封页的历史块。LRU 使用每个 scope 的观察快照，依据最近的接受包
+   使用时间排序；共享 CPU 压力跨 scope 记账。这是近似的分 scope LRU，不是全局
+   精确 LRU。sink/recent 和精确 P/M frame 的保留属于策略规则。
+2. 不可逆退休允许已有引用和 GPU residency。退休后新 pin、CPU read 和新的执行
+   准入失败；旧操作仍可完成。旧 read 不能充当新执行许可，旧 lease 不能 rescue。
+3. CPU payload、CPU 索引、metadata/GPU 权限分别持有。CPU read/DMA source 权限
+   结束后，原生 reaper 释放 CPU 数据；metadata/GPU lease 不阻止这一释放。
+4. MeanK 的 FP32 sum 和可选 FP16 mean 直接使用 native 分配的缓冲区，Torch
+   视图保留 buffer owner。前台移除 Record 只排队小型 owner，原生 reaper 只释放
+   C++ 数组，不持有 Torch/Python 对象。普通逐块回收在索引释放后确认 CPU 回执，
+   再归还 metadata；关闭 scope 可以先归还原生 metadata，但整轮 CPU 额度仍需
+   等待索引实际释放。没有后台 Python 回调。
+5. 已准入的 GPU 窗口可以继续使用退休块，普通换窗移出旧块或请求结束时，由原有
+   allocator 归还 GPU 页。GC 不直接 free 正在计算的 GPU 页。
+6. slot、CPU allocation、IO publication 和回执都校验 generation；晚到的旧消息不能
+   作用于替代 allocation。完成位保持到描述符清理及显式 ACK，不会因队列满丢失。
+7. 封页 IO 与 engine 更新分开使用原子发布通道；decode 不等待 IO 发布 guard。
+   大块 scope 数组在服务启动时按固定 scope 数预分配，后台清理并复用。
+8. 新 turn 在运行前一次预约全部新增输入、最大输出、P/M 两代尾页和两包在途余量。
+   CPU 额度包含 KV 和最坏情况下的 MeanK；尾页和待释放索引仍计入占用。只有完成
+   worker fence 的 settlement 可替换活跃预约，EOS/取消本身不归还额度。
+9. 容量不足时排队在准入边界。scheduler 向空闲 scope 发送 generation 限定的 Ready
+   或 CPU 保留目标，LRU 只能提供实际已释放容量；活跃 turn 和 pending GC 不作为
+   可用额度。未封页尾块、待释放索引也不能作为 LRU 的回收供给；下发 native
+   payload 目标时剔除这些 index-only 预约，避免排队差一个尾块而停滞。下一轮激活后，旧 idle 容量回报失效。
+10. P/M checkpoint 的 policy hold 不持有 CPU read。显式退休或自定义策略仍可使
+    checkpoint 失效；机制不复活已删 generation。取消半页时仅重建尾页 generation，
+    完整前缀与 GDN/MTP 状态保留。
+
+LRU 会减少未来可检索的上下文，不能保证任务语义与保留完整历史完全一致。保护
+当前 GPU 权限保证已有计算安全，P/M hold 保证受保留 frame 可恢复。精确保留内容
+应通过策略的 mandatory 规则表达。所有历史均受保护且预算不足时，准入仍需等待
+会话释放或其他容量变化。
+
+## 指标
+
+`capture/archive.json`、`capture/progress.json` 和 scheduler resources 提供：
+
+- `historical_gc`：published、examined、decisions、retired、cpu_released、
+  slots_released、pending_slots、pending_cpu_bytes、retries、stale、policy_failures、
+  shadow_decisions、admission_attempts/retries。
+- `historical_gc.metadata`：启动分配次数、后台复用次数、预分配 scope 数与容量。
+- `cpu_authority_bytes`、`cpu_index_bytes/owners` 及各自 released bytes。
+- `cpu_history_admission`：活跃/退休预约、已保留/可用 bytes、deferrals 和 settlements。
+- `gc_wait_count/seconds`：旧式 GC 等待指标；新路径不调用该等待接口。须同时检查
+  执行准入重试、IO deferrals 和容量预约证据，不能仅凭两个零值推断延迟无变化。
+
+释放表示归还 allocator / GPU 页池，进程 RSS 或显存保留量不一定同步下降。
+
+checkpoint、IO/staging、原生 metadata 池和 GPU cache 有各自的固定预算/指标；
+`cpu_read_cache_bytes` 在本模式下约束历史 KV + MeanK 的保守容量，不是进程 RSS 上限。
+
+## 验证与复现
+
+```bash
+cmake -S . -B build/history-gc -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/history-gc -j2
+ctest --test-dir build/history-gc --output-on-failure
+PYTHONPATH=src python -m pytest -q tests/test_historical*.py tests/test_native_memory_storage.py
+```
+
+GPU 测试需显式 `KVMEM_RUN_GPU_TESTS=1`。覆盖普通、packed、direct、split 组装、
+queued IO 在退休前取得读权限、CPU 先于当前 GPU 工作结束释放、旧 generation 复用，
+以及真实模型 K scale 下的逐字节 FP8 重建。后者发现并修复了近似除法跨越 FP8
+舍入中点的问题；保留独立 CPU oracle，没有放宽误差标准。
+
+原生 Host CTest、ASan/UBSan/LeakSanitizer 当前为 8/8；TSan 为 4/4。index reaper
+新增用例验证最后一个前台 owner 仅排队、C++ deleter 在后台执行、关闭等待旧 owner，
+容量拒绝不改变已有存储的所有权；另有 200 次满容量复用，验证容量归还先于
+完成回执。原有并发覆盖 1,000 次 CPU 复用、2,000 次旧意图复用、
+10,000 次 engine/IO 并行元数据更新、500 次执行准入与退休交错。
+
+相关 host serving 回归为 435 passed、1 skipped、1 个已存在的失败：
+`test_v2_requires_a_real_pm_restore_profile` 期待 `P/M sessions`，原实现返回
+`CPU P/M or frozen-P sessions`。这个错误文案匹配问题在 HEAD 已存在，本次没有修改。
+新增公开配置/索引/准入/async refresh 回归为 49 passed，GPU FP8/历史管理回归为
+22 passed。这些数量来自不同范围，不能相加作为不重复的总测试数。
+
+真实 Qwen3.6-27B-NVFP4、RTX PRO 6000 Blackwell 的完整生命周期证据位于
+`artifacts/background-history-gc-model/final-model-lifecycle/01-delete/client/results.json`：
+
+- M 在 history=1828 恢复 676-token 窗口，半页取消重试在 history=1878 恢复
+  726-token 窗口；P 回退恢复 history=1664 的 512-token 窗口。
+- 17 个注意力层（含 1 个原生 MTP 层）的目标 KV 和 96 个 recurrent tensor 与独立
+  重建/保存状态逐字节一致。
+- 在私有 Query 和后台 assembly 开始后断开请求，均收到取消 fence，GPU owned
+  blocks 回到零。测试结束后 CPU KV、索引与 scope 也全部归还。
+
+`scripts/qualify_historical_gc.py` 支持
+冻结源码、独占本机 GPU、自动启动/关闭自己创建的服务，以及接入已有 owned server。
+输入 JSON 含 `input_ids` 和 `append_ids`。例如：
+
+```bash
+CUDA_HOME=/usr/local/cuda-13 PYTHONPATH=src python scripts/qualify_historical_gc.py \
+  --config examples/serve-qwen3.6-27b-historical-gc.json \
+  --input /path/to/frozen-input.json --output artifacts/history-gc-lifecycle \
+  --kind lifecycle
+```
+
+性能输入应保留在一个稳定 GPU 窗口内，并使用足够高的 Ready 水位，使删除与 decode
+实际重叠。`--kind performance --pairs 5 --decode-tokens 512` 对每种模式先暖机，再
+进行独立的 off/delete 服务对照，组间反转顺序，保存 SSE 与 native step 时序。
+五组中位数的初始目标：吞吐损失 ≤1%、p95 步间隔增长 ≤2%、p99 ≤5%；每组保留
+原始结果，不以 pooled token 数掩盖异常。对照 off 保留 native ownership/预约路径。加上 `--baseline legacy` 则以省略
+`historical_gc` 的旧 archive 路径为基线，测量完整功能的新增开销。跨硬件、并发数及完整任务质量仍应
+分别验收；这些结果不代表所有负载严格零开销。
+
+最终模型/性能摘要：`docs/benchmarks/background-history-gc-serving-20261020.json`。
+所有最终 GPU serving 用例使用相同冻结包摘要
+`ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51`。
+
+160 MiB 压力用例的整轮容量为 137 个 record envelope，采样峰值恰为 137。已有
+turn 正常完成，新 turn 先排队，再通过实际回收的空闲历史获得完整预约。GDN/MTP
+恢复字节一致，GC 等待计数为零。回归还覆盖尾页从 native payload 目标中扣除、
+尾页及待释放索引不作为 LRU 供给，避免较早的不可删尾页阻塞后面的可回收 scope。
+
+最终性能证据：`artifacts/background-history-gc-model/final-model-performance-5/results.json`。
+每组独立启动旧路径与 delete 服务，各自暖机，组间交错顺序。400-token 合成 notes
+输入在一个稳定 GPU 窗口内生成 512 token，以隔离回收开销。五组输出全部一致，
+每组均在初始性能预算内；配对中位数如下：
+
+| 指标 | delete 相对旧路径 | 初始上限 |
+| --- | --- | --- |
+| 吞吐损失 | -0.17%（提高 0.17%） | ≤1% |
+| p95 native decode 步间隔增长 | -0.14% | ≤2% |
+| p99 native decode 步间隔增长 | -2.48% | ≤5% |
+
+每次测量均有 16 个策略退休，实时 progress 采样确认 CPU 回收发生于公开 decode
+期间。这里的吞吐差异很小，不能据此宣称普遍提速；结果支持已测配置下未出现
+有意义的 decode 性能回退。测试使用合成稳定窗口负载，不代表长任务检索质量评测。
+
+历史阶段摘要保存在 `docs/benchmarks/background-history-gc-{components,manager,admission}-*.json`。
+XML 报告可能被后续复测更新，各阶段 JSON 保留当时摘要。完整模型与性能阶段应读取
+新的 serving 摘要，不把早期组件结果当作端到端资格证明。

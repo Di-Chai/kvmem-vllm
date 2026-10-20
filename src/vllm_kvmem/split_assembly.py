@@ -88,7 +88,11 @@ def _assemble_split(raw_payload, raw_indices, values, value_indices, bases,
     sin=tl.load(trig+position*TRIG+HALF+freq).to(tl.float32)
     rotated=tl.where(d<HALF,x*cos-mate*sin,x*cos+mate*sin)
     rotated=tl.where(d<2*HALF,rotated,x).to(ROPE_TYPE).to(tl.float32)
-    quantized=tl.minimum(tl.maximum(rotated/tl.load(scale),-448.0),448.0)
+    if RAW_ELEMENT_BYTES == 1:
+        scaled=tl.div_rn(rotated,tl.load(scale))
+    else:
+        scaled=rotated/tl.load(scale)
+    quantized=tl.minimum(tl.maximum(scaled,-448.0),448.0)
     tl.store(key+page*K0+(position%PAGE)*K1+head*K2+d,quantized,mask=d<DIM)
     v=tl.load(values+value_record*VALUE_BYTES+VALUE_OFFSET+inner+d,mask=d<DIM,other=0)
     tl.store(value.to(tl.pointer_type(tl.uint8))+page*V0+(position%PAGE)*V1+head*V2+d,v,mask=d<DIM)

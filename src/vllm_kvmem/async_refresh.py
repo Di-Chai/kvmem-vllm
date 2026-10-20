@@ -88,6 +88,13 @@ class RefreshJob:
 
 
 class AsyncRefresh:
+    def _ensure_window_adapter(self, command):
+        if getattr(self.runner, '_kvmem_window_adapter', None) is None:
+            from .window_batch import WindowBatchAdapter
+            memory = self.options.memory
+            self.runner._kvmem_window_adapter = WindowBatchAdapter(
+                tuple(group for group, _ in command.groups), memory.select_budget+memory.gen_budget)
+
     def __init__(self, runner, options):
         self.runner,self.options=runner,options
         self.original=runner.model.forward
@@ -371,6 +378,7 @@ class AsyncRefresh:
         if job.stage=='prepare':
             rid=job.command.request_id
             if rid not in self.runner.req_states.req_id_to_index:return False
+            self._ensure_window_adapter(job.command)
             if self.runner._kvmem_sessions is not None:
                 # A zero-replay pressure ticket still consumes any checkpoint
                 # queued at this exact accepted prefix. Session capture only

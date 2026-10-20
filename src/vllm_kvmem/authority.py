@@ -33,6 +33,15 @@ class Record:
     scatter_views: tuple | None = field(default=None, repr=False)
     mean_key: torch.Tensor | None = field(default=None, repr=False)
     staging_slot: int | None = field(default=None, repr=False)
+    index_owner: object | None = field(default=None, repr=False)
+
+    def __del__(self):
+        # Keep the native buffer owner until every Python tensor field
+        # has dropped its reference. Its destruction only queues native work.
+        owner = getattr(self, 'index_owner', None)
+        self.key_sum = self.mean_key = self.scatter_views = None
+        self.index_owner = None
+        del owner
 
 
 def record_key(handle):
@@ -97,7 +106,12 @@ class RequestAuthority:
         self._rewind_position = None
         self._rewind_committed = False
         self.gc = None
-        if gc_config is not None:
+        if getattr(archive, '_history_worker', None) is not None:
+            if gc_config is not None:
+                raise ValueError('Historical KV management and legacy repository GC cannot share an authority')
+            from .historical_gc import HistoricalAuthorityGc
+            self.gc = HistoricalAuthorityGc(self.memory, archive)
+        elif gc_config is not None:
             from .repository_gc import AuthorityGc
             self.gc = AuthorityGc(self.memory, archive, gc_config, gc_progress)
 
@@ -140,10 +154,13 @@ class RequestAuthority:
                 # Publish only after durable write completion, never on CPU
                 # cache admission or asynchronous I/O submission.
                 flags = _native.GC_RAW_BACKED | _native.GC_VALUE_BACKED | _native.GC_INDEXED
-                self.memory._store.gc_flags(record.handle, flags, flags)
+                if not getattr(self.gc, 'native_history', False):
+                    self.memory._store.gc_flags(record.handle, flags, flags)
             completed += 1
         self.writes = remaining
         for key, record in list(self.discarded_records.items()):
+            if getattr(self.gc, 'native_history', False):
+                break  # The native worker owns reclamation of these generations.
             result = self.memory.repository.reclaim(record.handle,
                 lambda entry: self.archive.reclaim(self.memory.request_id, entry))
             if result == _native.ReclaimResult.RECLAIMED:
@@ -287,11 +304,18 @@ class RequestAuthority:
                 # value handle, otherwise an index entry pins the entire store
                 # and prevents request cancellation from reclaiming any record.
                 handle = _native.Handle(span.handle.slot, span.handle.generation)
-                sums = torch.zeros((self.scoring_layers, self.shape[2], self.shape[3]), dtype=torch.float32)
+                index_shape = (self.scoring_layers, self.shape[2], self.shape[3])
+                index_owner = None
+                if getattr(self.gc, 'native_history', False):
+                    sums, index_owner = self.archive.allocate_index(index_shape,
+                        mean=self.mean_k_backend == 'qw3_cuda')
+                else:
+                    sums = torch.zeros(index_shape, dtype=torch.float32)
                 record_raw, record_values, slot = self._borrow_record_buffers()
                 try:
                     record = Record(handle, span.history_begin, 0,
                         record_raw, record_values, sums, staging_slot=slot)
+                    record.index_owner = index_owner
                     self.records[key] = record
                 except BaseException:
                     self._busy_record_buffers.remove(slot)
@@ -314,10 +338,19 @@ class RequestAuthority:
                     finalize = (_native.finalize_mean_fp8 if self.raw_dtype == torch.float8_e4m3fn
                                 else _native.finalize_mean_bf16)
                     finalize(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(), record.count)
-                    record.mean_key = (record.key_sum / record.count).to(torch.float16)
+                    if record.index_owner is not None:
+                        record.mean_key = torch.frombuffer(record.index_owner, dtype=torch.float16,
+                            count=record.key_sum.numel(), offset=record.key_sum.numel()*4).view(record.key_sum.shape)
+                        torch.div(record.key_sum, record.count, out=record.mean_key)
+                    else:
+                        record.mean_key = (record.key_sum / record.count).to(torch.float16)
                 self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
+        if getattr(self.gc, 'native_history', False):
+            # One accepted public packet stamps the current GPU window. The
+            # native observer does not scan historical records per decode.
+            self.memory._store.gc_begin_step()
         self.flush()
 
     def append(self, raw, values, *, history_begin, local_rope_begin, accepted=None):
@@ -366,7 +399,7 @@ class RequestAuthority:
         finally:
             for lease in leases:
                 lease.reset()
-            if self.gc is not None:
+            if self.gc is not None and not getattr(self.gc, 'native_history', False):
                 self.gc.worker.notify_progress()
 
     def mean_keys(self):
@@ -382,7 +415,8 @@ class RequestAuthority:
         self._require_open()
         self.poll()
         records = [self.records[record_key(handle)] for handle in handles]
-        leases = [self.memory.repository.pin(handle) for handle in handles]
+        admitted = [self.memory.admitted_read(handle) for handle in handles]
+        leases = [entry[0] for entry in admitted]
         try:
             if not all(leases):
                 raise ValueError("Stale authority handle")
@@ -395,7 +429,9 @@ class RequestAuthority:
                     result[i] = (record.raw[:, :record.count].clone(), record.values[:, :record.count].clone())
             if not disk_indices:
                 return result
-            job = self.archive.read(self.memory.request_id, [leases[i] for i in disk_indices])
+            sources = [admitted[i][1] for i in disk_indices]
+            kwargs = {'_sources': sources} if sources and all(sources) else {}
+            job = self.archive.read(self.memory.request_id, [leases[i] for i in disk_indices], **kwargs)
             if job is None:
                 raise BlockingIOError("Archive read queue is full")
             data, _ = job.result()
@@ -549,19 +585,29 @@ class RequestAuthority:
 
     def close(self):
         self.closing = True
+        historical = getattr(self.gc, 'native_history', False)
         graph = getattr(self, 'block_graph', None)
         if graph is not None:
             graph.close()
-        self.stop_gc()
+        if not historical:
+            self.stop_gc()
         self.poll()
-        if self.writes or not self.memory.close():
+        if self.writes or not self.memory.close(background_retire=historical):
+            return False
+        if historical and not self.gc.close():
             return False
         all_reclaimed = True
         for records in (self.records, self.discarded_records):
             for key, record in list(records.items()):
-                result = self.memory.repository.reclaim(record.handle,
-                    lambda entry: self.archive.reclaim(self.memory.request_id, entry))
-                if result == _native.ReclaimResult.RECLAIMED:
+                if historical:
+                    released = self.archive.retire_cpu_record(self.memory.request_id, record.handle)
+                else:
+                    result = self.memory.repository.reclaim(record.handle,
+                        lambda entry: self.archive.reclaim(self.memory.request_id, entry))
+                    released = result == _native.ReclaimResult.RECLAIMED
+                if released:
+                    if historical:
+                        self.gc.defer_index(key, record)
                     self._return_record_buffers(record)
                     del records[key]
                     if records is self.records:
@@ -571,10 +617,14 @@ class RequestAuthority:
                 else:
                     all_reclaimed = False
         if all_reclaimed:
+            if historical and not self.gc.index_released():
+                return False
             if self._busy_record_buffers:
                 raise RuntimeError('Authority closed with live record staging')
             self._record_buffers.clear()
             self._free_record_buffers.clear()
+            if historical:
+                self.archive.unregister_history_scope(self.memory.request_id, self.gc.scope)
         return all_reclaimed
 
     def stop_gc(self):

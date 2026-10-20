@@ -8,6 +8,8 @@ from the shared authority arena; the runner must reserve room for idle authoriti
 import hashlib
 import os
 import time
+from collections import deque
+from itertools import islice
 
 import torch
 
@@ -38,6 +40,24 @@ def verify_preserved_authority(authority, timeout=180):
             raise TimeoutError('Preserved authority publication timed out')
     for job, _ in authority.writes:
         job.result(timeout=remaining())
+    if getattr(authority.gc, 'native_history', False):
+        authority.poll()
+        records = tuple(authority.records.values())
+        if sum(record.archived for record in records) + authority.gc_reclaimed_records != authority.history_end // authority.shape[1]:
+            raise RuntimeError('Preserved authority has unpublished sealed records')
+        verified = 0
+        for record in records:
+            if not record.archived:
+                continue
+            remaining()
+            admitted = authority.gc.scope.admit_read(record.handle)
+            if admitted is None:
+                continue  # Irreversible retirement won before this new read.
+            lease, source = admitted
+            if source is None or hashlib.sha256(source).hexdigest() != record.digest:
+                raise RuntimeError('Preserved native authority checksum differs from accepted capture')
+            verified += 1
+        return verified
     while True:
         remaining()
         authority.poll()
@@ -91,6 +111,9 @@ class SessionWorker:
         self.checkpoint_deferrals = 0
         self.restored_tokens = 0
         self.release_requests = set()
+        self._history_idle = deque()
+        self._history_idle_queued = set()
+        self._history_capacity_sent = {}
 
     @property
     def runtime(self):
@@ -98,6 +121,7 @@ class SessionWorker:
 
     def receive(self, commands):
         self.release_requests.update(getattr(commands, 'release_requests', ()))
+        self._receive_history_capacity(getattr(commands, 'history_capacity', ()))
         for binding in commands.bindings:
             if binding.request_id in self.bindings:
                 raise ValueError('Duplicate worker session binding')
@@ -429,6 +453,8 @@ class SessionWorker:
             return False
         binding = self.bindings.pop(request_id)
         prompt = self.pool.prompts.get(binding.namespace)
+        historical = getattr(checkpoint.authority.gc, 'native_history', False)
+        allocated, protected = self._history_rows(checkpoint) if historical else (0, 0)
         self.completed.append(SessionNotice('retired', binding.namespace, binding.generation,
             request_id, checkpoint.position, checkpoint.window.window_tokens,
             checkpoint.authority.memory.repository.ready_slots,
@@ -438,7 +464,14 @@ class SessionWorker:
             resident_ready=(checkpoint.kind == 'M' and not checkpoint.rewind_started and
                             checkpoint.position == report['history_end'] and
                             (report.get('terminal_prefix') or {}).get('status') in
-                            ('FINISHED_STOPPED', 'FINISHED_LENGTH_CAPPED'))))
+                            ('FINISHED_STOPPED', 'FINISHED_LENGTH_CAPPED')),
+            allocated_records=allocated, protected_records=protected))
+        if historical:
+            self._history_capacity_sent[binding.namespace] = (binding.generation, checkpoint.position,
+                checkpoint.authority.memory.repository.ready_slots, allocated, protected)
+            if binding.namespace not in self._history_idle_queued:
+                self._history_idle.append(binding.namespace)
+                self._history_idle_queued.add(binding.namespace)
         self.runtime.completed.append({**report, 'retirement_ack_ready_at': time.perf_counter()})
         del self.retiring[request_id]
         self.runtime._write_archive_report()
@@ -473,6 +506,7 @@ class SessionWorker:
             del self.evictions[namespace]
             del self.identities[namespace]
             getattr(self, 'restore_oracles', {}).pop(namespace, None)
+            self._history_capacity_sent.pop(namespace, None)
             changed = True
         if changed and self.runtime is not None:
             self.runtime._write_archive_report()
@@ -480,8 +514,76 @@ class SessionWorker:
     def notices(self):
         self.pool.poll_captures()
         self._poll_evictions()
+        self._poll_idle_history()
         result, self.completed = self.completed, []
         return result
+
+    def _poll_idle_history(self, budget=4):
+        from .prompt_checkpoints import CheckpointPhase
+        for _ in range(min(budget, len(self._history_idle))):
+            namespace = self._history_idle.popleft()
+            self._history_idle_queued.discard(namespace)
+            checkpoint = self.pool.entries.get(namespace)
+            if checkpoint is None or checkpoint.phase is not CheckpointPhase.IDLE:
+                continue
+            authority = checkpoint.authority
+            authority.poll()
+            allocated, protected = self._history_rows(checkpoint)
+            state = (self.identities[namespace], authority.history_end, authority.memory.repository.ready_slots,
+                     allocated, protected)
+            if self._history_capacity_sent.get(namespace) != state:
+                self.completed.append(SessionNotice('history_capacity', namespace, state[0], '',
+                    history=state[1], ready_records=state[2], allocated_records=state[3], protected_records=state[4]))
+                self._history_capacity_sent[namespace] = state
+            self._history_idle.append(namespace)
+            self._history_idle_queued.add(namespace)
+
+    def _receive_history_capacity(self, requests):
+        from .prompt_checkpoints import CheckpointPhase
+        for request in requests:
+            checkpoint = self.pool.entries.get(request.namespace)
+            if (self.identities.get(request.namespace) != request.generation or checkpoint is None or
+                    checkpoint.phase is CheckpointPhase.CLOSING):
+                continue  # A late hint cannot change a replacement generation.
+            reset = request.ready_records == 0 and request.retained_records is None
+            if not reset and checkpoint.phase is not CheckpointPhase.IDLE:
+                continue
+            authority = checkpoint.authority
+            if not getattr(authority.gc, 'native_history', False):
+                raise ValueError('Historical pressure requires a native history scope')
+            # Scheduler envelopes include index-only tails and pending index
+            # owners. Native pressure counts published CPU payloads only.
+            # Keeping those envelopes in the payload target leaves one extra
+            # sealed record per idle scope and can strand a queued turn.
+            index_only = authority._resident_count + len(authority.gc.pending_index)
+            limit = (2**64-1 if request.retained_records is None else
+                     max(0, request.retained_records-index_only) * authority.record_bytes)
+            authority.gc.scope.request_capacity(request.ready_records, limit)
+
+    def _history_rows(self, checkpoint):
+        authority = checkpoint.authority
+        allocated = authority.archive.namespace_allocated_records(authority.memory.request_id)
+        # Retain index-only partial tails and already detached index owners in
+        # the same conservative record envelope until their native release.
+        index_only = authority._resident_count + len(authority.gc.pending_index)
+        allocated += index_only
+        frames = [checkpoint]
+        prompt = self.pool.prompts.get(checkpoint.namespace)
+        if prompt is not None:
+            frames.append(prompt)
+        protected = {(slot, generation) for frame in frames for slot, generation, *_ in frame.window.records}
+        cfg = authority.memory.config
+        for record in islice(authority.records.values(), cfg.sink_blocks):
+            if record.history_begin < cfg.sink_blocks*cfg.block_tokens:
+                protected.add((record.handle.slot, record.handle.generation))
+        for record in islice(reversed(authority.records.values()), cfg.recent_blocks):
+            if record.history_begin+record.count > authority.history_end-cfg.recent_blocks*cfg.block_tokens:
+                protected.add((record.handle.slot, record.handle.generation))
+        protected_cpu = sum(key in authority.records and authority.records[key].archived for key in protected)
+        # LRU cannot delete an unsealed tail or accelerate an index owner
+        # already draining. Never offer these envelopes as reclamation supply
+        # for another scope: an older tail could otherwise starve later victims.
+        return allocated, protected_cpu+index_only
 
     def close(self):
         from .prompt_checkpoints import CheckpointPhase
@@ -503,4 +605,7 @@ class SessionWorker:
         getattr(self, 'restore_oracles', {}).clear()
         self.retiring.clear()
         self.evictions.clear()
+        self._history_idle.clear()
+        self._history_idle_queued.clear()
+        self._history_capacity_sent.clear()
         return True

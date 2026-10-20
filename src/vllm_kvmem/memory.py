@@ -37,6 +37,7 @@ class WindowCheckpoint:
     # A rebased partial checkpoint may describe a different frame from the
     # current working set. Retain its exact generations explicitly.
     leases: tuple = field(default=(), repr=False, compare=False)
+    policy_hold: object = field(default=None, repr=False, compare=False)
 
     @property
     def position(self):
@@ -131,13 +132,32 @@ class RequestMemory:
         Async scorers must retain a storage read and use generation-qualified
         native handles before entering this synchronous convenience method.
         """
-        selected = self.preview_selection(scores, mandatory_slots, action=action,
-            prefill_scores=prefill_scores, pressure_scores=pressure_scores, max_tokens=max_tokens)
-        plan = self._store.select([self._store.handle(slot) for slot in selected])
+        for _ in range(self.config.repository_blocks + 1):
+            selected = self.preview_selection(scores, mandatory_slots, action=action,
+                prefill_scores=prefill_scores, pressure_scores=pressure_scores, max_tokens=max_tokens)
+            try:
+                plan = self._store.select([self._store.handle(slot) for slot in selected])
+                break
+            except _native.HistoryAdmissionRetry:
+                # No window mutation or GPU work preceded this failure. Each
+                # failed admission lost at least one candidate to retirement;
+                # pick again from the remaining live generations, without
+                # waiting for GC or granting old reads execution permission.
+                continue
+        else:
+            raise RuntimeError('Historical execution admission did not converge')
         self._plan = plan  # Retains previous-window leases until assembly completes.
         self.phase = Phase.ASSEMBLING
         self._submitted = False
         return plan
+
+    def admitted_read(self, handle):
+        """Clone CPU/execution rights of this already admitted assembly only."""
+        if self.phase is Phase.ASSEMBLING and self._plan is not None:
+            result = self._plan.admitted_read(handle)
+            if result is not None:
+                return result
+        return self.repository.pin(handle), None
 
     def preview_selection(self, scores, mandatory_slots=(), *, action=True,
                           prefill_scores=None, pressure_scores=None, max_tokens=None):
@@ -213,11 +233,22 @@ class RequestMemory:
         self._require(Phase.READY)
         if self.history_end == 0 or (self.history_end % self.config.block_tokens and not allow_partial):
             raise ValueError('Window checkpoint requires a nonempty sealed prefix')
+        records = tuple(self._store.working_records())
+        hold = self._protect_checkpoint(records)
         prefix = self.checkpoint()
         checkpoint = WindowCheckpoint(self.request_id, prefix,
-                                      tuple(self._store.working_records()))
+                                      records, policy_hold=hold)
         self._validate_window_checkpoint(checkpoint)
         return checkpoint
+
+    def _protect_checkpoint(self, records):
+        scope = getattr(self, '_history_scope', None)
+        if scope is None or not records:
+            return None
+        hold = scope.protect([_native.Handle(slot, generation) for slot, generation, *_ in records])
+        if hold is None:
+            raise BufferError('Historical checkpoint admission must retry before model capture')
+        return hold
 
     def _validate_window_checkpoint(self, checkpoint, *, timing=None):
         with timing.stage('window_validate') if timing is not None else nullcontext():
@@ -247,12 +278,13 @@ class RequestMemory:
     def checkpoint_frame(self, records):
         """Pin an exact CPU frame after replacing a cancelled partial tail."""
         self._require(Phase.READY)
+        hold = self._protect_checkpoint(records)
         leases = tuple(self.repository.pin(_native.Handle(slot, generation))
                        for slot, generation, *_ in records)
         if not all(leases):
             raise ValueError('Checkpoint frame contains a retired generation')
         result = WindowCheckpoint(self.request_id,
-            self._store.checkpoint(self.history_end, False), tuple(records), leases)
+            self._store.checkpoint(self.history_end, False), tuple(records), leases, hold)
         self._validate_window_checkpoint(result)
         return result
 
@@ -333,7 +365,7 @@ class RequestMemory:
         self._submitted = False
         self.phase = Phase.READY
 
-    def close(self) -> bool:
+    def close(self, *, background_retire=False) -> bool:
         if self.phase is Phase.CLOSED:
             return True
         if self._submitted and not self._fence.query():
@@ -348,7 +380,7 @@ class RequestMemory:
         self._store = None
         # Retirement hides cancelled request data immediately. Existing read/DMA
         # leases still prevent the resource bundle from being reclaimed.
-        for slot in range(self.config.repository_blocks):
+        for slot in range(0 if background_retire else self.config.repository_blocks):
             lease = self.repository.pin_slot(slot)
             if lease:
                 self.repository.retire(lease.handle)

@@ -82,6 +82,7 @@ public:
         Reclaimed, DeferredReaders, DeferredRelease, NotRetired, StaleHandle,
         Busy
     };
+    enum class RetireResult { Committed, AlreadyRetired, StaleHandle, Retry };
     struct Stats {
         uint32_t capacity = 0, ready = 0, writing = 0, live = 0;
         uint32_t retired = 0, releasing = 0, cancelled = 0;
@@ -103,7 +104,16 @@ public:
     // reader may clone its lease across retirement, and rescue that same entry.
     Lease try_pin(KvMemBlockHandle) const;
     Lease try_pin_slot(uint32_t slot) const;
+    // Identity check for completion of an already admitted operation, including
+    // after retirement. This does not grant a new read or execution permit.
+    bool owns(const Lease &) const;
     bool retire(KvMemBlockHandle);
+    // Irreversible historical deletion, independent of policy and reader count.
+    // Existing leases remain valid, but neither new pins nor rescue can reopen
+    // this generation. Bounded CAS contention returns Retry without dropping
+    // the caller's intent. This entry point accepts published Live blocks only;
+    // mutable-tail deletion requires the separate append rollover protocol.
+    RetireResult retire_permanently(KvMemBlockHandle);
     // Policy retirement must not hide blocks currently being scored, used by
     // a checkpoint, or copied asynchronously. Unlike explicit invalidation
     // above, this succeeds only if its own temporary pin is the sole reader.

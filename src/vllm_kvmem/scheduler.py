@@ -167,9 +167,19 @@ class KVMemScheduler(Scheduler):
             record_bytes = row_bytes * config.block_tokens
             capacity = min(options.cpu_read_cache_bytes,
                 record_bytes * config.repository_blocks * (self.scheduler_config.max_num_seqs + options.session_capacity))
-            self.connector.history_admission = HistoryAdmission(capacity, config.block_tokens,
-                row_bytes, self.vllm_config.model_config.max_model_len,
-                reserve_progress=options.cpu_progress_reserve)
+            if options.historical_gc is not None:
+                from .historical_admission import HistoricalHistoryAdmission
+                from .historical_gc import historical_record_charge
+                record_bytes = historical_record_charge(record_bytes, config.block_tokens)
+                capacity = min(options.cpu_read_cache_bytes,
+                    record_bytes*config.repository_blocks*(self.scheduler_config.max_num_seqs+options.session_capacity))
+                self.connector.history_admission = HistoricalHistoryAdmission(capacity, record_bytes,
+                    config.repository_blocks, config.block_tokens, self.connector.sessions,
+                    lookahead_tokens=self.draft_contract.query_tokens if self.draft_contract else 1)
+            else:
+                self.connector.history_admission = HistoryAdmission(capacity, config.block_tokens,
+                    row_bytes, self.vllm_config.model_config.max_model_len,
+                    reserve_progress=options.cpu_progress_reserve)
         if options.active_residency_enabled:
             if self.draft_contract is not None and self.draft_contract.method != 'mtp':
                 raise ValueError('Idle active residency currently qualifies target-only or native MTP')

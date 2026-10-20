@@ -1,0 +1,477 @@
+{
+  "date": "2026-10-20",
+  "goal_status": "complete",
+  "base_commit": "f639acfc986f7e8b9ddaf24a667d078d07e737ac",
+  "scope": "CPU archive/eager native asynchronous historical LRU, safe independent CPU/index reclamation, whole-turn admission and P/M/GDN/native-MTP lifecycle",
+  "serving_profile_enabled": true,
+  "scheduler_installs_new_ledger": true,
+  "index_storage": "Native C++ arrays exported as owned Python buffers; reaper owns only plain native storage, no Torch/Python deleter",
+  "source_sha256": {
+    "CMakeLists.txt": "306d3002f9e4273f94152fd333ebe91232e720ab6c054316a69be81148980746",
+    "csrc/bindings.cpp": "fbe8e8bf45fd8f9c1da9996370afd48cb6a9b7cea77012b98dc89186dc355b58",
+    "csrc/historical_kv_policy.hpp": "bedeaa4ccb7cfbfed2056214826496acb47be8c2906032cc42982f9397766d6e",
+    "csrc/historical_manager.cpp": "09b2d8d9da037a8320d1743fa28a42f67b2a573771982a583c372a44057c9cad",
+    "csrc/historical_manager.hpp": "0e5c9a1dd99594a2b95f4b1cadf786ba0faf0849af20985995dbd7bec4511aea",
+    "csrc/historical_payload.cpp": "e7f7c6821d21b3ab0fed074709f0c2221ac47765c383877a789be86fe7321bb2",
+    "csrc/historical_payload.hpp": "8f97ffeea7270520bf32cf456dd631f1c0a8330f705f12e96b6f60af316884d7",
+    "csrc/tests/historical_kv_policy_test.cpp": "4d4435718677fa2420a9dc67b744cc399e804bf10a0c06f234d54a0c2dc56afe",
+    "csrc/tests/historical_manager_test.cpp": "3fc81d967e4dfa397b60e789e134c716341318323be94d34c99ac064c6e00770",
+    "csrc/tests/historical_payload_test.cpp": "82841a8f14b583545b062a92c057e7d24e934df92bdd9d30f3d7ff9d33557031",
+    "scripts/qualify_historical_gc.py": "1f90012bfaca25161eca04f792418b23c6ff0322d96cb2525a611dc879ba7696",
+    "setup.py": "b5f6ad30cd8b1bc86d567073bd3ace096362e348ae940cd449cc6a0207af0a09",
+    "src/vllm_kvmem/assembly.py": "1d879f6445ef04d86f14a2a306d97ccc3af087ae4aa73a20c8f85c265a91a861",
+    "src/vllm_kvmem/async_refresh.py": "efcdd564778ea8ac204e70832a0e2494c9ac1667306bd6040d9b8c39a54426a7",
+    "src/vllm_kvmem/authority.py": "a996f6d218dc6a4ce2043c123d98a77f15040ee5c0a0aacb7c0329afd1db2e9f",
+    "src/vllm_kvmem/capture_runtime.py": "8edc0f35028ffcd5fbd55f3a56a379366e628582500c4a9f457f217f1817d400",
+    "src/vllm_kvmem/connector.py": "cebcc23da5048f155ac12725366c5ddbddbe8a9a1ab6409dd0288c7661e646b3",
+    "src/vllm_kvmem/elastic_serve.py": "e1ec494b9c5ad5ed1e23b86363b060b1bf130379b3199492ab648de559f5df5c",
+    "src/vllm_kvmem/historical_admission.py": "98e0483e7ea30ab2d033bb3f954c656f5d43695b223c274c6a09f7d1b1b24af5",
+    "src/vllm_kvmem/historical_gc.py": "eda56dc02eca953e31bc2dc501158a31b1b9a76108112c9dd2c0be9b856e7274",
+    "src/vllm_kvmem/memory.py": "0313abca88177723882c7ab2767cc86278a8376596e8bfdd1b26e5aaf1b9517e",
+    "src/vllm_kvmem/memory_storage.py": "814f3e9cd7801f6da50171d526968abc7b9b30b3cfbd5c7e1e364c82bcaaa1f1",
+    "src/vllm_kvmem/native_memory_storage.py": "664b5bf95b3e9b1d5d7e6695ed3c3d923430335badc4b559a9dccefe3d28e25a",
+    "src/vllm_kvmem/options.py": "62e314f077def59ab399228b6573e6e8a631669a53f7f67a373bfdf66bc26c51",
+    "src/vllm_kvmem/packed_assembly.py": "9e642de2688d037b3742afed177cf329c1190f5e36d4a27a56c6796f1dda14b1",
+    "src/vllm_kvmem/prompt_checkpoints.py": "a0c6218e13c30bbd93b00bfcf0881ac8f3e6cdf8bf2f847828c4ef245855a93e",
+    "src/vllm_kvmem/retirement.py": "27ad09efaf4369600a347748f81898550aa9d9e6a592c8cefc3838012eff7e5d",
+    "src/vllm_kvmem/runner.py": "0ef9b09a3e3a968700a496c06c5e29044b619a87926769fff7f66b613ffbbf4d",
+    "src/vllm_kvmem/scheduler.py": "4c808120eb4081a642c2e1f96716d7efbd2d3d8c1f95ffe2a8654ad72fc70597",
+    "src/vllm_kvmem/session_control.py": "c92a231f87bd312e84f9aecdc440423739d3c913e042518a3af5e68ddef9ebb2",
+    "src/vllm_kvmem/session_worker.py": "3f18be9e5ca123b99d81342456726a2b76ee55abf53d8c8bfe7e30dc1d7a22ba",
+    "src/vllm_kvmem/split_assembly.py": "885f3fb2bcd495454154a6349c9a1ecf8c2eb5a705d837b20726c1888708f51a",
+    "src/vllm_kvmem/storage.py": "9567e95123e1b30afe17ac65ff6a7c04b21f39c689d71a3602a6d37dc205a670",
+    "src/vllm_kvmem/window_assembly.py": "2d0642781c02d8db63dbca06d3d83bf5cf80714f9f6320e52b5bc40c060af2e3",
+    "tests/test_historical_admission.py": "1bcd6925e1d07cc242e55c49d883d8b255216354477dc1206d4d89fb633121dd",
+    "tests/test_historical_admission_integration.py": "5b25cfa0da7e18668c85c2ce4003294e6f2f278c2c536e90d7fcfb2e11401ef8",
+    "tests/test_historical_assembly_gpu.py": "43f3da12ef282132f66a0ae152a3a18ec7c5c156dd2de04ad9414a739bfd1932",
+    "tests/test_historical_authority.py": "51ab3bf1a942f1fa362c904e9fc4f3980f5fd4f3a1df790f3e7c974d587008a3",
+    "tests/test_historical_index.py": "c2d89d9fe8c5f6324be707b0b7027c43d9403ec7cdcd7c71f2f178e65ed8e06e",
+    "tests/test_historical_manager.py": "8ddadaffbc69d33bbf7894ff9cf8c8c85b51a9973b2d72ed6d92f4388ff35239",
+    "tests/test_historical_options.py": "b818d5e423c981523044717856e7c5ad655417dcf0edcc3229f9078bc20eb9b0",
+    "tests/test_historical_payload.py": "66d61cb1c92c73a6fbceacd81521063b7dad26f6a9b1f520cdfe03c45b702783",
+    "tests/test_historical_payload_gpu.py": "a9590d7e752eb2b3a57f71f819266b1cb647deaebe62219d31ac4a69e3dc9382",
+    "tests/test_historical_pm.py": "864de830e2f42826710ada4f8350b6ce81af076c5e06466bbe7b7b87f5ce1420",
+    "tests/test_historical_retirement.py": "575a4632c8993d0811f74654ba4ae592b0ea221e8320ac9b62852f0666d003c4",
+    "tests/test_historical_worker_pressure.py": "7dc69dbc230233f5ce407ceac2039c4305ba726104ab5aab95dcdd8352f5eedf",
+    "third_party/qw3/include/qw3/kvmem_repository.hpp": "67212c787e53e7e1bd2cea97348f2445311a91d312113b9451b7bdc1e38fe263",
+    "third_party/qw3/include/qw3/kvmem_store.hpp": "05b436f2b518ee90339b0141f3803379dcefc26da182b94028cd3e0f4da70aaf",
+    "third_party/qw3/src/kvmem_repository.cpp": "7bda77441939aac4ceaf0a780b459416b5215df6b9392c6d7af3b2f43f68c600",
+    "third_party/qw3/src/kvmem_store.cpp": "d58c67918896422d6ed0a653cdd74ffcd34d530d24f3db7b315b70f34e66a81b"
+  },
+  "reports": {
+    "final-host": {
+      "path": "artifacts/background-history-gc-components/final-host.xml",
+      "sha256": "10f8d181ef2e72ff18eea59220057c7f69dcc788bf1d36744d6e56e2bb1ceb58",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failed_tests": []
+    },
+    "final-asan": {
+      "path": "artifacts/background-history-gc-components/final-asan.xml",
+      "sha256": "5feffac1d828f536b4b6cd98e8bd995cd68089a795391875b2dc004fe4aa8932",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failed_tests": []
+    },
+    "final-tsan": {
+      "path": "artifacts/background-history-gc-components/final-tsan.xml",
+      "sha256": "3e5c8404e06eaec2d3a07c498b3acf8f5c8d68f9f4b5ec7d92af3eb5434dbf6c",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failed_tests": []
+    },
+    "serving-index": {
+      "path": "artifacts/background-history-gc-components/serving-index.xml",
+      "sha256": "5455ab75e1ea927becd71a9f6205cccb91066c368ac5875fcf09d7d132f55199",
+      "tests": 437,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 1,
+      "failed_tests": [
+        "test_v2_requires_a_real_pm_restore_profile"
+      ]
+    },
+    "native-index-python": {
+      "path": "artifacts/background-history-gc-components/native-index-python.xml",
+      "sha256": "039370e3ce1db9e362eb7ac6a7e2abb937ec8742bcfc259122e19f1549b5317b",
+      "tests": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failed_tests": []
+    },
+    "final-gpu": {
+      "path": "artifacts/background-history-gc-components/final-gpu.xml",
+      "sha256": "b74c6e7293b3f1bf1e1c86e96701016c8d75f35636c7d0a534a06d7c5c5a36c8",
+      "tests": 22,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failed_tests": []
+    }
+  },
+  "known_baseline_failure": {
+    "test": "test_v2_requires_a_real_pm_restore_profile",
+    "expected": "P/M sessions",
+    "actual": "CPU P/M or frozen-P sessions",
+    "present_in_head": true
+  },
+  "environment": {
+    "model": "/data/huggingface/models/unsloth/Qwen3.6-27B-NVFP4",
+    "gpu": "RTX PRO 6000 Blackwell Server Edition",
+    "vllm": "0.30.0",
+    "torch": "2.13.0+cu130",
+    "execution": "eager",
+    "native_mtp_draft_tokens": 1,
+    "archive": "cpu"
+  },
+  "model_cases": {
+    "lifecycle": {
+      "status": "passed",
+      "path": "artifacts/background-history-gc-model/final-model-lifecycle/01-delete/client/results.json",
+      "sha256": "ef462eca5dc58f53d780b67b6d095a8789cc065eb667b292c8e04e3ed168130f",
+      "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+      "released": {
+        "cpu_authority_bytes": 0,
+        "cpu_index_bytes": 0,
+        "cpu_index_owners": 0,
+        "archive_used_slots": 0,
+        "active_scopes": 0,
+        "owned_blocks": 0,
+        "reserved_records": 0
+      },
+      "m": {
+        "request_id": "cmpl-a317f9ab7eba16e3-0-9a0ebde3",
+        "history_tokens": 1828,
+        "working_tokens": 676,
+        "target_kv_bytes": 23535616,
+        "working_attention_layers": 17,
+        "mtp_attention_layers": 1,
+        "recurrent_tensors": 96,
+        "draft_layers": 0,
+        "oracle_kind": "fp8_immutable_rebuild",
+        "byte_equal": true
+      },
+      "p": {
+        "request_id": "cmpl-8eb128cd66ff9ca1-0-aee58cc5",
+        "history_tokens": 1664,
+        "working_tokens": 512,
+        "target_kv_bytes": 17825792,
+        "working_attention_layers": 17,
+        "mtp_attention_layers": 1,
+        "recurrent_tensors": 96,
+        "draft_layers": 0,
+        "oracle_kind": "fp8_immutable_rebuild",
+        "byte_equal": true
+      },
+      "rebased_m": {
+        "request_id": "cmpl-89d9e10fca46ca9d-0-b674193a",
+        "history_tokens": 1878,
+        "working_tokens": 726,
+        "target_kv_bytes": 25276416,
+        "working_attention_layers": 17,
+        "mtp_attention_layers": 1,
+        "recurrent_tensors": 96,
+        "draft_layers": 0,
+        "oracle_kind": "fp8_immutable_rebuild",
+        "byte_equal": true
+      },
+      "refresh_cancellations": [
+        {
+          "stage": "query",
+          "trigger": {
+            "request_id": "cmpl-941a4c2a5860c3bb-0-a4760a20",
+            "command_id": 7,
+            "stage": "query",
+            "at": 4989108.344697139,
+            "tokens": 36,
+            "host_seconds": 0.09243109449744225,
+            "public_peers": 0
+          },
+          "cancelled_at": 4989108.347607663,
+          "ack": {
+            "request_id": "cmpl-941a4c2a5860c3bb-0-a4760a20",
+            "command_id": 7,
+            "stage": "cancelled",
+            "at": 4989108.364820547,
+            "public_peers": 0
+          },
+          "owned_blocks": 0
+        },
+        {
+          "stage": "assembly_started",
+          "trigger": {
+            "request_id": "cmpl-b6232f1f40b6a6e3-0-b6f3e779",
+            "command_id": 8,
+            "stage": "assembly_started",
+            "at": 4989109.601780882
+          },
+          "cancelled_at": 4989109.607831828,
+          "ack": {
+            "request_id": "cmpl-b6232f1f40b6a6e3-0-b6f3e779",
+            "command_id": 8,
+            "stage": "cancelled",
+            "at": 4989109.612694315,
+            "public_peers": 0
+          },
+          "owned_blocks": 0
+        }
+      ]
+    },
+    "pressure": {
+      "status": "passed",
+      "path": "artifacts/background-history-gc-model/final-model-pressure/01-delete/client/results.json",
+      "sha256": "aa2b5db84162cee996af3f84cae5f0ed3b56bf956344a98ae10e3c0997f588ac",
+      "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+      "released": {
+        "cpu_authority_bytes": 0,
+        "cpu_index_bytes": 0,
+        "cpu_index_owners": 0,
+        "archive_used_slots": 0,
+        "active_scopes": 0,
+        "owned_blocks": 0,
+        "reserved_records": 0
+      },
+      "capacity_records": 137,
+      "max_reserved_records": 137,
+      "active_and_waiting_samples": 6,
+      "deferrals": 139,
+      "retired": 45,
+      "gc_wait_count": 0,
+      "restored_peer": {
+        "request_id": "cmpl-b4b2f94716c6ac06-0-a7a78e0f",
+        "history_tokens": 1827,
+        "working_tokens": 675,
+        "target_kv_bytes": 23500800,
+        "working_attention_layers": 17,
+        "mtp_attention_layers": 1,
+        "recurrent_tensors": 96,
+        "draft_layers": 0,
+        "oracle_kind": "fp8_immutable_rebuild",
+        "byte_equal": true
+      }
+    }
+  },
+  "performance": {
+    "status": "passed",
+    "baseline": "historical_gc omitted",
+    "pairs_required": 5,
+    "input": "Synthetic numbered notes; 400-token stable-window prompt",
+    "decode_tokens": 512,
+    "target_paired_medians": {
+      "throughput_loss": 0.01,
+      "p95_regression": 0.02,
+      "p99_regression": 0.05
+    },
+    "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+    "comparisons": [
+      {
+        "pair": 1,
+        "throughput_loss": 0.007974718873008602,
+        "p95_regression": 0.00861233709691911,
+        "p99_regression": -0.04809806598063082,
+        "identical_output": true
+      },
+      {
+        "pair": 2,
+        "throughput_loss": -0.005054406185233562,
+        "p95_regression": -0.0066362869589188245,
+        "p99_regression": -0.024958747821084315,
+        "identical_output": true
+      },
+      {
+        "pair": 3,
+        "throughput_loss": 0.003372556636852986,
+        "p95_regression": 0.002876441755092163,
+        "p99_regression": 0.006597959764427008,
+        "identical_output": true
+      },
+      {
+        "pair": 4,
+        "throughput_loss": -0.0017290702145682513,
+        "p95_regression": -0.0014127612946682744,
+        "p99_regression": -0.0008786132132179159,
+        "identical_output": true
+      },
+      {
+        "pair": 5,
+        "throughput_loss": -0.008494552342286799,
+        "p95_regression": -0.00844016279983617,
+        "p99_regression": -0.024780380807118085,
+        "identical_output": true
+      }
+    ],
+    "paired_medians": {
+      "throughput_loss": -0.0017290702145682513,
+      "p95_regression": -0.0014127612946682744,
+      "p99_regression": -0.024780380807118085
+    },
+    "driver_sha256": "1f90012bfaca25161eca04f792418b23c6ff0322d96cb2525a611dc879ba7696",
+    "path": "artifacts/background-history-gc-model/final-model-performance-5/results.json",
+    "sha256": "89273335bbe7ffa51e405906e8f37ec1c5afc1f76cc755591956868ea4ff287c",
+    "live_overlap": [
+      {
+        "pair": 1,
+        "samples": 36,
+        "cpu_releases_during_decode": 16,
+        "maximum_pending_slots": 16
+      },
+      {
+        "pair": 2,
+        "samples": 36,
+        "cpu_releases_during_decode": 16,
+        "maximum_pending_slots": 16
+      },
+      {
+        "pair": 3,
+        "samples": 36,
+        "cpu_releases_during_decode": 16,
+        "maximum_pending_slots": 16
+      },
+      {
+        "pair": 4,
+        "samples": 36,
+        "cpu_releases_during_decode": 16,
+        "maximum_pending_slots": 16
+      },
+      {
+        "pair": 5,
+        "samples": 36,
+        "cpu_releases_during_decode": 16,
+        "maximum_pending_slots": 16
+      }
+    ],
+    "runs": [
+      {
+        "mode": "legacy",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.109621735382344,
+        "p95_ms": 71.49143028073013,
+        "p99_ms": 76.17669724859297,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 0,
+        "cpu_released": 0,
+        "pair": 1
+      },
+      {
+        "mode": "delete",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 24.909379561035085,
+        "p95_ms": 72.10713857784867,
+        "p99_ms": 72.51274543814361,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 16,
+        "cpu_released": 17,
+        "pair": 1
+      },
+      {
+        "mode": "delete",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.147892530684906,
+        "p95_ms": 71.42482046037912,
+        "p99_ms": 72.35474432818586,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 16,
+        "cpu_released": 17,
+        "pair": 2
+      },
+      {
+        "mode": "legacy",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.02142409000105,
+        "p95_ms": 71.90198265016079,
+        "p99_ms": 74.2068544961512,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 0,
+        "cpu_released": 0,
+        "pair": 2
+      },
+      {
+        "mode": "legacy",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.033151867059185,
+        "p95_ms": 71.74226827919483,
+        "p99_ms": 73.00657904706895,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 0,
+        "cpu_released": 0,
+        "pair": 3
+      },
+      {
+        "mode": "delete",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 24.948726144588587,
+        "p95_ms": 71.94863073527813,
+        "p99_ms": 73.48827351815997,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 16,
+        "cpu_released": 17,
+        "pair": 3
+      },
+      {
+        "mode": "delete",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.106511108475992,
+        "p95_ms": 71.63431076332927,
+        "p99_ms": 72.0510439015925,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 16,
+        "cpu_released": 17,
+        "pair": 4
+      },
+      {
+        "mode": "legacy",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.0631751188954,
+        "p95_ms": 71.7356561217457,
+        "p99_ms": 72.11440457031131,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 0,
+        "cpu_released": 0,
+        "pair": 4
+      },
+      {
+        "mode": "legacy",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.044832426417926,
+        "p95_ms": 71.77415117621422,
+        "p99_ms": 74.26687674596906,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 0,
+        "cpu_released": 0,
+        "pair": 5
+      },
+      {
+        "mode": "delete",
+        "source_digest": "ef577c5265cd80b8ed2044bd505e1c0bd45889f2bddc1998397c055ab3c4bd51",
+        "throughput": 25.257577066367933,
+        "p95_ms": 71.16836565546691,
+        "p99_ms": 72.42651525884864,
+        "intervals": 286,
+        "output_sha256": "55b8c6a1f312fb96f2e723d60efa3d91c65f440ece3be8217c7bd91fb0f9a0f4",
+        "retired": 16,
+        "cpu_released": 17,
+        "pair": 5
+      }
+    ]
+  },
+  "real_model_qualified": true,
+  "decode_performance_measured": true,
+  "ready_for_goal_completion": true,
+  "goal_elapsed_seconds": 13393
+}

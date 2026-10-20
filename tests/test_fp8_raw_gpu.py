@@ -9,7 +9,8 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Expl
 
 @pytest.mark.parametrize('mode',['generic','packed','direct','split'])
 @pytest.mark.parametrize('count',[32,35])
-def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(tmp_path,mode,count):
+@pytest.mark.parametrize('key_scale',[.037, .04052734375])
+def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(tmp_path,mode,count,key_scale):
     from vllm_kvmem.authority import RequestAuthority
     from vllm_kvmem.config import KVMemConfig
     from vllm_kvmem.storage import AsyncArchive
@@ -30,7 +31,7 @@ def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(t
     table=torch.tensor([3,5,1,7,2,6,4,8],dtype=torch.int32,device='cuda')
     angles=torch.randn(128,16,generator=g)
     trig=torch.cat((angles.cos(),angles.sin()),-1).bfloat16()
-    scale=torch.tensor(.037,device='cuda')
+    scale=torch.tensor(key_scale,device='cuda')
     native=[]
     for _ in range(layers):
         backing=torch.full((10,heads,8,dim*2),13,dtype=torch.uint8,device='cuda')
@@ -67,7 +68,7 @@ def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(t
                     positions=torch.arange(remap.to_base,remap.to_base+remap.n_tokens)
                     source=raw[layer_index,first:first+remap.n_tokens]
                     rotated=neox_rope(source,trig[positions,:16],trig[positions,16:])
-                    expected=(rotated/.037).clamp(-448,448).to(torch.float8_e4m3fn).view(torch.uint8)
+                    expected=(rotated/key_scale).clamp(-448,448).to(torch.float8_e4m3fn).view(torch.uint8)
                     p=table[positions.cuda()//8].long();offsets=positions.cuda()%8
                     assert torch.equal(layer.key.view(torch.uint8)[p,offsets].cpu(),expected)
                     assert torch.equal(layer.value.view(torch.uint8)[p,offsets].cpu(),values[layer_index,first:first+remap.n_tokens])
@@ -105,3 +106,20 @@ def test_native_capture_quantizes_raw_k_before_d2h_and_preserves_upstream_qkv(tm
     assert torch.equal(keys.view(torch.uint8),expected.cpu().view(torch.uint8))
     for c,(key,value) in zip(captures,originals):
         assert torch.equal(c.key,key) and torch.equal(c.value,value)
+
+
+def test_fp8_rebuild_real_model_scale_uses_rounded_division():
+    from vllm_kvmem.assembly import assemble_fp8
+    from vllm_kvmem.codec import neox_rope
+    count,heads,dim=512,4,256
+    generator=torch.Generator().manual_seed(6671)
+    raw=torch.randn(count,heads,dim,generator=generator).mul(3).to(torch.float8_e4m3fn)
+    angles=torch.randn(count,32,generator=generator)
+    trig=torch.cat((angles.cos(),angles.sin()),-1).bfloat16()
+    scale=.04052734375  # Qwen3.6 layers 19/47; reciprocal approximation lost 48 bytes.
+    key=torch.zeros(32,16,heads,dim,device='cuda',dtype=torch.float8_e4m3fn)
+    positions=torch.arange(count,device='cuda')
+    assemble_fp8(raw.cuda(),None,positions,positions,trig.cuda(),key,key.clone(),torch.tensor(scale,device='cuda'))
+    rotated=neox_rope(raw,trig[:,:32],trig[:,32:])
+    expected=(rotated/scale).clamp(-448,448).to(torch.float8_e4m3fn).view(torch.uint8)
+    assert torch.equal(key.view(torch.uint8).reshape(count,heads,dim).cpu(),expected)

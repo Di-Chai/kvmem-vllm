@@ -110,6 +110,7 @@ void KvMemStore::attach_gc(std::shared_ptr<KvMemGc> gc) {
 
 void KvMemStore::attach_repository_gc(std::shared_ptr<KvMemRepositoryGc> gc) {
     require_no_repository_append();
+    if (gc && history_observer_) throw std::invalid_argument("Repository already has a historical observer");
     if (gc && (!repository_ || gc->repository() != repository_))
         throw std::invalid_argument("KVMem GC belongs to a different repository");
     if (repository_gc_ && repository_gc_ != gc) repository_gc_->stop();
@@ -117,6 +118,15 @@ void KvMemStore::attach_repository_gc(std::shared_ptr<KvMemRepositoryGc> gc) {
     if (!repository_gc_) return;
     repository_gc_->set_history_end(total_tokens_);
     for (uint32_t i = 0; i < block_count(); ++i) repository_sync_gc(i);
+}
+
+void KvMemStore::attach_history_observer(std::shared_ptr<KvMemHistoryObserver> observer) {
+    require_no_repository_append();
+    if (!repository_ || repository_gc_ || (observer && !observer->observes(repository_)))
+        throw std::invalid_argument("Historical observer requires an independent bounded repository");
+    history_observer_ = std::move(observer);
+    if (total_tokens_)
+        for (uint32_t i = 0; i < block_count(); ++i) repository_sync_gc(i);
 }
 
 void KvMemStore::set_repository_gc_flags(KvMemBlockHandle h, uint32_t mask, uint32_t values) {
@@ -131,10 +141,19 @@ void KvMemStore::set_repository_gc_flags(KvMemBlockHandle h, uint32_t mask, uint
 }
 
 void KvMemStore::repository_sync_gc(uint32_t slot, bool used) {
+    if (!repository_gc_ && !history_observer_) return;
+    const auto &b = blocks_[slot];
+    if (history_observer_) {
+        const auto recent_tokens = uint64_t(cfg_.recent_blocks) * cfg_.block_tokens;
+        history_observer_->history_changed(total_tokens_, total_tokens_ > recent_tokens ? total_tokens_ - recent_tokens : 0);
+        auto lease = repository_resident_leases_[slot] ? repository_resident_leases_[slot].clone() :
+                                                       repository_->try_pin(repository_handle(slot));
+        if (lease) history_observer_->observe(lease, b.n_tokens == cfg_.block_tokens,
+                                              b.tier == KvTier::GPU || b.in_working_set, sink_block(slot));
+    }
     if (!repository_gc_) return;
     auto lease = repository_->try_pin(repository_handle(slot));
     if (!lease) return;
-    const auto &b = blocks_[slot];
     const uint32_t flags = repository_gc_flags_[slot] | KvMemGc::Registered |
         (b.n_tokens == cfg_.block_tokens ? KvMemGc::Sealed : 0u) |
         (b.tier == KvTier::GPU ? KvMemGc::Gpu : 0u) | (b.in_flight ? KvMemGc::Io : 0u) |
@@ -674,7 +693,8 @@ void KvMemStore::set_repository_retrieval_scores(
         if (h != repository_handle(h.slot) || !h.generation)
             throw std::runtime_error("KVMem score frame contains a stale block generation");
         auto l = repository_->try_pin(h);
-        if (!l || seen[h.slot]) throw std::runtime_error("KVMem score frame has missing or duplicate blocks");
+        if (seen[h.slot]) throw std::runtime_error("KVMem score frame has missing or duplicate blocks");
+        if (!l && !history_observer_) throw std::runtime_error("KVMem score frame has missing or duplicate blocks");
         seen[h.slot] = 1; leases.push_back(std::move(l));
     }
     for (auto &b : blocks_) b.attn_score = b.retrieval_score = 0;
@@ -929,7 +949,8 @@ void KvMemStore::set_retrieval_scores(const std::vector<double> &scores) {
     }
 }
 
-KvMemRepository::Lease KvMemStore::validate_repository_mutation(uint32_t id, uint64_t generation) const {
+KvMemRepository::Lease KvMemStore::validate_repository_mutation(uint32_t id, uint64_t generation,
+                                                              bool admitted_window) const {
     // Completion of an older batch may overlap a prepared append. Versioned
     // tier/index flags do not change the append's historical directory or
     // token extents; structural mutations still require no pending append.
@@ -937,6 +958,8 @@ KvMemRepository::Lease KvMemStore::validate_repository_mutation(uint32_t id, uin
     const KvMemBlockHandle h{id, generation};
     if (!generation || h != repository_handle(id))
         throw std::runtime_error("KVMem metadata update requires the current block generation");
+    if (admitted_window && repository_resident_leases_[id])
+        return repository_resident_leases_[id].clone();
     auto lease = repository_->try_pin(h);
     if (!lease) throw std::runtime_error("KVMem metadata update refers to a retired block");
     return lease;
@@ -944,11 +967,10 @@ KvMemRepository::Lease KvMemStore::validate_repository_mutation(uint32_t id, uin
 
 void KvMemStore::set_block_tier(uint32_t block_id, KvTier tier,
                                 int32_t cpu_slot, int32_t nvme_slot, uint64_t generation) {
-    auto mutation = validate_repository_mutation(block_id, generation);
+    auto mutation = validate_repository_mutation(block_id, generation, true);
     if (block_id >= block_count()) return;
     KvMemBlock &b = blocks_[block_id];
     if (repository_) {
-        if (!is_live(block_id)) throw std::runtime_error("KVMem tier change requires a live block");
         if (tier == KvTier::GPU && !repository_resident_leases_[block_id]) {
             auto lease = repository_->try_pin(repository_handle(block_id));
             if (!lease) throw std::runtime_error("KVMem stage-in block retired");
@@ -1032,13 +1054,13 @@ void KvMemStore::set_block_io_in_flight(uint32_t block_id, bool in_flight, uint6
 }
 
 void KvMemStore::set_block_baked_pos(uint32_t block_id, int64_t baked_pos, uint64_t generation) {
-    auto mutation = validate_repository_mutation(block_id, generation);
+    auto mutation = validate_repository_mutation(block_id, generation, true);
     if (block_id >= block_count()) return;
     blocks_[block_id].baked_pos = baked_pos;
 }
 
 void KvMemStore::record_block_rerope(uint32_t block_id, int64_t baked_pos, uint64_t generation) {
-    auto mutation = validate_repository_mutation(block_id, generation);
+    auto mutation = validate_repository_mutation(block_id, generation, true);
     if (block_id >= block_count()) return;
     KvMemBlock &block = blocks_[block_id];
     if (block.baked_pos != baked_pos) {
@@ -1586,24 +1608,42 @@ KvMemPlan KvMemStore::set_repository_selection(
     require_no_repository_append();
     if (!repository_) throw std::logic_error("KVMem repository selection requires bounded mode");
     std::vector<KvMemRepository::Lease> next;
+    std::vector<std::shared_ptr<KvMemCpuReadOwner>> cpu_sources;
     next.reserve(handles.size());
     std::vector<uint32_t> ids;
     ids.reserve(handles.size());
     for (const auto h : handles) {
         if (h != repository_handle(h.slot) || !h.generation)
             throw std::runtime_error("KVMem selection contains a stale generation");
-        auto l = repository_->try_pin(h);
-        if (!l) throw std::runtime_error("KVMem selection contains a retired block");
+        KvMemExecutionAdmission admission;
+        if (history_observer_) admission = history_observer_->admit(h);
+        else admission.lease = repository_->try_pin(h);
+        auto l = std::move(admission.lease);
+        if (!l) {
+            if (history_observer_) throw KvMemAdmissionRetry();
+            throw std::runtime_error("KVMem selection contains a retired block");
+        }
+        cpu_sources.push_back(std::move(admission.cpu));
         ids.push_back(h.slot); next.push_back(std::move(l));
     }
-    auto old = std::make_shared<std::vector<KvMemRepository::Lease>>(repository_checkpoint_leases());
+    // The previous GPU operation already owns execution rights. A new pin
+    // would wrongly reject its retired generations and prevent ordinary
+    // stage-out; cloning these rights does not admit them to the next window.
+    auto old = std::make_shared<std::vector<KvMemRepository::Lease>>();
+    for (const auto &lease : repository_resident_leases_) if (lease) old->push_back(lease.clone());
     auto plan = set_selection_impl(std::move(ids), force_raw_refresh);
     plan.repository_previous_window = std::move(old);
+    plan.cpu_sources = std::move(cpu_sources);
+    if (history_observer_) {
+        plan.repository_next_window = std::make_shared<std::vector<KvMemRepository::Lease>>();
+        for (const auto &lease : next) plan.repository_next_window->push_back(lease.clone());
+    }
     for (const auto &b : blocks_) {
         if (!b.in_working_set && b.tier != KvTier::GPU)
             repository_resident_leases_[b.block_id].reset();
     }
     for (auto &l : next) repository_resident_leases_[l.handle().slot] = std::move(l);
+    if (history_observer_) for (const auto &b : blocks_) repository_sync_gc(b.block_id, b.in_working_set);
     if (repository_gc_) {
         for (const auto &b : blocks_) repository_sync_gc(b.block_id, b.in_working_set);
         if (repository_scores_pending_) {
@@ -1649,7 +1689,7 @@ KvMemPlan KvMemStore::set_selection_impl(std::vector<uint32_t> selected_ids,
     for (uint32_t id : selected_ids) now_selected[id] = true;
     std::vector<bool> was_in_working_set(block_count(), false);
     for (const KvMemBlock &b : blocks_) {
-        if (repository_ && !is_live(b.block_id)) continue;
+        if (repository_ && !repository_resident_leases_[b.block_id] && !is_live(b.block_id)) continue;
         was_in_working_set[b.block_id] = b.in_working_set;
         if (b.in_working_set && now_selected[b.block_id]) {
             ++plan.selection_overlap_blocks;
@@ -1663,7 +1703,7 @@ KvMemPlan KvMemStore::set_selection_impl(std::vector<uint32_t> selected_ids,
     // Their cache pages keep whatever bake they currently hold (baked_pos
     // unchanged); a future re-selection will de-rotate from there.
     for (auto &b : blocks_) {
-        if (repository_ && !is_live(b.block_id)) continue;
+        if (repository_ && !repository_resident_leases_[b.block_id] && !is_live(b.block_id)) continue;
         if (repository_ && !now_selected[b.block_id]) b.in_working_set = false;
         if (b.tier == KvTier::GPU &&
             (!now_selected[b.block_id] || force_full_reload)) {
@@ -1784,6 +1824,7 @@ void KvMemStore::gc_validate_mandatory(const std::vector<uint32_t> &ids) const {
         throw std::runtime_error("KVMem GC: mandatory/checkpoint block was deleted");
 }
 void KvMemStore::gc_begin_step() {
+    if (history_observer_) history_observer_->begin_step();
     if (repository_gc_) {
         repository_gc_->begin_step();
         for (const auto &b : blocks_)

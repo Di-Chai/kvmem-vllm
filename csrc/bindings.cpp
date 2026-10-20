@@ -5,6 +5,8 @@
 #include "qw3/kvmem_store.hpp"
 #include "qw3/nvme_kv_tier.hpp"
 #include "qw3/kvmem_repository_gc.hpp"
+#include "historical_payload.hpp"
+#include "historical_manager.hpp"
 #include "kvmem_request_plan.hpp"
 #include "kvmem_prefix_reuse_policy.hpp"
 #include "kvmem_query_history.hpp"
@@ -25,6 +27,17 @@
 
 namespace py = pybind11;
 using namespace qw3;
+
+// Tensor views retain this Python buffer exporter. The storage itself is a
+// plain C++ allocation; its deleter never owns or calls back into Python/Torch.
+struct NativeIndexStorage {
+    std::unique_ptr<uint8_t[]> data;
+};
+struct NativeIndexOwner {
+    uint8_t *data = nullptr;
+    size_t bytes = 0;
+    std::shared_ptr<vllm_kvmem::HistoricalPayloadArena::ExternalOwner> owner;
+};
 
 // A private, named inode allows strict reservation verification without changing
 // the imported tier. Unlink at construction exit (including exceptions), leaving
@@ -177,6 +190,7 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
 }
 
 PYBIND11_MODULE(_native, m) {
+    py::register_exception<KvMemAdmissionRetry>(m, "HistoryAdmissionRetry");
     kvmem_prefill::bind(m);
     kvmem_graph::bind(m);
     kvmem_decode::bind(m);
@@ -621,6 +635,11 @@ PYBIND11_MODULE(_native, m) {
         .value("NOT_RETIRED", KvMemRepository::ReclaimResult::NotRetired)
         .value("STALE", KvMemRepository::ReclaimResult::StaleHandle)
         .value("BUSY", KvMemRepository::ReclaimResult::Busy);
+    py::enum_<KvMemRepository::RetireResult>(m, "RetireResult")
+        .value("COMMITTED", KvMemRepository::RetireResult::Committed)
+        .value("ALREADY_RETIRED", KvMemRepository::RetireResult::AlreadyRetired)
+        .value("STALE", KvMemRepository::RetireResult::StaleHandle)
+        .value("RETRY", KvMemRepository::RetireResult::Retry);
     py::class_<KvMemRepository, std::shared_ptr<KvMemRepository>>(m, "Repository")
         .def(py::init([](uint32_t capacity, uint32_t block_tokens) {
             return std::make_shared<KvMemRepository>(KvMemRepository::Config{capacity, block_tokens});
@@ -629,6 +648,7 @@ PYBIND11_MODULE(_native, m) {
         .def("pin", &KvMemRepository::try_pin)
         .def("pin_slot", &KvMemRepository::try_pin_slot)
         .def("retire", &KvMemRepository::retire)
+        .def("retire_permanently", &KvMemRepository::retire_permanently)
         .def("retired_at", &KvMemRepository::retired_at)
         .def("reclaim", [](KvMemRepository &r, KvMemBlockHandle h, py::function release) {
             return r.try_reclaim(h, [&](const KvMemRepository::Record &record) {
@@ -645,6 +665,173 @@ PYBIND11_MODULE(_native, m) {
 #undef STAT
             return d;
         });
+    using PayloadArena = vllm_kvmem::HistoricalPayloadArena;
+    py::class_<PayloadArena::ExternalCompletion, std::shared_ptr<PayloadArena::ExternalCompletion>>(m, "HistoricalIndexCompletion")
+        .def("query", [](const PayloadArena::ExternalCompletion &f) {
+            return f.done.load(std::memory_order_acquire);
+        });
+    py::class_<NativeIndexOwner, std::shared_ptr<NativeIndexOwner>>(m, "HistoricalIndexOwner", py::buffer_protocol())
+        .def_buffer([](NativeIndexOwner &o) {
+            return py::buffer_info(o.data, 1, py::format_descriptor<uint8_t>::format(), 1,
+                {static_cast<py::ssize_t>(o.bytes)}, {1});
+        })
+        .def_property_readonly("completion", [](const NativeIndexOwner &o) { return o.owner->completion(); });
+    py::class_<PayloadArena::Handle>(m, "HistoricalPayloadHandle")
+        .def(py::init<uint32_t, uint64_t>())
+        .def_readonly("slot", &PayloadArena::Handle::slot)
+        .def_readonly("generation", &PayloadArena::Handle::generation);
+    py::class_<PayloadArena::Read>(m, "HistoricalPayloadRead", py::buffer_protocol())
+        .def("__bool__", [](const PayloadArena::Read &r) { return bool(r); })
+        .def("clone", &PayloadArena::Read::clone)
+        .def_property_readonly("handle", &PayloadArena::Read::handle)
+        .def_buffer([](PayloadArena::Read &r) {
+            return py::buffer_info(const_cast<uint8_t *>(r.data()), 1,
+                py::format_descriptor<uint8_t>::format(), 1,
+                {static_cast<py::ssize_t>(r.size())}, {1}, true);
+        });
+    py::enum_<PayloadArena::RetireResult>(m, "HistoricalPayloadRetireResult")
+        .value("COMMITTED", PayloadArena::RetireResult::Committed)
+        .value("ALREADY_RETIRED", PayloadArena::RetireResult::AlreadyRetired)
+        .value("STALE", PayloadArena::RetireResult::StaleHandle)
+        .value("RETRY", PayloadArena::RetireResult::Retry);
+    py::class_<PayloadArena, std::shared_ptr<PayloadArena>>(m, "HistoricalPayloadArena")
+        .def(py::init([](uint32_t capacity, size_t record_bytes, bool background,
+                        uint32_t poll_ms, uint32_t scan_slots, uint32_t release_batch) {
+            if (record_bytes > size_t(PY_SSIZE_T_MAX))
+                throw std::invalid_argument("Historical CPU record exceeds buffer protocol limits");
+            return std::make_shared<PayloadArena>(PayloadArena::Config{
+                capacity, record_bytes, poll_ms, scan_slots, release_batch, background});
+        }), py::arg("capacity"), py::arg("record_bytes"), py::arg("background") = true,
+            py::arg("poll_ms") = 10, py::arg("scan_slots") = 256, py::arg("release_batch") = 64)
+        .def("publish", [](PayloadArena &arena, PayloadArena::Handle handle, py::buffer source) {
+            auto view = source.request();
+            if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
+                throw std::invalid_argument("Historical publication requires contiguous one-dimensional bytes");
+            py::gil_scoped_release no_gil;
+            arena.publish(handle, view.ptr, static_cast<size_t>(view.size));
+        })
+        .def("publish_segments", [](PayloadArena &arena, PayloadArena::Handle handle,
+                                    const std::vector<py::buffer> &sources) {
+            std::vector<py::buffer_info> exports;
+            std::vector<PayloadArena::Segment> segments;
+            exports.reserve(sources.size());
+            segments.reserve(sources.size());
+            for (const auto &source : sources) {
+                auto view = source.request();
+                if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
+                    throw std::invalid_argument("Historical publication requires contiguous byte segments");
+                segments.push_back({view.ptr, static_cast<size_t>(view.size)});
+                exports.push_back(std::move(view));
+            }
+            py::gil_scoped_release no_gil;
+            arena.publish_segments(handle, segments.data(), segments.size());
+        })
+        .def("acquire", &PayloadArena::acquire)
+        .def("owns", &PayloadArena::owns)
+        .def("_allocate_index", [](PayloadArena &arena, size_t bytes) {
+            if (!bytes || bytes > size_t(PY_SSIZE_T_MAX))
+                throw std::invalid_argument("Invalid native index allocation size");
+            auto storage = std::make_unique<NativeIndexStorage>();
+            auto result = std::make_shared<NativeIndexOwner>();
+            result->bytes = bytes;
+            result->owner = arena.retain_external(storage.get(), [](void *p) {
+                delete static_cast<NativeIndexStorage *>(p);
+            }, bytes);
+            auto *admitted = storage.release();
+            admitted->data.reset(new uint8_t[bytes]());
+            result->data = admitted->data.get();
+            return result;
+        })
+        .def("retire", &PayloadArena::retire)
+        .def("reclaimed", &PayloadArena::reclaimed)
+        .def("advance", [](PayloadArena &arena) {
+            py::gil_scoped_release no_gil;
+            return arena.advance();
+        })
+        .def("close", &PayloadArena::close)
+        .def_property_readonly("stats", [](const PayloadArena &arena) {
+            const auto s = arena.stats();
+            py::dict result;
+#define PAYLOAD_STAT(name) result[#name] = s.name
+            PAYLOAD_STAT(used_slots); PAYLOAD_STAT(used_bytes); PAYLOAD_STAT(retired_bytes);
+            PAYLOAD_STAT(readers); PAYLOAD_STAT(released_slots); PAYLOAD_STAT(released_bytes);
+            PAYLOAD_STAT(last_release_thread);
+            PAYLOAD_STAT(external_owners); PAYLOAD_STAT(external_bytes); PAYLOAD_STAT(external_released_bytes);
+#undef PAYLOAD_STAT
+            return result;
+        });
+    using HistoryWorker = vllm_kvmem::HistoricalGcWorker;
+    using HistoryScope = vllm_kvmem::HistoricalGcScope;
+    using HistoryMode = vllm_kvmem::HistoricalGcMode;
+    using HistoryCompletion = vllm_kvmem::HistoricalCompletion;
+    py::enum_<HistoryMode>(m, "HistoricalGcMode")
+        .value("OFF", HistoryMode::Off)
+        .value("SHADOW", HistoryMode::Shadow)
+        .value("DELETE", HistoryMode::Delete);
+    py::class_<HistoryWorker::Config>(m, "HistoricalGcConfig")
+        .def(py::init<>())
+#define HCFG(name) .def_readwrite(#name, &HistoryWorker::Config::name)
+        HCFG(max_scopes) HCFG(scope_capacity) HCFG(poll_ms) HCFG(ready_low) HCFG(ready_high)
+        HCFG(cpu_free_low) HCFG(cpu_free_high) HCFG(scan_blocks) HCFG(delete_blocks)
+        HCFG(mode) HCFG(keep_mandatory) HCFG(background)
+#undef HCFG
+        ;
+    py::class_<HistoryCompletion>(m, "HistoricalCompletion")
+        .def_readonly("handle", &HistoryCompletion::handle)
+        .def_readonly("cpu", &HistoryCompletion::cpu)
+        .def_readonly("slot", &HistoryCompletion::slot);
+    py::class_<vllm_kvmem::HistoricalFrameHold, std::shared_ptr<vllm_kvmem::HistoricalFrameHold>>(m, "HistoricalFrameHold");
+    py::class_<HistoryScope, std::shared_ptr<HistoryScope>>(m, "HistoricalGcScope")
+        .def("protect", &HistoryScope::protect)
+        .def("admit_read", [](HistoryScope &scope, KvMemBlockHandle handle) -> py::object {
+            auto admission = scope.admit(handle);
+            if (!admission.lease) return py::none();
+            auto cpu = std::dynamic_pointer_cast<vllm_kvmem::HistoricalReadOwner>(admission.cpu);
+            return py::make_tuple(std::move(admission.lease), cpu ? py::cast(cpu->read.clone()) : py::none());
+        })
+        .def("publish", &HistoryScope::publish, py::arg("lease"), py::arg("cpu"),
+             py::arg("flags"), py::arg("use_seq") = 0)
+        .def("update", &HistoryScope::update, py::arg("lease"), py::arg("flags"), py::arg("use_seq") = 0)
+        .def("used", &HistoryScope::used)
+        .def("pause_policy", &HistoryScope::pause_policy)
+        .def_property_readonly("policy_paused", &HistoryScope::policy_paused)
+        .def("request_capacity", &HistoryScope::request_capacity, py::arg("ready_slots"),
+             py::arg("retained_cpu_bytes") = UINT64_MAX)
+        .def("completions", &HistoryScope::completions, py::arg("limit") = 64)
+        .def("acknowledge", &HistoryScope::acknowledge)
+        .def("close", &HistoryScope::close)
+        .def_property_readonly("stats", [](const HistoryScope &scope) {
+            const auto stats = scope.stats();
+            py::dict result;
+#define HSTAT(name) result[#name] = stats.name
+            HSTAT(published); HSTAT(ticks); HSTAT(examined); HSTAT(decisions); HSTAT(retired);
+            HSTAT(cpu_released); HSTAT(slots_released); HSTAT(pending_slots); HSTAT(pending_cpu_bytes);
+            HSTAT(retries); HSTAT(stale); HSTAT(policy_failures); HSTAT(shadow_decisions);
+            HSTAT(admission_attempts); HSTAT(admission_retries);
+#undef HSTAT
+            return result;
+        });
+    py::class_<HistoryWorker>(m, "HistoricalGcWorker")
+        .def(py::init<HistoryWorker::Config, std::shared_ptr<PayloadArena>>())
+        .def_property_readonly("storage_stats", [](const HistoryWorker &worker) {
+            const auto stats = worker.storage_stats();
+            py::dict result;
+            result["allocations"]=stats.allocations; result["recycles"]=stats.recycles;
+            result["pooled_scopes"]=stats.pooled_scopes; result["scope_capacity"]=stats.scope_capacity;
+            return result;
+        })
+        .def("register_scope", [](HistoryWorker &worker, std::shared_ptr<KvMemRepository> repository) {
+            py::gil_scoped_release no_gil;
+            return worker.register_scope(std::move(repository));
+        })
+        .def("advance", [](HistoryWorker &worker) {
+            py::gil_scoped_release no_gil;
+            worker.advance();
+        })
+        .def("close", &HistoryWorker::close);
+    m.attr("HISTORY_SEALED") = py::int_(uint32_t(vllm_kvmem::HistoricalSealed));
+    m.attr("HISTORY_MANDATORY") = py::int_(uint32_t(vllm_kvmem::HistoricalMandatory));
+    m.attr("HISTORY_GPU") = py::int_(uint32_t(vllm_kvmem::HistoricalGpu));
     py::class_<KvMemStoreConfig>(m, "StoreConfig")
         .def(py::init<>())
 #define CFG(x) .def_readwrite(#x, &KvMemStoreConfig::x)
@@ -668,6 +855,19 @@ PYBIND11_MODULE(_native, m) {
 #undef REMAP
         ;
     py::class_<KvMemPlan>(m, "Plan")
+        .def("admitted_read", [](const KvMemPlan &plan, KvMemBlockHandle handle) -> py::object {
+            if (!plan.repository_next_window) return py::none();
+            for (size_t i = 0; i < plan.repository_next_window->size(); ++i) {
+                const auto &lease = (*plan.repository_next_window)[i];
+                if (lease.handle() != handle) continue;
+                auto cpu = std::dynamic_pointer_cast<vllm_kvmem::HistoricalReadOwner>(plan.cpu_sources[i]);
+                return py::make_tuple(lease.clone(), cpu ? py::cast(cpu->read.clone()) : py::none());
+            }
+            throw std::invalid_argument("Read is outside the admitted assembly window");
+        })
+        .def("release_cpu_sources", [](KvMemPlan &plan) {
+            for (auto &source : plan.cpu_sources) source.reset();
+        })
 #define PLAN(x) .def_readonly(#x, &KvMemPlan::x)
         PLAN(stage_in) PLAN(stage_out) PLAN(remaps) PLAN(total_window_tokens)
         PLAN(selection_overlap_blocks) PLAN(gpu_reused_blocks)
@@ -689,6 +889,11 @@ PYBIND11_MODULE(_native, m) {
         .def("close", &OwnedScoreFrame::close);
     py::class_<KvMemStore>(m, "Store")
         .def(py::init<KvMemStoreConfig, std::shared_ptr<KvMemRepository>>())
+        .def("attach_history", [](KvMemStore &store, std::shared_ptr<HistoryScope> scope) {
+            if (scope && store.repository() == nullptr)
+                throw std::invalid_argument("Historical scope requires a repository");
+            store.attach_history_observer(std::move(scope));
+        })
         .def("attach_gc", [](KvMemStore &store, std::shared_ptr<RepositoryGcBridge> gc) {
             py::gil_scoped_release no_gil;
             store.attach_repository_gc(gc ? gc->native : nullptr);
