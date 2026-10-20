@@ -26,14 +26,24 @@ def prepare(args):
     from vllm_kvmem.options import RuntimeOptions
     reference=args.reference.resolve();base=read(reference/'profile.json');old=read(reference/'manifest.json')
     if read(reference/'status.json')['status']!='passed':raise ValueError('Require original passed full C8 reference')
+    combined=getattr(args,'combined',False)
+    if combined:
+        if old.get('overhead_mode')!='reference' or any(base['kvmem'].get(key,False) for key in SWITCHES.values()):
+            raise ValueError('Combined comparison requires a completed all-off reference')
+        for name,digest in old['runtime_sha256'].items():
+            if name.startswith('src/') and sha(ROOT/name)!=digest:
+                raise ValueError('Reused reference serving source differs: '+name)
+        for name,digest in read(reference.parent/'manifest.json')['cpp_sha256'].items():
+            if sha(ROOT/name)!=digest:raise ValueError('Reused reference C++ source differs: '+name)
     for key,name in [('profile_sha256','profile.json'),('fixture_sha256','fixture.json')]:
         if sha(reference/name)!=old[key]:raise ValueError('Reference changed')
     validate_profile(base,'D','niah')
     root=args.output.resolve();root.mkdir(parents=True,exist_ok=False)
     jobs={};order=[]
-    for component,flag in SWITCHES.items():
-        for repetition in (1,2):
-            for mode in ('reference','optimized'):
+    comparisons=[('combined','all_four')] if combined else list(SWITCHES.items())
+    for component,flag in comparisons:
+        for repetition in ((1,) if combined else (1,2)):
+            for mode in (('optimized',) if combined else ('reference','optimized')):
                 name=f'{component}-{mode}-{repetition}';order.append(name)
                 profile=deepcopy(base)
                 profile.update(port=args.port,served_model_name='kvmem-attention-overhead')
@@ -46,7 +56,8 @@ def prepare(args):
                     profile['kvmem']['action_native_scores']='off'
                 else:
                     profile['kvmem'].pop('action_native_scores',None)
-                profile['kvmem'][flag]=mode=='optimized'
+                if combined:profile['kvmem'].update({key:True for key in SWITCHES.values()})
+                else:profile['kvmem'][flag]=mode=='optimized'
                 validate_profile(profile,'D','niah')
                 path=root/(name+'-profile.json');save(path,profile);job=root/name
                 build_launch(profile,job,job/'launch-preflight')
@@ -67,8 +78,13 @@ def prepare(args):
         cpp_sha256={str(p.relative_to(ROOT)):sha(p) for folder in ('csrc','third_party/qw3')
             for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.cpp','.hpp','.cuh')},
         start_cpu_available_bytes=105620439040,minimum_cpu_available_bytes=8589934592,minimum_gpu_free_mib=4096,
-        scope='Four independent A/B comparisons with two fresh cohorts per arm. Original V2 D multi/alpha.2/graph-pressure '
-              'policy and full256K+16K C8 workload are fixed; exactly one overhead switch differs in each comparison. '
+        combined=combined,
+        scope=('User-requested combined all-off/all-on comparison, reusing the declared completed all-off reference. '
+              if combined else 'Four independent A/B comparisons with two fresh cohorts per arm. ')+
+              'Original V2 D multi/alpha.2/graph-pressure '
+              'policy and full256K+16K C8 workload are fixed; '+
+              ('all four overhead switches change together. ' if combined else
+               'exactly one overhead switch differs in each comparison. ')+
               'Native FlashInfer/XQA QK reuse is disabled throughout.'))
     save(root/'status.json',dict(status='prepared',at=time.time()))
 
@@ -91,21 +107,22 @@ def audit_switch(job):
     config=read(capture/'action_config.json')
     actions=[json.loads(line) for line in (capture/'action_attention.jsonl').read_text().splitlines()]
     native=manifest['overhead_mode']=='optimized';component=manifest['overhead_component']
-    if config.get('native_decode_commit',False)!=(native and component=='decode'):raise ValueError('Decode mode differs')
-    if config.get('download_pool',False)!=(native and component=='pool'):raise ValueError('Download mode differs')
-    if config.get('fused_scoring',False)!=(native and component=='fused'):raise ValueError('Scoring mode differs')
-    if component=='decode' and native and not max(r['decode_commit_native_calls'] for r in actions):
+    active=lambda name:native and component in (name,'combined')
+    if config.get('native_decode_commit',False)!=active('decode'):raise ValueError('Decode mode differs')
+    if config.get('download_pool',False)!=active('pool'):raise ValueError('Download mode differs')
+    if config.get('fused_scoring',False)!=active('fused'):raise ValueError('Scoring mode differs')
+    if active('decode') and not max(r['decode_commit_native_calls'] for r in actions):
         raise ValueError('Native decode acceptance did not execute')
-    if component=='pool' and native:
+    if active('pool'):
         for r in actions:
             pool=r['download_pool_total']
             if (not pool['reuses'] or pool['exhaustions'] or pool['quarantined_slots'] or
                     pool['allocated_pinned_bytes']>pool['max_pinned_bytes'] or pool['event_count']>pool['max_events']):
                 raise ValueError('Pool was unused, exceeded capacity or failed')
-    if component=='fused' and native and not max(r['scoring_backend_counts'].get('fused',0) for r in actions):
+    if active('fused') and not max(r['scoring_backend_counts'].get('fused',0) for r in actions):
         raise ValueError('Fused bypass scorer did not execute')
     graph=[json.loads(line) for line in (capture/'block_graph.jsonl').read_text().splitlines()]
-    expected=native and component=='propagation'
+    expected=active('propagation')
     for phase in ('query','pressure'):
         rows=[r for r in graph if r['phase']==phase]
         if not rows or any((r.get('backend')=='cpp_v2')!=expected for r in rows):
@@ -178,6 +195,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=('prepare','run'));parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--reference',type=Path);parser.add_argument('--port',type=int,default=18836)
+    parser.add_argument('--combined',action='store_true',help='Prepare only all-on; reuse an existing complete all-off reference')
     args=parser.parse_args();(prepare if args.action=='prepare' else run)(args)
 
 
