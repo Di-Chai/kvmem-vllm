@@ -227,7 +227,8 @@ def prepare(a):
         'protocol_provenance':json.loads((output/'protocol/provenance.json').read_text()),
         'backend_kind':a.backend_kind,
         'duration_seconds':a.duration_seconds,
-        'inference':f"NVFP4 + FP8 KV + MTP(4), compiled CUDA graphs, backend={a.backend_kind}; original qw3 text protocol helpers.",
+        'inference':f"NVFP4 + FP8 KV + {profile.get('draft_method','dflash')}({profile['draft_tokens']}), "
+            f"execution={profile.get('execution_mode','eager')}, backend={a.backend_kind}; original qw3 text protocol helpers.",
         'differences':['vLLM native per-request seed=1000 (qw3 server RNG is sequential)',
             'Current attention pressure + Query history; guided/private growth/evidence triggers remain disabled as current implementation profile',
             f"Native generation max_tokens is capped at G={profile['kvmem']['gen_budget']}; logical position limit {profile['max_model_len']}",
