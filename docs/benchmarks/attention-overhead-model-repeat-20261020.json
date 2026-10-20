@@ -1,0 +1,386 @@
+{
+  "combined": true,
+  "fresh_reference": true,
+  "analyzer_sha256": "72543c23652f6a15048c3c09f1a3fc200b24f3fee8f1955c61af543ff44b7650",
+  "reference": "/home/chaidi/kvmem-freetoken/kvmem-vllm/artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-reference-1",
+  "measurements": {
+    "all_off": {
+      "job": "combined-reference-1",
+      "component": "combined",
+      "mode": "reference",
+      "engine_startup_seconds": 85.0201346874237,
+      "cold_preparation_seconds": 409.17220619414,
+      "effective_input_tokens_per_second": 5124.512291543886,
+      "pure_prefill_model_tokens_per_second": 5550.267905654936,
+      "full_decode_step_mean_ms": 42.78743981581468,
+      "model_decode_step_mean_ms": 41.46862235323212,
+      "shared_decode_output_tokens_per_second": 699.2556604700044,
+      "whole_batch_seconds": 627.6371430829167,
+      "whole_batch_output_tokens_per_second": 208.83403961113908,
+      "observed_process_lifetime_seconds": 719.7533686161041,
+      "observed_output_tokens_per_second_including_startup": 182.10682396946177,
+      "shared_decode_mtp_mean_acceptance_length": 3.858859784283513,
+      "shared_decode_draft_acceptance_rate": 0.7147149460708783,
+      "mtp": {
+        "mean_acceptance_length": 3.858859784283513,
+        "draft_acceptance_rate": 0.7147149460708783,
+        "proposals": 103840.0,
+        "accepted_draft_tokens": 74216.0,
+        "drafts": 25960.0,
+        "samples": 29,
+        "scope": "Counter deltas inside common C8 decode with two-second guards for 1Hz publication; length includes bonus token."
+      },
+      "owner_verifications": 35316,
+      "output_per_owner_verification": 3.711179068977234,
+      "accepted_output_samples": 7391,
+      "accepted_prefill_samples": 65384,
+      "candidate_samples": 75540,
+      "metadata_early_batches": 5970,
+      "metadata_fallback_batches": 1,
+      "gpu_peak_allocated_bytes": 89177570816,
+      "gpu_peak_reserved_bytes": 92960456704,
+      "observed_peak_gpu_used_mib": 74224.0,
+      "observed_peak_owned_process_rss_bytes": 93916848128,
+      "observed_peak_owned_process_pss_bytes": 93505792000,
+      "graph_scoring_seconds": 4.974412448704243,
+      "graph_selection_seconds": 11.405193304643035,
+      "decode_commit_native_calls": 0,
+      "decode_commit_python_calls": 35316,
+      "download_pool": null,
+      "scoring_backend_counts": {
+        "reference": 36636
+      },
+      "graph_backends": {
+        "cpp_v2": 0,
+        "python_reference": 112
+      },
+      "native_graph_indexes": {},
+      "native_qk_reuse": false,
+      "identities": {
+        "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+        "query_selection_multiset": [
+          "04688113cc1596bd409d8a1f4911b17f7949f660b0c78f7e3daff332ca68f13a",
+          "2ae9c70d91d6c84cd0d6b21a120a5ccccd6c5e65bc778175219fea775b1ebdef",
+          "3c80f04692dcfd4593ea8f094acd693bf3254dd6cb431c16eee746bba8f0ed9d",
+          "3d097fa06d4cd0891ec7f798f8239b3c257044897662bc4b13021ce29902a4e1",
+          "6f5baa1cf0a6a2b13f9db2891ad7b6848afa42b7619ede1196495f6500b9dc7b",
+          "771d8554ad0dc84f99bbe5069d5face7aac5eb9f9f80382a646d32d8a2581e19",
+          "ac52733346aa9cd521f526b2448776228617a4250e281e249490c582dd7f1145",
+          "bcffa167a340fd8dbec3ee905b0acf7be42c94fc0fbb9b33f5485bfe7a32a866"
+        ],
+        "pressure_selection_multiset": [
+          "329be983206a80d4332a51322eba65b3e3320df165e771ff6a905bf7fed0288e",
+          "37c0bffb07365cdc3e6c986e4fe0448377be8dca401c7800a97d8609f9986716",
+          "43ed0938efee8b72b82c4d6aa7d40781dc7948d2f5b2c66da120651662437886",
+          "81f046b50bf099d55c72a7e3fef4224726a9be0538ca216743fda317008f94e3",
+          "9401e0961849f9fdc3f8a905c23e8d98fe9fa4d80c1f22f6a60d78ddd121cf0b",
+          "b427cc898b262eb94fc314b3b7c1de56350d5feb6047e1a663ebeae9017b9262",
+          "d9dc4ece30adb00aede233add0de57700f56f7b4d635adbedd5a692f7d9080a5",
+          "dbe5e1bbe4d0f6180f80dbaf1c7e53db854cdaa9ad79932b1ffbd3ef4a04657c"
+        ],
+        "accepted_output_multiset": [
+          "1891bf3dafde8be60b76520eaa27aac83d76c578365e8f172acef6bc360cd636",
+          "4659e0023c86dc10812272406a9de84ed88006c39886c44e791b3044316fadbb",
+          "5ad904c4e593bc78b6d49163268b91018894a7bd8643d6537e2d81a1c74f3eee",
+          "8c567572d96f44ececd053f97ba3de211b4230b3ea0b34a7d72b4b775390d440",
+          "8d91724c65b99be7921904d93bae333cf1b0ec700a01ef41201e0e21a269f2c2",
+          "97c2161c4adf2c945c6a8006bfea35f41afc43f3623077f0e7dcf46cd35ba630",
+          "988b7ffa12e4af2258abb381d4b1456ee9b350f18ba779c5c8b0f80306d2b1ce",
+          "f9e2e5cc98925f4634ec11ffc8f18802f3d6a8329398734d95be9c9c8231152e"
+        ]
+      },
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed",
+      "original_snapshot_violations": [],
+      "audit_sha256": "bde9837aa7989c21e9c6b15d19839f5067c634b1b1eac61e3860e25c9973d1f1"
+    },
+    "all_on": {
+      "job": "combined-optimized-1",
+      "component": "combined",
+      "mode": "optimized",
+      "engine_startup_seconds": 82.87019729614258,
+      "cold_preparation_seconds": 402.17475453112274,
+      "effective_input_tokens_per_second": 5213.673847938499,
+      "pure_prefill_model_tokens_per_second": 5542.897138823902,
+      "full_decode_step_mean_ms": 42.621556711414634,
+      "model_decode_step_mean_ms": 41.24985964701056,
+      "shared_decode_output_tokens_per_second": 785.7998487841352,
+      "whole_batch_seconds": 608.9019407173619,
+      "whole_batch_output_tokens_per_second": 215.25961938236057,
+      "observed_process_lifetime_seconds": 698.6796469688416,
+      "observed_output_tokens_per_second_including_startup": 187.59956808337557,
+      "shared_decode_mtp_mean_acceptance_length": 4.330945677376615,
+      "shared_decode_draft_acceptance_rate": 0.8327364193441537,
+      "mtp": {
+        "mean_acceptance_length": 4.330945677376615,
+        "draft_acceptance_rate": 0.8327364193441537,
+        "proposals": 96608.0,
+        "accepted_draft_tokens": 80449.0,
+        "drafts": 24152.0,
+        "samples": 27,
+        "scope": "Counter deltas inside common C8 decode with two-second guards for 1Hz publication; length includes bonus token."
+      },
+      "owner_verifications": 31702,
+      "output_per_owner_verification": 4.134250205034383,
+      "accepted_output_samples": 6111,
+      "accepted_prefill_samples": 65384,
+      "candidate_samples": 73185,
+      "metadata_early_batches": 5916,
+      "metadata_fallback_batches": 1,
+      "gpu_peak_allocated_bytes": 89177570816,
+      "gpu_peak_reserved_bytes": 92960456704,
+      "observed_peak_gpu_used_mib": 74224.0,
+      "observed_peak_owned_process_rss_bytes": 94176215040,
+      "observed_peak_owned_process_pss_bytes": 93767178240,
+      "graph_scoring_seconds": 1.8562654480338097,
+      "graph_selection_seconds": 8.13116276729852,
+      "decode_commit_native_calls": 31702,
+      "decode_commit_python_calls": 0,
+      "download_pool": {
+        "allocations": 34,
+        "reuses": 15740,
+        "exhaustions": 0,
+        "allocated_pinned_bytes": 2580480,
+        "active_pinned_bytes": 12288,
+        "peak_active_pinned_bytes": 1441792,
+        "event_count": 34,
+        "max_pinned_bytes": 67108864,
+        "max_events": 128,
+        "storage_carrier": "dlpack",
+        "quarantined_slots": 0
+      },
+      "scoring_backend_counts": {
+        "fused": 29571
+      },
+      "graph_backends": {
+        "cpp_v2": 112,
+        "python_reference": 0
+      },
+      "native_graph_indexes": {
+        "cmpl-a0a4fcdde2cab18c-0-b09c7e85": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-98514e47fa75fab8-0-9aa52085": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-89e8b95cbfcf30c7-0-873bae22": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-a7153e6e9d11bcf0-0-801c6488": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-8f60af54e325747b-0-a9aeb837": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-8699426828ad4747-0-8e74ce75": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-b096050debc0118e-0-b1c2d974": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        },
+        "cmpl-9e89329c927768e8-0-a7926468": {
+          "native_index_bytes": 2623072,
+          "native_index_builds": 14,
+          "native_index_hits": 0
+        }
+      },
+      "native_qk_reuse": false,
+      "identities": {
+        "input_sha256": "a5076ac38d75bcd05ff998e7fce37c780878dae30b9cb06a31e40c40faba6e39",
+        "query_selection_multiset": [
+          "01b34586564acb17ff319371a534c19d040cf92899325e37f2cb82a3e5b5a8ed",
+          "0292e82c33e773b23202f4177ab692add8ccd94b5ccee52e05d67d6a8f74e9e5",
+          "3e1d3dca274cf95adb075f1cd5a624f9ede876f72404afce83604d1af148f22f",
+          "53bc443dd9be7b9715a75555bfdd6c3bbff1713dbfdd78610aa136e332e731b5",
+          "7eb445b329484c61e40ab84ab327a57103ef7607122a8049e34efc2ee6705546",
+          "8d7fef94a1eed24586b582ee52b14c294ee7f22f086b3db99a832f1c3d8feef3",
+          "d18fcee2b33eabb51a35f6f787a6fd12ab2dc81d01207eccda1db7d5068ec0c7",
+          "fa2e69e9124ac46822628b242ff0ba1becbdb8482dafe3466074bad56a5b597d"
+        ],
+        "pressure_selection_multiset": [
+          "0176fa75ab0ea627e84c43d80997bd6085276b431c019d59d121fddb2c72f9b4",
+          "1a0a37cf45bda4902473ac26ac9c6f6d65e326991d0956b946e1aba149042fa7",
+          "407a7fdb125de3a115957520d5807d1a74202ec16e9b2ed9465671c188834477",
+          "4e27e9f9b6de1919ea3438fc24633e530f1ac0bf22b9f986bfa493c3aa9e7fb4",
+          "59f94e4bf3d23e936a52ee9a22f3f74c64a91caf0b593c9ffcebe1cecd9050b0",
+          "aa7efc73e51adc57335e1684a2e6e3d06ab3c515fea7a0f565306e02e58c744e",
+          "cd6f84605f986cad39924fba7c80390dff9f580bf1ecca456c49e40d35a306ed",
+          "d3bc3576d83aa655ba3c7635c3d4548f4a0ef376ca678e94c6de35fb10dc04f4"
+        ],
+        "accepted_output_multiset": [
+          "29b1d47b7c72870aac6ab2a05497c29103c5c191bc9b7a9c3d653c4901026a1e",
+          "2d6debd61d632138d08d647b627c07c3af25dd1589b6987150a945baaeaac46d",
+          "5a446ab8395f016203f06e6ff6da20cba4ed652aac7500213053c650bdd41066",
+          "673c2675c6e7ee64378cf6c9cc7659728223656cb657ccd03569a26c72236175",
+          "7b66cad5abf89938a6850990153da23d90ab2c4d1c350ae6fe53335ba10583ad",
+          "89e88be2e6efac9f82b1d2724d8bce0ad49d9fde98425f00eca13c58f33855f8",
+          "a4b376bafb78a4a0bf93dda35ec1fd359416d9405b37b02aa3a34df9838ab2b8",
+          "e1ce6eb316de0558285c4e73abbb08cbc2ae1d8eafb0584f5ca473ebcb2f7fc4"
+        ]
+      },
+      "original_job_status": "failed",
+      "original_snapshot_status": "failed",
+      "original_snapshot_violations": [
+        {
+          "sample_index": 1606,
+          "read_started_at": 402.74147944897413,
+          "read_finished_at": 402.99354700930417,
+          "reasons": [
+            "prefill_increment_during_window"
+          ],
+          "prefill_delta": 2
+        }
+      ],
+      "audit_sha256": "11808956044f375ab6a5594ccf03feda7d5a27f7795f4570df1869e9808c7087"
+    }
+  },
+  "observed_percent_change": {
+    "engine_startup_seconds": -2.5287391030199724,
+    "cold_preparation_seconds": -1.7101483329239553,
+    "effective_input_tokens_per_second": 1.7399032595109887,
+    "pure_prefill_model_tokens_per_second": -0.13280019913135543,
+    "full_decode_step_mean_ms": -0.3876911194362509,
+    "model_decode_step_mean_ms": -0.5275379161577387,
+    "shared_decode_output_tokens_per_second": 12.376616051411027,
+    "whole_batch_seconds": -2.9850372260520897,
+    "whole_batch_output_tokens_per_second": 3.0768833391272343,
+    "observed_process_lifetime_seconds": -2.927908720702732,
+    "observed_output_tokens_per_second_including_startup": 3.016220915936074,
+    "shared_decode_mtp_mean_acceptance_length": 12.23381826455132,
+    "shared_decode_draft_acceptance_rate": 16.513083142040696,
+    "owner_verifications": -10.233322007022316,
+    "output_per_owner_verification": 11.3999116774967,
+    "accepted_output_samples": -17.31836016777162,
+    "accepted_prefill_samples": 0.0,
+    "candidate_samples": -3.1175536139793514,
+    "metadata_early_batches": -0.9045226130653283,
+    "metadata_fallback_batches": 0.0,
+    "gpu_peak_allocated_bytes": 0.0,
+    "gpu_peak_reserved_bytes": 0.0,
+    "observed_peak_gpu_used_mib": 0.0,
+    "observed_peak_owned_process_rss_bytes": 0.2761665421805004,
+    "observed_peak_owned_process_pss_bytes": 0.27954015939462007,
+    "graph_scoring_seconds": -62.683724617219106,
+    "graph_selection_seconds": -28.706488788854312,
+    "decode_commit_python_calls": -100.0
+  },
+  "changed_switches": [
+    "action_native_decode_commit",
+    "action_download_pool",
+    "action_fused_scoring",
+    "graph_native_propagation"
+  ],
+  "serving_sources_identical": true,
+  "native_qk_reuse": false,
+  "trajectory": {
+    "identity_equal": {
+      "input_sha256": true,
+      "query_selection_multiset": false,
+      "pressure_selection_multiset": false,
+      "accepted_output_multiset": false
+    },
+    "query_history_overlap": {
+      "mean": 0.9414717497783885,
+      "minimum": 0.9230125523012552,
+      "maximum": 0.9540816326530612,
+      "mandatory_fits_equal": true,
+      "scope": "All cross-owner history-page Jaccards; first inputs identical for all eight owners."
+    },
+    "verification_count_equal": false
+  },
+  "existing_all_off_repetitions": [
+    {
+      "job": "combined-reference-1",
+      "shared_decode_output_tokens_per_second": 699.2556604700044,
+      "full_decode_step_mean_ms": 42.78743981581468,
+      "shared_decode_mtp_mean_acceptance_length": 3.858859784283513,
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed"
+    }
+  ],
+  "limitation": "User requested one combined all-off/all-on comparison. Both primary cohorts are fresh and their all-off/all-on order was declared before launch. A single pair cannot establish stable causal throughput improvement. Generation/selection and MTP differences are reported separately. Step CUDA-event intervals and wall throughput cover different scopes; startup includes first-use cache/JIT effects. Resource observations are sampled at 1Hz, process RSS/PSS at 5s. Raw snapshot-gate failures remain unchanged; complete executed-window and terminal/release audits are independent.",
+  "classification": "diagnostic_repeat_original_all_on_snapshot_gate_failed",
+  "end_to_end_speedup_established": false,
+  "original_strict_pair_passed": false,
+  "proof_summary": {
+    "all_off": {
+      "original_job_status": "passed",
+      "original_snapshot_status": "passed",
+      "controller_returncode": 0,
+      "executed_overlap_steps": 3380,
+      "last_actual_prefill_before_window_seconds": 0.6012410633265972,
+      "native_snapshot_coverage": 0.9958409366445609,
+      "full_output_requests": 8,
+      "accepted_output_each": 16384,
+      "terminal_histories": 8,
+      "all_owned_history_checkpoint_graph_released": true,
+      "no_historical_ssd_io": true
+    },
+    "all_on": {
+      "original_job_status": "failed",
+      "original_snapshot_status": "failed",
+      "controller_returncode": 1,
+      "executed_overlap_steps": 3285,
+      "last_actual_prefill_before_window_seconds": 0.5955081023275852,
+      "native_snapshot_coverage": 0.9950350283826238,
+      "full_output_requests": 8,
+      "accepted_output_each": 16384,
+      "terminal_histories": 8,
+      "all_owned_history_checkpoint_graph_released": true,
+      "no_historical_ssd_io": true
+    }
+  },
+  "previous_combined_comparison": {
+    "all_off": {
+      "pure_prefill_model_tokens_per_second": 5549.723440248432,
+      "shared_decode_output_tokens_per_second": 743.115531964266,
+      "full_decode_step_mean_ms": 42.76519059679638,
+      "shared_decode_mtp_mean_acceptance_length": 4.1091098169717135,
+      "whole_batch_output_tokens_per_second": 210.1482559733917
+    },
+    "all_on": {
+      "pure_prefill_model_tokens_per_second": 5535.887687874425,
+      "shared_decode_output_tokens_per_second": 669.6346377042362,
+      "full_decode_step_mean_ms": 43.099172875210705,
+      "shared_decode_mtp_mean_acceptance_length": 3.7059176809737346,
+      "whole_batch_output_tokens_per_second": 210.05616904203737
+    }
+  },
+  "source_provenance": {
+    "serving_source_matches_current": true,
+    "cpp_source_matches_current": true,
+    "serving_source_sha256": "9c178a367b1155a845892ec001cd32437785171f6c139a826e8bb73e5a8ba431",
+    "cpp_source_sha256": "d04d944ca1b95735d04fe29689630497135e3c672f78c4221bacb381460f36f2",
+    "coordinator_commit": "1fc751e",
+    "coordinator_sha256": "40b90c2fc09783fcd35943f45e8d72d4af7c3dc28c757cc25e1b97aa64c9a873"
+  },
+  "evidence_sha256": {
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1-analysis.json": "b9e327d01ad39defb6a0075f530041e17e0922a3f644c1cbd3c7ae4bebedbe20",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/manifest.json": "8e7cdcb25747e21e4a3a09b463735389f66ec5e4f573b0bef692ede1831351ea",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/repeat-plan.json": "cedd93526b6bc8666adf401043b9a74740b8766b6ce170a444b0e9c982ed657e",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-reference-1/manifest.json": "868bd1b96fbb2b7e98f847fabbf4e93ef95ec4f6c27a2eeaacc868ee49953aa6",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-reference-1-executed-audit.json": "bde9837aa7989c21e9c6b15d19839f5067c634b1b1eac61e3860e25c9973d1f1",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-reference-1/cleanup.json": "993be4787cff39267a20f519150486cd43da0c32b74bec1985373c144e3bfbb2",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-optimized-1/manifest.json": "1c76dccdb4dad0e4ab49dc4b1693f6c830a884f6dcb5efc832544f8ef858444f",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-optimized-1-executed-audit.json": "11808956044f375ab6a5594ccf03feda7d5a27f7795f4570df1869e9808c7087",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/combined-optimized-1/cleanup.json": "2ecbc57337adfa3cf2d5488fd29e9d08333b2482eaa4e0071aa8c730b2a4927a",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/final-cleanup.json": "a11754cfa700e80217a9d220b9e9325ea3f0b3a440b14296d0834d16f129e634",
+    "artifacts/attention-overhead-20261020/model-c8-repeat-r1/final-source-ownership-audit.json": "5e08d47f67f50534f7eab20dfcea4b5fc3bf3520979ecd6034e65ec36a39735c"
+  },
+  "qualification_limitation": "All-on original strict snapshot gate failed on one prefill counter increment of 2 at the beginning of the common window; controller exit code 1 and failed statuses remain unchanged. Independent complete executed-model rows prove pure C8, and all eight full outputs, terminal histories, no historical SSD I/O and release checks pass. This repeat is diagnostic, not a fully qualified performance acceptance.",
+  "causal_limitation": "MTP mean accepted length rises 12.23% while shared output rate rises 12.38%; full step intervals fall 0.39%. Inputs match but selections and output trajectories differ. Neither this increase nor the initial decrease isolates the optimizations from trajectory or MTP effects. No new default is enabled."
+}

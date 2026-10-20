@@ -2,10 +2,12 @@
 
 All four switches remain **default off**. Implementation, fixed-input component
 correctness, six real-model cross-turn state runs and component measurements are
-complete. The user-requested combined all-off/all-on full-C8 comparison is also
-complete: both primary runs pass the original strict gate, complete executed
-window, terminal-history and release audits. **Whole-batch throughput is flat;
-this experiment does not establish an end-to-end speedup.**
+complete. Both runs of the initial combined full-C8 comparison pass the original
+strict gate and execution/lifecycle audits; whole-batch throughput is flat.
+A later user-requested fresh repeat observes higher decode throughput alongside
+higher MTP acceptance, but its all-on original snapshot gate fails. That repeat
+is retained as diagnostic evidence, with its failure unchanged.
+**Neither comparison establishes an isolated end-to-end optimization speedup.**
 
 This work optimizes the **existing bypass scorer** and its consumers. It is
 separate from the experimental native FlashInfer/XQA QK reuse route.
@@ -245,7 +247,7 @@ source or numerical path changes. `model-c8-r3` started the independent cohorts 
 the corrected client; the later user-requested combined plan reuses its completed
 all-off reference and keeps the same correction.
 
-## Combined result
+## Initial combined result
 
 Primary evidence is in
 [`attention-overhead-model-20261020.json`](benchmarks/attention-overhead-model-20261020.json).
@@ -254,7 +256,8 @@ All-off is the predeclared `model-c8-r3/decode-reference-2`; all-on is
 262,101 prompt and 16,384 accepted output tokens each, pass the **original**
 strict native gate and independent complete executed-window audit, publish all
 eight terminal histories and release all owned history/checkpoint/graph state.
-Historical SSD read/write bytes are zero. No further model test is scheduled.
+Historical SSD read/write bytes are zero. The later user-requested fresh repeat
+is recorded separately below.
 
 | Metric | All off | All on | Observed change |
 | --- | ---: | ---: | ---: |
@@ -301,8 +304,9 @@ mask and history semantics, while closed-loop model trajectories can differ.
 Shared decode output rate falls 9.89% while native MTP mean length falls
 9.81%. Owner verification calls and accepted scoped sample counts increase;
 the capture intervals and scoring/graph parameters remain unchanged. The output
-rate change therefore cannot be reported as a measured net regression caused by
-the optimization. Conversely, the lower cold/startup time cannot establish a net
+rate change therefore does not isolate a net regression caused by
+the optimization, nor rule out an effect of the optimization on trajectories.
+Conversely, the lower cold/startup time cannot establish a net
 optimization benefit. **Whole-batch output rate is essentially unchanged**
 (210.148 → 210.056 token/s), and full step intervals are slightly higher.
 
@@ -351,10 +355,11 @@ have their own explicit budgets in addition to these process observations.
 ### Acceptance and retained evidence
 
 Implementation and correctness qualification are complete. Component CPU costs
-and scorer scratch allocation improve; this single combined pair does **not**
+and scorer scratch allocation improve; this initial combined pair does **not**
 demonstrate a net end-to-end throughput improvement. All four defaults stay off.
-The single-pair scope follows the user's reduced test plan; no extra repetitions
-or per-feature full-model runs were started after that change.
+The initial single-pair scope follows the user's reduced test plan. No further
+per-feature full-model cohorts were run. A subsequent explicit request to repeat
+the combined comparison led to the two fresh cohorts below.
 
 Raw failed coordinator/client attempts and the user-interrupted independent
 cohort retain their original statuses and logs. They are excluded from the
@@ -371,3 +376,115 @@ resource timelines and cleanup records remain under
 `artifacts/attention-overhead-20261020/`; the compact tracked JSON includes raw
 analysis, manifest and audit hashes. GPU/CPU component and state qualification
 are independent of the earlier experimental native-QK route.
+
+## Fresh repeat after the MTP diagnosis
+
+The user requested another measurement to check the possible MTP effect.
+`1fc751e` adds `--combined --fresh-reference`: prepare exactly one new all-off
+cohort followed by one new all-on cohort, without rerunning individual switches.
+The order, inputs and metrics were frozen before results in
+`model-c8-repeat-r1/repeat-plan.json`. Both profiles exactly match the previous
+profile except for the four declared booleans. MTP remains **k=4**; source,
+extension, C++ headers, input, seed, temperature, capture density, graph policy,
+full output length and capacities remain unchanged. Native QK reuse stays off.
+
+The first preparation invocation imported an older installed serving schema
+because it omitted `PYTHONPATH=src`. It failed **before any model launch**;
+`model-c8-combined-r2/preparation-failure.json` retains that attempt. The corrected
+preparation created `model-c8-repeat-r1`, the only new two-cohort GPU run.
+
+### Qualification status: diagnostic repeat
+
+The all-off original job and strict snapshot gate **pass**. The all-on original
+job and strict snapshot gate **fail**, with controller return code 1. One
+scheduled-prefill counter increment of 2 is observed between 402.741 and
+402.994 seconds, shortly after the common SSE window begins at 402.624 seconds.
+The original `prefill_increment_during_window` violation and client failure are
+retained. The coordinator's `completed` status means both cohorts and independent
+audits finished; it does **not** mean both original qualifications passed.
+
+Independent complete execution audits pass for both cohorts: 3,380 / 3,285
+contiguous model submissions overlapping their respective windows are pure C8,
+with no prefill or Query/pressure refresh. The last actual prefill submission
+ends 0.601 / 0.596 seconds before each common window. Snapshot coverage is
+99.58% / 99.50%. Thus the recorded increment is consistent with delayed
+publication, rather than an executed prefill step inside the window; this
+interpretation does not override the original gate.
+
+Both runs complete all eight full inputs and 16,384 accepted output tokens per
+request, publish all eight terminal histories, release all owned history,
+checkpoints and graph state, and perform zero historical SSD I/O. No owned
+model/GPU process remains. **The repeat is diagnostic, not a fully qualified
+performance acceptance.** No automatic replacement run or gate relaxation is
+performed.
+
+### Observed repeat costs
+
+All throughput rates are totals across eight requests. The same event/wall
+scopes and resource sampling limitations as the initial comparison apply.
+
+| Metric | Fresh all off | Fresh all on (diagnostic) | Observed change |
+| --- | ---: | ---: | ---: |
+| Engine startup/JIT, s | 85.020 | 82.870 | -2.53% |
+| Cold request preparation / last first-token, s | 409.172 | 402.175 | -1.71% |
+| Effective input wall rate, token/s | 5,124.51 | 5,213.67 | +1.74% |
+| Pure-prefill model event rate, token/s | 5,550.27 | 5,542.90 | -0.13% |
+| Shared C8 accepted output rate, token/s | 699.26 | 785.80 | +12.38% |
+| Full decode step event interval, ms | 42.787 | 42.622 | -0.39% |
+| Model decode step event interval, ms | 41.469 | 41.250 | -0.53% |
+| Whole ready-batch wall time, s | 627.637 | 608.902 | -2.99% |
+| Whole ready-batch output rate, token/s | 208.834 | 215.260 | +3.08% |
+| Observed controller lifetime, s | 719.753 | 698.680 | -2.93% |
+| Observed output rate including startup, token/s | 182.107 | 187.600 | +3.02% |
+| MTP mean accepted length, including bonus | 3.859 | 4.331 | +12.23% |
+| Draft acceptance rate | 71.47% | 83.27% | +11.80 percentage points |
+| Total owner verification calls | 35,316 | 31,702 | -10.23% |
+| Accepted scoped output observations | 7,391 | 6,111 | -17.32% |
+| Accepted prefill observations | 65,384 | 65,384 | unchanged |
+
+The initial common decode drop (743.12 -> 669.63 token/s) is not reproduced in
+these diagnostic measurements: the sign changes while MTP mean accepted length
+also changes sign (initial 4.109 -> 3.706, repeat 3.859 -> 4.331). Full step
+interval changes are below 1% in both comparisons. This supports treating MTP
+and trajectory variation as material confounders. It does **not** establish that
+the optimizations cannot affect those trajectories, nor justify reporting
+12.38% as their net decode benefit. The measured 3.08% whole-batch increase has
+the same qualification and causality limitations. No pooled causal estimate is
+computed from the qualified initial pair and the diagnostic repeat.
+
+Input hashes match, but Query/pressure selections and accepted-output hashes
+differ. Query history-page Jaccard averages 0.9415 (range 0.9230–0.9541), with
+matching mandatory contents. The larger MTP acceptance also reduces verification
+and scoped-sampling work, so reduced total CPU costs are not all attributed to
+faster implementations.
+
+### Actual modes and memory
+
+Both runs execute the same 112 graph selection calls. Graph scoring takes
+4.974 -> 1.856 s (-62.68%); the surrounding selection block takes
+11.405 -> 8.131 s (-28.71%). All-on builds 112 native indexes with zero cache
+hits; index reservation is included in those times. Maximum index reservation
+is 2,623,072 bytes per owner, as in the initial pair.
+
+Actual all-on counters show 31,702 native decode commits (zero Python), 29,571
+fused bypass scorer calls (zero reference), and 112 native propagation reports
+(zero reference). The DLPack pool uses 34 allocations/events and 15,740 reuses,
+retaining 2,580,480 pinned bytes with 1,441,792 peak active bytes. Exhaustions
+and quarantined slots are zero; the 64 MiB / 128-slot limits hold. The existing
+early-metadata fallback occurs once in each arm; none of the four optimized
+paths falls back.
+
+| Observed peak, GiB | Fresh all off | Fresh all on |
+| --- | ---: | ---: |
+| CUDA allocator allocated | 83.053 | 83.053 |
+| CUDA allocator reserved | 86.576 | 86.576 |
+| Owned process RSS, 5s sampling | 87.467 | 87.708 |
+| Owned process PSS, 5s sampling | 87.084 | 87.327 |
+| Device used, 1Hz sampling | 72.484 | 72.484 |
+
+All four defaults remain off. The independent correctness/component results
+remain unchanged; this repeat adds measurements and preserves its strict-gate
+failure. The full analysis, original statuses, raw evidence hashes and source
+provenance are in
+[`attention-overhead-model-repeat-20261020.json`](benchmarks/attention-overhead-model-repeat-20261020.json).
+The initial tracked result and all raw artifacts remain unchanged.
