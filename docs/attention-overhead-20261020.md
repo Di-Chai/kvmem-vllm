@@ -1,6 +1,13 @@
 # Attention maintenance and propagation optimization, 2026-10-20
 
-All four switches remain **default off**. Implementation, fixed-input component
+All four switches are now **default on at the user's explicit request** following
+the measurements below. Each remains independently configurable as `false`.
+The snapshot-gate failure and performance limitations are retained; this default
+change does not convert the diagnostic repeat into a passed acceptance result.
+Native FlashInfer/XQA QK reuse remains off. The measured cohorts below used
+explicit switches, so their original configurations and results are unchanged.
+
+Implementation, fixed-input component
 correctness, six real-model cross-turn state runs and component measurements are
 complete. Both runs of the initial combined full-C8 comparison pass the original
 strict gate and execution/lifecycle audits; whole-batch throughput is flat.
@@ -356,7 +363,8 @@ have their own explicit budgets in addition to these process observations.
 
 Implementation and correctness qualification are complete. Component CPU costs
 and scorer scratch allocation improve; this initial combined pair does **not**
-demonstrate a net end-to-end throughput improvement. All four defaults stay off.
+demonstrate a net end-to-end throughput improvement. All four defaults stayed off
+at the end of that comparison, before the user's later default-enable request.
 The initial single-pair scope follows the user's reduced test plan. No further
 per-feature full-model cohorts were run. A subsequent explicit request to repeat
 the combined comparison led to the two fresh cohorts below.
@@ -482,9 +490,29 @@ paths falls back.
 | Owned process PSS, 5s sampling | 87.084 | 87.327 |
 | Device used, 1Hz sampling | 72.484 | 72.484 |
 
-All four defaults remain off. The independent correctness/component results
+All four defaults remained off at the end of the repeat. The independent correctness/component results
 remain unchanged; this repeat adds measurements and preserves its strict-gate
 failure. The full analysis, original statuses, raw evidence hashes and source
 provenance are in
 [`attention-overhead-model-repeat-20261020.json`](benchmarks/attention-overhead-model-repeat-20261020.json).
 The initial tracked result and all raw artifacts remain unchanged.
+
+## User-requested default enablement
+
+After reviewing the repeat, the user explicitly requested default enablement.
+The runtime constructor, public connector parser, shared graph defaults and
+elastic launcher now default all four implementation switches to `true`. The
+graph example follows that default. Existing explicit `false` settings still
+select each reference path. Attention-statistics activation, graph mode/version,
+sampling density, capacities, MTP and native QK reuse settings are unchanged.
+V1/trace propagation continues to use its compatible reference implementation.
+
+This is a user-directed default policy change, not a new performance claim.
+Neither historical result JSON nor frozen benchmark profiles are rewritten.
+
+Validation: 436 existing configuration, launch, accepted-decode, graph and
+attention regression tests pass. Six configuration variants (omitted settings,
+each switch independently false, and all four false) also pass constructor,
+public connector, direct launch, elastic/backend forwarding and profile replay
+checks. No additional full-model throughput run is needed for this default-only
+change; the explicit all-on execution evidence remains the result above.

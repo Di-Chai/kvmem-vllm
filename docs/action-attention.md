@@ -236,11 +236,14 @@ host preparation. Raw alignment and aggregates are retained in
 `artifacts/action-attention-20261014/niah-utilization.json`.
 
 
-## Optional maintenance, download, scorer and propagation optimizations
+## Maintenance, download, scorer and propagation optimizations
 
-Four independent, default-off switches are available: `action_native_decode_commit`,
+Four independent switches are enabled by default: `action_native_decode_commit`,
 `action_download_pool`, `action_fused_scoring` and `graph_native_propagation`. The
-reference paths remain available. Decode staging preserves accepted-row and
+reference paths remain available by setting the corresponding switch to `false`.
+These switches choose implementations when attention statistics or graph scoring
+are active; they do not enable those policies. Native propagation applies to V2;
+V1 and explicit tracing retain the reference path. Decode staging preserves accepted-row and
 transaction order; the bounded pool retains buffers through every CPU alias and
 DMA fence; the fused bypass scorer keeps full-context causal normalization;
 native V2 propagation caches owner/version-bound indexes and reapplies each mask.

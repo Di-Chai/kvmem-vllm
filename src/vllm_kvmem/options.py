@@ -16,7 +16,7 @@ GRAPH_DEFAULTS = {
     'graph_max_bytes_per_session': 33554432,
     'graph_max_total_bytes': 268435456,
     'graph_trace': False,
-    'graph_native_propagation': False,
+    'graph_native_propagation': True,
 }
 GRAPH_SCORING_MODES = frozenset(('locality', 'attention', 'multi'))
 _UNSET = object()
@@ -176,12 +176,12 @@ class RuntimeOptions:
     action_layers: str = 'spread3'
     action_interval: int = 16
     action_decay: float = 0.5
-    action_native_decode_commit: bool = False
+    action_native_decode_commit: bool = True
     action_commit_max_bytes: int = 16777216
-    action_download_pool: bool = False
+    action_download_pool: bool = True
     action_download_max_bytes: int = 67108864
     action_download_max_slots: int = 128
-    action_fused_scoring: bool = False
+    action_fused_scoring: bool = True
     async_refresh: bool = False
     refresh_quantum_tokens: int = 256
     prefill_attention: bool = False
@@ -239,7 +239,7 @@ class RuntimeOptions:
     graph_max_bytes_per_session: int = 33554432
     graph_max_total_bytes: int = 268435456
     graph_trace: bool = False
-    graph_native_propagation: bool = False
+    graph_native_propagation: bool = True
     graph_scoring_version: str = 'v1'
     graph_alpha: float = _UNSET
     pressure_policy: str = _UNSET
@@ -548,10 +548,10 @@ class RuntimeOptions:
         action = {name: payload.pop(name, default) for name, default in (
             ('action_scope', 'tool-call'), ('action_layers', 'spread3'),
             ('action_interval', 16), ('action_decay', 0.5),
-            ('action_native_decode_commit', False), ('action_commit_max_bytes', 16777216),
-            ('action_download_pool', False), ('action_download_max_bytes', 67108864),
+            ('action_native_decode_commit', True), ('action_commit_max_bytes', 16777216),
+            ('action_download_pool', True), ('action_download_max_bytes', 67108864),
             ('action_download_max_slots', 128),
-            ('action_fused_scoring', False),
+            ('action_fused_scoring', True),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
             ('prefill_attention_interval', 1024), ('prefill_attention_stride', 32),
