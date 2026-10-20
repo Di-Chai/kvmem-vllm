@@ -234,3 +234,17 @@ not a kernel trace. Refresh windows include GPU work and cannot all be counted
 as idle time. Summed assembly time was 477.2 seconds, of which 434.4 seconds was
 host preparation. Raw alignment and aggregates are retained in
 `artifacts/action-attention-20261014/niah-utilization.json`.
+
+
+## Optional maintenance, download, scorer and propagation optimizations
+
+Four independent, default-off switches are available: `action_native_decode_commit`,
+`action_download_pool`, `action_fused_scoring` and `graph_native_propagation`. The
+reference paths remain available. Decode staging preserves accepted-row and
+transaction order; the bounded pool retains buffers through every CPU alias and
+DMA fence; the fused bypass scorer keeps full-context causal normalization;
+native V2 propagation caches owner/version-bound indexes and reapplies each mask.
+
+These switches are separate from native attention QK reuse. See the
+[qualification and independent cost report](attention-overhead-20261020.md) for
+limits, measured scope, state checks and full C8 comparisons.
