@@ -1,4 +1,4 @@
-"""Two frozen live-tool DeepSWE windows: optimized MTP4 versus experimental DFlash2."""
+"""Frozen live-tool DeepSWE windows: optimized MTP4 versus experimental DFlash2."""
 import argparse
 import fcntl
 import hashlib
@@ -42,6 +42,8 @@ def prepare(args):
     base=read(args.profile)
     base.update(port=args.port,served_model_name='kvmem-dflash-agent-comparison',max_model_len=262144,
         verify_session_restore=False,query_replay_budget=16384,max_num_seqs=8)
+    if args.gpu_memory_utilization is not None:
+        base['gpu_memory_utilization']=args.gpu_memory_utilization
     kv=base['kvmem']
     kv.update(select_budget=36864,gen_budget=16384,recent_blocks=64,
         session_capacity=32,session_checkpoint_bytes=4294967296,cpu_read_cache_bytes=100000000000,
@@ -50,7 +52,7 @@ def prepare(args):
         cpu_history_coordination=True,rolling_active_window=False,
         action_native_decode_commit=True,action_download_pool=True,action_fused_scoring=True,
         graph_native_propagation=True,action_native_scores='off')
-    order=['mtp4','dflash7'];profiles={}
+    order=['dflash7'] if args.dflash_only else ['mtp4','dflash7'];profiles={}
     for name in order:
         cfg=json.loads(json.dumps(base));cfg.update(
             draft_method='mtp' if name=='mtp4' else 'dflash',draft_tokens=4 if name=='mtp4' else 7,
@@ -69,6 +71,8 @@ def prepare(args):
     sources={str(p.relative_to(frozen)):sha(p) for p in frozen.rglob('*') if p.is_file()}
     inputs={str(p.relative_to(root)):sha(p) for name in order for p in (root/name).rglob('*') if p.is_file()}
     save(root/'manifest.json',dict(order=order,profiles=profiles,source_sha256=sources,input_sha256=inputs,
+        reference_mtp=str(args.reference_mtp.resolve()) if args.reference_mtp else None,
+        targeted_dflash_memory_screen=args.dflash_only,
         qualification=str(qualification),qualification_sha256=sha(qualification/'manifest.json'),
         qualification_result_sha256=sha(qualification/'qualification/results.json'),
         warmup_sha256=sha(root/'warmup.i32'),duration_seconds=args.duration_seconds,
@@ -79,7 +83,9 @@ def prepare(args):
             'CPU history budget and synchronous refresh/restore. MTP4 uses its qualified compiled mode; '
             'DFlash7 uses experimental FULL graphs and independent BF16 sliding draft state. '
             'This deployment comparison does not isolate the speculative algorithm from its execution mode. '
-            'The matched recent band/sync settings differ from previous throughput experiments. No historical result is reused.'))
+            'The matched recent band/sync settings differ from previous throughput experiments. '
+            + ('This targeted follow-up reuses the declared completed MTP reference; extra DFlash GPU memory is a deployment tradeoff.'
+               if args.dflash_only else 'Both measurements are fresh; no historical throughput result is reused.')))
     save(root/'status.json',dict(status='prepared',at=time.time()))
 
 
@@ -138,6 +144,13 @@ if __name__=='__main__':
     p.add_argument('--protocol',type=Path,default=Path('artifacts/deepswe-first16-20261015-r16/protocol'))
     p.add_argument('--warmup',type=Path,default=Path('artifacts/deepswe-capacity-20261017-r3/warmup.i32'))
     p.add_argument('--duration-seconds',type=int,default=300);p.add_argument('--port',type=int,default=18846)
+    p.add_argument('--dflash-only',action='store_true',help='Targeted follow-up after a completed pair; retain its original MTP reference')
+    p.add_argument('--reference-mtp',type=Path)
+    p.add_argument('--gpu-memory-utilization',type=float)
     p.add_argument('--bridge-port',type=int,default=18847);a=p.parse_args()
     if a.duration_seconds<300:p.error('Keep at least a five-minute live-tool window')
+    if a.action=='prepare' and a.dflash_only and not a.reference_mtp:
+        p.error('A targeted follow-up requires its declared original MTP reference')
+    if a.action=='prepare' and a.reference_mtp and not a.dflash_only:
+        p.error('An MTP reference is only valid for a targeted DFlash follow-up')
     (prepare if a.action=='prepare' else run)(a)

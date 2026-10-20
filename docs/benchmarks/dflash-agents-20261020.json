@@ -1,0 +1,359 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "status": "completed",
+  "conclusion": "With all four overhead optimizations enabled, experimental DFlash2 k7 improves observed live-tool generation throughput only after enlarging its GPU KV pool in this screen. Preliminary one-window deployment result; experimental planning remains default-off.",
+  "protocol": {
+    "workers": 8,
+    "real_executed_tools": true,
+    "task_source": "original first16 Claude Code harness",
+    "full_first16_completed": false,
+    "formal_seconds_per_arm": 300,
+    "order": [
+      "mtp4_gpu072",
+      "dflash7_gpu072",
+      "dflash7_gpu080"
+    ],
+    "followup_reuses_original_mtp": true,
+    "target": "NVFP4",
+    "target_kv": "FP8",
+    "dflash_draft_kv": "BF16 independent five-layer sliding state",
+    "K": 36864,
+    "G": 16384,
+    "block_tokens": 32,
+    "prefill_chunk": 1024,
+    "recent_band_configured_tokens": 2048,
+    "refresh_restore": "synchronous",
+    "graph": "V2 multi, alpha 0.2, graph pressure",
+    "cpu_history_budget_bytes": 100000000000,
+    "historical_ssd": false,
+    "prefix_caching": false,
+    "logical_request_cap": 262144,
+    "backing_store_history_capacity": 524288,
+    "native_qk_reuse": false,
+    "all_four_overhead_optimizations": true
+  },
+  "state_qualification": {
+    "status": "passed",
+    "quality": {
+      "correct": 6,
+      "total": 6,
+      "criterion": "Exact expected code occurs in the model answer; narrow synthetic dependency task only"
+    },
+    "accepted_sample_oracle": true,
+    "rejected_tokens": 2168,
+    "graph_checks_complete": true,
+    "target_draft_byte_restores": 4,
+    "draft_layers": 5,
+    "actual_native_decode_calls": 464,
+    "actual_fused_scoring_calls": 774,
+    "native_graph_calls": 10,
+    "all_owned_sessions_released": true,
+    "result_sha256": "814df4a3ce5f43e3c698e20943e2b9ed4109e6d4113478687ce9e89d290bc0eb"
+  },
+  "host_regression": {
+    "passed": 267,
+    "skipped": 1
+  },
+  "measurements": {
+    "mtp4_gpu072": {
+      "formal_seconds": 300.0,
+      "execution": {
+        "draft_method": "mtp",
+        "draft_tokens": 4,
+        "execution_mode": "compiled_graph",
+        "native_graph_mode": "FULL_AND_PIECEWISE",
+        "gpu_memory_utilization": 0.72
+      },
+      "complete_response_output_tokens": 45254,
+      "complete_response_output_tokens_per_second": 150.84666666666666,
+      "native_generation_tokens": 51837.0,
+      "native_observed_seconds": 299.5460512638092,
+      "native_generation_tokens_per_second": 173.0518555704389,
+      "public_prefill_tokens": 646948.0,
+      "public_prefill_tokens_per_wall_second": 2159.761403198185,
+      "completed_responses": 201,
+      "formal_tool_calls": 279,
+      "task_states": {
+        "window_truncated": 8
+      },
+      "speculation": {
+        "sequence_verify_steps": 14160.0,
+        "drafted_tokens": 56640.0,
+        "accepted_draft_tokens": 37850.0,
+        "draft_acceptance_rate": 0.6682556497175142,
+        "mean_acceptance_length": 3.6730225988700567
+      },
+      "ttft_ms": {
+        "p50": 1158.9782405644655,
+        "p95": 8313.076237216592
+      },
+      "generation_ms": {
+        "p50": 3507.8430213034153,
+        "p95": 20296.12568207085
+      },
+      "pure_decode_batch_histogram": {
+        "8": 520,
+        "6": 160,
+        "7": 686,
+        "5": 24
+      },
+      "pure_decode_step_mean_ms": 41.71135919282762,
+      "pure_decode_model_mean_ms": 36.79008490061588,
+      "common_eight_no_public_prefill_eligible_intervals": 0,
+      "native_waiting_mean": 0.003472222222222222,
+      "gpu_memory_peak_mib": 74196.0,
+      "cpu_authority_max_bytes": 24307695616,
+      "host_available_min_bytes": 72940396544,
+      "native_gpu_kv": {
+        "capacity_bytes": 42253254656,
+        "native_blocks": 751,
+        "groups": 4,
+        "recurrent_groups": 3,
+        "reservation_rejections_lifetime": 0,
+        "authority_rejections_lifetime": 0,
+        "scope": "Final scheduler counters include initialization; rejection count is scheduling attempts, not failed requests."
+      },
+      "native_decode_calls": 14298,
+      "python_decode_fallback_calls": 0,
+      "scoring_backend_counts": {
+        "fused": 6117
+      },
+      "native_graph_calls": 141,
+      "pinned_pool": {
+        "allocations": 13,
+        "reuses": 4378,
+        "exhaustions": 0,
+        "allocated_pinned_bytes": 1208320,
+        "event_count": 13,
+        "max_pinned_bytes": 67108864,
+        "max_events": 128,
+        "quarantined_slots": 0
+      },
+      "cold_preparation_seconds": 933.2491698265076,
+      "startup_autotune_oom_tactic_fallbacks": 4,
+      "formal_errors": [],
+      "context_limit_events": [],
+      "preemptions": 0.0,
+      "cleanup_errors": []
+    },
+    "dflash7_gpu072": {
+      "formal_seconds": 300.0,
+      "execution": {
+        "draft_method": "dflash",
+        "draft_tokens": 7,
+        "execution_mode": "full_graph",
+        "native_graph_mode": "FULL_DECODE_ONLY",
+        "gpu_memory_utilization": 0.72
+      },
+      "complete_response_output_tokens": 39230,
+      "complete_response_output_tokens_per_second": 130.76666666666668,
+      "native_generation_tokens": 40949.0,
+      "native_observed_seconds": 299.17411732673645,
+      "native_generation_tokens_per_second": 136.8734714282735,
+      "public_prefill_tokens": 518847.0,
+      "public_prefill_tokens_per_wall_second": 1734.2643295354078,
+      "completed_responses": 190,
+      "formal_tool_calls": 267,
+      "task_states": {
+        "window_truncated": 8
+      },
+      "speculation": {
+        "sequence_verify_steps": 9464.0,
+        "drafted_tokens": 66248.0,
+        "accepted_draft_tokens": 31451.0,
+        "draft_acceptance_rate": 0.47474640743871516,
+        "mean_acceptance_length": 4.3232248520710055
+      },
+      "ttft_ms": {
+        "p50": 976.0524029843509,
+        "p95": 15576.753697171767
+      },
+      "generation_ms": {
+        "p50": 3321.566306054592,
+        "p95": 17091.280886949957
+      },
+      "pure_decode_batch_histogram": {
+        "8": 16,
+        "7": 556,
+        "6": 362,
+        "5": 63,
+        "4": 3
+      },
+      "pure_decode_step_mean_ms": 53.33971981048584,
+      "pure_decode_model_mean_ms": 44.80941969299317,
+      "common_eight_no_public_prefill_eligible_intervals": 0,
+      "native_waiting_mean": 0.7534722222222222,
+      "gpu_memory_peak_mib": 72450.0,
+      "cpu_authority_max_bytes": 18330157056,
+      "host_available_min_bytes": 79549452288,
+      "native_gpu_kv": {
+        "capacity_bytes": 38476185600,
+        "native_blocks": 1140,
+        "groups": 15,
+        "recurrent_groups": 10,
+        "reservation_rejections_lifetime": 1389,
+        "authority_rejections_lifetime": 0,
+        "scope": "Final scheduler counters include initialization; rejection count is scheduling attempts, not failed requests."
+      },
+      "native_decode_calls": 9711,
+      "python_decode_fallback_calls": 0,
+      "scoring_backend_counts": {
+        "fused": 6726
+      },
+      "native_graph_calls": 138,
+      "pinned_pool": {
+        "allocations": 17,
+        "reuses": 4048,
+        "exhaustions": 0,
+        "allocated_pinned_bytes": 1699840,
+        "event_count": 17,
+        "max_pinned_bytes": 67108864,
+        "max_events": 128,
+        "quarantined_slots": 0
+      },
+      "cold_preparation_seconds": 350.41411447525024,
+      "startup_autotune_oom_tactic_fallbacks": 1,
+      "formal_errors": [],
+      "context_limit_events": [],
+      "preemptions": 0.0,
+      "cleanup_errors": []
+    },
+    "dflash7_gpu080": {
+      "formal_seconds": 300.0,
+      "execution": {
+        "draft_method": "dflash",
+        "draft_tokens": 7,
+        "execution_mode": "full_graph",
+        "native_graph_mode": "FULL_DECODE_ONLY",
+        "gpu_memory_utilization": 0.8
+      },
+      "complete_response_output_tokens": 56040,
+      "complete_response_output_tokens_per_second": 186.8,
+      "native_generation_tokens": 60615.0,
+      "native_observed_seconds": 299.13081431388855,
+      "native_generation_tokens_per_second": 202.6370975488822,
+      "public_prefill_tokens": 559805.0,
+      "public_prefill_tokens_per_wall_second": 1871.438759273315,
+      "completed_responses": 228,
+      "formal_tool_calls": 318,
+      "task_states": {
+        "window_truncated": 8
+      },
+      "speculation": {
+        "sequence_verify_steps": 13762.0,
+        "drafted_tokens": 96334.0,
+        "accepted_draft_tokens": 46814.0,
+        "draft_acceptance_rate": 0.4859551144974775,
+        "mean_acceptance_length": 4.401685801482342
+      },
+      "ttft_ms": {
+        "p50": 1122.670626733452,
+        "p95": 9299.863946810357
+      },
+      "generation_ms": {
+        "p50": 3344.9943913146853,
+        "p95": 21919.142046337918
+      },
+      "pure_decode_batch_histogram": {
+        "7": 550,
+        "8": 683,
+        "6": 89,
+        "5": 18,
+        "4": 2
+      },
+      "pure_decode_step_mean_ms": 51.080647754242804,
+      "pure_decode_model_mean_ms": 45.457056727743364,
+      "common_eight_no_public_prefill_eligible_intervals": 0,
+      "native_waiting_mean": 0.0,
+      "gpu_memory_peak_mib": 79654.0,
+      "cpu_authority_max_bytes": 20314062848,
+      "host_available_min_bytes": 77293830144,
+      "native_gpu_kv": {
+        "capacity_bytes": 46643937280,
+        "native_blocks": 1382,
+        "groups": 15,
+        "recurrent_groups": 10,
+        "reservation_rejections_lifetime": 0,
+        "authority_rejections_lifetime": 0,
+        "scope": "Final scheduler counters include initialization; rejection count is scheduling attempts, not failed requests."
+      },
+      "native_decode_calls": 13800,
+      "python_decode_fallback_calls": 0,
+      "scoring_backend_counts": {
+        "fused": 8118
+      },
+      "native_graph_calls": 180,
+      "pinned_pool": {
+        "allocations": 13,
+        "reuses": 4950,
+        "exhaustions": 0,
+        "allocated_pinned_bytes": 1339392,
+        "event_count": 13,
+        "max_pinned_bytes": 67108864,
+        "max_events": 128,
+        "quarantined_slots": 0
+      },
+      "cold_preparation_seconds": 84.4532036781311,
+      "startup_autotune_oom_tactic_fallbacks": 1,
+      "formal_errors": [],
+      "context_limit_events": [],
+      "preemptions": 0.0,
+      "cleanup_errors": []
+    }
+  },
+  "observed_percent_change": {
+    "equal_gpu_dflash_vs_mtp": {
+      "complete_response_output_tokens_per_second": -13.31153047244441,
+      "native_generation_tokens_per_second": -20.906094316590206,
+      "completed_responses": -5.472636815920396,
+      "formal_tool_calls": -4.3010752688172005
+    },
+    "larger_pool_dflash_vs_mtp": {
+      "complete_response_output_tokens_per_second": 23.83435718389535,
+      "native_generation_tokens_per_second": 17.096171480461784,
+      "completed_responses": 13.432835820895516,
+      "formal_tool_calls": 13.978494623655923
+    },
+    "larger_pool_dflash_vs_original_dflash": {
+      "complete_response_output_tokens_per_second": 42.84985980117257,
+      "native_generation_tokens_per_second": 48.047021409164124,
+      "completed_responses": 19.999999999999996,
+      "formal_tool_calls": 19.10112359550562
+    }
+  },
+  "memory_tradeoff": {
+    "larger_pool_dflash_vs_mtp_peak_mib": 5458,
+    "larger_pool_dflash_vs_original_dflash_peak_mib": 7204
+  },
+  "limitations": [
+    "Single 300-second live-tool window per configuration; no interleaved repetition or full first16 task-quality score.",
+    "Natural task and generated-token trajectories, prompt lengths and speculative acceptance differ.",
+    "MTP compiled_graph vs DFlash full_graph; larger-pool follow-up uses extra GPU memory and the original MTP reference.",
+    "Native generation includes unfinished responses; completed-response accounting only includes responses finished inside the formal window.",
+    "Public prefill rate is mixed-workload wall throughput, not pure prefill capacity. No certified pure common-eight decode token rate.",
+    "Cold compilation/autotuning cache and execution order differ. Caught startup OOM tactic fallbacks are recorded, without formal API errors.",
+    "Legacy planned-off client cleanup failed; retained separately, not counted as a full qualification pass."
+  ],
+  "final_cleanup": {
+    "at": 1792466302.1245387,
+    "run_id": "kvds-1792465798",
+    "remaining_owned_processes": [],
+    "remaining_gpu_pids": "",
+    "remaining_owned_networks": [],
+    "remaining_owned_containers": [],
+    "original_cleanup_errors": [],
+    "host_available_bytes": 114032631808
+  },
+  "evidence_sha256": {
+    "artifacts/dflash-agent-20261020/live-tools-r1/manifest.json": "156c96d62875b5b609350e4497ec471c6aa176076c0279999c56477ac65101c8",
+    "artifacts/dflash-agent-20261020/live-tools-more-kv-r1/manifest.json": "85dafdc18f326a8296788cf0dd3ed10ffd14411b6a3a9eff7717489bc2d69a12",
+    "artifacts/dflash-agent-20261020/live-tools-more-kv-r1/targeted-plan.json": "9f59a56ce6329489d819c3298d521af69a13d5e3c0189764101ec69f1daf4945",
+    "artifacts/dflash-agent-20261020/planned-state-proof.json": "87dded16ff4e821576a0a748c28a65638c08697279f60e33dd720047ecf15003",
+    "artifacts/dflash-agent-20261020/host-regression-r2.txt": "cd044b703c592a6c0ad658ebc1949a1ddc227bcccada4b356c8d925482bb631c",
+    "artifacts/dflash-agent-20261020/live-tools-r1-comparison-final.json": "acb1e49c02715b41f21194cc03b96fe3493e33fddfc35a8438dfe3164b796792",
+    "artifacts/dflash-agent-20261020/live-tools-more-kv-r1-comparison-final.json": "3cb7ce200f2d40247e11c73eb89074e8d2837f897aa587576ecf41b8f42953d4",
+    "artifacts/dflash-agent-20261020/final-cleanup.json": "647f9ae03326eeba835a470485d4e47599b0c71b2418510cd3795a78a953a585",
+    "artifacts/dflash-agent-20261020/final-cleanup-more-kv.json": "8f37e39e5cd6bf684aa3c143c6ad4b97c052381328263d57c4942fdb6cb39ea6"
+  }
+}
