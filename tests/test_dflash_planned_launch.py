@@ -1,8 +1,70 @@
 """Experimental DFlash planning never silently changes supported deployment modes."""
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import pytest
 from test_serving_launcher import nvfp4_profile
 from vllm_kvmem.serve import build_launch
+
+
+def test_default_deployment_matches_editable_profile_and_keeps_bounded_dflash(tmp_path):
+    from vllm_kvmem.default_profile import load_default_profile
+    cfg=load_default_profile()
+    assert cfg==json.loads((Path(__file__).parents[1]/'examples/serve-default.json').read_text())
+    plan=build_launch(cfg,tmp_path,tmp_path/'run',check_paths=False)
+    argv=plan['vllm_argv'];kv=plan['profile']['kvmem']
+    assert (cfg['draft_method'],cfg['draft_tokens'],cfg['execution_mode'])==('dflash',7,'full_graph')
+    assert argv[argv.index('--gpu-memory-utilization')+1]=='0.8'
+    assert argv[argv.index('--max-num-batched-tokens')+1]=='16448'
+    assert '--no-enable-prefix-caching' in argv and '--no-async-scheduling' in argv
+    assert (kv['select_budget'],kv['gen_budget'],kv['recent_blocks'])==(36864,16384,64)
+    assert kv['cpu_read_cache_bytes']==100000000000 and kv['archive_backend']=='cpu'
+    assert all(kv[k] for k in ('action_native_decode_commit','action_download_pool',
+        'action_fused_scoring','graph_native_propagation'))
+    assert kv['action_native_scores']=='off'
+    assert cfg['experimental_dflash_query_planning'] and not kv['async_refresh'] and not kv['async_restore']
+    assert build_launch(plan['profile'],tmp_path,tmp_path/'replay',check_paths=False)['vllm_argv']==argv
+    cfg['kvmem']['gen_budget']=32
+    assert load_default_profile()['kvmem']['gen_budget']==16384
+
+
+def test_default_cli_works_outside_checkout_without_engine_or_side_effects(tmp_path):
+    model=nvfp4_profile(tmp_path)
+    paths={k:str(tmp_path/model[k]) for k in ('model','tokenizer','hf_config_path','draft_model')}
+    code='''import json,os,sys
+from vllm_kvmem import default_profile
+from vllm_kvmem.serve import main
+default_profile._PROFILE.update(json.loads(sys.argv[1]))
+before=dict(os.environ)
+main(['--run-dir','owned-run','--dry-run'])
+assert dict(os.environ)==before
+assert 'vllm' not in sys.modules and 'torch' not in sys.modules
+'''
+    result=subprocess.run([sys.executable,'-B','-c',code,json.dumps(paths)],cwd=tmp_path,
+        env={**os.environ,'PYTHONPATH':str(Path(__file__).parents[1]/'src')},
+        capture_output=True,text=True,check=True)
+    plan=json.loads(result.stdout)
+    assert plan['profile']['draft_method']=='dflash' and plan['profile']['gpu_memory_utilization']==.8
+    assert json.loads(plan['vllm_argv'][plan['vllm_argv'].index('--speculative-config')+1])['kv_cache_dtype']=='bfloat16'
+    assert not (tmp_path/'owned-run').exists()
+
+
+def test_explicit_mtp_profile_bypasses_default_dflash_selection(tmp_path,monkeypatch,capsys):
+    from vllm_kvmem import default_profile
+    from vllm_kvmem.serve import main
+    def refuse_default():
+        raise AssertionError('An explicit profile must not read or merge the default deployment')
+    monkeypatch.setattr(default_profile,'load_default_profile',refuse_default)
+    cfg=nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp',draft_tokens=4,execution_mode='compiled_graph',gpu_memory_utilization=.61)
+    source=tmp_path/'mtp.json';source.write_text(json.dumps(cfg))
+    main(['--config',str(source),'--run-dir',str(tmp_path/'owned-run'),'--dry-run'])
+    plan=json.loads(capsys.readouterr().out)
+    assert (plan['profile']['draft_method'],plan['profile']['gpu_memory_utilization'])==('mtp',.61)
+    assert not plan['profile']['experimental_dflash_query_planning']
+    assert not (tmp_path/'owned-run').exists()
 
 
 def configured(tmp_path):

@@ -1,9 +1,28 @@
 # Installation and experimental serving
 
-For the current original-MeanK integration, start with
-[MeanK setup and implementation](meank-integration-20261013.md) and
-`examples/qwen-nvfp4-meank-elastic.json`. It uses DFlash2 and native decode
-CUDA Graphs, with automatic historical KV selection and terminal restoration.
+The default direct agent deployment, selected by the user on 2026-10-20, is
+NVFP4 + FP8 target KV, DFlash2 k=7, FULL CUDA Graphs, GPU memory utilization .80,
+eight active requests, K36864/G16384, synchronous Query/pressure restoration and
+all four attention-maintenance optimizations. Its CPU-only history budget is
+100,000,000,000 bytes; prefix caching is disabled. The editable configuration is
+`examples/serve-default.json`; its paths refer to this host's external models.
+
+```sh
+PYTHONPATH=src python -m vllm_kvmem serve --run-dir runs/agent-01 --dry-run
+```
+
+Omit `--dry-run` to start the default. After installing the current package,
+`vllm-kvmem serve --run-dir runs/agent-01` uses the same bundled profile without
+depending on a checkout's examples directory or benchmark execution records.
+To change paths/settings, copy the example and pass `--config local-profile.json`.
+The default explicitly enables the experimental DFlash Query-planning option
+within its qualified synchronous/full-graph scope. Existing explicit MTP and
+other profiles retain their settings. See the [agent results and limits](dflash-agents-20261020.md):
+the larger pool improves this single window, with extra GPU memory and no
+completed full-task quality evaluation.
+
+For the earlier original-MeanK integration, see
+[MeanK setup and implementation](meank-integration-20261013.md).
 The [elastic API](elastic-serving.md) also supports full-context native MTP
 offloading as a separate mode. See [measured results](meank-throughput-20261013.md)
 for their different performance and qualification boundaries.

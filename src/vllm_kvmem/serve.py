@@ -369,13 +369,19 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--config', type=Path,
+        help='Explicit JSON profile; omit for the bundled DFlash2 k7 / GPU .80 agent profile')
     parser.add_argument('--run-dir', type=Path, required=True, help='New owned telemetry/archive directory')
     parser.add_argument('--dry-run', action='store_true', help='Validate local inputs and print the exact launch without importing vLLM')
     args = parser.parse_args(argv)
-    source = args.config.expanduser().resolve()
     run_dir = args.run_dir.expanduser().resolve()
-    plan = build_launch(json.loads(source.read_text()), source.parent, run_dir)
+    if args.config is None:
+        from .default_profile import load_default_profile
+        profile, base = load_default_profile(), Path.cwd()
+    else:
+        source = args.config.expanduser().resolve()
+        profile, base = json.loads(source.read_text()), source.parent
+    plan = build_launch(profile, base, run_dir)
     if 'multi_user' in plan['profile'] and os.environ.get('VLLM_RUST_FRONTEND_PATH'):
         raise ValueError('Multi-user admission requires the Python API frontend')
     if args.dry_run:

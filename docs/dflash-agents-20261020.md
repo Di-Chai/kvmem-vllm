@@ -8,8 +8,10 @@ and completed-response output throughput is **186.80 vs 150.85 token/s
 (+23.83%)**. The latter is a single follow-up against the original MTP
 reference, with extra device memory, different graph modes and changed
 trajectories; it is preliminary deployment evidence, not a repeated causal
-speedup or full task-quality acceptance. Experimental DFlash planning remains
-default-off.
+speedup or full task-quality acceptance. Experimental DFlash planning was
+default-off during this screen. Following the user's subsequent request, the
+default direct agent deployment now explicitly selects the larger-pool profile;
+see the adoption note below.
 
 ## Experimental compatibility scope
 
@@ -237,5 +239,31 @@ The raw final audits are `live-tools-r1-comparison-final.json` and
 the state qualification are retained. `final-cleanup.json` and
 `final-cleanup-more-kv.json` separately audit the original pair and follow-up.
 
-Default experimental DFlash Query planning stays off. The ordinary MTP
-deployment and four previously authorized default-on optimizations are intact.
+## Default deployment adoption
+
+After reviewing these measurements, the user requested adopting the larger-pool
+DFlash configuration as the default. Direct `serve` now uses the bundled profile
+when `--config` is omitted; `examples/serve-default.json` is its editable JSON
+counterpart. It exactly preserves the measured DFlash .80 resolved profile
+except the listener/model-name fields (127.0.0.1:8000, `kvmem`). Query planning,
+K/G, recent band, scoring, graph propagation, CPU/session budgets, prefill chunk,
+reasoning-end configuration, instrumentation and all four optimizations match.
+The bundled Python module is included with ordinary package code, so installed
+launches do not require a checkout or benchmark execution records.
+
+This default profile explicitly sets `experimental_dflash_query_planning=true`.
+The low-level profile-field default remains false, all compatibility guards
+remain enforced, and explicitly supplied profiles retain their settings. The
+separate authenticated elastic gateway is not switched to this direct-serving
+configuration. This adoption records the user's choice and does not change the
+raw experimental evidence, single-window limitations or task-quality scope.
+
+Adoption verification: **270 passed, 1 skipped** in the launcher, draft-contract,
+graph-qualification, session and real-agent client regression group. The
+no-config CLI works from another working directory without importing torch or
+vLLM in dry runs, default profiles do not share mutable state, and an explicit
+MTP profile bypasses the default. A dry run with this host's real model paths
+matches every field of the measured DFlash .80 resolved profile except port and
+served model name. No new throughput run is needed for this profile selection
+change; the original GPU evidence remains unchanged. The adoption record is
+`docs/benchmarks/dflash-default-20261020.json`.

@@ -1,5 +1,16 @@
 # vllm-kvmem
 
+**Default agent deployment, 2026-10-20:** `vllm-kvmem serve --run-dir runs/agent-01`
+now selects the bundled NVFP4 + FP8 target-KV, DFlash2 k=7 profile with GPU memory
+utilization **0.80**, FULL CUDA Graphs, eight active requests, K36,864/G16,384,
+CPU-only 100 GB history, V2 multi/alpha .2 graph pressure and all four attention
+overhead optimizations. The [editable profile](examples/serve-default.json)
+uses this host's external model paths. Inspect it with `--dry-run`; use
+`--config local-profile.json` to select another deployment.
+The [real-tool agent screen](docs/dflash-agents-20261020.md) observed
+202.64 vs 173.05 generated token/s with 5.33 GiB more peak device memory;
+single-window trajectory/mode differences and full-task quality limits remain.
+
 **Offline agent policy, 2026-10-16:** the [scheduling policy and acceptance evidence](docs/offline-agent-scheduling-policy.md)
 define decode priority, pressure-managed active residency, measured ready-work
 ordering and separate CPU/GPU admission. Three paired synthetic runs passed with
@@ -260,14 +271,16 @@ are running; no final quality or long-task throughput acceptance is claimed.
 ## Experimental profile launcher
 
 [Installation and API usage](docs/installation.md) describe an entry that does not
-require a prior benchmark artifact. Edit the external model paths in
-`examples/qwen-q8-fp8-dflash.json`, then inspect a launch with:
+require prior benchmark execution records. The bundled default selects the
+user-approved DFlash2 deployment; inspect it with:
 
 ```sh
 .venv/bin/python -m vllm_kvmem serve \
-  --config local-profile.json --run-dir runs/session-01 --dry-run
+  --run-dir runs/session-01 --dry-run
 ```
 
+Copy `examples/serve-default.json` and pass `--config local-profile.json` to
+change model paths or settings. Explicit older profiles retain their settings.
 Omit `--dry-run` to start native vLLM. The public profile launcher and first-request
 automatic arming passed an actual-model GPU startup check on 2026-10-13. The
 multi-user entry also passed short-request load, isolation, overload and recovery

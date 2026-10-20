@@ -1,4 +1,4 @@
-"""Explicit profile serving and version-checked native vLLM compatibility entry."""
+"""Default or explicit profile serving and checked native vLLM compatibility entry."""
 import argparse
 import os
 import sys

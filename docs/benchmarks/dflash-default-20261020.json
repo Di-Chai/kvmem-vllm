@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-20",
+  "change": "User-approved larger GPU KV DFlash2 configuration is the default direct-serving deployment when --config is omitted.",
+  "default_profile": "examples/serve-default.json",
+  "bundled_profile": "src/vllm_kvmem/default_profile.py",
+  "settings": {
+    "draft_method": "dflash",
+    "draft_tokens": 7,
+    "gpu_memory_utilization": 0.8,
+    "execution_mode": "full_graph",
+    "max_num_seqs": 8,
+    "max_num_batched_tokens": 16448,
+    "K": 36864,
+    "G": 16384,
+    "chunk": 1024,
+    "CPU_history_bytes": 100000000000,
+    "all_four_overhead_optimizations": true,
+    "native_qk_reuse": false,
+    "experimental_dflash_query_planning": true
+  },
+  "equivalence": {
+    "qualified_profile_sha256": "35d739e884adc41bd91f66e369c4f9f595852e693373a4d7199c449bce15bc56",
+    "default_example_sha256": "b70400f5ef7f44fcde81d486e841e286e999d56ebb0068e734dfe52fe5122bfa",
+    "default_module_sha256": "6cbc0edb60c367ae37a54528d61a92521ab1a8857f5e09d3c3080dc0918d4cb9",
+    "exact_resolved_profile_match": true,
+    "changed_fields_only": [
+      "port",
+      "served_model_name"
+    ],
+    "no_run_directory_created": true
+  },
+  "validation": {
+    "host_passed": 270,
+    "host_skipped": 1,
+    "default_cli_dry_run": "passed using real model paths",
+    "different_cwd_and_no_engine_import": "passed",
+    "explicit_mtp_override": "passed",
+    "new_gpu_throughput_run": false,
+    "reason": "Measured runtime arguments and policies are unchanged; this change selects and bundles that profile."
+  },
+  "reference_measurement": "docs/benchmarks/dflash-agents-20261020.json",
+  "scope": "Default direct serve selects the full measured profile; explicit JSON configurations and authenticated elastic-serve keep their semantics. The experimental feature flag is explicit in this profile and compatibility checks remain. Previous single-window evidence and quality limits are unchanged.",
+  "evidence_sha256": {
+    "artifacts/dflash-default-20261020/default-equivalence.json": "4000393f986e6b49c42cae1d167ae7c56adb773ca22685d634ac15446256f856",
+    "artifacts/dflash-default-20261020/default-dry-run.json": "760e854d57429717aab4353b12937c81893c31565db32993bd0560028d6fe65c",
+    "artifacts/dflash-default-20261020/host-regression.txt": "5ff3fa2060885e91a27488db8ac8afb318278f5b29a2a49a6dabd5ee156c6c0d",
+    "src/vllm_kvmem/default_profile.py": "6cbc0edb60c367ae37a54528d61a92521ab1a8857f5e09d3c3080dc0918d4cb9",
+    "examples/serve-default.json": "b70400f5ef7f44fcde81d486e841e286e999d56ebb0068e734dfe52fe5122bfa"
+  }
+}
