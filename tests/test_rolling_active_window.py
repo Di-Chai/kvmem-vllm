@@ -111,6 +111,7 @@ def test_zero_replay_pressure_consumes_owner_checkpoint_without_private_forward(
     from test_async_refresh import manager, command
     obj = manager()
     obj.options.rolling_active_window = True
+    obj.options.memory = NS(select_budget=32,gen_budget=32)
     ticket = NS(history_end=64, replay_tokens=0, original_block_ids=(3, 4), window_tokens=32)
     cmd = replace(command(), selection='pressure', input_tokens=(), groups=((0, ticket),))
     job = obj.enqueue(cmd)

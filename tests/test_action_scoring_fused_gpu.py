@@ -59,6 +59,47 @@ def test_graph_replay_changes_operands_without_reading_old_lse():
     torch.testing.assert_close(actual,expected,rtol=2e-5,atol=2e-6)
 
 
+def test_uniform_logits_preserve_causal_mass_under_large_per_head_shifts():
+    # Softmax is invariant to a common logit offset within each head. Absolute
+    # FP32 logsumexp loses the small normalization term at these offsets.
+    length,dim,heads=259,256,8
+    positions=torch.tensor([0,2,17,35,258],device='cuda')
+    q=torch.zeros(len(positions),heads,dim,device='cuda',dtype=torch.bfloat16)
+    shifts=torch.tensor([-1048576.,-65536.,-4096.,-16.,16.,4096.,65536.,1048576.],device='cuda')
+    q[...,0]=shifts*16
+    key=torch.zeros(18,16,2,dim,device='cuda')
+    key[...,0]=1.
+    key=key.to(torch.float8_e4m3fn)
+    table=torch.arange(17,-1,-1,device='cuda',dtype=torch.int32)
+    trig=torch.cat((torch.ones(length,dim//4,device='cuda'),
+                    torch.zeros(length,dim//4,device='cuda')),dim=-1)
+    starts=torch.arange(0,length,32,device='cuda',dtype=torch.int32)
+    counts=(length-starts).clamp(max=32)
+    unit=torch.ones((),device='cuda')
+    args=(q,positions,key,table,trig,unit,starts,counts,length)
+    kwargs=dict(scale=1/16,q_dtype=torch.bfloat16,q_scale=unit,block_tokens=32)
+    visible=torch.minimum((positions[:,None]-starts[None,:]+1).clamp(min=0),counts)
+    expected=visible.float()/(positions[:,None]+1)
+    reference=page_attention(*args,**kwargs)
+    actual=page_attention(*args,**kwargs,fused=True,complete_partition=True)
+    torch.testing.assert_close(reference,expected,rtol=2e-6,atol=2e-7)
+    torch.testing.assert_close(actual,expected,rtol=2e-6,atol=2e-7)
+    assert torch.equal(actual[visible==0],torch.zeros_like(actual[visible==0]))
+
+    # Replay must overwrite both statistics, including completely masked pages.
+    torch.cuda.synchronize()
+    graph=torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replayed=page_attention(*args,**kwargs,fused=True,complete_partition=True)
+    q.mul_(-8)
+    positions.copy_(torch.tensor([258,35,17,2,0],device='cuda'))
+    graph.replay()
+    visible=torch.minimum((positions[:,None]-starts[None,:]+1).clamp(min=0),counts)
+    expected=visible.float()/(positions[:,None]+1)
+    torch.testing.assert_close(replayed,expected,rtol=2e-6,atol=2e-7)
+    assert torch.equal(replayed[visible==0],torch.zeros_like(replayed[visible==0]))
+
+
 def test_fused_native_page_stride_past_two_gib_uses_wide_addressing():
     physical,page,kv,heads,dim=650,1616,4,8,256
     cache=torch.empty((physical,kv,page,dim*2),device='cuda',dtype=torch.float8_e4m3fn)

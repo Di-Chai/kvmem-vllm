@@ -33,7 +33,8 @@ struct Fixture {
     uint64_t payload_epoch = 0;
 
     Fixture(HistoricalGcMode mode = HistoricalGcMode::Delete, bool background = false,
-            std::unique_ptr<HistoricalKvPolicy> policy = {}, uint32_t max_scopes = 1, bool preallocate = false) {
+            std::unique_ptr<HistoricalKvPolicy> policy = {}, uint32_t max_scopes = 1, bool preallocate = false,
+            HistoricalPolicyParameters params = {}) {
         arena = std::make_shared<Payload>(Payload::Config{16, 16, 1, 16, 16, background});
         repo = std::make_shared<Repo>(Repo::Config{8, 4});
         HistoricalGcWorker::Config config;
@@ -45,6 +46,7 @@ struct Fixture {
         config.scan_blocks = 8;
         config.delete_blocks = 2;
         config.mode = mode;
+        config.policy_params = std::move(params);
         config.background = background;
         worker = std::make_unique<HistoricalGcWorker>(config, arena);
         scope = worker->register_scope(repo, std::move(policy));
@@ -405,12 +407,13 @@ static void scope_cpu_target_is_independent_of_global_free_bytes() {
     frame.reset();
 }
 
-static void serving_metadata_is_preallocated_and_recycled_before_scope_ack() {
-    Fixture fixture(HistoricalGcMode::Delete, false, {}, 1, true);
+static void serving_metadata_is_preallocated_and_recycled_before_scope_ack(bool keep_mandatory = true) {
+    Fixture fixture(HistoricalGcMode::Delete, false, {}, 1, true, {{"keep_mandatory", keep_mandatory}});
     check(fixture.worker->storage_stats().allocations == 1, "serving metadata was not allocated at startup");
     for (unsigned round = 0; round < 10; ++round) {
         fixture.payload_epoch = uint64_t(round)*8;
-        for (unsigned i = 0; i < 8; ++i) fixture.append();
+        for (unsigned i = 0; i < 8; ++i)
+            fixture.append(HistoricalSealed | HistoricalGpu | (keep_mandatory ? 0 : HistoricalMandatory));
         fixture.step(16);
         check(fixture.scope->stats().retired == 4, "reused LRU policy inherited its previous incarnation");
         fixture.gpu.clear();
@@ -445,6 +448,7 @@ int main() {
         requested_capacity_can_exceed_static_lru_watermarks();
         scope_cpu_target_is_independent_of_global_free_bytes();
         serving_metadata_is_preallocated_and_recycled_before_scope_ack();
+        serving_metadata_is_preallocated_and_recycled_before_scope_ack(false);
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

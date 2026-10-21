@@ -183,6 +183,7 @@ class RuntimeOptions:
     action_download_max_slots: int = 128
     action_fused_scoring: bool = True
     action_native_scores: str = 'off'
+    action_native_prefill_aligned_pieces: bool = False
     action_native_max_rows: int = 256
     action_native_max_bytes: int = 2147483648
     async_refresh: bool = False
@@ -229,6 +230,8 @@ class RuntimeOptions:
     async_action_metadata: bool = False
     rolling_active_window: bool = False
     early_capture_slot_release: bool = False
+    prefill_publication_pipeline: bool = False
+    prefill_native_plan_arm: bool = False
     early_capture_feedback_bytes: int = 268435456
     action_profiling: bool = False
     action_profile_interval: int = 1
@@ -250,6 +253,28 @@ class RuntimeOptions:
     _policy_resolved_values: tuple | None = field(default=None, repr=False, compare=False)
     cpu_direct_record_seal: bool = False
     historical_gc: object = None
+    guided_query_backend: str = 'eager'
+    guided_reselect: str = 'boundary'
+    guided_trigger_tokens: int = 0
+    guided_max_refreshes: int = 2
+    assembly_chunk_blocks: int = 32
+    prefill_capture_ahead: bool = False
+    cpu_seal_hash_workers: int = 1
+    capture_fused_pack: bool = False
+    prefill_action_before_mtp: bool = False
+    prefill_deferred_validation: bool = False
+    prefill_deferred_validation_max_bytes: int = 67108864
+    prefill_deferred_validation_scratch_bytes: int = 2147483648
+    prefill_scatter_after_target: bool = False
+    cpu_mean_index_simd: bool = False
+    assembly_read_prefetch: bool = False
+    assembly_fused_layers: bool = False
+    prefill_physical_coalescing: bool = False
+    prefill_physical_max_chunks: int = 2
+    action_native_prefill_cta_gate: bool = False
+    capture_opaque_projection: bool = False
+    action_native_prefill_static_aligned: bool = False
+    cpu_seal_pack_workers: int = 1
 
     @property
     def active_residency_enabled(self):
@@ -261,6 +286,14 @@ class RuntimeOptions:
             return 0
         block = self.memory.block_tokens
         return ((256 + self.guided_query_tokens + block - 1) // block) * block
+
+    @property
+    def guided_trigger(self):
+        if self.guided_trigger_tokens:
+            return self.guided_trigger_tokens
+        block, generation = self.memory.block_tokens, self.memory.gen_budget
+        guard = max(min(4096, generation // 4), self.guided_reserve + 3*block)
+        return max(block, (generation-guard)//block*block)
 
     def __post_init__(self):
         import math
@@ -312,6 +345,23 @@ class RuntimeOptions:
             raise ValueError('Action commit capacity must be at least 4096 bytes')
         if self.action_native_scores not in ('off', 'verify', 'reuse'):
             raise ValueError('Native Action scores must be off, verify or reuse')
+        if type(self.action_native_prefill_aligned_pieces) is not bool:
+            raise ValueError('Native prefill aligned pieces must be boolean')
+        if self.action_native_prefill_aligned_pieces and self.action_native_scores == 'off':
+            raise ValueError('Native prefill aligned pieces require native Action scores')
+        if type(self.action_native_prefill_cta_gate) is not bool:
+            raise ValueError('Native prefill CTA gate must be boolean')
+        if type(self.capture_opaque_projection) is not bool:
+            raise ValueError('Opaque capture projection must be boolean')
+        if self.action_native_prefill_cta_gate and self.action_native_scores == 'off':
+            raise ValueError('Native prefill CTA gate requires native Action scores')
+        if type(self.action_native_prefill_static_aligned) is not bool:
+            raise ValueError('Native prefill static aligned must be boolean')
+        if self.action_native_prefill_static_aligned:
+            if self.action_native_scores == 'off':
+                raise ValueError('Native prefill static aligned requires native Action scores')
+            if self.action_native_prefill_aligned_pieces or self.action_native_prefill_cta_gate:
+                raise ValueError('Native prefill static aligned cannot combine runtime aligned pieces or CTA gate')
         if (type(self.action_native_max_rows) is not int or self.action_native_max_rows < 1 or
                 type(self.action_native_max_bytes) is not int or self.action_native_max_bytes < 1):
             raise ValueError('Native Action buffer limits must be positive integers')
@@ -328,11 +378,80 @@ class RuntimeOptions:
             raise ValueError('Early capture slot release requires async CPU scatter')
         if self.early_capture_slot_release and not self.split_capture_dma:
             raise ValueError('Early capture slot release requires split capture DMA')
+        if type(self.prefill_publication_pipeline) is not bool:
+            raise ValueError('prefill_publication_pipeline must be boolean')
+        if self.prefill_publication_pipeline:
+            if not (self.async_cpu_scatter and self.split_capture_dma and
+                    self.memory.action_attention and self.prefill_attention):
+                raise ValueError('Prefill publication pipeline requires async CPU scatter, '
+                                 'split capture DMA and prefill action attention')
+            if self.early_capture_slot_release:
+                raise ValueError('Prefill publication pipeline requires completion-owned capture slots')
+        if type(self.prefill_native_plan_arm) is not bool:
+            raise ValueError('prefill_native_plan_arm must be boolean')
+        if self.prefill_native_plan_arm and (not self.prefill_publication_pipeline or
+                                             self.action_native_scores == 'off'):
+            raise ValueError('Prefill native plan arm requires the publication pipeline and native scores')
+        if type(self.prefill_capture_ahead) is not bool:
+            raise ValueError('prefill_capture_ahead must be boolean')
+        if type(self.capture_fused_pack) is not bool:
+            raise ValueError('capture_fused_pack must be boolean')
+        if type(self.prefill_action_before_mtp) is not bool:
+            raise ValueError('prefill_action_before_mtp must be boolean')
+        if self.prefill_action_before_mtp and (not self.prefill_publication_pipeline or
+                                               self.action_native_scores != 'reuse'):
+            raise ValueError('Prefill action before MTP requires the publication pipeline and native reuse')
+        if type(self.prefill_deferred_validation) is not bool:
+            raise ValueError('prefill_deferred_validation must be boolean')
+        if type(self.prefill_scatter_after_target) is not bool:
+            raise ValueError('prefill_scatter_after_target must be boolean')
+        if self.prefill_scatter_after_target and not (
+                self.async_cpu_scatter and self.split_capture_dma and
+                self.prefill_publication_pipeline and self.prefill_native_plan_arm):
+            raise ValueError('Prefill scatter after target requires asynchronous split capture, '
+                             'publication pipeline and native prefill plan arming')
+        if self.prefill_deferred_validation and not (
+                self.prefill_action_before_mtp and self.prefill_native_plan_arm and
+                self.async_archive_retirement):
+            raise ValueError('Deferred prefill validation requires early MTP scoring, '
+                             'native plan arm and asynchronous archive retirement')
+        for name in ('prefill_deferred_validation_max_bytes',
+                     'prefill_deferred_validation_scratch_bytes'):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(name + ' must be a positive integer')
+        if self.prefill_capture_ahead and (not self.prefill_publication_pipeline or
+                                          self.action_native_scores == 'off'):
+            raise ValueError('Prefill capture ahead requires the publication pipeline and native scores')
+        if type(self.prefill_physical_coalescing) is not bool:
+            raise ValueError('prefill_physical_coalescing must be boolean')
+        if (type(self.prefill_physical_max_chunks) is not int or
+                not 2 <= self.prefill_physical_max_chunks <= 8):
+            raise ValueError('prefill_physical_max_chunks must be an integer in [2, 8]')
+        if self.prefill_physical_coalescing:
+            if not (self.request_planning and self.prefill_publication_pipeline and
+                    self.prefill_native_plan_arm and self.action_native_scores == 'reuse' and
+                    self.batched_cpu_append and self.graph_mode != 'off'):
+                raise ValueError('Physical prefill coalescing requires request planning, '
+                                 'the publication pipeline, native plan arm, native reuse, '
+                                 'batched CPU append and an active graph')
+            if (self.early_capture_slot_release or self.prefill_deferred_validation or
+                    self.prefill_scatter_after_target or self.offline_prefill_coalescing or
+                    self.offline_phase_policy or self.prefill_batch_tokens or self.adaptive_prefill or
+                    self.guided_query_tokens):
+                raise ValueError('Physical prefill coalescing does not qualify early slot release, '
+                                 'deferred validation/scatter, other coalescing or prefill budget '
+                                 'controllers, or guided Query')
+            if self.action_native_max_rows < 64*self.prefill_physical_max_chunks:
+                raise ValueError('Physical prefill coalescing requires native sample capacity for every logical chunk')
+            if not self.action_download_pool or self.action_download_max_slots < 4:
+                raise ValueError('Physical prefill coalescing requires four bounded Action download slots')
         if type(self.rolling_active_window) is not bool:
             raise ValueError('Rolling active window must be boolean')
-        if self.rolling_active_window and not (self.request_planning and self.async_refresh and
-                self.async_restore and self.cpu_history_coordination and self.session_capture_terminal):
-            raise ValueError('Rolling active window requires planned asynchronous CPU history sessions and terminal capture')
+        if self.rolling_active_window and not (self.request_planning and
+                self.async_refresh == self.async_restore and
+                self.cpu_history_coordination and self.session_capture_terminal):
+            raise ValueError('Rolling active window requires planned CPU history sessions, '
+                             'terminal capture and matching refresh/restore modes')
         if (type(self.resident_restore_slots) is not int or
                 not 1 <= self.resident_restore_slots <= 32 or
                 (self.resident_restore_slots > 1 and not self.async_restore)):
@@ -464,6 +583,23 @@ class RuntimeOptions:
         if (type(self.query_history_decay) not in (float, int) or
                 not math.isfinite(self.query_history_decay) or not 0 <= self.query_history_decay <= 1):
             raise ValueError('Query history decay must be in [0, 1]')
+        if self.guided_query_backend not in ('eager', 'cuda_graph'):
+            raise ValueError('Guided Query backend must be eager or cuda_graph')
+        if self.guided_reselect not in ('off', 'boundary', 'middecode', 'both'):
+            raise ValueError('guided_reselect must be off, boundary, middecode or both')
+        if type(self.guided_trigger_tokens) is not int or self.guided_trigger_tokens < 0:
+            raise ValueError('guided_trigger_tokens must be a nonnegative integer')
+        if type(self.guided_max_refreshes) is not int or not 0 <= self.guided_max_refreshes <= 8:
+            raise ValueError('guided_max_refreshes must be in [0, 8]')
+        if self.guided_query_tokens and self.guided_reselect in ('middecode', 'both'):
+            if not self.rolling_active_window:
+                raise ValueError('Guided automatic refresh requires rolling_active_window')
+            if self.async_refresh:
+                raise ValueError('Guided automatic refresh currently requires synchronous refresh')
+            if not 0 < self.guided_trigger < self.memory.gen_budget:
+                raise ValueError('Guided refresh trigger must be smaller than G')
+            if self.guided_trigger + self.guided_reserve + 2*self.memory.block_tokens > self.memory.gen_budget:
+                raise ValueError('Guided refresh trigger leaves insufficient private headroom')
         if type(self.guided_query_tokens) is not int or not 0 <= self.guided_query_tokens <= 4096:
             raise ValueError('Guided query tokens must be in [0, 4096]')
         if self.archive_backend not in ('nvme', 'cpu'):
@@ -474,6 +610,28 @@ class RuntimeOptions:
             raise ValueError('cpu_direct_record_seal must be boolean')
         if self.cpu_direct_record_seal and (self.archive_backend != 'cpu' or not self.async_seal):
             raise ValueError('cpu_direct_record_seal requires archive_backend=cpu and async_seal=true')
+        if type(self.cpu_mean_index_simd) is not bool:
+            raise ValueError('cpu_mean_index_simd must be boolean')
+        if self.cpu_mean_index_simd and self.mean_k_backend != 'qw3_cuda':
+            raise ValueError('cpu_mean_index_simd requires mean_k_backend=qw3_cuda')
+        if type(self.assembly_read_prefetch) is not bool:
+            raise ValueError('assembly_read_prefetch must be boolean')
+        if self.assembly_read_prefetch and not (
+                self.archive_backend == 'cpu' and self.packed_assembly and self.direct_pinned_reads):
+            raise ValueError('assembly_read_prefetch requires CPU archive and direct packed reads')
+        if type(self.assembly_fused_layers) is not bool:
+            raise ValueError('assembly_fused_layers must be boolean')
+        if self.assembly_fused_layers and not (
+                self.archive_backend == 'cpu' and self.packed_assembly and self.direct_pinned_reads):
+            raise ValueError('assembly_fused_layers requires CPU archive and direct packed reads')
+        if type(self.cpu_seal_hash_workers) is not int or not 1 <= self.cpu_seal_hash_workers <= 8:
+            raise ValueError('cpu_seal_hash_workers must be an integer in [1, 8]')
+        if self.cpu_seal_hash_workers > 1 and (self.archive_backend != 'cpu' or not self.async_seal):
+            raise ValueError('cpu_seal_hash_workers > 1 requires archive_backend=cpu and async_seal=true')
+        if type(self.cpu_seal_pack_workers) is not int or not 1 <= self.cpu_seal_pack_workers <= 8:
+            raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
+        if self.cpu_seal_pack_workers > 1 and (not self.cpu_direct_record_seal or self.historical_gc is not None):
+            raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU record sealing without historical_gc')
         if (self.query_history or self.guided_query_tokens) and not self.request_planning:
             raise ValueError('Query history/guided refresh require explicit request planning')
         if self.query_history and not self.session_capacity:
@@ -492,6 +650,8 @@ class RuntimeOptions:
             raise ValueError('CPU scatter minimum must be an integer in [1, 65536]')
         if type(self.cpu_gather_workers) is not int or not 1 <= self.cpu_gather_workers <= 16:
             raise ValueError('CPU gather workers must be an integer in [1, 16]')
+        if type(self.assembly_chunk_blocks) is not int or not 1 <= self.assembly_chunk_blocks <= 256:
+            raise ValueError('Assembly chunk blocks must be an integer in [1, 256]')
         if any(type(value) is not int or value < 0 for value in
                (self.cpu_read_cache_bytes, self.nvme_max_bytes, self.archive_io_max_bytes,
                 self.session_capacity, self.session_checkpoint_bytes, self.cpu_history_cache_bytes_per_request,
@@ -553,6 +713,8 @@ class RuntimeOptions:
         gather_workers = payload.pop('cpu_gather_workers', 8)
         async_seal = payload.pop('async_seal', False)
         direct_record_seal = payload.pop('cpu_direct_record_seal', False)
+        seal_hash_workers = payload.pop('cpu_seal_hash_workers', 1)
+        seal_pack_workers = payload.pop('cpu_seal_pack_workers', 1)
         raw_cache = payload.pop('gpu_raw_k_cache_bytes', 0)
         reuse_v = payload.pop('reuse_resident_v', False)
         cpu_scatter = payload.pop('async_cpu_scatter', False)
@@ -568,6 +730,10 @@ class RuntimeOptions:
         graph = {name: payload.pop(name) for name in GRAPH_DEFAULTS if name in payload}
         graph['pressure_policy'] = payload.pop('pressure_policy', _UNSET)
         action = {name: payload.pop(name, default) for name, default in (
+            ('assembly_chunk_blocks', 32),
+            ('guided_query_backend', 'eager'),
+            ('guided_reselect', 'boundary'), ('guided_trigger_tokens', 0),
+            ('guided_max_refreshes', 2),
             ('action_scope', 'tool-call'), ('action_layers', 'spread3'),
             ('action_interval', 16), ('action_decay', 0.5),
             ('action_native_decode_commit', True), ('action_commit_max_bytes', 16777216),
@@ -575,6 +741,10 @@ class RuntimeOptions:
             ('action_download_max_slots', 128),
             ('action_fused_scoring', True),
             ('action_native_scores', 'off'), ('action_native_max_rows', 256),
+            ('action_native_prefill_aligned_pieces', False),
+            ('action_native_prefill_cta_gate', False),
+            ('capture_opaque_projection', False),
+            ('action_native_prefill_static_aligned', False),
             ('action_native_max_bytes', 2147483648),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
@@ -599,6 +769,20 @@ class RuntimeOptions:
             ('native_action_metadata', False), ('resident_restore_slots', 1),
             ('async_action_metadata', False),
             ('rolling_active_window', False), ('early_capture_slot_release', False),
+            ('prefill_publication_pipeline', False),
+            ('prefill_native_plan_arm', False),
+            ('prefill_capture_ahead', False),
+            ('capture_fused_pack', False),
+            ('prefill_action_before_mtp', False),
+            ('prefill_deferred_validation', False),
+            ('prefill_deferred_validation_max_bytes', 67108864),
+            ('prefill_deferred_validation_scratch_bytes', 2147483648),
+            ('prefill_scatter_after_target', False),
+            ('cpu_mean_index_simd', False),
+            ('assembly_read_prefetch', False),
+            ('assembly_fused_layers', False),
+            ('prefill_physical_coalescing', False),
+            ('prefill_physical_max_chunks', 2),
             ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),
             ('action_profile_interval', 1), ('action_profile_max_events', 256))}
         try:
@@ -611,4 +795,6 @@ class RuntimeOptions:
                    io_bytes, session_capacity, session_bytes, capture_decode, history_bytes, capture_terminal,
                    gather_workers, async_seal, raw_cache, reuse_v,cpu_scatter,scatter_min,batched_append,planning,scorer,checkpoint_policy,
                    query_history,query_decay,guided_tokens,archive_backend,
-                   cpu_direct_record_seal=direct_record_seal,historical_gc=historical_gc,**action,**graph)
+                   cpu_direct_record_seal=direct_record_seal,cpu_seal_hash_workers=seal_hash_workers,
+                   cpu_seal_pack_workers=seal_pack_workers,
+                   historical_gc=historical_gc,**action,**graph)

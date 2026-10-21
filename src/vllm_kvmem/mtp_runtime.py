@@ -69,15 +69,36 @@ def install_mtp_runtime(runner):
             lengths = next(iter(window.groups.values()))
             draft_batch = replace(input_batch, positions=window.positions,
                 seq_lens=lengths.seq_lens, seq_lens_cpu_upper_bound=lengths.cpu_upper_bound)
-        result = original_propose(draft_batch, *args, **kwargs)
-        if pending is not None:
-            captured, original_batch = pending
-            if original_batch is not input_batch:
-                raise ValueError('MTP publication must match the accepted target batch')
-            rejected = runner._kvmem_mtp_rejected
-            runner._kvmem_capture_runtime.submit([*captured, *captures], original_batch, rejected)
-            runner._kvmem_pending_capture = None
-            runner._kvmem_mtp_rejected = None
-        return result
+        runtime = getattr(runner, '_kvmem_capture_runtime', None)
+        action = getattr(runtime, 'action', None)
+        staged = False
+        try:
+            if pending is not None and pending[1] is input_batch and action is not None:
+                staged = action.stage_before_mtp(pending[0], input_batch)
+            result = original_propose(draft_batch, *args, **kwargs)
+            if pending is not None:
+                captured, original_batch = pending
+                if original_batch is not input_batch:
+                    raise ValueError('MTP publication must match the accepted target batch')
+                rejected = runner._kvmem_mtp_rejected
+                runtime.submit([*captured, *captures], original_batch, rejected)
+                runner._kvmem_pending_capture = None
+                runner._kvmem_mtp_rejected = None
+            return result
+        except BaseException as error:
+            if staged or getattr(action, '_mtp_capture_frame', None) is not None:
+                # Even a failure after capture consumed the ready score frame
+                # is fatal: submit may already own an unconfirmed KV packet.
+                # Do not release queued slots or allow a later scheduler ACK.
+                runtime.quarantine_publication(error)
+                try:
+                    action.cancel_before_mtp()
+                except BaseException as cleanup_error:
+                    runtime.quarantine_publication(cleanup_error)
+                    action._mtp_count('quarantined_frames')
+                    raise
+                runner._kvmem_pending_capture = None
+                runner._kvmem_mtp_rejected = None
+            raise
 
     proposer.propose = MethodType(propose, proposer)

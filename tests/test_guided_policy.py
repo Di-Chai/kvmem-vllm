@@ -7,6 +7,44 @@ import torch
 from vllm_kvmem.guided_query import GuidedQueryPolicy, collect_guided_query
 
 
+def test_guided_audit_checks_exact_target_bits_and_acceptance_counter():
+    from vllm_kvmem.guided_query import verify_guided_rollback
+    values={'state':torch.tensor([-0.,float('nan')]),'num_accepted':torch.tensor([3])}
+    before=NS(tensors={k:v.clone() for k,v in values.items()})
+    assert verify_guided_rollback(before,values,[])['recurrent_byte_equal']
+    values['state'][0]=0.
+    with pytest.raises(RuntimeError,match='recurrent state'):
+        verify_guided_rollback(before,values,[])
+    values['state'].copy_(before.tensors['state'])
+    values['num_accepted'][0]=4
+    with pytest.raises(RuntimeError,match='recurrent state'):
+        verify_guided_rollback(before,values,[])
+
+
+def test_guided_audit_covers_committed_draft_rows_but_allows_scratch():
+    from vllm_kvmem.guided_query import snapshot_guided_draft, verify_guided_rollback
+    cache=torch.arange(8,dtype=torch.float32).reshape(4,1,1,2)
+    def views(owner,begin,end):
+        assert (owner,begin,end)==('a',1,3)
+        return {'draft':(cache,torch.tensor([1,2]),torch.tensor([0,0]))}
+    runner=NS(_kvmem_sessions=NS(model_adapter=NS(_draft_views=views)))
+    batch=NS(req_ids=['a','cold'],num_computed_tokens_np=[3,0])
+    draft=snapshot_guided_draft(runner,batch,NS(method='dflash',sliding_window=3))
+    assert len(draft)==1
+    before=NS(tensors={'state':torch.ones(1)})
+    cache[3].fill_(999)
+    assert verify_guided_rollback(before,before.tensors,draft)['draft_byte_equal']
+    cache[1].fill_(999)
+    with pytest.raises(RuntimeError,match='committed draft KV'):
+        verify_guided_rollback(before,before.tensors,draft)
+
+
+def test_guided_audit_rejects_incomplete_recurrent_schema():
+    from vllm_kvmem.guided_query import verify_guided_rollback
+    with pytest.raises(RuntimeError,match='schema'):
+        verify_guided_rollback(NS(tensors={'state':torch.ones(1)}),{},[])
+
+
 class Tokenizer:
     eos_token_id = 1000
     unk_token_id = -1

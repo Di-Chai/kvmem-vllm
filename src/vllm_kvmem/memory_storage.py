@@ -207,19 +207,34 @@ class MemoryTier:
 
 
 class MemoryArchive(AsyncArchive):
-    def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False,
+    def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False, cpu_seal_hash_workers=1,
+                 cpu_seal_pack_workers=1,
                  native_payloads=False, **kwargs):
         if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
             raise ValueError('CPU gather workers must be between 1 and 16')
         if type(cpu_direct_record_seal) is not bool:
             raise ValueError('cpu_direct_record_seal must be boolean')
+        if type(cpu_seal_hash_workers) is not int or not 1 <= cpu_seal_hash_workers <= 8:
+            raise ValueError('cpu_seal_hash_workers must be an integer in [1, 8]')
+        if type(cpu_seal_pack_workers) is not int or not 1 <= cpu_seal_pack_workers <= 8:
+            raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
+        if cpu_seal_pack_workers > 1 and (not cpu_direct_record_seal or native_payloads):
+            raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU records without native payloads')
         super().__init__(*args, **kwargs, memory_only=True, native_cpu_payloads=native_payloads)
         self._native_payload_arena = getattr(self.tier, 'payloads', None)
         self._history_worker = None
         self._history_scopes = {}
         self._history_totals = Counter()
         self._history_mode = None
+        self._history_policy = None
+        self._history_policy_params = {}
         self.cpu_direct_record_seal = cpu_direct_record_seal
+        self.cpu_seal_hash_workers = cpu_seal_hash_workers
+        self.cpu_seal_pack_workers = cpu_seal_pack_workers
+        self._seal_pack_parallel_batches_completed = 0
+        self._seal_pack_parallel_shards_completed = 0
+        self._seal_hash_parallel_batches_completed = 0
+        self._seal_hash_parallel_shards_completed = 0
         self._seal_totals = dict(seal_batches=0, seal_records=0, seal_payload_bytes=0,
             seal_direct_records=0, seal_direct_bytes=0, seal_pack_seconds=0.,
             seal_hash_seconds=0., seal_cache_seconds=0., seal_record_copy_seconds=0.,
@@ -238,34 +253,38 @@ class MemoryArchive(AsyncArchive):
 
     def _seal_views(self, keys, entries, spans, views):
         if self._native_payload_arena is not None:
-            started = time.perf_counter()
-            allocations = [entry.allocation for entry in entries]
-            stats = self.tier.publish_record_views(allocations,
-                [views[2*i:2*i+2] for i in range(len(entries))])
-            copied = time.perf_counter()
-            sources = self.tier.borrow_records(allocations)
+            sources = []
             try:
-                digests = tuple(hashlib.sha256(source).hexdigest() for source in sources)
+                started = time.perf_counter()
+                allocations = [entry.allocation for entry in entries]
+                stats = self.tier.publish_record_views(allocations,
+                    [views[2*i:2*i+2] for i in range(len(entries))])
+                copied = time.perf_counter()
+                sources = self.tier.borrow_records(allocations)
+                digests = self._record_digests(sources)
+                stats.update(record_digests=digests, seal_pack_seconds=copied-started,
+                    seal_hash_seconds=time.perf_counter()-copied, seal_cache_seconds=0.,
+                    seal_record_copy_seconds=0., seal_record_publish_seconds=0.,
+                    seal_direct_records=len(entries), seal_direct_bytes=len(entries)*self.record_bytes)
+                return stats
             finally:
+                views = None
                 sources.clear()
-            stats.update(record_digests=digests, seal_pack_seconds=copied-started,
-                seal_hash_seconds=time.perf_counter()-copied, seal_cache_seconds=0.,
-                seal_record_copy_seconds=0., seal_record_publish_seconds=0.,
-                seal_direct_records=len(entries), seal_direct_bytes=len(entries)*self.record_bytes)
-            return stats
         if not self.cpu_direct_record_seal:
-            return super()._seal_views(keys, entries, spans, views)
+            try:
+                return super()._seal_views(keys, entries, spans, views)
+            finally:
+                views = None
         records = []
         record = None
         try:
             started = time.perf_counter()
-            for i in range(len(entries)):
-                record = _native.pack_record_views(views[2*i:2*i+2])
-                if type(record) is not bytes or len(record) != self.record_bytes:
-                    raise RuntimeError('Invalid owned CPU sealed record')
-                records.append(record)
+            records = self._pack_records(views)
+            if (len(records) != len(entries) or
+                    any(type(record) is not bytes or len(record) != self.record_bytes for record in records)):
+                raise RuntimeError('Invalid owned CPU sealed record')
             packed = time.perf_counter()
-            digests = tuple(hashlib.sha256(record).hexdigest() for record in records)
+            digests = self._record_digests(records)
             hashed = time.perf_counter()
             # No batch slab or record views survive publication. The exact
             # bytes objects hashed above become the immutable authority owners.
@@ -278,6 +297,130 @@ class MemoryArchive(AsyncArchive):
         finally:
             views = record = None
             records.clear()
+
+    def _pack_range(self, views, start, end):
+        """Own one disjoint record shard; native memcpy releases the GIL."""
+        self._gather_worker.active = True
+        pairs = None
+        try:
+            pairs = views[2*start:2*end]
+            return _native.pack_record_pairs(pairs, self.record_bytes)
+        finally:
+            # A failed Future must not retain sealed tensor buffer exports.
+            views = pairs = None
+            self._gather_worker.active = False
+
+    def _pack_records(self, views):
+        """Pack an admitted batch with bounded shards and one copy per record.
+
+        write_from_views already validates the complete source extent and owns
+        generation leases plus 2x byte admission. Workers only allocate private
+        independent records; hashing and publication wait for every shard.
+        """
+        jobs, parts, error, job, records = [], [], None, None, None
+        try:
+            if getattr(self._gather_worker, 'active', False):
+                raise RuntimeError('CPU gather worker cannot recursively pack')
+            pack_pairs = getattr(_native, 'pack_record_pairs', None)
+            if not callable(pack_pairs):
+                # Older extensions retain their original serial copy path.
+                records = []
+                for i in range(0, len(views), 2):
+                    records.append(_native.pack_record_views(views[i:i+2]))
+                return records
+            if self.cpu_seal_pack_workers == 1:
+                return pack_pairs(views, self.record_bytes)
+            workers = min(self.cpu_seal_pack_workers, len(views)//2)
+            with self._gather_control:
+                if self._gather_unusable is not None:
+                    raise RuntimeError('CPU gather pool unavailable: '+self._gather_unusable)
+                if workers > 1:
+                    try:
+                        for worker in range(workers):
+                            jobs.append(self._gather_executor.submit(self._pack_range, views,
+                                (len(views)//2)*worker//workers,
+                                (len(views)//2)*(worker+1)//workers))
+                    except BaseException as failure:
+                        error = failure
+                        self._gather_unusable = 'submission failed ('+type(failure).__name__+')'
+            if error is not None:
+                # submit can start a task without returning its Future. Drain
+                # the whole poisoned pool before source leases are released.
+                self._stop_gather_pool()
+            if workers <= 1:
+                return pack_pairs(views, self.record_bytes)
+            for job in jobs:
+                try:
+                    parts.append(job.result())
+                except BaseException as failure:
+                    if error is None:
+                        error = failure
+            if error is not None:
+                raise error
+            records = [record for part in parts for record in part]
+            with self._lock:
+                self._seal_pack_parallel_batches_completed += 1
+                self._seal_pack_parallel_shards_completed += len(jobs)
+            return records
+        finally:
+            views = job = records = None
+            jobs.clear()
+            parts.clear()
+
+    def _hash_range(self, records, start, end):
+        self._gather_worker.active = True
+        try:
+            return super()._record_digests(records[start:end])
+        finally:
+            records = None
+            self._gather_worker.active = False
+
+    def _record_digests(self, records):
+        jobs, error, parts = [], None, []
+        try:
+            if self.cpu_seal_hash_workers == 1:
+                return super()._record_digests(records)
+            if getattr(self._gather_worker, 'active', False):
+                raise RuntimeError('CPU gather worker cannot recursively seal')
+            workers = min(self.cpu_seal_hash_workers, len(records))
+            with self._gather_control:
+                if self._gather_unusable is not None:
+                    raise RuntimeError('CPU gather pool unavailable: '+self._gather_unusable)
+                if workers > 1:
+                    try:
+                        # At most eight shards per admitted archive job; reuse
+                        # the existing bounded gather pool, never one task per record.
+                        for worker in range(workers):
+                            jobs.append(self._gather_executor.submit(self._hash_range, records,
+                                len(records)*worker//workers, len(records)*(worker+1)//workers))
+                    except BaseException as failure:
+                        error = failure
+                        self._gather_unusable = 'submission failed ('+type(failure).__name__+')'
+            if error is not None:
+                # submit can enqueue/start work and then raise without returning
+                # its Future. Cancel unseen queued tasks and join running ones.
+                self._stop_gather_pool()
+            if workers <= 1:
+                return super()._record_digests(records)
+            for job in jobs:
+                try:
+                    parts.append(job.result())
+                except BaseException as failure:
+                    if error is None:
+                        error = failure
+            if error is not None:
+                raise error
+            # These counters describe completed parallel hashing, before the
+            # caller's publication transaction; failed shard batches add none.
+            with self._lock:
+                self._seal_hash_parallel_batches_completed += 1
+                self._seal_hash_parallel_shards_completed += len(jobs)
+            return tuple(digest for part in parts for digest in part)
+        finally:
+            # All workers have drained before callers release source owners or
+            # roll back allocations; failed archive Futures retain no records here.
+            records = None
+            jobs.clear()
 
     def _copy_range(self, *args):
         self._gather_worker.active = True
@@ -387,6 +530,8 @@ class MemoryArchive(AsyncArchive):
         self._history_worker = _native.HistoricalGcWorker(config, self._native_payload_arena)
         self._history_background = config.background
         self._history_mode = config.mode.name.lower()
+        self._history_policy = config.policy
+        self._history_policy_params = dict(config.policy_params)
         return self._history_worker
 
     def register_history_scope(self, namespace, repository):
@@ -423,7 +568,8 @@ class MemoryArchive(AsyncArchive):
             for scope in self._history_scopes.values():
                 totals.update(scope.stats)
             scopes = len(self._history_scopes)
-        return dict(mode=self._history_mode, active_scopes=scopes, **dict(totals),
+        return dict(mode=self._history_mode, policy=self._history_policy,
+                    policy_params=dict(self._history_policy_params), active_scopes=scopes, **dict(totals),
                     metadata=self._history_worker.storage_stats)
 
     def allocate_index(self, shape, *, mean):
@@ -478,9 +624,16 @@ class MemoryArchive(AsyncArchive):
             self._lock.release()
 
     def io_usage(self):
+        with self._lock:
+            hash_usage = dict(cpu_seal_hash_workers=self.cpu_seal_hash_workers,
+                seal_hash_parallel_batches_completed=self._seal_hash_parallel_batches_completed,
+                seal_hash_parallel_shards_completed=self._seal_hash_parallel_shards_completed,
+                cpu_seal_pack_workers=self.cpu_seal_pack_workers,
+                seal_pack_parallel_batches_completed=self._seal_pack_parallel_batches_completed,
+                seal_pack_parallel_shards_completed=self._seal_pack_parallel_shards_completed)
         native = self._native_payload_arena.stats if self._native_payload_arena is not None else None
         return {**super().io_usage(), 'archive_backend':'cpu', 'disk_read_bytes':0,
-                'disk_write_bytes':0,
+                'disk_write_bytes':0, **hash_usage,
                 'cpu_authority_bytes':native['used_bytes'] if native else self.tier.used_slots*self.record_bytes,
                 **({'cpu_native_payloads': True, 'cpu_payload_readers': native['readers'],
                     'cpu_payload_released_bytes': native['released_bytes'],

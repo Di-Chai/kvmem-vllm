@@ -202,6 +202,24 @@ def test_rolling_continuation_preserves_stable_query_and_pages_until_they_fill()
     assert rolling.selection_budget(offset+boundary,51634,53248) == 36864
 
 
+def test_dflash8_tool_rounds_share_window_and_clip_every_acceptance_at_capacity():
+    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    p=RequestPlan((64,96),block_tokens=32,gen_budget=16384,
+        output_tokens=16384,rolling_active_window=True)
+    # A 129-token tool call and its 920-token tool result do not reserve a fresh G.
+    resumed,changed=p.continuation(151841,16384,150921,36937,53248,(64,96))
+    assert not changed and resumed.query is None and resumed.prefill_window=='keep_selected'
+    assert resumed.action(151840,151841,150921-36937,53248) is None
+    policy=SpeculativeQueryPolicy(32,36864,16384,8)
+    boundary=53248-32
+    for left in range(1,9):
+        h=boundary-left
+        admitted=policy.admit(h,8,1,0)
+        assert admitted==left
+        for accepted in range(1,admitted+1):
+            assert resumed.action(h+accepted,1,0,53248)==('pressure' if accepted==left else None)
+
+
 def test_rolling_plan_is_server_only_and_survives_public_payload_roundtrip(monkeypatch):
     import json
     from types import SimpleNamespace

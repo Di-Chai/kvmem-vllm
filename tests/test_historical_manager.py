@@ -178,3 +178,49 @@ def test_history_gc_requires_native_storage_and_setup_before_archive_use(tmp_pat
     finally:
         lease.reset()
         eventually(archive.close)
+
+
+@pytest.mark.parametrize('keep', [True, False])
+def test_configured_factory_parameters_control_real_archive_reclamation(tmp_path, keep):
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.historical_gc import HistoricalGcSettings
+
+    memory = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=12,
+                         repository_blocks=8, sink_blocks=0, recent_blocks=0)
+    config = HistoricalGcSettings(mode='delete', policy='lru',
+        policy_params={'keep_mandatory': keep}, ready_low=2, ready_high=4).native(memory, 1)
+    config.background = False
+    archive = MemoryArchive(str(tmp_path), 8, 16, native_payloads=True)
+    worker = archive.enable_history_gc(config)
+    repo = n.Repository(8, 4)
+    scope = archive.register_history_scope('a', repo)
+    leases, _ = append(archive, repo, scope)
+    assert all(scope.update(lease, n.HISTORY_SEALED | n.HISTORY_GPU | n.HISTORY_MANDATORY)
+               for lease in leases)
+    try:
+        steps(archive, worker, scope)
+        stats = archive.history_stats()
+        assert stats['policy'] == 'lru' and stats['policy_params'] == {'keep_mandatory': keep}
+        assert scope.stats['retired'] == scope.stats['cpu_released'] == (0 if keep else 4)
+        assert archive.io_usage()['cpu_authority_bytes'] == (64 if keep else 32)
+        assert all(bool(repo.pin(lease.handle)) == (keep or i >= 4) for i, lease in enumerate(leases))
+        assert all(lease.record.token_count == 4 for lease in leases)
+    finally:
+        leases.clear()
+        eventually(archive.close)
+
+
+@pytest.mark.parametrize('policy,params', [
+    ('unknown', {}), ('lru', {'typo': True}),
+    *[('lru', {'keep_mandatory': v}) for v in (0, 1, 1.0, 'true')],
+])
+def test_native_worker_validates_factory_before_scope_registration_even_when_off(tmp_path, policy, params):
+    archive = MemoryArchive(str(tmp_path), 8, 16, native_payloads=True)
+    config = configuration(mode=n.HistoricalGcMode.OFF)
+    config.policy, config.policy_params = policy, params
+    try:
+        with pytest.raises(ValueError, match='historical_gc.policy'):
+            archive.enable_history_gc(config)
+        assert archive._history_worker is None
+    finally:
+        eventually(archive.close)

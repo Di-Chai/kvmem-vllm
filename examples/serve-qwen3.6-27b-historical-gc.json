@@ -50,6 +50,10 @@
     "verify_archive_on_finish": true,
     "historical_gc": {
       "mode": "delete",
+      "policy": "lru",
+      "policy_params": {
+        "keep_mandatory": true
+      },
       "ready_low": 272,
       "ready_high": 280,
       "poll_ms": 10,

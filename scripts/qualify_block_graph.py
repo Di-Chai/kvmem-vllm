@@ -218,16 +218,18 @@ def edited_turn(agent, before_question, second_spans):
 
 
 def stream_request(profile, session, tokens, count, minimum, *, query=None, spans=(), release=False,
-                   timeout=600):
+                   timeout=600, reselect='force', query_mode='raw', query_id=None):
     body = dict(model=profile['served_model_name'], session_id=session, cache_salt=session,
         prompt=tokens, max_tokens=count, min_tokens=minimum, temperature=0, seed=1927,
         ignore_eos=bool(release), return_token_ids=True, stream=True,
         stream_options={'include_usage': True}, kvmem_mandatory_parts='none',
-        kvmem_reselect='off' if release else 'force')
+        kvmem_reselect='off' if release else reselect)
     if release:
         body['kv_transfer_params'] = {'kvmem_release_session': True}
     else:
         body.update(kvmem_query_span=query, kvmem_message_spans=spans)
+        if query_mode != 'raw':
+            body.update(kvmem_query_mode=query_mode, kvmem_query_id=query_id)
     row = dict(begin=time.monotonic(), wall_begin=time.time(), session=session,
         input_tokens=len(tokens), input_sha256=digest(tokens), query_span=query,
         output_ids=[], chunks=[], text='', usage=None, response_id=None, finish_reason=None)

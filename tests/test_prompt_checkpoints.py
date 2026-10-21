@@ -29,6 +29,44 @@ def ready(pool, checkpoint):
         time.sleep(.001)
 
 
+def test_guided_original_query_restores_saved_version_and_charges_payload(tmp_path):
+    from vllm_kvmem.guided_seed import QuerySeed
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    base_bytes = old.payload_bytes
+    seed = QuerySeed(8, torch.arange(16).reshape(1, 2, 2, 4).float())
+    authority.guided_seed = seed
+    checkpoint = pool.capture(old.namespace, 'a', authority, list(range(11)), adapter, replace=True)
+    assert checkpoint.guided_seed is seed
+    assert checkpoint.payload_bytes == base_bytes+64
+    assert authority.append(*payload(8, 4), history_begin=8, local_rope_begin=8)
+    authority.guided_seed = QuerySeed(12, torch.zeros_like(seed.tensor))
+    pool.retire(checkpoint, Event(True))
+    ready(pool, checkpoint)
+    assert pool.claim(checkpoint.namespace, 'new', list(range(11))) is checkpoint
+    plan = pool.prepare_claim_window(checkpoint)
+    assert authority.guided_seed is seed
+    authority.memory.attach_completion(Event(True))
+    assert authority.memory.commit_selection()
+    assert pool.finish_claim(checkpoint, Event(True)) is authority
+    assert checkpoint.guided_seed is None and pool.payload_bytes == 0
+    assert authority.guided_seed is seed
+    del plan
+    assert authority.close() and archive.close()
+
+
+def test_guided_seed_checkpoint_quota_failure_preserves_previous_version(tmp_path):
+    from vllm_kvmem.guided_seed import QuerySeed
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    previous = pool.payload_bytes
+    authority.guided_seed = QuerySeed(8, torch.ones(4096))
+    with pytest.raises(BufferError):
+        pool.capture(old.namespace, 'a', authority, list(range(11)), adapter, replace=True)
+    assert pool.entries[old.namespace] is old and pool.payload_bytes == previous
+    assert old.guided_seed is None
+    pool.drop_live(old)
+    assert authority.close() and archive.close()
+
+
 def test_terminal_restore_is_not_advertised_before_sealed_publication(tmp_path,monkeypatch):
     pool,old,authority,archive,adapter,_=saved(tmp_path)
     write=archive.write

@@ -144,6 +144,9 @@ class _Entry:
     query: tuple | None = None
     mandatory: tuple = ()
     active_records: tuple = ()
+    query_id: str | None = None
+    guided_anchor: int = 0
+    prompt_guided_anchor: int = 0
     _fingerprint_tokens: bytes | None = field(default=None, repr=False, compare=False)
     _fingerprint: str = field(default='', repr=False, compare=False)
 
@@ -159,7 +162,8 @@ class _Entry:
 class SessionLedger:
     def __init__(self, capacity, block_tokens, prepare_import, abort_import, commit_import, *, terminal_capture=False,
                  select_budget=None, gen_budget=None, checkpoint_policy='sealed',memory_config=None,
-                 preserve_history=False, require_owned=False, pressure_policy='recency', freeze_prompt=False):
+                 preserve_history=False, require_owned=False, pressure_policy='recency', freeze_prompt=False,
+                 guided_options=None):
         if any(type(v) is not int or v <= 0 for v in (capacity, block_tokens)):
             raise ValueError('Session capacity and checkpoint block size must be positive')
         self.capacity, self.block_tokens = capacity, block_tokens
@@ -179,6 +183,7 @@ class SessionLedger:
                 (checkpoint_policy != 'sealed' or terminal_capture)):
             raise ValueError('Frozen prompt ledger requires sealed P-only checkpoints')
         self.freeze_prompt = freeze_prompt
+        self.guided_options = guided_options
         self.memory_config = memory_config
         self.pressure_policy = pressure_policy
         self.select_budget, self.gen_budget = select_budget, gen_budget
@@ -248,9 +253,10 @@ class SessionLedger:
             from .request_plan import request_plan
             plan = request_plan(request,self.block_tokens,self.gen_budget) if self.gen_budget else None
             matches = len(prompt)>entry.history and token_bytes(prompt,entry.history)==entry.tokens
+            same_identity = plan is None or plan.query_id is None or plan.query_id == entry.query_id
             output = self.output_tokens(request)
             effective, changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
-                self.select_budget+self.gen_budget,entry.query if matches else None,
+                self.select_budget+self.gen_budget,entry.query if matches and same_identity else None,
                 entry.mandatory if matches else ()) if plan is not None else (None,False))
             needs_p = not matches or (effective is not None and effective.query is not None and entry.history>effective.replay_begin)
             if needs_p:
@@ -269,7 +275,7 @@ class SessionLedger:
                         if entry.query is not None and entry.query[1] > entry.history:
                             entry.query = None
                     effective,changed = (plan.continuation(len(prompt),output,entry.history,entry.window,
-                        self.select_budget+self.gen_budget,entry.query,entry.mandatory) if plan is not None else (None,False))
+                        self.select_budget+self.gen_budget,entry.query if same_identity else None,entry.mandatory) if plan is not None else (None,False))
                 else:
                     if effective is not None:
                         self.validate_plan_capacity(request, effective)
@@ -290,6 +296,9 @@ class SessionLedger:
                 self._evict(saved_entry)
                 self.waits += 1
                 return None
+            if self.guided_options is not None:
+                from .guided_refresh import prepare_request
+                effective = prepare_request(request, effective, entry, self.guided_options, imported=True)
             self.validate_plan_capacity(request, effective, history=entry.history, window=entry.window)
             for name in ('history', 'window', 'tokens', 'query', 'mandatory'):
                 setattr(saved_entry, name, getattr(entry, name))
@@ -297,22 +306,32 @@ class SessionLedger:
             if effective is not None:
                 self.set_plan(request,effective)
                 entry.query = plan.query or entry.query
+                entry.query_id = plan.query_id
                 entry.mandatory = effective.mandatory
             entry.pressure_restore = False  # Storage alone never triggers selection.
             entry.restore_window = 0
-            if (effective is not None and effective.query is None and
-                    entry.history > effective.generation_checkpoint(len(prompt)) and
-                    entry.window + len(prompt) - entry.history + effective.output_reserve >
-                    self.select_budget + self.gen_budget - self.block_tokens):
+            capacity = self.select_budget + self.gen_budget if effective is not None else None
+            terminal_reserve_overflow = (effective is not None and effective.query is None and
+                entry.history > effective.generation_checkpoint(len(prompt)) and
+                entry.window + len(prompt) - entry.history + effective.output_reserve >
+                capacity - self.block_tokens)
+            prefill_probe_overflow = (effective is not None and effective.query is None and
+                effective.prefill_window == 'pressure' and
+                entry.window > effective.prefill_boundary(entry.history, capacity))
+            if terminal_reserve_overflow or prefill_probe_overflow:
                 # A partial terminal M prefix can already lie past the last
-                # sealed public prefill boundary. Compact it during restore,
-                # before decoding, rather than rewinding/recomputing history.
-                # Rolling mode only reserves the new input and native lookahead;
-                # subsequent accepted output can trigger its own pressure refresh.
-                budget = min(self.select_budget,
-                    (self.select_budget + self.gen_budget - effective.output_reserve -
-                     (len(prompt) - entry.history) - self.block_tokens)
-                    // self.block_tokens * self.block_tokens)
+                # safe prefill pressure point. Native allocation reserves draft
+                # lookahead BEFORE connector metadata can compact the window;
+                # sealing this tail and probing a whole block can exceed K+G.
+                # Select during the fenced import, preserving the accepted tail
+                # and model state. A long tool suffix may use later ordinary
+                # pressure points; it does not need to fit in one reservation.
+                budget = self.select_budget
+                if terminal_reserve_overflow:
+                    budget = min(budget,
+                        (capacity - effective.output_reserve -
+                         (len(prompt) - entry.history) - self.block_tokens)
+                        // self.block_tokens * self.block_tokens)
                 if budget <= 0:
                     raise ValueError('Continuation output reserve exceeds active capacity')
                 entry.pressure_restore = True
@@ -360,8 +379,12 @@ class SessionLedger:
             if (plan.prefill_window=='keep_selected' and
                     request.num_prompt_tokens+plan.output_reserve>self.select_budget+self.gen_budget-self.block_tokens):
                 plan = replace(plan,prefill_window='pressure')  # Original cold checkpoint-hole fallback.
+            if self.guided_options is not None:
+                from .guided_refresh import prepare_request
+                plan = prepare_request(request, plan, entry, self.guided_options)
             self.set_plan(request,plan)
             entry.query,entry.mandatory = plan.query,plan.mandatory
+            entry.query_id = plan.query_id
         self.entries[namespace] = self.requests[request.request_id] = entry
         return 0
 
@@ -459,6 +482,7 @@ class SessionLedger:
                 raise ValueError('Retained frozen prompt differs from the current token prefix')
             return
         entry.candidate_position = position
+        entry.prompt_guided_anchor = entry.guided_anchor
         entry.candidate_tokens = token_bytes(request.prompt_token_ids, position)
         self.commands.captures.append(SessionCapture(request.request_id, entry.generation, position))
 

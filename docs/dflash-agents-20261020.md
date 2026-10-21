@@ -18,10 +18,22 @@ see the adoption note below.
 The four attention-maintenance optimizations remain enabled in both arms.
 Native FlashInfer/XQA QK reuse is off. This experiment adds an explicit,
 default-off direct-launch option, `experimental_dflash_query_planning=true`.
-It permits DFlash2 k=7 with FULL CUDA Graphs, synchronous refresh/restore,
-no guided Query and the existing qualified 2,048-token target recent band.
+It permits DFlash2 k=7 with FULL CUDA Graphs, synchronous refresh/restore
+and the existing qualified 2,048-token target recent band. The initial
+qualification below kept guided Query disabled.
 Compiled DFlash, asynchronous DFlash refresh, rolling windows and extended
 logical position tables are not enabled by this change.
+
+A subsequent opt-in guided Query check uses a 512-token private output cap;
+the bundled default remains zero. Two owners with three turns each pass Query,
+tool continuation and suffix-edit checks: 6/6 narrow answers, two published
+private Queries and four explicit empty-output fallbacks. Verification checks
+bitwise target GDN/acceptance-counter rollback and unchanged committed draft KV
+for both batch owners before public replay, four byte-equal session restores,
+accepted-output attention samples, V2 multi propagation and complete release.
+Evidence: `artifacts/dsh-guided-query-20261020-r1/qualification/results.json`.
+This is a state correctness gate; the separate DSH trial assesses actual agent
+behavior and does not establish an eight-request speedup.
 
 The original DFlash2 contract continues to verify native source hashes, its
 five independent BF16 sliding-attention layers, cache layout, logical positions,

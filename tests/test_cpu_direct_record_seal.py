@@ -13,6 +13,12 @@ from vllm_kvmem.memory_storage import MemoryArchive, MemorySpan, MemoryTier
 from vllm_kvmem.storage import AsyncArchive, make_shared_archive
 
 
+@pytest.fixture
+def legacy_record_packer(monkeypatch):
+    # Retain failure/ownership coverage for deployments with older extensions.
+    monkeypatch.setattr(_native, 'pack_record_pairs', None, raising=False)
+
+
 def repository(count):
     repo = _native.Repository(count, 4)
     leases = [repo.reserve(i*4, 4).commit() for i in range(count)]
@@ -28,7 +34,7 @@ def reclaim_all(repo, leases, handles, archive, namespace='owner'):
 
 
 @pytest.mark.parametrize('mode', ['default', 'false', 'direct', 'ssd'])
-def test_direct_seal_publishes_the_exact_hashed_independent_record_bytes(tmp_path, monkeypatch, mode):
+def test_direct_seal_publishes_the_exact_hashed_independent_record_bytes(tmp_path, monkeypatch, mode, legacy_record_packer):
     kwargs = {} if mode == 'default' else {'cpu_direct_record_seal': mode == 'direct'}
     archive = (AsyncArchive(str(tmp_path), 4, 2) if mode == 'ssd'
                else MemoryArchive(str(tmp_path), 4, 2, **kwargs))
@@ -98,7 +104,7 @@ def test_authority_direct_seal_preserves_codec_digest_and_recycled_staging(dtype
     assert archive.tier.used_slots == 0 and archive.close()
 
 
-def test_authority_cancellation_waits_for_direct_seal_before_returning_staging(monkeypatch):
+def test_authority_cancellation_waits_for_direct_seal_before_returning_staging(monkeypatch, legacy_record_packer):
     from test_record_staging_pool import setup, source
     authority, archive = setup(torch.float8_e4m3fn, resident=1)
     archive.cpu_direct_record_seal = True
@@ -126,7 +132,7 @@ def test_authority_cancellation_waits_for_direct_seal_before_returning_staging(m
         release.set()
 
 
-def test_inflight_direct_seal_is_atomic_drainable_and_keeps_generation_leases(tmp_path, monkeypatch):
+def test_inflight_direct_seal_is_atomic_drainable_and_keeps_generation_leases(tmp_path, monkeypatch, legacy_record_packer):
     archive = MemoryArchive(str(tmp_path), 4, 4, max_pending=2, io_max_bytes=16,
                             cpu_direct_record_seal=True)
     repo, leases, handles = repository(3)
@@ -180,7 +186,7 @@ def test_inflight_direct_seal_is_atomic_drainable_and_keeps_generation_leases(tm
 
 
 @pytest.mark.parametrize('failure', ['pack', 'invalid_record', 'hash', 'publication', 'submission'])
-def test_direct_seal_failure_rolls_back_whole_batch_and_releases_credits(tmp_path, monkeypatch, failure):
+def test_direct_seal_failure_rolls_back_whole_batch_and_releases_credits(tmp_path, monkeypatch, failure, legacy_record_packer):
     archive = MemoryArchive(str(tmp_path), 4, 2, cpu_direct_record_seal=True)
     repo, leases, handles = repository(2)
     pack = _native.pack_record_views
@@ -224,7 +230,7 @@ def test_direct_seal_failure_rolls_back_whole_batch_and_releases_credits(tmp_pat
 
 
 @pytest.mark.parametrize('invalid', [False, True])
-def test_completed_or_failed_job_does_not_retain_sealed_source_exports(tmp_path, monkeypatch, invalid):
+def test_completed_or_failed_job_does_not_retain_sealed_source_exports(tmp_path, monkeypatch, invalid, legacy_record_packer):
     archive = MemoryArchive(str(tmp_path), 4, 2, cpu_direct_record_seal=True)
     repo, leases, handles = repository(2)
     entered, release = Event(), Event()

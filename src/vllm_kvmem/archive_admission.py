@@ -40,6 +40,21 @@ class ArchiveAdmission:
         self.snapshots = {k: v for k, v in self.snapshots.items() if k in live_requests}
         self.snapshots.update({k: v for k, v in snapshots.items() if k in live_requests})
 
+    def available_tokens(self, request_id, history):
+        """Read conservative credit without recording a failed admission.
+
+        A coalescer uses this upper bound before choosing a physical shape;
+        the final ordinary ``allows`` check still owns admission accounting.
+        """
+        if type(history) is not int or history < 0:
+            raise ValueError('Invalid scheduler accepted extent')
+        snapshot = self.snapshots.get(request_id, ArchiveCapacity(0, self.repository_records))
+        if history < snapshot.history_end:
+            raise ValueError('Scheduler history precedes its archive')
+        tail = snapshot.history_end % self.block_tokens
+        capacity = snapshot.ready_records*self.block_tokens + (self.block_tokens-tail if tail else 0)
+        return max(0, capacity-(history-snapshot.history_end))
+
     def allows(self, request_id, history, query_tokens):
         if any(type(v) is not int or v < 0 for v in (history, query_tokens)):
             raise ValueError('Invalid scheduler accepted/query extent')

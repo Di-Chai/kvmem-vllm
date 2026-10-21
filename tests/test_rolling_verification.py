@@ -86,3 +86,19 @@ def test_stable_rows_compare_original_native_bytes_while_moved_rows_use_fp8_rebu
     actual[0] = 202
     with pytest.raises(RuntimeError, match='target/MTP KV'):
         oracle.verify(job)
+
+
+def test_dflash_rolling_oracle_checks_draft_bytes_before_public_verification(monkeypatch,tmp_path):
+    runner,job,_,_,_=oracle_fixture(monkeypatch,tmp_path)
+    cache=torch.arange(8,dtype=torch.float32).reshape(4,1,1,2)
+    runner._kvmem_draft_contract=NS(method='dflash',sliding_window=3)
+    runner._kvmem_last_batch=NS(req_ids=['a'],num_computed_tokens_np=[3])
+    runner._kvmem_sessions.model_adapter=NS(_draft_views=lambda *_:
+        {'draft':(cache,torch.tensor([1,2]),torch.tensor([0,0]))})
+    runner._kvmem_mtp_modules={}
+    oracle=RollingPressureOracle(runner,job)
+    oracle.verify(job)
+    row=json.loads((tmp_path/'verified_rolling_pressure.jsonl').read_text())
+    assert row['draft_byte_equal'] and row['draft_layers']==1 and row['mtp_attention_layers']==0
+    cache[1].add_(1)
+    with pytest.raises(RuntimeError,match='committed draft KV'):oracle.verify(job)

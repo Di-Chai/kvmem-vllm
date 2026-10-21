@@ -358,6 +358,59 @@ def test_rolling_partial_m_preserves_selected_pages_when_only_output_reserve_ove
     assert entry.restore_window == 0 and not entry.pressure_restore
 
 
+@pytest.mark.parametrize('window,suffix,pressure', [
+    (87,12,False), (88,12,False), (89,12,True), (90,12,True),
+    (91,12,True), (92,12,True), (90,160,True), (90,1,False), (90,2,False)])
+def test_near_full_terminal_append_reserves_prefill_probe_before_import(
+        monkeypatch,window,suffix,pressure):
+    import json
+    from vllm_kvmem.prompt_checkpoints import token_bytes
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps({'rolling_active_window':True}))
+    control, events, _, entry = planned_idle_session()
+    history = window + 128
+    entry.history, entry.window = history, window
+    entry.tokens = token_bytes(list(range(history+1)), history)
+    req = request('near-full', tokens=list(range(history+suffix)))
+    req.num_prompt_tokens = len(req.prompt_token_ids)
+    req.max_tokens = 32
+    req.kv_transfer_params = {'kvmem_request_plan':{'kvmem_reselect':'off'}}
+    assert control.lookup(req,0) == history
+    expected = 64 - (-history % 4) if pressure else window
+    assert entry.pressure_restore == pressure
+    assert (entry.restore_window or entry.window) == expected
+    assert events[-1] == ('prepare', ('near-full',history,expected))
+    assert entry.history == history and entry.window == window
+    control.finished(req)
+    assert entry.phase == 'idle' and entry.restore_window == 0
+    assert entry.history == history and entry.window == window
+
+
+def test_dsh_terminal_capacity_failure_keeps_native_lookahead_inside_allocation(monkeypatch):
+    """Real DSH step132: partial M at local53212, then628 new prompt tokens."""
+    import json
+    from vllm_kvmem.prompt_checkpoints import token_bytes
+    from vllm_kvmem.request_plan import request_plan
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':True}))
+    control, _, _, entry = planned_idle_session()
+    control.block_tokens, control.select_budget, control.gen_budget = 32,36864,16384
+    entry.history, entry.window = 102204,53212
+    entry.tokens = token_bytes(list(range(entry.history+1)),entry.history)
+    req = request('dsh-failure',tokens=list(range(102832)))
+    req.num_prompt_tokens, req.max_tokens = 102832,16384
+    req.kv_transfer_params = {'kvmem_request_plan':{'kvmem_reselect':'off'}}
+    assert control.lookup(req,0) == 102204
+    assert entry.pressure_restore and entry.restore_window == 36860
+    plan = request_plan(req,32,16384)
+    history, offset = entry.history, entry.history-entry.restore_window
+    while history < req.num_prompt_tokens:
+        count = plan.admit(history,1024,req.num_prompt_tokens,offset,53248)
+        assert count > 0
+        # Native allocate_slots includes seven draft lookahead rows BEFORE
+        # connector metadata can execute an ordinary synchronous pressure.
+        assert history-offset+count+7 <= 53248
+        history += count
+
+
 @pytest.mark.parametrize('session', ['s',None])
 @pytest.mark.parametrize('rolling,prompt,expected', [
     (False,80,'pressure'), (True,80,'keep_selected'), (True,93,'pressure')])

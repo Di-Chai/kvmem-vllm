@@ -1,4 +1,5 @@
 #include "historical_kv_policy.hpp"
+#include "historical_policy_factory.hpp"
 
 #include <atomic>
 #include <array>
@@ -214,6 +215,49 @@ static void eligibility_is_a_policy_choice_and_snapshot_is_stable() {
     check(rejected, "policy silently reset a partially scanned snapshot");
 }
 
+static void factory_validates_parameters_and_preserves_policy_behavior() {
+    HistoricalSnapshot s{7, 1, {block(0, 1, 1), block(1, 2, 2)}};
+    s.blocks[0].mandatory = true;
+    const HistoricalPressure pressure{0, 1, 2, 0};
+    HistoricalDecisionBatch out(8);
+    auto keep = make_historical_kv_policy("lru", {}, 8);
+    keep->step(s, pressure, {8, 8}, out);
+    check(out.values().size() == 1 && out.values()[0].handle.slot == 1,
+          "factory default changed mandatory protection");
+    out.clear_after_ack();
+    auto allow = make_historical_kv_policy("lru", {{"keep_mandatory", false}}, 8);
+    allow->step(s, pressure, {8, 8}, out);
+    check(out.values().size() == 2 && out.values()[0].handle.slot == 0,
+          "factory ignored explicit LRU parameters");
+    out.clear_after_ack();
+    allow->reset();
+    ++s.incarnation;
+    ++s.round;
+    allow->step(s, pressure, {8, 8}, out);
+    check(out.values().size() == 2, "factory policy reset lost configuration or round state");
+    out.clear_after_ack();
+    auto legacy = make_historical_kv_policy("lru", {}, 8, false);
+    legacy->step(s, pressure, {8, 8}, out);
+    check(out.values().size() == 2, "legacy native keep_mandatory fallback was lost");
+    out.clear_after_ack();
+    auto explicit_keep = make_historical_kv_policy("lru", {{"keep_mandatory", true}}, 8, false);
+    explicit_keep->step(s, pressure, {8, 8}, out);
+    check(out.values().size() == 1, "explicit parameters did not override the legacy fallback");
+
+    const std::vector<std::pair<std::string, HistoricalPolicyParameters>> invalid = {
+        {"fifo", {}}, {"", {}}, {"lru", {{"typo", true}}},
+        {"lru", {{"keep_mandatory", int64_t(1)}}},
+        {"lru", {{"keep_mandatory", 1.0}}},
+        {"lru", {{"keep_mandatory", std::string("true")}}}
+    };
+    for (const auto &[name, params] : invalid) {
+        bool rejected = false;
+        try { make_historical_kv_policy(name, params, 8); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        check(rejected, "factory accepted an unknown policy or invalid parameter");
+    }
+}
+
 int main() {
     try {
         irreversible_retirement();
@@ -223,6 +267,7 @@ int main() {
         byte_pressure_is_independent_of_slots();
         refill_reuses_one_scan_and_observes_current_pressure();
         eligibility_is_a_policy_choice_and_snapshot_is_stable();
+        factory_validates_parameters_and_preserves_policy_behavior();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

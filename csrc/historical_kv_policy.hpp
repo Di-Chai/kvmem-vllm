@@ -75,6 +75,9 @@ private:
 class HistoricalKvPolicy {
 public:
     virtual ~HistoricalKvPolicy() = default;
+    // Called by the backend before a preallocated scope is reused. Stateful
+    // factory policies must clear round/candidate state without reallocating.
+    virtual void reset() {}
     // Policy-owned trigger. Custom proactive policies default to requesting a
     // snapshot even without capacity pressure; the mechanism never vetoes it.
     virtual bool wants_snapshot(const HistoricalPressure &) { return true; }
@@ -108,7 +111,7 @@ public:
     bool permits(const HistoricalBlockMeta &block) const override {
         return block.live && block.sealed && (!keep_mandatory_ || !block.mandatory);
     }
-    void reset() {
+    void reset() override {
         initialized_ = done_ = slots_pressure_ = bytes_pressure_ = false;
         cursor_ = 0;
         candidates_.clear();

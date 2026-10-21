@@ -39,7 +39,7 @@ def test_packed_metadata_exact_fields_big_int64_and_original_stream():
 
 
 @pytest.mark.parametrize('q_dtype', [torch.bfloat16, torch.float8_e4m3fn])
-def test_three_layers_recursive_scoring_and_confirmed_prefix_equal_to_legacy(q_dtype):
+def test_three_layers_recursive_scoring_and_confirmed_prefix_equal_to_legacy(q_dtype, *, fused=False):
     p = PackedActionMetadata()
     g = torch.Generator(device='cuda').manual_seed(841)
     length, dim, heads, kvheads, page = 259, 128, 8, 2, 16
@@ -58,7 +58,7 @@ def test_three_layers_recursive_scoring_and_confirmed_prefix_equal_to_legacy(q_d
         s, c, ids, pos = metadata
         values = [page_attention(q.index_select(0, ids), pos, raw.transpose(1, 2)[..., :dim], table,
                   trig, ks, s, c, length, scale=dim**-.5, q_dtype=q_dtype, q_scale=qs,
-                  block_tokens=16) for q, raw in zip(queries, cache)]
+                  block_tokens=16, fused=fused, complete_partition=True) for q, raw in zip(queries, cache)]
         return (values[0]+values[1]+values[2])/3
     legacy = (torch.tensor(starts, device='cuda', dtype=torch.int32),
               torch.tensor(counts, device='cuda', dtype=torch.int32),

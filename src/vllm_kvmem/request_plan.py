@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 FIELDS = {'kvmem_query_span', 'kvmem_query_message_range', 'kvmem_message_spans',
           'kvmem_reselect', 'kvmem_prefill_window', 'kvmem_replay_span',
           'kvmem_mandatory_spans', 'kvmem_mandatory_parts',
-          'kvmem_locality_spans', 'kvmem_locality_provenance'}
+          'kvmem_locality_spans', 'kvmem_locality_provenance',
+          'kvmem_query_mode', 'kvmem_query_id', 'kvmem_evidence_changed'}
 PARTS = {'system', 'root', 'query', 'policy', 'tool-call', 'tool-result'}
 KINDS = PARTS | {'file', 'explicit'}
 
@@ -93,6 +94,9 @@ class RequestPlan:
     message_spans: tuple[tuple[int, int, str], ...] = ()
     locality_spans: tuple[tuple[int, int, str], ...] = ()
     locality_provenance: tuple = ()
+    query_mode: str = 'raw'
+    query_id: str | None = None
+    evidence_changed: bool = False
 
     @property
     def output_reserve(self):
@@ -195,6 +199,9 @@ class RequestPlan:
             out['kvmem_locality_spans'] = span_payload(self.locality_spans)
         if self.locality_provenance:
             out['kvmem_locality_provenance'] = dict(self.locality_provenance)
+        if self.query_mode != 'raw' or self.query_id is not None or self.evidence_changed:
+            out.update(kvmem_query_mode=self.query_mode, kvmem_query_id=self.query_id,
+                       kvmem_evidence_changed=self.evidence_changed)
         return out
 
     def continuation(self, prompt_tokens, output_tokens, history, window, capacity,
@@ -268,6 +275,13 @@ class RequestPlan:
         window = payload.get('kvmem_prefill_window', 'pressure')
         if mode not in ('auto', 'force', 'off') or window not in ('pressure', 'keep_selected', 'semantic_chunk'):
             raise ValueError('Invalid KVMem reselection/prefill policy')
+        query_mode = payload.get('kvmem_query_mode', 'raw')
+        query_id = payload.get('kvmem_query_id')
+        changed = payload.get('kvmem_evidence_changed', False)
+        if query_mode not in ('raw', 'agent') or type(changed) is not bool:
+            raise ValueError('Invalid Query lifecycle mode or evidence-change flag')
+        if query_id is not None and (not isinstance(query_id, str) or not 0 < len(query_id) <= 1024):
+            raise ValueError('Query identity must be a nonempty bounded string')
         query = payload.get('kvmem_query_span')
         spans = payload.get('kvmem_message_spans', [])
         if not isinstance(spans, list) or any(not isinstance(s, dict) for s in spans):
@@ -322,7 +336,8 @@ class RequestPlan:
         plan = cls(query, mode, window, block_tokens, gen_budget, replay,
                    tuple(dict.fromkeys(mandatory)), bool(set(payload)&{'kvmem_mandatory_spans','kvmem_message_spans','kvmem_mandatory_parts'}),probe_tokens,
                    message_spans=normalized_messages, locality_spans=normalized_locality,
-                   locality_provenance=provenance)
+                   locality_provenance=provenance, query_mode=query_mode, query_id=query_id,
+                   evidence_changed=changed)
         if query is not None and plan.replay_end - plan.replay_begin > gen_budget:
             raise ValueError('Complete partial tail + Query exceeds G replay capacity')
         if query is not None and plan.replay_end - plan.replay_begin > gen_budget - block_tokens - probe_tokens:

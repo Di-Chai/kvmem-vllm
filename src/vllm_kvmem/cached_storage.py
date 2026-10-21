@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from . import _native
-from .storage import AsyncArchive, ArchiveJob, read_destination
+from .storage import AsyncArchive, _submit_archive_job, read_destination
 from .read_cache import RecordReadCache
 
 
@@ -141,7 +141,7 @@ class CachedArchive(AsyncArchive):
 
         with self._lock:
             try:
-                return ArchiveJob(self.executor.submit(work))
+                return _submit_archive_job(self.executor, work)
             except BaseException:
                 owned.clear()
                 self._complete(size)

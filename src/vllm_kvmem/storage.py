@@ -6,7 +6,7 @@ repository GC releases records only after all consumers have dropped leases.
 """
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Condition, Lock
+from threading import Condition, Event, Lock
 import hashlib
 import time
 
@@ -47,6 +47,40 @@ class ArchiveJob:
         return False
 
 
+def _submit_archive_job(executor, work):
+    """Do not touch I/O sources until submission returns an owned completion.
+
+    ThreadPoolExecutor.submit can enqueue work and then fail while starting a
+    thread, leaving no Future for the caller to drain. The gate makes such a
+    hidden task harmless: its caller performs the original admission rollback,
+    and the task only exits. In particular, never join the pool while holding
+    the archive lock needed by other accepted jobs' completion paths.
+    """
+    ready = Event()
+    callback = [work]
+    accepted = False
+
+    def run():
+        ready.wait()
+        if accepted:
+            return callback.pop()()
+
+    try:
+        future = executor.submit(run)
+        job = ArchiveJob(future)
+    except BaseException:
+        # A queued/running wrapper cannot retain archive leases or the pinned
+        # destination through its closure after the admission is rolled back.
+        callback.clear()
+        raise
+    else:
+        accepted = True
+        return job
+    finally:
+        work = None
+        ready.set()
+
+
 def make_shared_archive(options, directory, record_bytes, max_requests, *, max_query_tokens=0):
     """One process-wide arena; each admitted authority has a lifetime partition."""
     capacity = options.memory.repository_blocks * (max_requests + options.session_capacity)
@@ -63,6 +97,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
                                io_max_bytes=options.archive_io_max_bytes,
                                gather_workers=options.cpu_gather_workers,
                                cpu_direct_record_seal=getattr(options, 'cpu_direct_record_seal', False),
+                               cpu_seal_hash_workers=getattr(options, 'cpu_seal_hash_workers', 1),
+                               cpu_seal_pack_workers=getattr(options, 'cpu_seal_pack_workers', 1),
                                native_payloads=getattr(options, 'historical_gc', None) is not None)
         archive.async_seal = options.async_seal
         archive.history_record_charge = charge
@@ -304,7 +340,7 @@ class AsyncArchive:
         # the pool while an admitted task still needs to be submitted.
         with self._lock:
             try:
-                return ArchiveJob(self.executor.submit(work))
+                return _submit_archive_job(self.executor, work)
             except BaseException:
                 owned.clear()
                 for key in keys:
@@ -321,13 +357,14 @@ class AsyncArchive:
     def _seal_views(self, keys, entries, spans, views):
         """The original whole-batch snapshot path, including cached/SSD writes."""
         snapshot = byte_view = None
+        records = []
         try:
             started = time.perf_counter()
             snapshot = _native.pack_record_views(views)
             packed = time.perf_counter()
             byte_view = memoryview(snapshot)
-            digests = tuple(hashlib.sha256(byte_view[i*self.record_bytes:(i+1)*self.record_bytes])
-                            .hexdigest() for i in range(len(keys)))
+            records = [byte_view[i*self.record_bytes:(i+1)*self.record_bytes] for i in range(len(keys))]
+            digests = self._record_digests(records)
             hashed = time.perf_counter()
             with self._lock:
                 self._cache_write(keys, snapshot)
@@ -339,6 +376,19 @@ class AsyncArchive:
         finally:
             # A retained failed Future must not retain its source buffer exports.
             views = snapshot = byte_view = None
+            records.clear()
+
+    def _record_digests(self, records):
+        """Hash complete immutable records in their publication order."""
+        record = None
+        try:
+            digests = []
+            for record in records:
+                digests.append(hashlib.sha256(record).hexdigest())
+            return tuple(digests)
+        finally:
+            # Failed Futures may retain this frame after admission rolls back.
+            records = record = None
 
     def _cache_write(self, keys, payload):
         """Optional cache admission under lock, before asynchronous publication."""
@@ -384,7 +434,7 @@ class AsyncArchive:
                     self._complete(size)
         with self._lock:
             try:
-                return ArchiveJob(self.executor.submit(work))
+                return _submit_archive_job(self.executor, work)
             except BaseException:
                 if sources is not None:
                     sources.clear()
@@ -489,7 +539,7 @@ class AsyncArchive:
 
         with self._lock:
             try:
-                return ArchiveJob(self.executor.submit(work))
+                return _submit_archive_job(self.executor, work)
             except BaseException:
                 sources.clear()
                 owned.clear()

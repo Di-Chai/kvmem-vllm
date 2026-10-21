@@ -31,6 +31,8 @@ ownership、容量预约和共享 worker。对象中的 `mode` 支持：
 ```json
 "historical_gc": {
   "mode": "delete",
+  "policy": "lru",
+  "policy_params": {"keep_mandatory": true},
   "poll_ms": 10,
   "scan_blocks": 256,
   "delete_blocks": 64,
@@ -43,6 +45,18 @@ ownership、容量预约和共享 worker。对象中的 `mode` 支持：
 5%/10%；显式值必须满足 `0 < low < high <= repository_blocks`。
 `scan_blocks` 限制每轮策略观察量，`delete_blocks` 限制每轮意图数量。
 示例中的较高水位用于在短历史中实际触发 GC，生产环境应结合保留需求调整。
+
+`policy` 选择删除策略，`policy_params` 只传递该策略的参数；`mode` 独立控制是否
+执行删除。当前注册的策略为 `lru`，参数 `keep_mandatory` 默认为 `true`，保留
+sink/recent 和 P/M frame 等 mandatory 块；设为 `false` 允许这些块参与 LRU 删除，
+可能使对应 checkpoint 失效。省略新增字段与原有 LRU 行为一致。未知策略、未知
+参数和错误参数类型在启动时拒绝，`off`/`shadow` 也执行配置校验。
+
+新增原生策略实现 `HistoricalKvPolicy`，在 `csrc/historical_policy_factory.hpp`
+登记校验和构造入口，并在 `HistoricalGcSettings` 的参数 schema 中登记公开参数。
+有状态策略实现 `reset()`，清除轮次状态并保留预分配缓冲区。工厂在服务启动时
+为每个 pooled scope 创建独立策略实例，后台复用时调用 `reset()`；decode 不创建
+策略对象。已有 C++ 自定义策略注入入口保留，安全退休和资源释放流程由所有策略共用。
 
 当前要求 CPU archive、request planning、async seal/retirement、CPU history
 coordination 和 owned sessions。与旧 `repository_gc`、block graph 的组合会在启动时
@@ -92,6 +106,7 @@ LRU 会减少未来可检索的上下文，不能保证任务语义与保留完�
 - `historical_gc`：published、examined、decisions、retired、cpu_released、
   slots_released、pending_slots、pending_cpu_bytes、retries、stale、policy_failures、
   shadow_decisions、admission_attempts/retries。
+- `historical_gc.policy/policy_params`：实际启用的策略名称与参数（公开配置展开默认值）。
 - `historical_gc.metadata`：启动分配次数、后台复用次数、预分配 scope 数与容量。
 - `cpu_authority_bytes`、`cpu_index_bytes/owners` 及各自 released bytes。
 - `cpu_history_admission`：活跃/退休预约、已保留/可用 bytes、deferrals 和 settlements。
@@ -104,6 +119,9 @@ checkpoint、IO/staging、原生 metadata 池和 GPU cache 有各自的固定预
 `cpu_read_cache_bytes` 在本模式下约束历史 KV + MeanK 的保守容量，不是进程 RSS 上限。
 
 ## 验证与复现
+
+策略名称/参数/工厂入口的扩展由原生与 host 集成回归验证；下方真实模型和性能
+数字为首版冻结版本的验收记录，并非这次工厂扩展的重新测量结果。
 
 ```bash
 cmake -S . -B build/history-gc -DCMAKE_BUILD_TYPE=Debug

@@ -11,6 +11,22 @@ class UnsupportedNativeStats(RuntimeError):
     pass
 
 
+_STATIC_ALIGNMENT_SOURCES = {
+    'flashinfer/attention/scheduler.cuh': 'a11a39aea393cdb380ad9439aac9170cd96849d7426ebbb920c5c8cdadfcc575',
+    'flashinfer/attention/variants.cuh': '90a228dd71b3ce8030d663e2b16f67f840fe4a3e99912f8b47774d3fd905a080',
+}
+
+
+def _check_static_alignment_sources(include):
+    # Removing split-piece CAS depends on page-based split sizes and the
+    # default no-window interpretation. Keep this extra contract local to the
+    # optional specialization so drift can fall back to generic native stats.
+    for relative, expected in _STATIC_ALIGNMENT_SOURCES.items():
+        path = include / relative
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise UnsupportedNativeStats('static_source_mismatch:' + relative)
+
+
 def _replace(source, before, after, count=1):
     if source.count(before) != count:
         raise UnsupportedNativeStats('FlashInfer source structure changed')
@@ -100,7 +116,7 @@ def patch_xqa(source, name):
     raise ValueError(name)
 
 
-def patch_prefill(source):
+def patch_prefill(source, *, cta_gate=False):
     marker = '''          update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
         }
 
@@ -110,17 +126,63 @@ def patch_prefill(source):
     if anchor not in source:
         raise UnsupportedNativeStats('FlashInfer paged prefill structure changed')
     start = source.index(anchor)
-    return source[:start] + _replace(source[start:], marker, '''          update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
+    paged = _replace(source[start:], marker, '''          update_mdo_states<KTraits>(variant, s_frag, o_frag, m, d);
         }
         variant.template CaptureSoftmax<KTraits>(params, request_idx, qo_packed_idx_base, kv_idx_base,
             qo_len, kv_len, chunk_end, group_size, s_frag, m, tid, kv_head_idx);
 
         block.sync();
         if constexpr (KTraits::USE_KV_SHARED_SMEM) {''')
+    if cta_gate:
+        # All valid CTA threads reach this point, after the PDL wait and before
+        # either VO or KV loop. A packed-Q tile can begin/end within one GQA
+        # group: include both boundary Q rows even if only some heads are here.
+        gate_marker = '''#endif
+
+    // Split-D over the VO dimension'''
+        gate = '''#endif
+
+    const uint32_t kvmem_q_begin = (qo_tile_idx * CTA_TILE_Q) / group_size;
+    bool kvmem_local_sampled = false;
+    for (uint32_t kvmem_q = kvmem_q_begin + block.thread_rank();
+         kvmem_q < qo_upper_bound; kvmem_q += KTraits::NUM_THREADS) {
+      kvmem_local_sampled |=
+          params.stat_rows[params.stat_offset + params.q_indptr[request_idx] + kvmem_q] >= 0;
+    }
+    const bool kvmem_cta_sampled = __syncthreads_or(kvmem_local_sampled);
+
+    // Split-D over the VO dimension'''
+        paged = _replace(paged, gate_marker, gate)
+        call = '''        variant.template CaptureSoftmax<KTraits>(params, request_idx, qo_packed_idx_base, kv_idx_base,
+            qo_len, kv_len, chunk_end, group_size, s_frag, m, tid, kv_head_idx);'''
+        paged = _replace(paged, call, '''        if (kvmem_cta_sampled) {
+''' + call + '''
+        }''')
+    return source[:start] + paged
+
+
+def patch_static_readonly(source):
+    """Component-only variant: change two immutable loads, no floating math.
+
+    Keep the checked-in header and all historical overlays unchanged. A unique
+    class makes profiler/SASS dispatch attribution independent of module names.
+    """
+    marker = 'struct KVMemStaticAlignedAttention :'
+    if source.count(marker) != 1:
+        raise UnsupportedNativeStats('Static readonly class structure changed')
+    start = source.index(marker)
+    prefix, variant = source[:start], source[start:]
+    variant = _replace(variant, 'int sample = stats.rows[p.q_indptr[batch] + q];',
+        'int sample = __ldg(stats.rows + __ldg(p.q_indptr + batch) + q);')
+    variant = variant.replace('KVMemStaticAlignedAttention', 'KVMemStaticReadonlyAttention')
+    return prefix + variant
 
 
 @cache
-def source_overlay(directory):
+def source_overlay(directory, *, prefill_cta_gate=False, prefill_static_aligned=False,
+                   prefill_static_readonly=False):
+    if prefill_static_readonly and (not prefill_static_aligned or prefill_cta_gate):
+        raise ValueError('Readonly metadata requires only the static aligned component')
     from flashinfer.jit import env
     manifest = json.loads(Path(__file__).with_name('native_attention_sources.json').read_text())
     roots = {'csrc': env.FLASHINFER_CSRC_DIR, 'include': env.FLASHINFER_INCLUDE_DIR,
@@ -136,6 +198,15 @@ def source_overlay(directory):
     digest.update(inspect.getsource(patch_prefill).encode())
     for name in ('native_stats.cuh', 'native_prefill_stats.cuh'):
         digest.update((own / name).read_bytes())
+    if prefill_cta_gate:
+        digest.update(b'prefill_cta_gate_v1')
+    if prefill_static_aligned:
+        _check_static_alignment_sources(roots['include'])
+        digest.update(json.dumps(_STATIC_ALIGNMENT_SOURCES, sort_keys=True).encode())
+        digest.update(b'prefill_static_aligned_v1')
+    if prefill_static_readonly:
+        digest.update(b'prefill_static_readonly_v1')
+        digest.update(inspect.getsource(patch_static_readonly).encode())
     # A content-addressed canonical path prevents absolute includes in generated
     # instantiations from invalidating the cache for every new serving run.
     target = env.FLASHINFER_GEN_SRC_DIR / 'kvmem_stats' / digest.hexdigest()[:16]
@@ -151,10 +222,13 @@ def source_overlay(directory):
     # is overlaid, and generated instantiations include it by absolute path.
     header = (roots['include'] / 'flashinfer/attention/prefill.cuh').read_text()
     header = header.replace('#include "', '#include "' + str(roots['include'] / 'flashinfer/attention') + '/')
-    _write(target / 'prefill.cuh', patch_prefill(header))
+    _write(target / 'prefill.cuh', patch_prefill(header, cta_gate=prefill_cta_gate))
     _write(target / 'tvm_ffi_utils.h', (roots['csrc'] / 'tvm_ffi_utils.h').read_bytes())
     for name in ('native_stats.cuh', 'native_prefill_stats.cuh'):
-        _write(target / name, (own / name).read_bytes())
+        payload = (own / name).read_bytes()
+        if prefill_static_readonly and name == 'native_prefill_stats.cuh':
+            payload = patch_static_readonly(payload.decode()).encode()
+        _write(target / name, payload)
     _write(xqa / 'native_stats.cuh', (own / 'native_stats.cuh').read_bytes())
     return target
 
@@ -175,19 +249,44 @@ def _xqa_module(q_dtype, kv_dtype, page, dim, group, out_dtype, q_len, ragged):
         extra_cuda_cflags=flags + ['-DUSE_SM90_MHA=0'], extra_ldflags=['-lcuda']).build_and_load()
 
 
-def prefill_module(directory, q_dtype, kv_dtype, out_dtype, idtype, dim):
-    return _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim)
+def prefill_module(directory, q_dtype, kv_dtype, out_dtype, idtype, dim, *, aligned_pieces=False,
+                   cta_gate=False, static_aligned=False, static_readonly=False):
+    return _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim, aligned_pieces, cta_gate,
+                          static_aligned, static_readonly)
 
 
 @cache
-def _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim):
+def _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim, aligned_pieces=False, cta_gate=False,
+                    static_aligned=False, static_readonly=False):
     from flashinfer.jit.attention import gen_customize_batch_prefill_module
-    overlay = source_overlay(None)
+    if static_readonly and (not static_aligned or aligned_pieces or cta_gate):
+        raise ValueError('Readonly metadata requires only the static aligned component')
+    if static_aligned and (aligned_pieces or cta_gate):
+        raise ValueError('Static aligned FA2 cannot combine runtime aligned pieces or CTA gate')
+    overlay = (source_overlay(None, prefill_static_aligned=True, prefill_static_readonly=True) if static_readonly else
+               source_overlay(None, prefill_static_aligned=True) if static_aligned else
+               source_overlay(None, prefill_cta_gate=True) if cta_gate else source_overlay(None))
     name = f'kvmem_fa2_{overlay.name}_{q_dtype}_{kv_dtype}_{out_dtype}_{idtype}_{dim}'.replace('torch.', '')
+    if cta_gate:
+        name += '_cta_gate'
+    tensors = ['stat_rows', 'stat_requests', 'stat_pieces', 'stat_lse']
+    tensor_types = ['int32_t', 'int32_t', 'int32_t', 'float']
+    variant = 'KVMemAttention'
+    if aligned_pieces:
+        name += '_aligned16'
+        tensors.append('stat_aligned')
+        tensor_types.append('int32_t')
+        variant = 'KVMemAlignedAttention'
+    if static_aligned:
+        name += '_static_aligned16'
+        variant = 'KVMemStaticAlignedAttention'
+    if static_readonly:
+        name += '_readonly_metadata'
+        variant = 'KVMemStaticReadonlyAttention'
     spec = gen_customize_batch_prefill_module('fa2', name, q_dtype, kv_dtype, out_dtype, idtype, dim, dim,
-        ['stat_rows', 'stat_requests', 'stat_pieces', 'stat_lse'], ['int32_t', 'int32_t', 'int32_t', 'float'],
+        tensors, tensor_types,
         ['stat_context', 'stat_width', 'stat_offset', 'sm_scale'], ['int32_t', 'int32_t', 'int32_t', 'double'],
-        'KVMemAttention', '#include "' + str(overlay / 'native_prefill_stats.cuh') + '"')
+        variant, '#include "' + str(overlay / 'native_prefill_stats.cuh') + '"')
     # The kernel header is included before the generated configuration.
     # Its dependent Capture call resolves only for this custom variant.
     generated = overlay / name
@@ -201,4 +300,8 @@ def _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim):
         sources.append(destination)
     _write(generated / 'batch_prefill_config.inc', (spec.sources[0].parent / 'batch_prefill_config.inc').read_bytes())
     spec.sources = sources
-    return spec.build_and_load()
+    module = spec.build_and_load()
+    if static_readonly:
+        from .native_prefill_readonly import CheckedReadonlyPrefillModule
+        return CheckedReadonlyPrefillModule(module, library_path=spec.get_library_path(), overlay=overlay)
+    return module

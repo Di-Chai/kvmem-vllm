@@ -47,6 +47,9 @@ class RefreshCommand:
     message_spans: tuple = ()
     locality_spans: tuple = ()
     locality_provenance: tuple = ()
+    guided_reason: str = ''
+    guided_private: bool = False
+    guided_boundary: bool | None = None
 
 
 @dataclass
@@ -57,6 +60,8 @@ class ControlMetadata(KVConnectorMetadata):
     sessions: SessionCommands = field(default_factory=SessionCommands)
     maintenance_costs: dict[str, float | None] = field(default_factory=dict)
     cost_classification: dict[str, dict] = field(default_factory=dict)
+    logical_prefill_groups: dict = field(default_factory=dict)
+    logical_prefill_step: int | None = None
 
 
 @dataclass

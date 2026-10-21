@@ -30,6 +30,9 @@ def test_capacity_bound_holds_for_every_tail_and_unpublished_accepted_suffix():
                 for query in (1, 8, 16):
                     capacity = ready * 16 + (16 - tail if tail else 0)
                     assert gate.allows('a', 64 + tail + pending, query) == (pending + query <= capacity)
+                before = gate.deferred
+                assert gate.available_tokens('a',64+tail+pending) == max(0,capacity-pending)
+                assert gate.deferred == before
         gate.forget('a')  # Separate independent request history for the next tail.
 
 
@@ -46,6 +49,18 @@ def test_sequence_history_and_finished_request_isolation():
     gate.update(2, {'a': ArchiveCapacity(128, 1)}, set())
     assert not gate.snapshots
     assert gate.allows('new', 0, 1280) and not gate.allows('new', 0, 1281)
+    assert gate.available_tokens('new',128) == 1152
+
+
+def test_available_credit_rejects_stale_or_invalid_coordinates():
+    gate = ArchiveAdmission(32,8)
+    gate.update(1,{'a':ArchiveCapacity(64,3)},{'a'})
+    with pytest.raises(ValueError,match='precedes'):
+        gate.available_tokens('a',63)
+    for bad in (-1,True,None,64.0):
+        with pytest.raises(ValueError,match='extent'):
+            gate.available_tokens('a',bad)
+    assert gate.deferred == 0
 
 
 def test_native_connector_returns_capacity_even_without_model_or_refresh_work():

@@ -17,6 +17,23 @@ from .capture import capture_to, install_qwen_capture
 def make_probe_runner(base):
     class KVMemProbeRunner(base):
         def load_model(self, *args, **kwargs):
+            from .options import RuntimeOptions
+            options = RuntimeOptions.from_vllm(self.vllm_config)
+            from .capture_compile import validate_capture_compile_config
+            opaque_fingerprint = validate_capture_compile_config(
+                self.vllm_config, options.capture_opaque_projection)
+            if options.capture_opaque_projection:
+                from vllm.config import CUDAGraphMode, CompilationMode
+                compilation = self.vllm_config.compilation_config
+                if (os.getenv('KVMEM_FULL_GRAPH') != '1' or self.model_config.enforce_eager or
+                        compilation.mode != CompilationMode.VLLM_COMPILE or
+                        compilation.cudagraph_mode != CUDAGraphMode.FULL_AND_PIECEWISE or
+                        self.vllm_config.max_concurrent_batches != 1 or
+                        getattr(self.speculative_config, 'method', None) != 'mtp'):
+                    raise ValueError('Opaque capture projection requires compiled native MTP '
+                                     'and synchronous single-batch graphs')
+                # Register the ABI before native AOT unpickling resolves ops.
+                from .capture_opaque import install_opaque_capture
             super().load_model(*args, **kwargs)
             from .draft_quantization import install_quantized_context
             install_quantized_context(self)
@@ -46,13 +63,13 @@ def make_probe_runner(base):
                     self.input_buffers.positions)
             from .mtp_runtime import install_mtp_runtime
             install_mtp_runtime(self)
+            self._kvmem_capture_opaque = (install_opaque_capture(self, opaque_fingerprint)
+                if options.capture_opaque_projection else None)
             self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
             self._kvmem_probe_done = self._kvmem_serving
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
-            from .options import RuntimeOptions
-            options = RuntimeOptions.from_vllm(self.vllm_config)
             # Install before profiling/compilation/CUDA graph capture. Graphs
             # retain these addresses, and read fresh sampling metadata each run.
             self._kvmem_native_attention = None
@@ -273,10 +290,15 @@ def make_probe_runner(base):
             action = getattr(runtime, 'action', None)
             if action is not None and getattr(self, '_kvmem_public_action_forward', False):
                 action.prepare(batch, positions)
+                if getattr(runtime, '_prefill_scatter_deferred', None) is not None:
+                    runtime.recheck_prefill_scatter(batch)
+                runtime.note_prefill_pipeline_forward(batch)
             else:
                 native = getattr(self, '_kvmem_native_attention', None)
                 if native is not None:
                     native.disarm()
+                if runtime is not None and getattr(runtime, '_prefill_scatter_deferred', None) is not None:
+                    runtime.recheck_prefill_scatter(batch)
 
         def sample(self, hidden_states, input_batch, grammar_output):
             timing = getattr(self, '_kvmem_step_timing', None)
@@ -313,21 +335,47 @@ def make_probe_runner(base):
             # and must never count here. This also counts prefill chunks that
             # produce no output tokens or do not reach sample_tokens.
             before = getattr(self, 'execute_model_state', None)
+            runtime = getattr(self, '_kvmem_capture_runtime', None)
             self._kvmem_public_action_forward = observe_work
             try:
-                result = super().execute_model(scheduler_output, **kwargs)
-            finally:
-                self._kvmem_public_action_forward = False
-            state = getattr(self, 'execute_model_state', None)
-            work = getattr(self, '_kvmem_public_work', None)
-            if observe_work and work is not None and state is not None and state is not before:
-                adapter = getattr(self, '_kvmem_window_adapter', None)
-                work.submit(state.input_batch, getattr(adapter, 'offsets', None))
-            return result
+                try:
+                    result = super().execute_model(scheduler_output, **kwargs)
+                finally:
+                    self._kvmem_public_action_forward = False
+                state = getattr(self, 'execute_model_state', None)
+                fresh = observe_work and state is not None and state is not before
+                work = getattr(self, '_kvmem_public_work', None)
+                if fresh and work is not None:
+                    adapter = getattr(self, '_kvmem_window_adapter', None)
+                    work.submit(state.input_batch, getattr(adapter, 'offsets', None))
+                if runtime is not None and getattr(runtime, '_prefill_scatter_deferred', None) is not None:
+                    # Native execute_model has queued the complete target;
+                    # sampling and MTP still follow. Starting the old confirmed
+                    # packet here cannot compete with its first kernel launches.
+                    runtime.resume_prefill_scatter(after_target=True,
+                        batch=state.input_batch if fresh else None)
+                return result
+            except BaseException as error:
+                if runtime is not None and getattr(runtime, '_prefill_scatter_deferred', None) is not None:
+                    runtime.abort_prefill_scatter(error)
+                raise
 
         def execute_model(self, scheduler_output, intermediate_tensors=None,
                           dummy_run=False, skip_attn_for_dummy_run=False,
                           is_profile=False, context_len=0, valid_dummy_state_slots=False):
+            try:
+                return self._kvmem_execute_model(scheduler_output, intermediate_tensors,
+                    dummy_run, skip_attn_for_dummy_run, is_profile, context_len,
+                    valid_dummy_state_slots)
+            except BaseException as error:
+                runtime = getattr(self, '_kvmem_capture_runtime', None)
+                if runtime is not None and getattr(runtime, '_prefill_scatter_deferred', None) is not None:
+                    runtime.abort_prefill_scatter(error)
+                raise
+
+        def _kvmem_execute_model(self, scheduler_output, intermediate_tensors=None,
+                                dummy_run=False, skip_attn_for_dummy_run=False,
+                                is_profile=False, context_len=0, valid_dummy_state_slots=False):
             kwargs = dict(intermediate_tensors=intermediate_tensors, dummy_run=dummy_run,
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
@@ -339,6 +387,17 @@ def make_probe_runner(base):
                 timing.begin(getattr(scheduler_output.kv_connector_metadata, 'cost_classification', None))
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             refresh = getattr(self, '_kvmem_async_refresh', None)
+            # Every forward replaces this receipt, including ordinary 2K and
+            # idle steps. Worker planning binds it to its own authority/window
+            # generations before any grouped target computation is submitted.
+            self._kvmem_logical_prefill_groups = (dict(getattr(
+                scheduler_output.kv_connector_metadata, 'logical_prefill_groups', {}))
+                if not dummy_run and not is_profile else {})
+            self._kvmem_logical_prefill_step = (getattr(
+                scheduler_output.kv_connector_metadata, 'logical_prefill_step', None)
+                if not dummy_run and not is_profile else None)
+            if self._kvmem_logical_prefill_groups and (runtime is None or runtime.action is None):
+                raise RuntimeError('Physical prefill cannot precede Action runtime initialization')
             terminal = None
             if not dummy_run and runtime is not None:
                 if getattr(self, '_kvmem_bounded_target', False):
@@ -372,9 +431,12 @@ def make_probe_runner(base):
             work = getattr(self, '_kvmem_public_work', None)
             work_armed = not dummy_run and not is_profile and (self._kvmem_probe_output / 'armed').is_file()
             if work is not None and work_armed:
-                # Zero-token retirement/connector iterations can confirm a
-                # completed fence and fence the final partial interval.
-                work.poll(flush=not scheduler_output.total_num_scheduled_tokens)
+                from .work_counters import public_work_idle
+                # A zero-token publication/refresh turn still has live owners.
+                # Only true retirement/idle flushes the final short interval;
+                # all turns continue polling completion without synchronizing.
+                request_ids = getattr(getattr(self, 'req_states', None), 'req_id_to_index', ())
+                work.poll(flush=public_work_idle(scheduler_output, request_ids))
             observe_work = work_armed and bool(scheduler_output.total_num_scheduled_tokens)
             # V2 kernel warmup invokes ordinary execute_model with synthetic
             # requests and no connector metadata. Session control starts at the
@@ -390,7 +452,14 @@ def make_probe_runner(base):
                 # Apply EOS/cancellation truncation before draining the latest
                 # accepted sample packet into the immutable authority.
                 runtime.finish(scheduler_output.finished_req_ids, terminal)
-                runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh)
+                defer_scatter = (not is_profile and work_armed and
+                                 getattr(getattr(runtime, 'options', None), 'prefill_scatter_after_target', False) and
+                                 runtime.defer_prefill_scatter(scheduler_output, refresh))
+                if defer_scatter:
+                    runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh,
+                                                defer_scatter=True)
+                else:
+                    runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh)
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)

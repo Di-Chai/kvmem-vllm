@@ -36,15 +36,28 @@ struct KVMemStats {
   }
 
   __device__ void store16_weight(float a, float b, float c, float d, float center,
-                                 int base, int limit, int sample, int head, bool merge) const {
+                                 int base, int limit, int sample, int head, bool merge,
+                                 bool aligned = false) const {
     if (base >= limit) return;
-    int request = requests[sample];
     int lane = threadIdx.x % 32;
     int token = base + 2 * (lane % 4);
     a = token < limit ? a : 0.f;
     b = token + 1 < limit ? b : 0.f;
     c = token + 8 < limit ? c : 0.f;
     d = token + 9 < limit ? d : 0.f;
+    // Only the opt-in FA2 variant supplies this per-request qualification.
+    // Keep the exact causal masking/reduction order. A final partial tile is
+    // valid; an unaligned split-K still needs the original map/CAS path.
+    if (aligned && !merge && (base & 15) == 0) {
+      unsigned int active = __activemask() & (0xfU << (lane & ~3));
+      float sum = a + b + c + d;
+      sum += __shfl_xor_sync(active, sum, 1);
+      sum += __shfl_xor_sync(active, sum, 2);
+      if ((lane & 3) == 0 && sum > 0.f)
+        write(sample, head, base >> 4, center + logf(sum), false);
+      return;
+    }
+    int request = requests[sample];
     int first = pieces[request * context + base];
     int last = pieces[request * context + min(base + 15, limit - 1)];
     // Different quads can have different causal tails/piece counts. Only the
@@ -74,5 +87,26 @@ struct KVMemStats {
       if ((lane & 3) == 0 && sum > 0.f)
         write(sample, head, piece, center + logf(sum), merge);
     }
+  }
+
+  // Host-qualified, non-graph FA2 only. The arithmetic below is deliberately
+  // identical to the aligned branch above; this separate entry has no piece
+  // lookup or CAS path for the compiler to retain in its instantiated kernel.
+  __device__ void store16_weight_static_aligned(float a, float b, float c, float d,
+                                 float center, int base, int limit, int sample,
+                                 int head) const {
+    if (base >= limit) return;
+    int lane = threadIdx.x % 32;
+    int token = base + 2 * (lane % 4);
+    a = token < limit ? a : 0.f;
+    b = token + 1 < limit ? b : 0.f;
+    c = token + 8 < limit ? c : 0.f;
+    d = token + 9 < limit ? d : 0.f;
+    unsigned int active = __activemask() & (0xfU << (lane & ~3));
+    float sum = a + b + c + d;
+    sum += __shfl_xor_sync(active, sum, 1);
+    sum += __shfl_xor_sync(active, sum, 2);
+    if ((lane & 3) == 0 && sum > 0.f)
+      write(sample, head, base >> 4, center + logf(sum), false);
   }
 };

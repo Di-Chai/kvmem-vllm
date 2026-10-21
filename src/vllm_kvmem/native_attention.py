@@ -6,6 +6,8 @@ the graph only for the actual sampled rows, before Action's existing D2H.
 """
 from contextvars import ContextVar
 from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from functools import wraps
 import importlib
 import json
@@ -13,7 +15,7 @@ import math
 from pathlib import Path
 import re
 from types import SimpleNamespace
-from threading import Lock
+from threading import Lock, get_ident
 
 import numpy as np
 import torch
@@ -48,6 +50,60 @@ def _layout_array(starts, counts, length):
     sizes = (start+count+15)//16 - start//16
     ends = np.cumsum(sizes)
     return np.stack((start,count,ends-sizes,sizes),axis=1).astype(np.int32), int(ends[-1])
+
+
+def aligned_piece_layout(layout, length):
+    """Whether the visible partition's piece IDs equal dense token_index // 16.
+
+    Cached candidate layouts can extend past the current visible prefix. Only
+    that prefix matters; its last segment/count and causal tail may be partial.
+    No physical page IDs or original-history positions enter this predicate.
+    """
+    layout = np.asarray(layout)
+    if (layout.ndim != 2 or layout.shape[1] != 4 or not len(layout) or
+            not np.issubdtype(layout.dtype, np.integer) or length <= 0):
+        return False
+    end = int(np.searchsorted(layout[:, 0], length, side='left'))
+    live = layout[:end]
+    if not len(live):
+        return False
+    starts, counts, first, pieces = live.T
+    return bool(starts[0] == 0 and np.all(counts > 0) and
+        np.array_equal(starts[1:], starts[:-1] + counts[:-1]) and
+        starts[-1] + counts[-1] >= length and np.all(starts % 16 == 0) and
+        np.array_equal(first, starts // 16) and
+        np.array_equal(pieces, (starts + counts + 15) // 16 - starts // 16))
+
+
+def static_aligned_frame(plans):
+    """Freeze CPU geometry proved against the metadata uploaded by this arm.
+
+    All owners must partition the complete visible prefix into dense pieces;
+    only its final causal tail may be partial. No device metadata is read.
+    """
+    if not plans or not any(len(plan.get('rows', ())) for plan in plans.values()):
+        return None, 'no_sampled_frame'
+    spans = []
+    try:
+        for plan in plans.values():
+            count, begin = int(plan['count']), int(plan['begin'])
+            length = int(plan['local_begin']) + count
+            if count <= 0 or begin < 0:
+                return None, 'invalid_frame_geometry'
+            layout = (plan['_layout'] if '_layout' in plan else
+                      _layout_array(plan['starts'], plan['counts'], length)[0])
+            if not aligned_piece_layout(layout, length):
+                return None, 'unaligned_logical_segments'
+            spans.append((int(plan['index']), begin, count))
+        spans.sort()
+        cursor = 0
+        for index, (owner, begin, count) in enumerate(spans):
+            if owner != index or begin != cursor:
+                return None, 'noncontiguous_owner_frame'
+            cursor += count
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        return None, 'invalid_frame_geometry'
+    return tuple(spans), None
 
 
 @triton.jit
@@ -111,6 +167,68 @@ def _segment_scores(Lse, RowLse, Ranges, Meta, Control, Selected, Out,
 _active: ContextVar = ContextVar('kvmem_native_attention', default=None)
 
 
+@dataclass
+class NativeValidation:
+    """One private same-forward completion fence; no buffer may be rearmed."""
+    dirty: bool
+    event: object = None
+    recorded: bool = False
+    resolved: bool = False
+    error: object = None
+
+
+@dataclass(frozen=True)
+class DetachedValidationResult:
+    invalid_names: tuple[str, ...]
+
+    @property
+    def valid(self):
+        return not self.invalid_names
+
+
+@dataclass(eq=False)
+class DetachedNativeValidation:
+    """One frame's independently owned download, with no reference to its bank.
+
+    The caller owns the bounded flags/event lease. Resolving on a publication
+    thread never reads live native scratch or updates native counters. A failed
+    fence remains quarantined even if a later CUDA operation would succeed.
+    """
+    names: tuple[str, ...]
+    dirty: bool
+    frame_success: tuple[tuple[str, int], ...]
+    host_flags: object
+    event: object
+    origin: object = field(repr=False)
+    sequence: int
+    recorded: bool = False
+    resolved: bool = False
+    applied: bool = False
+    error: object = None
+    result: object = None
+    _lock: object = field(default_factory=Lock, repr=False)
+
+    def resolve(self):
+        with self._lock:
+            if self.error is not None:
+                raise RuntimeError('Detached native validation is quarantined') from self.error
+            if self.resolved or not self.recorded:
+                raise RuntimeError('Detached native validation is already resolved or incomplete')
+            try:
+                self.event.synchronize()
+                flags = self.host_flags.tolist() if self.dirty else (1,) * len(self.names)
+                if len(flags) != len(self.names):
+                    raise ValueError('Detached native flags have an incomplete layer domain')
+                result = DetachedValidationResult(tuple(name for name, valid in
+                    zip(self.names, flags, strict=True) if not valid))
+            except BaseException as error:
+                self.error = error
+                raise
+            self.result = result
+            self.resolved = True
+            return result
+
+
 def _install_xqa_dispatch():
     module = importlib.import_module('flashinfer.xqa')
     original = module.get_xqa_module
@@ -169,6 +287,17 @@ class NativeAttentionStats:
         self.mode = options.action_native_scores
         self.reasons, self.counts = {}, Counter()
         self.xqa_modules, self.prefill_modules = {}, {}
+        self.aligned_prefill_enabled = bool(getattr(options, 'action_native_prefill_aligned_pieces', False))
+        self.aligned_prefill_counts = Counter()
+        self.cta_gate_enabled = bool(getattr(options, 'action_native_prefill_cta_gate', False))
+        self.cta_gate_counts = Counter()
+        self.static_prefill_enabled = bool(getattr(options, 'action_native_prefill_static_aligned', False))
+        if self.static_prefill_enabled and (self.aligned_prefill_enabled or self.cta_gate_enabled):
+            raise ValueError('Static aligned FA2 cannot combine runtime aligned pieces or CTA gate')
+        self.static_prefill_counts = Counter()
+        self.static_prefill_source_fingerprint = None
+        self.static_prefill_unavailable = None
+        self.prefill_source_fingerprint = None
         self.plans, self.slots = {}, {}
         self.reduced = set()
         self.invalid = set()
@@ -178,6 +307,7 @@ class NativeAttentionStats:
         self.source_fingerprint = None
         self.report_calls = 0
         self.report_lock = Lock()
+        self._detached_owner_thread = get_ident()
         self.allocated_bytes = 0
         self.gpu_bytes = self.host_bytes = 0
         self.verification = {'comparisons': 0, 'max_abs': 0., 'l1_max': 0.}
@@ -193,9 +323,17 @@ class NativeAttentionStats:
             return
         try:
             self.source_fingerprint = source_overlay(self.directory).name
+            self.prefill_source_fingerprint = (source_overlay(self.directory, prefill_cta_gate=True).name
+                if self.cta_gate_enabled else self.source_fingerprint)
         except UnsupportedNativeStats as error:
             self.disabled = str(error)
             return
+        if self.static_prefill_enabled:
+            try:
+                self.static_prefill_source_fingerprint = source_overlay(
+                    self.directory, prefill_static_aligned=True).name
+            except UnsupportedNativeStats as error:
+                self.static_prefill_unavailable = str(error)
         geometry = {(layer.num_heads, layer.head_dim) for layer in layers}
         if len(geometry) != 1:
             self.disabled = 'nonuniform_head_geometry'
@@ -213,11 +351,15 @@ class NativeAttentionStats:
             'selected': ((self.max_rows,),torch.int32),
             'row_lse': ((self.max_rows, self.heads), torch.float32),
             'valid_flags': ((len(layers),), torch.int32)}
+        if self.aligned_prefill_enabled:
+            shapes['aligned_pieces'] = ((runner.max_num_reqs,), torch.int32)
         self.allocated_bytes = sum(math.prod(shape) * 4 for shape, _ in shapes.values())
         self.allocated_bytes += len(layers) * self.max_rows * self.max_segments * 4
         self.allocated_bytes += len(layers) * self.max_rows * self.heads * self.width * 4
         self.gpu_bytes = self.allocated_bytes
         host_fields = ('rows', 'requests', 'ranges', 'meta', 'valid_flags', 'selected')
+        if self.aligned_prefill_enabled:
+            host_fields += ('aligned_pieces',)
         self.host_bytes = sum(math.prod(shapes[field][0])*4 for field in host_fields)
         self.allocated_bytes += self.host_bytes
         if self.allocated_bytes > options.action_native_max_bytes:
@@ -241,16 +383,24 @@ class NativeAttentionStats:
             self._wrap(layer.attn.impl, layer.attn.layer_name)
 
     def disarm(self):
+        self._check_detached_validation(allow_submitted=True)
+        if getattr(self, '_validation_ticket', None) is not None:
+            raise RuntimeError('Native attention still owns unresolved validation')
         if self.rows is not None:
             self.rows.fill_(-1)
             self.control.zero_()
+            if getattr(self, 'aligned_prefill_enabled', False):
+                self.aligned_pieces.zero_()
         self.plans, self.slots = {}, {}
         self.reduced = set()
         self.invalid = set()
         self.validation_dirty = False
         self.frame_invalid = False
         self.frame_success = Counter()
+        self._detached_frame_submitted = False
         self.selected_slots,self.request_reasons={},{}
+        self.static_prefill_frame = None
+        self.static_prefill_reason = 'unarmed_frame'
         if self.rows is not None:
             self.valid_flags.fill_(1)
 
@@ -270,6 +420,9 @@ class NativeAttentionStats:
             self.upload_event.synchronize()
         self.host['ranges'].zero_()
         self.host['rows'].fill_(-1)
+        aligned_counts = Counter()
+        if getattr(self, 'aligned_prefill_enabled', False):
+            self.host['aligned_pieces'].zero_()
         for request_id, plan in plans.items():
             if not plan['rows']:
                 continue
@@ -284,6 +437,12 @@ class NativeAttentionStats:
                 return
             i, first, n = plan['index'], len(meta), len(plan['rows'])
             self.host['ranges'].numpy()[i, :len(layout)] = layout
+            if getattr(self, 'aligned_prefill_enabled', False):
+                aligned = aligned_piece_layout(layout, plan['local_begin'] + plan['count'])
+                self.host['aligned_pieces'][i] = int(aligned)
+                kind = 'aligned' if aligned else 'generic'
+                aligned_counts[kind + '_candidate_owners'] += 1
+                aligned_counts[kind + '_candidate_rows'] += n
             segments=plan.get('_segments',len(layout))
             self.slots[request_id] = first, n, segments
             for row in plan['rows']:
@@ -296,7 +455,11 @@ class NativeAttentionStats:
             self.host['meta'].numpy()[:len(meta)] = meta
             self.host['requests'].numpy()[:len(meta)] = requests
             self.host['rows'].numpy()[row_indices] = sample_ids
-            for name in ('rows','ranges'):
+            upload_names = ('rows', 'ranges')
+            if getattr(self, 'aligned_prefill_enabled', False):
+                upload_names += ('aligned_pieces',)
+                self.aligned_prefill_counts.update(aligned_counts)
+            for name in upload_names:
                 getattr(self,name).copy_(self.host[name],non_blocking=True)
             for name in ('meta','requests'):
                 getattr(self,name)[:len(meta)].copy_(self.host[name][:len(meta)],non_blocking=True)
@@ -314,9 +477,17 @@ class NativeAttentionStats:
                 _clear_lse[(len(meta), self.heads, triton.cdiv(max(m[1] for m in meta), 256))](
                     lse, self.meta, self.control, self.heads, self.width, 256)
         self.plans = plans
+        if getattr(self, 'static_prefill_enabled', False):
+            self.static_prefill_frame, self.static_prefill_reason = static_aligned_frame(plans)
+            key = ('qualified_candidate_frames' if self.static_prefill_frame is not None else
+                   'candidate_fallback:' + self.static_prefill_reason)
+            self.static_prefill_counts[key] += 1
 
     def resolve(self, plans):
         """Bind exact sampled rows/logical segments after native forward."""
+        self._check_detached_validation()
+        if getattr(self, '_validation_ticket', None) is not None:
+            raise RuntimeError('Planning cannot modify a queued native validation frame')
         if self.disabled or getattr(self,'batch_reason',None):
             return
         if self.upload_event is not None and not self.upload_event.query():
@@ -359,6 +530,54 @@ class NativeAttentionStats:
             self.selected[:len(selected)].copy_(self.host['selected'][:len(selected)],non_blocking=True)
             self.upload_event=torch.cuda.Event();self.upload_event.record()
 
+    def _static_prefill_qualification(self, wrapper, run_args, metadata):
+        if getattr(self, 'static_prefill_unavailable', None):
+            return self.static_prefill_unavailable
+        # Never bake a changing CPU qualification into a CUDA graph. A graph
+        # captures the generic module even if this particular frame is aligned.
+        if torch.cuda.is_current_stream_capturing():
+            return 'cuda_graph_capture'
+        if getattr(wrapper, 'is_cuda_graph_enabled', None) is not False:
+            return 'graph_or_unknown_wrapper'
+        plan_info = run_args[2]
+        # FlashInfer's TVM FFI returns a host Array implementing Sequence, not
+        # necessarily a Python list. Tensor plans remain ineligible: no device
+        # scalar inspection or synchronization is permitted here.
+        if (not isinstance(plan_info, Sequence) or len(plan_info) != 15 or
+                type(plan_info[13]) not in (int, bool) or plan_info[13]):
+            return 'graph_or_unknown_plan'
+        frame = getattr(self, 'static_prefill_frame', None)
+        if frame is None or getattr(self, 'disabled', None) or getattr(self, 'batch_reason', None):
+            return getattr(self, 'static_prefill_reason', 'unarmed_frame')
+        query, key = run_args[3:5]
+        # Pure prefill only; mixed/decode owners retain the existing native
+        # implementation. The checked host spans must cover the actual FA2 Q.
+        decodes = getattr(metadata, 'num_decode_tokens', None)
+        owners = getattr(metadata, 'num_prefills', None)
+        tokens = getattr(metadata, 'num_prefill_tokens', None)
+        if any(type(value) is not int for value in (decodes, owners, tokens)):
+            return 'unknown_owner_metadata'
+        if decodes != 0:
+            return 'mixed_decode_prefix'
+        if (owners != len(frame) or tokens != query.shape[0] or
+                sum(item[2] for item in frame) != query.shape[0]):
+            return 'owner_or_query_domain'
+        if query.shape[0] < 128:
+            return 'small_prefill'
+        layout = getattr(wrapper, '_kv_layout', None)
+        if layout not in ('NHD', 'HND') or len(key.shape) != 4:
+            return 'unknown_page_geometry'
+        page = key.shape[1 if layout == 'NHD' else 2]
+        if page <= 0 or page % 16:
+            return 'unaligned_kv_page'
+        # Source-checked FlashInfer plans express every KV split in whole
+        # pages (scheduler.cuh: kv_chunk_size *= page_size). With window=-1,
+        # kv_start_idx=0. Thus every nonterminal split starts at a multiple of
+        # 16 regardless of partition_kv; a final partial page needs no CAS.
+        if type(run_args[14]) is not int or run_args[14] != -1:
+            return 'sliding_window'
+        return None
+
     def _wrap(self, impl, name):
         original = impl.forward
 
@@ -384,18 +603,50 @@ class NativeAttentionStats:
                     try:
                         geometry = (attn_metadata.q_data_type_prefill, torch.float8_e4m3fn,
                                     output.dtype, wrapper._paged_kv_indptr_buf.dtype, query.shape[-1])
-                        built = self.prefill_modules.get(geometry)
+                        aligned_enabled = getattr(self, 'aligned_prefill_enabled', False)
+                        module_key = geometry + ('aligned16',) if aligned_enabled else geometry
+                        cta_gate = getattr(self, 'cta_gate_enabled', False)
+                        if cta_gate:
+                            module_key += ('cta_gate',)
+                        built = self.prefill_modules.get(module_key)
                         if built is None:
                             if torch.cuda.is_current_stream_capturing():
                                 raise UnsupportedNativeStats('prefill_specialization_not_warmed')
-                            built = prefill_module(self.directory, *geometry)
-                            self.prefill_modules[geometry] = built
+                            build_options = {}
+                            if aligned_enabled:
+                                build_options['aligned_pieces'] = True
+                            if cta_gate:
+                                build_options['cta_gate'] = True
+                            built = prefill_module(self.directory, *geometry, **build_options)
+                            self.prefill_modules[module_key] = built
                         saved = wrapper._cached_module
 
                         def paged_run(*run_args):
                             # Original FA2 ABI: 16 common parameters, then optional
                             # mask/ALiBi fields, softcap and the effective QK scale.
-                            built.paged_run(*run_args[:16], self.rows, self.requests, self.pieces, self.lses[name],
+                            tensors = (self.rows, self.requests, self.pieces, self.lses[name])
+                            if aligned_enabled:
+                                tensors += (self.aligned_pieces,)
+                                self.aligned_prefill_counts['prefill_dispatch_calls'] += 1
+                            if cta_gate:
+                                self.cta_gate_counts['prefill_dispatch_calls'] += 1
+                            selected_module = built
+                            if getattr(self, 'static_prefill_enabled', False):
+                                reason = self._static_prefill_qualification(wrapper, run_args, attn_metadata)
+                                if reason is None:
+                                    static_key = geometry + ('static_aligned16',)
+                                    selected_module = self.prefill_modules.get(static_key)
+                                    if selected_module is None:
+                                        try:
+                                            selected_module = prefill_module(self.directory, *geometry,
+                                                                            static_aligned=True)
+                                            self.prefill_modules[static_key] = selected_module
+                                        except (UnsupportedNativeStats, RuntimeError) as error:
+                                            reason = 'build:' + str(error).splitlines()[0][:160]
+                                            selected_module = built
+                                self.static_prefill_counts[
+                                    'static_dispatch_calls' if reason is None else 'generic_dispatch:' + reason] += 1
+                            selected_module.paged_run(*run_args[:16], *tensors,
                                 self.context, self.width, attn_metadata.num_decode_tokens, run_args[23])
                         wrapper._cached_module = SimpleNamespace(paged_run=paged_run)
                         self.reasons[name, 'prefill'] = None
@@ -411,24 +662,173 @@ class NativeAttentionStats:
             return result
         impl.forward = forward
 
-    def validate(self):
-        """Fence once after all owners' scoring and downloads are enqueued."""
-        if self.validation_dirty:
-            self.host['valid_flags'].copy_(self.valid_flags, non_blocking=True)
-            event = torch.cuda.Event()
+    def _check_detached_validation(self, *, allow_submitted=False):
+        failed = getattr(self, '_detached_enqueue_failure', None)
+        if failed is not None:
+            raise RuntimeError('Native attention owns a failed detached enqueue') from failed.error
+        if not allow_submitted and getattr(self, '_detached_frame_submitted', False):
+            raise RuntimeError('Native attention frame was detached; rearm before reusing it')
+
+    def can_detach_validation(self):
+        """Only a complete reuse frame may take the asynchronous route.
+
+        A missing producer discovered by the device flags is handled later.
+        Known reference/mixed-layer fallbacks retain the synchronous API.
+        """
+        if (getattr(self, '_detached_enqueue_failure', None) is not None or
+                getattr(self, '_detached_frame_submitted', False) or
+                getattr(self, '_validation_ticket', None) is not None or
+                self.mode != 'reuse' or self.disabled or self.frame_invalid or
+                self.invalid or getattr(self, 'batch_reason', None) or
+                any(self.request_reasons.values())):
+            return False
+        owners = sum(bool(plan['rows']) for plan in self.plans.values())
+        if not owners:
+            return not self.validation_dirty and not self.frame_success and not self.reduced
+        return (self.validation_dirty and self.reduced == set(self.names) and
+                self.frame_success == Counter({'reuse:prefill': owners * len(self.names)}) and
+                all(request_id in self.slots for request_id, plan in self.plans.items() if plan['rows']))
+
+    def detach_validation(self, host_flags, event):
+        """Enqueue flags and a complete-score fence on the producer stream.
+
+        All score reductions and mass downloads must already be on this same
+        stream; subsequent arm/disarm must use it too. This method never waits.
+        The caller supplies distinct bounded pinned storage and an exclusive
+        event, held through successful resolution. Counter application reads
+        only the frozen result, so it does not extend this DMA lease.
+        No second GPU bank is used.
+        """
+        self._check_detached_validation()
+        if not self.can_detach_validation():
+            raise RuntimeError('Detached validation requires a complete native prefill reuse frame')
+        thread = self.__dict__.setdefault('_detached_owner_thread', get_ident())
+        if thread != get_ident():
+            raise RuntimeError('Detached validation submission is engine-thread owned')
+        if (host_flags.device.type != 'cpu' or host_flags.dtype != torch.int32 or
+                tuple(host_flags.shape) != (len(self.names),) or
+                not host_flags.is_contiguous() or not host_flags.is_pinned()):
+            raise ValueError('Detached validation needs independent pinned int32 layer flags')
+        if event is None or not callable(getattr(event, 'record', None)) or not callable(getattr(event, 'synchronize', None)):
+            raise ValueError('Detached validation needs an exclusive completion event')
+        pointer, size = host_flags.data_ptr(), len(self.names) * 4
+        def aliases(other):
+            address = other.data_ptr()
+            return pointer < address + size and address < pointer + size
+        shared = self.host.get('valid_flags')
+        if shared is not None and aliases(shared):
+            raise ValueError('Detached flags cannot alias the bank host scratch')
+        pending = self.__dict__.setdefault('_detached_pending', {})
+        if any((old.error is not None or not old.resolved) and
+               (old.event is event or aliases(old.host_flags)) for old in pending.values()):
+            raise ValueError('Detached validation flags/event are still leased by another frame')
+        origin = self.__dict__.setdefault('_detached_origin', object())
+        sequence = self.__dict__.get('_detached_sequence', 0) + 1
+        ticket = DetachedNativeValidation(tuple(self.names), bool(self.validation_dirty),
+            tuple(self.frame_success.items()), host_flags, event, origin, sequence)
+        self._detached_sequence = sequence
+        pending[sequence] = ticket
+        try:
+            if ticket.dirty:
+                host_flags.copy_(self.valid_flags, non_blocking=True)
             event.record()
-            event.synchronize()
-            self.validation_dirty = False
-            self.invalid.update(name for name, valid in zip(self.names, self.host['valid_flags'].tolist())
-                                if not valid)
-            if self.invalid:
-                self.frame_invalid = True
+            ticket.recorded = True
+        except BaseException as error:
+            ticket.error = error
+            self._detached_enqueue_failure = ticket
+            raise
+        self.validation_dirty = False
+        self._detached_frame_submitted = True
+        return ticket
+
+    def apply_detached_validation(self, ticket, result):
+        """Apply this detached frame's counters once, without changing live plans.
+
+        Invalid native output has the existing whole-frame fallback policy.
+        The caller must complete that reference scoring before publication;
+        this method records the fallback decision, not its GPU completion.
+        """
+        if getattr(self, '_detached_owner_thread', None) != get_ident():
+            raise RuntimeError('Detached validation statistics are engine-thread owned')
+        pending = getattr(self, '_detached_pending', {})
+        if (not isinstance(ticket, DetachedNativeValidation) or
+                ticket.origin is not getattr(self, '_detached_origin', None) or
+                pending.get(ticket.sequence) is not ticket):
+            raise RuntimeError('Detached validation belongs to another bank or was already applied')
+        with ticket._lock:
+            if (ticket.error is not None or not ticket.resolved or ticket.applied or
+                    ticket.result is not result):
+                raise RuntimeError('Detached validation cannot apply an unresolved or foreign result')
+            if not result.valid:
+                success = Counter(dict(ticket.frame_success))
+                self.counts.subtract(success)
+                self.counts.update({'fallback:'+key.split(':', 1)[1]+':invalid_native_mass': value
+                                    for key, value in success.items()})
                 self.validation_failures += 1
-                self.counts.subtract(self.frame_success)
-                self.frame_success.clear()
+            ticket.applied = True
+            del pending[ticket.sequence]
+        return result.valid
+
+    def enqueue_validation(self):
+        """Fence all scores/D2H, even if every layer used reference scoring.
+
+        The one live ticket prevents rearm or host-flag reuse. The same-forward
+        MTP caller may enqueue independent proposal work before resolving it.
+        A failed copy/record retains the ticket and its buffers for quarantine.
+        """
+        self._check_detached_validation()
+        if getattr(self, '_validation_ticket', None) is not None:
+            raise RuntimeError('Native attention validation already queued')
+        ticket = NativeValidation(bool(self.validation_dirty))
+        self._validation_ticket = ticket
+        try:
+            if ticket.dirty:
+                self.host['valid_flags'].copy_(self.valid_flags, non_blocking=True)
+            ticket.event = torch.cuda.Event()
+            ticket.event.record()
+            ticket.recorded = True
+        except BaseException as error:
+            ticket.error = error
+            raise
+        return ticket
+
+    def resolve_validation(self, ticket):
+        if (getattr(self, '_validation_ticket', None) is not ticket or
+                ticket.resolved or not ticket.recorded or ticket.event is None):
+            raise RuntimeError('Native attention validation ticket is stale or incomplete')
+        if ticket.error is not None:
+            raise RuntimeError('Native attention validation ticket is quarantined') from ticket.error
+        try:
+            ticket.event.synchronize()
+            if ticket.dirty:
+                flags = self.host['valid_flags'].tolist()
+                self.validation_dirty = False
+                self.invalid.update(name for name, valid in zip(self.names, flags) if not valid)
+                if self.invalid:
+                    self.frame_invalid = True
+                    self.validation_failures += 1
+                    self.counts.subtract(self.frame_success)
+                    self.frame_success.clear()
+        except BaseException as error:
+            ticket.error = error
+            raise
+        ticket.resolved = True
+        self._validation_ticket = None
+        return not self.frame_invalid
+
+    def validate(self):
+        """Original synchronous API; only dirty frames require a new fence."""
+        self._check_detached_validation()
+        if getattr(self, '_validation_ticket', None) is not None:
+            raise RuntimeError('Queued native validation requires its original ticket')
+        if self.validation_dirty:
+            return self.resolve_validation(self.enqueue_validation())
         return not self.frame_invalid
 
     def score(self, name, request_id, prefill, *, defer_validation=False):
+        self._check_detached_validation()
+        if getattr(self, '_validation_ticket', None) is not None:
+            raise RuntimeError('Scoring cannot modify a queued native validation frame')
         phase = 'prefill' if prefill else 'decode'
         reason = self.disabled or getattr(self, 'batch_reason', None)
         if not reason:
@@ -493,7 +893,22 @@ class NativeAttentionStats:
                 'source_fingerprint': self.source_fingerprint, 'verification': self.verification,
                 'validation_failures': self.validation_failures,
                 'armed_candidate_rows': self.armed_rows,
-                'normalized_layer_sample_rows': self.normalized_rows}, indent=2) + '\n')
+                'normalized_layer_sample_rows': self.normalized_rows,
+                'prefill_cta_gate': dict(enabled=getattr(self, 'cta_gate_enabled', False),
+                    counts=dict(getattr(self, 'cta_gate_counts', {})),
+                    source_fingerprint=getattr(self, 'prefill_source_fingerprint', None),
+                    dispatch_counts_exclude_graph_replays=True,
+                    device_skipped_ctas_not_counted=True),
+                'prefill_aligned_pieces': dict(enabled=getattr(self, 'aligned_prefill_enabled', False),
+                    counts=dict(getattr(self, 'aligned_prefill_counts', {})),
+                    candidate_counts_are_host_qualification=True,
+                    dispatch_counts_exclude_graph_replays=True),
+                'prefill_static_aligned': dict(enabled=getattr(self, 'static_prefill_enabled', False),
+                    counts=dict(getattr(self, 'static_prefill_counts', {})),
+                    source_fingerprint=getattr(self, 'static_prefill_source_fingerprint', None),
+                    unavailable=getattr(self, 'static_prefill_unavailable', None),
+                    graph_dispatches_use_generic=True,
+                    dispatch_counts_exclude_graph_replays=True)}, indent=2) + '\n')
             temporary.replace(self.output)
 
 

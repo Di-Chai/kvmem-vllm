@@ -223,7 +223,10 @@ class ReservedKVCacheManager:
             plan = request_plan(request, self.guided_block_tokens,manager.capacity-manager.select_budget)
             at = request.num_computed_tokens + kwargs.get('num_external_computed_tokens',0)
             local_end = at-manager.offsets.get(request_id,0)+num_new_tokens
-            if (plan is not None and plan.query is not None and at == plan.replay_begin
+            control = getattr(self, 'guided_refresh_control', None)
+            guided = control(request, at, manager.offsets.get(request_id, 0)) if control else None
+            if (plan is not None and (plan.query is not None and at == plan.replay_begin or
+                    guided is not None and guided[2])
                     and local_end+self.guided_reserve<=manager.capacity):
                 kwargs = {**kwargs,'num_lookahead_tokens':max(kwargs.get('num_lookahead_tokens',0),self.guided_reserve)}
         if view is not None and permit is None:

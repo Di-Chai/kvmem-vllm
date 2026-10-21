@@ -292,7 +292,9 @@ class AsyncRefresh:
         with torch.inference_mode(),torch.cuda.device(self.runner.device),torch.cuda.stream(self.stream):
             self.stream.wait_event(ready)
             self.emit(job,'assembly_started')
+            selection_started = time.perf_counter()
             authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+            published = time.perf_counter()
             fit=RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
                 mandatory=job.command.mandatory_spans).mandatory_fit(job.history,cfg)
             required=set(fit['hard_blocks'])
@@ -304,6 +306,11 @@ class AsyncRefresh:
                 plan=select_pressure(authority,mandatory,max_tokens=cfg.select_budget)
             elif job.history<=cfg.select_budget:plan=authority.memory.select({})
             else:plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget)
+            if (getattr(self.options, 'action_profiling', False) or
+                    getattr(self.runner, '_kvmem_step_timing', None) is not None):
+                self.emit(job, 'selection_prepared',
+                    publication_seconds=published-selection_started,
+                    selection_seconds=time.perf_counter()-published)
             started=time.perf_counter()
             assembler=NativeWindowAssembler.from_runner(self.runner,job.command.request_id,self.runtime.names,
                 cfg.block_tokens,packed=self.options.packed_assembly,
@@ -428,7 +435,9 @@ class AsyncRefresh:
             if hi>lo:job.query_rows.append(q[:,lo:hi].clone())
             job.offset=end
             if end==len(job.command.input_tokens):
-                if self.options.guided_query_tokens and job.command.query_span is not None:
+                boundary_guided = (job.command.guided_boundary if job.command.guided_boundary is not None
+                    else self.options.guided_reselect in ('boundary', 'both'))
+                if self.options.guided_query_tokens and job.command.query_span is not None and boundary_guided:
                     local_end=job.history+end-self.runner._kvmem_window_adapter.offsets.get(job.command.request_id,0)
                     reserve=self.options.guided_reserve
                     available=local_end+reserve<=self.options.memory.select_budget+self.options.memory.gen_budget
@@ -500,11 +509,18 @@ class AsyncRefresh:
             mean_k_backend=self.options.mean_k_backend,assembly_seconds=seconds,
             assembly_host_prepare_seconds=assembly.host_prepare_seconds,assembly_uploaded_bytes=assembly.uploaded_bytes,
             raw_cache_hit_tokens=assembly.raw_cache_hit_tokens,resident_v_reused_tokens=assembly.resident_v_reused_tokens,
+            assembly_read_prefetch=getattr(self.options, 'assembly_read_prefetch', False),
+            assembly_fused_layers=getattr(self.options, 'assembly_fused_layers', False),
             refresh_started_at=job.started,refresh_finished_at=time.perf_counter(),asynchronous=True,
             public_peer_count=len(job.peers),private_forward_steps=job.steps,cancelled=job.cancelled,
             maintenance=self.maintenance.snapshot() if getattr(self, 'maintenance', None) is not None else None,
             **selection_report(authority, phase=job.command.selection))
         row.update(job.guided_diagnostics)
+        if (getattr(self.options, 'action_profiling', False) or
+                getattr(self.runner, '_kvmem_step_timing', None) is not None):
+            row.update(assembly_read_stats=assembly.read_stats, assembly_chunks=assembly.chunks,
+                assembly_rebuilt_tokens=assembly.rebuilt_tokens,
+                assembly_skipped_tokens=assembly.skipped_tokens)
         with (self.runner._kvmem_probe_output/'bounded_refresh.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
 
     def shutdown(self):

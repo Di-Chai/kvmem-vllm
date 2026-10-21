@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.work_counters import PublicWorkCounters, classify_public_batch
+from vllm_kvmem.work_counters import PublicWorkCounters, classify_public_batch, public_work_idle
 
 
 class Clock:
@@ -33,6 +33,7 @@ def batch(scheduled=(128,), lengths=(1024,), computed=(0,), *, history=None,
     return SimpleNamespace(num_reqs=len(scheduled), req_ids=[f'r{i}' for i in range(len(scheduled))],
         num_scheduled_tokens=scheduled, prefill_len_np=lengths,
         num_computed_prefill_tokens_np=computed, num_computed_tokens_np=history or computed,
+        positions=tuple(range(sum(scheduled))),
         num_tokens=sum(scheduled) if tokens is None else tokens,
         num_tokens_after_padding=padded_tokens, num_reqs_after_padding=padded_requests)
 
@@ -267,6 +268,47 @@ def test_failed_forward_is_not_published_as_completed_work(tmp_path):
         runner.execute_model(output)
     assert work.submitted['public_batches'] == 0
     assert not events
+
+
+def test_idle_requires_all_owners_retired_and_no_new_work():
+    output = SimpleNamespace(total_num_scheduled_tokens=0, finished_req_ids={'done'}, scheduled_new_reqs=[])
+    assert public_work_idle(output, {'done': 0})
+    assert not public_work_idle(output, {'done': 0, 'publication_wait': 1})
+    assert not public_work_idle(output, {'refresh_wait': 0})
+    output.scheduled_new_reqs = [object()]
+    assert not public_work_idle(output, {})
+    output.scheduled_new_reqs = []
+    output.total_num_scheduled_tokens = 5
+    assert not public_work_idle(output, {})
+
+
+def test_runner_maintenance_keeps_cadence_and_terminal_flush_keeps_exact_tail(tmp_path):
+    work, clock, events = observer(tmp_path)
+    runner = _runner(tmp_path, work)
+    runner.req_states = SimpleNamespace(req_id_to_index={'r0': 0})
+    (tmp_path/'armed').touch()
+    maintenance = SimpleNamespace(total_num_scheduled_tokens=0, finished_req_ids=set())
+    for i in range(5):
+        clock.now = i / 10
+        output = SimpleNamespace(total_num_scheduled_tokens=128, input_batch=batch(), finished_req_ids=set())
+        runner.execute_model(output)
+        events[0].ready = True
+        for _ in range(3):
+            runner.execute_model(maintenance)
+    assert work.submitted['public_batches'] == 5 and len(events) == 1
+    assert len(work.events_output.read_text().splitlines()) == 1
+    # The final owner is still in req_states before native update_requests.
+    terminal = SimpleNamespace(total_num_scheduled_tokens=0, finished_req_ids={'r0'})
+    runner.execute_model(terminal)
+    assert len(events) == 2
+    runner.req_states.req_id_to_index.clear()
+    events[-1].ready = True
+    runner.execute_model(maintenance)
+    row = json.loads(work.output.read_text())
+    assert row['all_submitted_completed']
+    assert row['completed']['public_prefill_tokens'] == 640
+    assert row['completed']['public_batches'] == 5
+    assert len(work.events_output.read_text().splitlines()) == 3
 
 
 def test_shutdown_publishes_pending_status_without_waiting(tmp_path):

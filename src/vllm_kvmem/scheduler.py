@@ -47,11 +47,14 @@ class KVMemScheduler(Scheduler):
         if self._bounded_target and hashlib.sha256(Path(inspect.getfile(Scheduler)).read_bytes()).hexdigest() != SCHEDULER_SHA256:
             raise ValueError("Unqualified scheduler token-admission/connector-metadata hooks")
         options = RuntimeOptions.from_vllm(self.vllm_config)
+        self._deferred_prefill_validation = options.prefill_deferred_validation
         self.connector.request_plan_memory = options.memory if options.request_planning else None
         self.connector.request_plan_pressure_policy = options.pressure_policy
-        if options.rolling_active_window and (
-                self.draft_contract is None or self.draft_contract.method != 'mtp'):
-            raise ValueError('Rolling active window currently requires native MTP accepted-prefix admission')
+        if options.rolling_active_window and not (self.draft_contract is not None and (
+                self.draft_contract.method == 'mtp' and options.async_refresh and options.async_restore or
+                self.draft_contract.method == 'dflash' and not options.async_refresh and not options.async_restore)):
+            raise ValueError('Rolling active window requires asynchronous MTP or '
+                             'synchronous DFlash2 accepted-prefix admission')
         if options.async_archive_retirement and not self._bounded_target:
             raise ValueError('Asynchronous archive retirement requires bounded execution')
         config = options.memory
@@ -71,8 +74,13 @@ class KVMemScheduler(Scheduler):
         self.async_refresh = options.async_refresh
         self.async_restore = options.async_restore
         self.rolling_active_window = options.rolling_active_window
+        self.guided_options = options
+        self._guided_tokenizer = None
         self.prefill_controller = None
         self.prefill_batch = None
+        self.prefill_physical_coalescing = options.prefill_physical_coalescing
+        self.prefill_physical_max_chunks = options.prefill_physical_max_chunks
+        self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
             if options.prefill_batch_tokens < config.block_tokens * self.scheduler_config.max_num_seqs:
@@ -116,6 +124,7 @@ class KVMemScheduler(Scheduler):
         if self._bounded_target:
             self.kv_cache_manager.guided_reserve = options.guided_reserve
             self.kv_cache_manager.guided_block_tokens = config.block_tokens
+            self.kv_cache_manager.guided_refresh_control = self._guided_refresh
         self.transactions = {}
         if self._bounded_target:
             self.kv_cache_manager.prefill_refresh_control = self._prefill_refresh_control
@@ -159,7 +168,8 @@ class KVMemScheduler(Scheduler):
                                                     preserve_history=options.cpu_history_coordination,
                                                     require_owned=options.graph_mode != 'off',
                                                     pressure_policy=options.pressure_policy,
-                                                    freeze_prompt=options.session_freeze_prompt)
+                                                    freeze_prompt=options.session_freeze_prompt,
+                                                    guided_options=options)
         if options.cpu_history_coordination:
             from .coordination import HistoryAdmission
             from .cache_manifest import archive_bytes_per_token
@@ -223,7 +233,7 @@ class KVMemScheduler(Scheduler):
             self.phase_policy = PhasePolicy(self.scheduler_config.max_num_seqs,
                 options.phase_prefill_wave_tokens, options.phase_max_wait_ms)
 
-    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=(), input_tokens=(), asynchronous=False, speculative_padding=0, message_spans=(), locality_spans=(), locality_provenance=()):
+    def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=(), input_tokens=(), asynchronous=False, speculative_padding=0, message_spans=(), locality_spans=(), locality_provenance=(), guided_reason='', guided_private=False, guided_boundary=None):
         if getattr(request, "num_in_flight_tokens", 0):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:
@@ -242,10 +252,28 @@ class KVMemScheduler(Scheduler):
         groups = tuple(prepared)
         command = RefreshCommand(request.request_id, groups[0][1].ticket_id, groups,query_span,selection,mandatory_spans,
                                  tuple(input_tokens), asynchronous, speculative_padding, tuple(message_spans),
-                                 tuple(locality_spans), tuple(locality_provenance))
+                                 tuple(locality_spans), tuple(locality_provenance),
+                                 guided_reason, guided_private, guided_boundary)
         self.transactions[request.request_id] = (command, request.next_decode_eligible_step)
         request.next_decode_eligible_step = 2**62
         self.connector.queue(command)
+
+    def _guided_refresh(self, request, history, offset):
+        epoch = getattr(request, '_kvmem_guided_epoch', None)
+        if epoch is None:
+            return None
+        from .request_plan import request_plan
+        from .guided_refresh import scheduled_refresh
+        plan = request_plan(request, self.query_policy.block_tokens, self.query_policy.gen_budget)
+        if (epoch.decode_enabled and history >= request.num_prompt_tokens and
+                history >= epoch.deadline and history % self.query_policy.block_tokens == 0 and
+                self._guided_tokenizer is None):
+            from vllm.tokenizers import get_tokenizer
+            cfg = self.vllm_config.model_config
+            self._guided_tokenizer = get_tokenizer(cfg.tokenizer, tokenizer_mode=cfg.tokenizer_mode,
+                                                   trust_remote_code=cfg.trust_remote_code)
+        return scheduled_refresh(request, plan, history, offset, self.query_policy.capacity,
+                                 self._guided_tokenizer)
 
     def _snapshot_cadence(self, name):
         from .snapshot_diagnostics import SnapshotCadence
@@ -397,6 +425,22 @@ class KVMemScheduler(Scheduler):
                 stream.write(json.dumps(report) + "\n")
         return result
 
+    def _preempt_request(self, request, timestamp, drop_stale_output=False):
+        if getattr(self, '_deferred_prefill_validation', False):
+            # Ordinary retirement retains pages until the worker ACK. Native
+            # preemption bypasses that ACK, and a scheduler step fence does not
+            # cover reference fallback reading the old prefix on another stream.
+            raise RuntimeError('Deferred prefill validation forbids native request preemption')
+        return super()._preempt_request(request, timestamp, drop_stale_output)
+
+    def reset_prefix_cache(self, reset_running_requests=False, reset_connector=False):
+        if (getattr(self, '_deferred_prefill_validation', False) and
+                reset_running_requests and self.requests):
+            # Reject before native reset pops running requests or frees any
+            # blocks. Finished-but-retiring requests still hold worker leases.
+            return False
+        return super().reset_prefix_cache(reset_running_requests, reset_connector)
+
     def _request_blocks_can_be_freed(self, request):
         if request.request_id in self.transactions:
             return False
@@ -438,6 +482,19 @@ class KVMemScheduler(Scheduler):
         for group_id, ticket in command.groups:
             if not self.window_managers[group_id].commit_refresh(ticket, _Complete(), selected_tokens):
                 raise RuntimeError("Acknowledged refresh could not commit")
+        if command.selection == 'query':
+            epoch = getattr(request, '_kvmem_guided_epoch', None)
+            if epoch is not None:
+                history = command.groups[0][1].history_end
+                # Initial explicit Query may precede the first dense K window.
+                epoch.anchor = min(epoch.anchor, history)
+                epoch.committed(history, automatic=bool(command.guided_reason))
+                sessions = self.connector.sessions
+                entry = sessions.requests.get(request_id) if sessions is not None else None
+                if entry is not None:
+                    entry.guided_anchor = history
+                    if entry.candidate_position == history and not sessions.freeze_prompt:
+                        entry.prompt_guided_anchor = history
         request = self.requests[request_id]
         request.next_decode_eligible_step = previous_step
         if not request.is_finished():
@@ -501,6 +558,9 @@ class KVMemScheduler(Scheduler):
                 (entry.namespace, entry.generation, entry.history, entry.window))
 
     def _reserve_prefill_lookahead(self, request, num_computed_tokens, num_new_tokens):
+        if getattr(self, 'prefill_physical_coalescing', False):
+            self._logical_prefill_groups.pop(request.request_id, None)
+        logical_group = None
         if (request.request_id in getattr(self.connector, 'publication_blocked', ()) and
                 request.status is RequestStatus.RUNNING):
             # Captured large prefill belongs to an already-running request.
@@ -587,6 +647,10 @@ class KVMemScheduler(Scheduler):
                 # complete Query remains atomic even when it exceeds this cap.
                 if prepared is None and not padding:
                     chunk = self._coalescing_cap(request, num_computed_tokens, chunk)
+                    logical_group = self._logical_prefill_group(
+                        request, plan, num_computed_tokens, offset, tokens, chunk)
+                    if logical_group is not None:
+                        chunk = logical_group.count
                 tokens = min(tokens,chunk)
             if (batch_budget is not None and ordinary and not padding and
                     getattr(self, 'num_prefill_lookahead', 1) > 1):
@@ -615,6 +679,16 @@ class KVMemScheduler(Scheduler):
                 if tokens < baseline:
                     tokens = super()._reserve_prefill_lookahead(request, num_computed_tokens, tokens)
             tokens = self.query_policy.admit(num_computed_tokens, tokens, request.num_prompt_tokens, offset)
+        if plan is not None and getattr(request, '_kvmem_guided_epoch', None) is not None:
+            from .guided_refresh import admit_epoch
+            tokens = admit_epoch(request, plan, num_computed_tokens, tokens, offset,
+                                 self.query_policy.capacity)
+        if logical_group is not None and tokens != logical_group.count:
+            # Native clipping must never create a new partial logical chunk
+            # from a group of original 2K transactions. Fall back before allocation.
+            tokens = plan.admit(num_computed_tokens, min(tokens, 2048),
+                               request.num_prompt_tokens, offset, self.query_policy.capacity)
+            logical_group = None
         if padding and tokens:
             # Native waiting-queue admission pads a one-token public tail to
             # the full verification shape when joining an existing decode batch.
@@ -652,7 +726,59 @@ class KVMemScheduler(Scheduler):
                 atomic_range=(plan.replay_begin, plan.replay_end) if plan is not None and plan.query is not None else None,
                 prepared_replay=prepared is not None,
                 authorization_id=getattr(self, '_coalescing_authorizations', {}).get(request.request_id))
+        if logical_group is not None and tokens:
+            if tokens != logical_group.count:
+                raise RuntimeError('Logical prefill changed shape after final admission')
+            self._logical_prefill_groups[request.request_id] = logical_group
         return tokens
+
+    def _prepare_logical_prefill(self):
+        self._logical_prefill_groups = {}
+        self._logical_prefill_owner = None
+        if not getattr(self, 'prefill_physical_coalescing', False):
+            return
+        # The first qualification admits exactly one live request. Counting
+        # blocked/waiting neighbours as well avoids guessing native composition.
+        requests = list(self.running) + list(self.waiting) + list(self.skipped_waiting)
+        if len(requests) == 1:
+            self._logical_prefill_owner = requests[0]
+
+    def _logical_prefill_group(self, request, plan, history, offset, budget, chunk):
+        if (not getattr(self, 'prefill_physical_coalescing', False) or chunk != 2048 or history == 0 or
+                getattr(self, '_logical_prefill_owner', None) is not request or budget < 4096 or
+                request.request_id in self.transactions or request.request_id in self.connector.pending or
+                request.request_id in self.prepared_refreshes or
+                getattr(request, '_kvmem_guided_epoch', None) is not None or
+                getattr(self, 'prefill_controller', None) is not None or
+                getattr(self, 'prefill_batch', None) is not None or
+                getattr(self, '_phase_decision', None) is not None or
+                getattr(self, 'prefill_coalescer', None) is not None or
+                getattr(request, 'spec_token_ids', ()) or
+                any(request.request_id in getattr(manager, name, {})
+                    for manager in self.window_managers.values()
+                    for name in ('pending', 'imports', 'resident_imports'))):
+            return None
+        from .logical_prefill import LogicalPrefillEligibility, plan_logical_prefill
+        gate = getattr(self, 'archive_admission', None)
+        if gate is not None and callable(getattr(gate, 'available_tokens', None)):
+            budget = min(budget, gate.available_tokens(request.request_id, history))
+        maximum = min(getattr(self, 'prefill_physical_max_chunks', 2), budget//2048,
+                      (request.num_prompt_tokens-history-1)//2048,
+                      (self.query_policy.capacity-history+offset)//2048)
+        if maximum < 2:
+            return None
+        limits = tuple(super(KVMemScheduler, self)._reserve_prefill_lookahead(
+            request, history + i * 2048, 2048) for i in range(maximum))
+        gates = LogicalPrefillEligibility((request.request_id,), limits, budget,
+            native_prefill_lookahead=getattr(self, 'num_prefill_lookahead', 1))
+        group, _ = plan_logical_prefill(plan, request_id=request.request_id,
+            # An admission receipt, not a worker authority/window generation.
+            # Action rebinds to its local generation after validating geometry.
+            owner_epoch=('scheduler', self.current_step, request.request_id, offset),
+            scheduler_step=self.current_step, history_begin=history, offset=offset,
+            prompt_tokens=request.num_prompt_tokens, capacity=self.query_policy.capacity,
+            eligibility=gates)
+        return group
 
     def _preserve_deferred_padding(self, request, output, query_tokens):
         # Native waiting admission synthesizes these placeholders, whereas the
@@ -709,6 +835,9 @@ class KVMemScheduler(Scheduler):
                 plan = request_plan(request, self.query_policy.block_tokens, self.query_policy.gen_budget)
                 action = (plan.action(request.num_computed_tokens, request.num_prompt_tokens, offset,
                     self.query_policy.capacity) if plan is not None else None)
+                guided = self._guided_refresh(request, request.num_computed_tokens, offset)
+                if guided is not None:
+                    action = 'guided'
                 if request_id in getattr(self, 'prepared_refreshes', {}):
                     history, reserved = self.prepared_refreshes.pop(request_id)
                     if history != request.num_computed_tokens or query_tokens > reserved:
@@ -723,6 +852,11 @@ class KVMemScheduler(Scheduler):
                         (action is not None and request.num_computed_tokens >= selected_budget)):
                     asynchronous = getattr(self, 'async_refresh', False)
                     tokens = ()
+                    if guided is not None and request.num_computed_tokens < request.num_prompt_tokens:
+                        tokens = tuple(request.prompt_token_ids[request.num_computed_tokens:
+                                                                request.num_prompt_tokens])
+                        if len(tokens) > query_tokens:
+                            raise RuntimeError('Guided boundary split the final public input tail')
                     padding = 0
                     replay_tokens = query_tokens
                     rolling_pressure = (asynchronous and action == 'pressure' and
@@ -750,12 +884,16 @@ class KVMemScheduler(Scheduler):
                                 raise ValueError('Async refresh requires a complete public prompt/Query prefix')
                     self.begin_refresh(request, selected_budget, replay_tokens=replay_tokens,
                         query_span=plan.query if action == 'query' else None,
-                        selection='pressure' if action == 'pressure' else 'query' if action == 'query' else 'chunk',
+                        selection='pressure' if action == 'pressure' else 'query' if action in ('query', 'guided') else 'chunk',
                         mandatory_spans=plan.mandatory if plan is not None else (),
                         message_spans=plan.message_spans if plan is not None else (),
                         locality_spans=plan.locality_spans if plan is not None else (),
                         locality_provenance=plan.locality_provenance if plan is not None else (),
-                        input_tokens=tokens, asynchronous=asynchronous, speculative_padding=padding)
+                        input_tokens=tokens, asynchronous=asynchronous, speculative_padding=padding,
+                        guided_reason=guided[1] if guided else '',
+                        guided_private=guided[2] if guided else False,
+                        guided_boundary=(getattr(request, '_kvmem_guided_epoch').raw_private
+                                         if getattr(request, '_kvmem_guided_epoch', None) is not None else None))
                     if asynchronous:
                         # Allocation/new-request/table updates remain delivered
                         # to the worker. Native counters and sampling advance
@@ -784,6 +922,16 @@ class KVMemScheduler(Scheduler):
                         history=history,replay_tokens=count,public_peer_count=len(output.num_scheduled_tokens),
                         private_pressure_verified=True))+'\n')
         metadata = super()._build_kv_connector_meta(connector, output)
+        if getattr(self, 'prefill_physical_coalescing', False):
+            groups = {rid: group for rid, group in self._logical_prefill_groups.items()
+                      if rid in output.num_scheduled_tokens}
+            if groups and (len(groups) != 1 or len(output.num_scheduled_tokens) != 1 or
+                    any(output.num_scheduled_tokens[rid] != group.count or
+                        output.scheduled_spec_decode_tokens.get(rid)
+                        for rid, group in groups.items())):
+                raise RuntimeError('Physical prefill no longer matches its single-owner admission')
+            metadata.logical_prefill_groups = groups
+            metadata.logical_prefill_step = self.current_step
         if getattr(self, 'offline_policy', None) is not None:
             metadata.maintenance_costs = self.offline_policy.maintenance_costs()
             metadata.cost_classification = {
@@ -1115,6 +1263,7 @@ class KVMemScheduler(Scheduler):
         if getattr(self, 'offline_policy', None) is not None:
             self.offline_policy.prepare()
         self._prepare_coalescing()
+        self._prepare_logical_prefill()
         self._prepare_phase()
         self._prepare_prefill_budget()
         armed = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "armed"

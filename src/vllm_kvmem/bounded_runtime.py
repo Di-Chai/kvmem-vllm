@@ -42,6 +42,7 @@ def install_bounded_target(runner):
         from .draft_contract import DraftContract
         from .options import RuntimeOptions
         draft_contract = DraftContract.from_vllm(runner.vllm_config, RuntimeOptions.from_vllm(runner.vllm_config).memory)
+    runner._kvmem_draft_contract = draft_contract
     if (runner.vllm_config.max_concurrent_batches != 1 or
             runner.vllm_config.cache_config.enable_prefix_caching or
             runner.vllm_config.cache_config.mamba_cache_mode != "none" or
@@ -122,15 +123,80 @@ def install_bounded_target(runner):
                 raise ValueError("Scheduler query does not match accepted authority or native input batch")
             extents[request_id] = (i, history, query)
 
+        if runner._kvmem_window_adapter is None:
+            groups = full_attention_groups(runner.kv_cache_config)
+            runner._kvmem_window_adapter = WindowBatchAdapter(groups, cfg.select_budget + cfg.gen_budget)
         needs_probe = any(history > jobs[request_id].command.groups[0][1].window_tokens and jobs[request_id].command.selection != 'pressure'
+                          and not jobs[request_id].command.guided_reason
                           for request_id, (_, history, _) in extents.items())
+        automatic = {rid for rid, job in jobs.items() if job.command.guided_reason}
+        needs_state = needs_probe or bool(automatic)
+        automatic_queries, automatic_reports = {}, {}
         state_adapter = checkpoints = before = bundle = None
         captured = []
-        if needs_probe:
+        audit_guided = (options.guided_query_tokens > 0 and
+                        os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1')
+        guided_draft = []
+        rolling_audits = {}
+        if options.rolling_active_window and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+            from types import SimpleNamespace
+            from .rolling_verification import RollingPressureOracle
+            for request_id, job in jobs.items():
+                i, history, _ = extents[request_id]
+                if job.command.selection == 'pressure' and history >= int(batch.prefill_len_np[i]):
+                    audit_job = SimpleNamespace(command=job.command, authority=runtime.authorities[request_id],
+                        history=history, cancelled=False, selected_tokens=0, steps=int(needs_probe))
+                    rolling_audits[request_id] = (audit_job, RollingPressureOracle(runner, audit_job))
+        if needs_state:
             state_adapter = NativeRecurrentState(runner)
             bundle = state_adapter.borrow(batch.req_ids)
             checkpoints = StateCheckpoints("bounded-query", bundle.bytes, capacity=1)
             before = checkpoints.capture(0, bundle.tensors)
+            if audit_guided:
+                from .guided_query import snapshot_guided_draft
+                guided_draft = snapshot_guided_draft(runner,batch,draft_contract)
+            for rid in automatic:
+                i, history, query = extents[rid]
+                command = jobs[rid].command
+                authority = runtime.authorities[rid]
+                from .guided_seed import original_queries
+                fallback = original_queries(authority, history, runner.device)
+                diagnostics = dict(guided_query_tokens=0, guided_prompt_tokens=0,
+                    guided_seconds=0.0, guided_fallback='emergency-original-query')
+                queries = None
+                if command.guided_private:
+                    reserve = options.guided_reserve
+                    local = history-runner._kvmem_window_adapter.offsets.get(rid, 0)
+                    private_end = local+len(command.input_tokens)+reserve
+                    available = private_end <= cfg.select_budget+cfg.gen_budget
+                    for group_id, ticket in command.groups:
+                        spec = runner.kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
+                        available &= private_end <= len(ticket.original_block_ids)*spec.block_size
+                    diagnostics['guided_fallback'] = 'capacity'
+                    if available:
+                        from .guided_query import guided_query
+                        started = time.perf_counter()
+                        try:
+                            generated = guided_query(runner, original, batch, i, history,
+                                                     reserve, options.guided_query_tokens,
+                                                     prefix=command.input_tokens)
+                            queries = generated.queries
+                            diagnostics.update(generated.diagnostics,
+                                guided_prompt_tokens=generated.prompt_tokens,
+                                guided_seconds=time.perf_counter()-started)
+                        finally:
+                            state_adapter.validate(bundle)
+                            checkpoints.restore(before, bundle.tensors)
+                if queries is None:
+                    queries = fallback
+                if queries is None:
+                    # Fail before committing any selection. A pressure pick
+                    # cannot be reported as a successful semantic refresh or
+                    # advance its epoch anchor.
+                    raise RuntimeError('Guided refresh has neither a generated nor an accepted original Query: '
+                                       + str(diagnostics['guided_fallback']))
+                automatic_queries[rid], automatic_reports[rid] = queries, diagnostics
+        if needs_probe:
             if getattr(runner, '_kvmem_graph', False):
                 original(*args, **kwargs)
                 captured = runner._kvmem_graph_captures
@@ -147,14 +213,12 @@ def install_bounded_target(runner):
             authority = runtime.authorities[request_id]
             authority.publish_sealed(runtime._wait_archive_progress)
 
-        if runner._kvmem_window_adapter is None:
-            groups = full_attention_groups(runner.kv_cache_config)
-            runner._kvmem_window_adapter = WindowBatchAdapter(groups, cfg.select_budget + cfg.gen_budget)
         owners, reports = [], []
         public_queries = {}
         for request_id, (i, history, query) in extents.items():
             command = jobs[request_id].command
-            if history <= command.groups[0][1].window_tokens or command.selection == 'pressure':
+            if (history <= command.groups[0][1].window_tokens or command.selection == 'pressure'
+                    or command.guided_reason):
                 continue
             begin, end = batch.query_start_loc_np[i:i+2]
             if command.query_span is not None:
@@ -170,12 +234,19 @@ def install_bounded_target(runner):
             public_queries[request_id] = torch.stack([c.query[begin:end] for c in captured]).clone()
         for request_id, job in jobs.items():
             i, history, query = extents[request_id]
+            local_tokens_before = history - runner._kvmem_window_adapter.offsets.get(request_id, 0)
             authority = runtime.authorities[request_id]
             score_query = query
             guided_tokens = guided_prompt_tokens = 0
             guided_seconds = 0.0
             guided_fallback = None
             guided_diagnostics = {}
+            if request_id in automatic:
+                guided_diagnostics = automatic_reports[request_id]
+                guided_tokens = guided_diagnostics['guided_query_tokens']
+                guided_prompt_tokens = guided_diagnostics['guided_prompt_tokens']
+                guided_seconds = guided_diagnostics['guided_seconds']
+                guided_fallback = guided_diagnostics['guided_fallback']
             from .request_plan import RequestPlan, selection_config
             pressure_policy = getattr(runtime.options, 'pressure_policy', None) or (
                 'attention' if getattr(runtime.options, 'action_pressure', False) else 'recency')
@@ -193,8 +264,11 @@ def install_bounded_target(runner):
             elif history <= selected_cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
             else:
-                queries = public_queries[request_id]
-                if runtime.options.guided_query_tokens and job.command.query_span is not None:
+                queries = (automatic_queries[request_id] if request_id in automatic
+                           else public_queries[request_id])
+                boundary_guided = (job.command.guided_boundary if job.command.guided_boundary is not None
+                    else options.guided_reselect in ('boundary', 'both'))
+                if runtime.options.guided_query_tokens and job.command.query_span is not None and boundary_guided:
                     reserve = runtime.options.guided_reserve
                     local_end = history + query - runner._kvmem_window_adapter.offsets.get(request_id,0)
                     available = local_end+reserve <= cfg.select_budget+cfg.gen_budget
@@ -240,7 +314,11 @@ def install_bounded_target(runner):
             if sessions is not None:
                 sessions.selection_committed(request_id, history)
             runner._kvmem_window_adapter.commit(request_id, history, selected)
-            if job.command.selection!='pressure':
+            if request_id in rolling_audits:
+                audit_job, _ = rolling_audits[request_id]
+                audit_job.selected_tokens = selected
+                audit_job.result = (assembler, assembly, plan)
+            if job.command.selection!='pressure' and not job.command.guided_reason:
                 from .prefill_attention import exclude_query_replay
                 exclude_query_replay(runner,authority,request_id,history,history+query,job.command.query_span is not None)
             from .prefill_attention import selection_report
@@ -248,12 +326,16 @@ def install_bounded_target(runner):
             owners.append((assembler, assembly, plan))
             reports.append({"request_id": request_id, "command_id": job.command.command_id,
                 "history_begin": history, "selected_tokens": selected, "query_tokens": query,
+                "rolling_active_window": options.rolling_active_window,
+                "local_tokens_before": local_tokens_before,
                 "rebuilt_tokens": assembly.rebuilt_tokens, "skipped_tokens": assembly.skipped_tokens,
                 "batch_requests": list(batch.req_ids), "probe_executed": needs_probe,
                 "query_score_tokens": score_query, "draft_groups": list(draft_groups),
                 "guided_query_tokens":guided_tokens,"guided_prompt_tokens":guided_prompt_tokens,
                 "guided_seconds":guided_seconds,
                 "guided_fallback":guided_fallback,
+                "guided_trigger_reason":job.command.guided_reason or 'explicit-query' if job.command.selection == 'query' else None,
+                "guided_original_seed_bytes":getattr(getattr(authority, 'guided_seed', None), 'bytes', 0),
                 **guided_diagnostics,
                 "query_history_enabled":getattr(authority,'query_history',None) is not None,
                 "action_attention_enabled":cfg.action_attention,
@@ -277,9 +359,20 @@ def install_bounded_target(runner):
                 "packed_assembly": runtime.options.packed_assembly,
                 "direct_pinned_reads": runtime.options.direct_pinned_reads})
 
-        if needs_probe:
+        if needs_state:
             state_adapter.validate(bundle)
             checkpoints.restore(before, bundle.tensors)
+            if audit_guided and any(row['guided_query_tokens'] for row in reports):
+                from .guided_query import verify_guided_rollback
+                audit = verify_guided_rollback(before,bundle.tensors,guided_draft)
+                with (runner._kvmem_probe_output/'verified_guided_rollback.jsonl').open('a') as stream:
+                    for row in reports:
+                        if row['guided_query_tokens']:
+                            stream.write(json.dumps(dict(request_id=row['request_id'],
+                                batch_requests=list(batch.req_ids),**audit))+'\n')
+            guided_draft.clear()
+        for audit_job, audit in rolling_audits.values():
+            audit.verify(audit_job)
         from vllm.forward_context import get_forward_context
         from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
         context = get_forward_context()
@@ -302,7 +395,7 @@ def install_bounded_target(runner):
         # First integration retires scratch synchronously. Keep the connector
         # acknowledgment after every replayed neighbour and the query itself.
         completed.synchronize()
-        if needs_probe:
+        if needs_state:
             assert checkpoints.release(0)
         for assembler, _, _ in owners:
             assert assembler.close()

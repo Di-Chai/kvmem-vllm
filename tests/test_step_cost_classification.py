@@ -15,6 +15,7 @@ def batch(ids=('p', 'd'), histories=(16384, 65536), scheduled=(2048, 5),
     return SimpleNamespace(req_ids=list(ids), num_computed_tokens_np=histories,
         num_scheduled_tokens=scheduled, prefill_len_np=prompts,
         num_computed_prefill_tokens_np=tuple(min(h, p) for h, p in zip(histories, prompts)),
+        positions=tuple(position for h, n in zip(histories, scheduled) for position in range(h, h+n)),
         is_prefilling_np=prefilling)
 
 

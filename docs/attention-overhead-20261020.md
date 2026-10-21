@@ -96,7 +96,9 @@ callers lacking that contract retain the reference full softmax. Each Q head is
 normalized separately over the full context, including segments not transported
 by later selection. Duplicate history identities retain additive segment mass.
 Ordinary FP32 softmax/logsumexp rounding differences are allowed; no narrower Q/K
-precision or different scale is substituted.
+precision or different scale is substituted. This describes the original measured
+kernel; the 2026-10-21 stability correction below replaces absolute logsumexp
+storage with separate maxima and shifted sums.
 
 ### Native graph propagation
 
@@ -516,3 +518,79 @@ each switch independently false, and all four false) also pass constructor,
 public connector, direct launch, elastic/backend forwarding and profile replay
 checks. No additional full-model throughput run is needed for this default-only
 change; the explicit all-on execution evidence remains the result above.
+
+## Fused normalization stability correction, 2026-10-21
+
+The fixed-input audit found that storing `max + log(sum)` as a single FP32
+number loses normalization bits when logits have a large common offset.
+Subtracting the full-row logsumexp cannot recover those bits. An adversarial
+uniform-logit input with offset 1,048,576 produced a 0.033427 row-mass error,
+whereas the reference path returned the exact expected segment probabilities.
+This is a numerical robustness failure, not evidence that real model logits
+reach that range or that it caused the historical benchmark differences.
+
+The corrected kernel stores a maximum `m_p` and shifted exponential sum `s_p`
+for each segment/head. For that head it computes `m = max_p(m_p)` and
+`z_p = s_p * exp(m_p - m)`, then returns `z_p / sum_p(z_p)`. All visible segments
+share the denominator before heads are averaged. Empty causal segments store
+`(-inf, 0)` so they cannot dominate a negative row maximum. The normalization
+kernel reuses the sum buffer for normalized probabilities; the final kernel
+only averages heads. QK, dtype, scale, sampling, acceptance and graph ranking
+rules are unchanged. There are still no token-sized logits/probability matrices.
+
+The new regression first failed on the old kernel. The final GPU suite passes
+34 tests, including positive/negative per-head offsets, partially visible and
+fully masked segments, FP8/GQA and changed operands under CUDA Graph replay.
+The original seven uniform-offset cases now agree exactly with their reference.
+Across 36 ordinary fixed-input cases, maximum segment error decreases from
+1.63913e-7 to 5.96046e-8; top-4 sets remain equal in those cases.
+
+This does **not** guarantee identical near-tied graph edges. In the constructed
+30-case boundary corpus, stored graph target sets differ in 21 cases after the
+fix (27 before). Tiny rounding differences still cross the discrete top-k
+boundary and can move about 0.025 of a unit-total Query propagation vector.
+Adding an epsilon tie rule or rounding graph scores would change the historical
+selection policy; no such rule is introduced. These synthetic cases establish
+sensitivity, not real-model quality gains or losses.
+
+For comparisons requiring the original scoring arithmetic, use the existing
+switches below. The other three optimizations retain exact fixed-input results
+in the audit and the combined boundary test:
+
+```json
+{
+  "action_fused_scoring": false,
+  "action_native_decode_commit": true,
+  "action_download_pool": true,
+  "graph_native_propagation": true,
+  "action_native_scores": "off"
+}
+```
+
+This isolates the four implementation switches. It does not by itself reproduce
+historical model batching, random state, other policy settings or generated
+trajectories. Automatic fallback only when one sampled row has near ties would
+not guarantee graph equivalence either: graph weights accumulate multiple rows
+and chunks before choosing edges. Strict comparison therefore uses the complete
+reference scorer from the start, not a late local tie correction.
+
+Twelve interleaved repetitions compare the reference, frozen original fusion
+and final corrected fusion on the same operands. Median cost per eight-owner,
+three-layer **sampling invocation** (including RoPE, scoring, layer mean and
+pinned downloads/CPU copies) is:
+
+| Phase | Reference | Original fusion | Corrected fusion |
+| --- | ---: | ---: | ---: |
+| Prefill, 32 sampled rows/owner | 57.374 ms | 47.699 ms | 45.817 ms |
+| Decode, 1 sampled row/owner | 4.619 ms | 4.642 ms | 4.649 ms |
+
+Prefill peak scoring scratch changes from 5.87 MiB to 10.73 MiB (reference
+385.00 MiB); decode scratch changes from 0.184 MiB to 0.336 MiB. The reference
+prefill mean is 63.291 ms because of an outlier; all samples and means are retained.
+These are component measurements alongside a running model service, not native
+model forward times or end-to-end throughput. No new quality benchmark was run.
+
+Evidence: `artifacts/attention-four-opt-audit-20261021/audit-summary.json` and
+`artifacts/attention-fused-stability-fix-20261021/r2/` (`gpu-differential.json`,
+`combined-boundary.json`, `component-costs.json` and their drivers). Existing
+default switches and the live DSH frozen runtime were not changed or restarted.

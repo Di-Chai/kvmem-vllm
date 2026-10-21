@@ -66,6 +66,13 @@ def _project_with_capture(self, qkv, positions):
         return self._kvmem_original_projection(qkv, positions)
     if sink is None and buffers is None:
         return self._kvmem_original_projection(qkv, positions)
+    if getattr(self, '_kvmem_opaque_projection', False):
+        # Persistent targets live in the forward-context Attention owner. The
+        # ordered opaque op exposes only the actual model projection outputs.
+        q, k, gate = torch.ops.kvmem.capture_projection(
+            qkv, positions, self.attn.layer_name, self.q_size, self.kv_size)
+        value = qkv.split([self.q_size * 2, self.kv_size, self.kv_size], dim=-1)[2]
+        return q, k, value, gate
     q_gate, key, value = qkv.split([self.q_size * 2, self.kv_size, self.kv_size], dim=-1)
     if positions.ndim == 2 and not getattr(self.rotary_emb, "mrope_section", None):
         positions = positions[0]

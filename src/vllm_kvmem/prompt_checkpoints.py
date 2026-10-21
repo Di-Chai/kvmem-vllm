@@ -56,6 +56,7 @@ class PromptCheckpoint:
     graph_history: object = None
     claim_graph_history: object = None
     claim_graph_end: int = 0
+    guided_seed: object = None
 
     @property
     def position(self):
@@ -147,6 +148,13 @@ class PromptCheckpointPool:
         # Account for the serialized frame geometry as well as token/model data.
         # Python object overhead and authority/archive storage are separate quotas.
         fixed = len(identity) + len(window.records) * 5 * 8
+        seed = getattr(authority, 'guided_seed', None)
+        if seed is not None and seed.end > position:
+            seed = None
+        if seed is not None:
+            # Immutable CPU Q can be shared with the live authority. Charge
+            # every retained version conservatively to the checkpoint quota.
+            fixed += seed.bytes
         action = getattr(authority,'action_history',None)
         action_snapshot = action.snapshot(position) if action is not None else None
         if action_snapshot is not None:
@@ -172,6 +180,7 @@ class PromptCheckpointPool:
         checkpoint.kind = 'M' if terminal else 'P'
         checkpoint.action_history = action_snapshot
         checkpoint.graph_history = graph_snapshot
+        checkpoint.guided_seed = seed
         # Keep the previous snapshot available if any validation/copy/admission
         # above fails. In-flight replaced snapshots retain their buffers and
         # payload credit until their own D2H fence completes.
@@ -472,6 +481,7 @@ class PromptCheckpointPool:
                     graph.restore(checkpoint.graph_history)
             checkpoint.authority._graph_validated_prefix = max(checkpoint.position, checkpoint.claim_graph_end)
         action = getattr(checkpoint.authority,'action_history',None)
+        checkpoint.authority.guided_seed = checkpoint.guided_seed
         if action is not None:
             with timing.stage('action_restore') if timing is not None else nullcontext():
                 original=checkpoint.action_history or ({},0)
@@ -572,6 +582,7 @@ class PromptCheckpointPool:
         self._release_payload(checkpoint)
 
     def _release_payload(self, checkpoint):
+        checkpoint.guided_seed = None
         self.payload_bytes -= checkpoint.payload_bytes
         for name in ('graph_history', 'claim_graph_history'):
             snapshot = getattr(checkpoint, name, None)

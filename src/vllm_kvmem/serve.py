@@ -211,8 +211,12 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('Phase prefill wave must fit one block per active request')
     if options.active_residency_enabled and cfg['draft_method'] != 'mtp':
         raise ValueError('Idle active residency currently qualifies native Qwen MTP')
-    if options.rolling_active_window and cfg['draft_method'] != 'mtp':
-        raise ValueError('Rolling active window currently requires native MTP')
+    if options.rolling_active_window and not (
+            cfg['draft_method'] == 'mtp' and options.async_refresh and options.async_restore or
+            cfg['draft_method'] == 'dflash' and cfg['experimental_dflash_query_planning'] and
+            not options.async_refresh and not options.async_restore):
+        raise ValueError('Rolling active window requires asynchronous native MTP or '
+                         'experimental synchronous DFlash2')
     if cfg['max_model_len']>262144 and (not options.request_planning or
             options.memory.select_budget+options.memory.gen_budget>262144):
         raise ValueError('Long logical histories require explicit bounded MTP with RoPE window <=256K')
@@ -234,10 +238,10 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
                 raise ValueError('Explicit Query planning currently requires native Qwen MTP; '
                                  'DFlash2 needs explicit experimental opt-in')
             if (cfg['draft_method'] != 'dflash' or cfg['draft_tokens'] != 7 or cfg['execution_mode'] != 'full_graph' or
-                    options.async_refresh or options.async_restore or options.guided_query_tokens or
+                    options.async_refresh or options.async_restore or
                     options.memory.recent_blocks * options.memory.block_tokens < 2047):
                 raise ValueError('Experimental DFlash2 planning requires k=7, FULL graphs, synchronous '
-                                 'refresh/restore, no guided Query and a 2048-token recent band')
+                                 'refresh/restore and a 2048-token recent band')
         if (options.session_capacity and not options.session_freeze_prompt and options.session_checkpoint_policy!='pm'
                 and (options.session_capture_terminal or not options.session_capture_decode)):
             raise ValueError('Explicit Query sessions require sealed decode checkpoints, not terminal checkpoints')
@@ -258,6 +262,22 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         if (not baseline or baseline % options.memory.block_tokens or
                 not baseline < maximum <= 2 * baseline or maximum > cfg['max_num_batched_tokens']):
             raise ValueError('Offline prefill coalescing requires an aligned baseline and at most a twofold native-fit maximum')
+    if options.prefill_physical_coalescing:
+        physical = 2048*options.prefill_physical_max_chunks
+        sample_rows = 64*options.prefill_physical_max_chunks
+        if (cfg['draft_method'] != 'mtp' or cfg['prefill_chunk_tokens'] != 2048 or
+                cfg['max_num_batched_tokens'] < physical or options.memory.gen_budget < physical):
+            raise ValueError('Physical prefill coalescing requires native MTP, an unchanged '
+                             '2048-token logical chunk and capacity for its maximum physical forward')
+        # Match the existing native score-bank upper bound. Two original
+        # physical leases can coexist, each retaining coordinates and masses.
+        context = options.memory.select_budget+options.memory.gen_budget+cfg['max_num_batched_tokens']
+        segments = ((context+options.memory.block_tokens-1)//options.memory.block_tokens +
+                    2*cfg['max_num_seqs']+136)
+        bucket = lambda n: max(256, 1 << (max(1, n)-1).bit_length())
+        required = 2*(bucket(24*physical)+bucket(4*sample_rows*segments))
+        if options.action_download_max_bytes < required:
+            raise ValueError('Physical prefill coalescing exceeds the configured Action download byte budget')
     if (cfg['max_model_len'] < options.memory.select_budget + options.memory.gen_budget or
             cfg['long_prefill_token_threshold'] % options.memory.block_tokens):
         raise ValueError('Model context must cover K+G and prefill chunks must align to authority records')
@@ -323,6 +343,16 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         env['KVMEM_FULL_GRAPH'] = '1'
     else:
         argv += ['--enforce-eager']
+    if getattr(options, 'capture_opaque_projection', False):
+        if cfg['execution_mode'] != 'compiled_graph':
+            raise ValueError('Opaque capture projection currently requires compiled_graph')
+        # KVTransferConfig does not include its connector payload in vLLM's
+        # compilation hash. This projection changes the compiled graph, so bind
+        # its ABI and source to the supported additional-config hash instead of
+        # reusing the old mutation/copy graph or clearing shared caches.
+        from .capture_compile import CAPTURE_COMPILE_KEY, capture_compile_fingerprint
+        argv += ['--additional-config', json.dumps({
+            CAPTURE_COMPILE_KEY: capture_compile_fingerprint()})]
     if cfg['verify_session_restore']:
         env['KVMEM_VERIFY_SESSION_RESTORE'] = '1'
     if not is_gguf:

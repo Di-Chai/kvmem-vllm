@@ -133,6 +133,7 @@ struct RepositoryGcBridge {
 };
 
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
 #define KVMEM_AVX2 __attribute__((target("avx2")))
 static bool native_decode_sum_supported() { return __builtin_cpu_supports("avx2"); }
 #else
@@ -149,7 +150,7 @@ static inline float bf16_as_float(const char *source) {
     return value;
 }
 
-static inline float fp8_as_float(const char *source) {
+static inline const std::array<float, 256> &fp8_value_table() {
     // CUDA __nv_fp8_e4m3 / torch.float8_e4m3fn, unit scale. Include signed
     // zero, subnormals and both NaN codes; finite source bytes widen exactly.
     static const std::array<float, 256> values = [] {
@@ -164,7 +165,93 @@ static inline float fp8_as_float(const char *source) {
         }
         return table;
     }();
-    return values[static_cast<unsigned char>(*source)];
+    return values;
+}
+
+static inline float fp8_as_float(const char *source) {
+    return fp8_value_table()[static_cast<unsigned char>(*source)];
+}
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+KVMEM_AVX2 static inline __m256 decode_fp8_e4m3_8(const char *row) {
+    const __m256i codes = _mm256_cvtepu8_epi32(_mm_loadl_epi64(
+        reinterpret_cast<const __m128i *>(row)));
+    const __m256i magnitude = _mm256_and_si256(codes, _mm256_set1_epi32(127));
+    // Normal E4M3: exponent bias 7 -> FP32 bias 127; the three mantissa
+    // bits become FP32's top three fraction bits. All conversions are exact.
+    const __m256 normal = _mm256_castsi256_ps(_mm256_slli_epi32(
+        _mm256_add_epi32(magnitude, _mm256_set1_epi32(120*8)), 20));
+    const __m256 subnormal = _mm256_mul_ps(_mm256_cvtepi32_ps(magnitude),
+                                         _mm256_set1_ps(1.f/512.f));
+    const __m256 small = _mm256_castsi256_ps(_mm256_cmpgt_epi32(
+        _mm256_set1_epi32(8), magnitude));
+    __m256 value = _mm256_blendv_ps(normal, subnormal, small);
+    const __m256 nan = _mm256_castsi256_ps(_mm256_cmpeq_epi32(
+        magnitude, _mm256_set1_epi32(127)));
+    value = _mm256_blendv_ps(value, _mm256_set1_ps(fp8_value_table()[127]), nan);
+    const __m256i sign = _mm256_slli_epi32(_mm256_and_si256(codes,
+        _mm256_set1_epi32(128)), 24);
+    return _mm256_castsi256_ps(_mm256_or_si256(_mm256_castps_si256(value), sign));
+}
+
+KVMEM_AVX2 static void finalize_mean_fp8_simd(const py::buffer_info &raw,
+                                            const py::buffer_info &sums, ssize_t count) {
+    // Independent channels use eight lanes. Each lane still adds tokens in
+    // their original order from +0, with no horizontal reduction or FMA.
+    const float *table = fp8_value_table().data();
+    const ssize_t channels = sums.shape[1] * sums.shape[2];
+    const ssize_t token_stride = raw.strides[1];
+    for (ssize_t layer = 0; layer < sums.shape[0]; ++layer) {
+        const char *base = static_cast<const char *>(raw.ptr) + layer * raw.strides[0];
+        float *out = reinterpret_cast<float *>(static_cast<char *>(sums.ptr) + layer * sums.strides[0]);
+        ssize_t channel = 0;
+        // Four independent accumulators hide conversion latency without changing
+        // the dependency chain (or operand order) of any individual channel.
+        for (; channel + 32 <= channels; channel += 32) {
+            __m256 s0 = _mm256_setzero_ps(), s1 = s0, s2 = s0, s3 = s0;
+            const char *row = base + channel;
+            for (ssize_t token = 0; token < count; ++token, row += token_stride) {
+                s0 = _mm256_add_ps(s0, decode_fp8_e4m3_8(row));
+                s1 = _mm256_add_ps(s1, decode_fp8_e4m3_8(row+8));
+                s2 = _mm256_add_ps(s2, decode_fp8_e4m3_8(row+16));
+                s3 = _mm256_add_ps(s3, decode_fp8_e4m3_8(row+24));
+            }
+            _mm256_storeu_ps(out+channel, s0);
+            _mm256_storeu_ps(out+channel+8, s1);
+            _mm256_storeu_ps(out+channel+16, s2);
+            _mm256_storeu_ps(out+channel+24, s3);
+        }
+        for (; channel + 8 <= channels; channel += 8) {
+            __m256 total = _mm256_setzero_ps();
+            const char *row = base + channel;
+            for (ssize_t token = 0; token < count; ++token, row += token_stride) {
+                total = _mm256_add_ps(total, decode_fp8_e4m3_8(row));
+            }
+            _mm256_storeu_ps(out + channel, total);
+        }
+        for (; channel < channels; ++channel) {
+            float total = 0.f;
+            const char *row = base + channel;
+            for (ssize_t token = 0; token < count; ++token, row += token_stride)
+                total += table[static_cast<unsigned char>(*row)];
+            out[channel] = total;
+        }
+    }
+}
+#endif
+
+static bool mean_fp8_simd_eligible(const py::buffer_info &raw,
+                                 const py::buffer_info &sums, ssize_t count) {
+    if (!native_decode_sum_supported() || sums.shape[1] * sums.shape[2] < 8)
+        return false;
+    // The scalar API historically accepts overlapping buffers. Changing its
+    // write order for those unusual callers would change subsequent reads.
+    const uintptr_t source = reinterpret_cast<uintptr_t>(raw.ptr);
+    const uintptr_t destination = reinterpret_cast<uintptr_t>(sums.ptr);
+    const size_t source_bytes = (sums.shape[0]-1)*raw.strides[0] +
+        (count-1)*raw.strides[1] + sums.shape[1]*sums.shape[2];
+    const size_t destination_bytes = sums.shape[0]*sums.strides[0];
+    return source + source_bytes <= destination || destination + destination_bytes <= source;
 }
 
 template<int Count, bool Fp8=false>
@@ -299,6 +386,63 @@ PYBIND11_MODULE(_native, m) {
             }
         }
     });
+    m.def("finalize_mean_simd_supported", &native_decode_sum_supported);
+    m.def("finalize_mean_batch", [](const std::vector<py::tuple> &jobs, bool vectorized) -> py::object {
+        // Validate every page before touching any sum. Buffer exports retain
+        // their owners across one GIL release for the accepted packet, instead
+        // of reacquiring the engine GIL after each small sealed page.
+        struct Row { py::buffer_info raw, sums; ssize_t count; bool fp8; };
+        std::vector<Row> rows;
+        rows.reserve(jobs.size());
+        for (const auto &job : jobs) {
+            if (job.size()!=4) throw std::invalid_argument("Invalid content-index job");
+            auto a=py::cast<py::buffer>(job[0]).request();
+            auto b=py::cast<py::buffer>(job[1]).request(true);
+            const auto count=py::cast<ssize_t>(job[2]);
+            const auto fp8=py::cast<bool>(job[3]);
+            const ssize_t width=fp8 ? 1 : 2;
+            if (a.ndim!=4 || a.itemsize!=1 || b.ndim!=3 || b.itemsize!=4 || b.readonly ||
+                b.format!=py::format_descriptor<float>::format() || count<=0 || count>a.shape[1] ||
+                b.shape[0]<=0 || b.shape[0]>a.shape[0] || b.shape[1]!=a.shape[2] ||
+                b.shape[2]*width!=a.shape[3] || b.shape[1]<=0 || b.shape[2]<=0 ||
+                a.strides[3]!=1 || a.strides[2]!=a.shape[3] ||
+                a.strides[1]<a.shape[2]*a.shape[3] || a.strides[0]<a.shape[1]*a.strides[1] ||
+                b.strides[2]!=4 || b.strides[1]!=b.shape[2]*4 || b.strides[0]!=b.shape[1]*b.strides[1])
+                throw std::invalid_argument("Invalid content-index buffers");
+            rows.push_back({std::move(a),std::move(b),count,fp8});
+        }
+        size_t vectorized_records = 0;
+        {
+          py::gil_scoped_release release;
+          for (const auto &r : rows) {
+            const auto &a=r.raw, &b=r.sums;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+            if (vectorized && r.fp8 && mean_fp8_simd_eligible(a, b, r.count)) {
+                finalize_mean_fp8_simd(a, b, r.count);
+                ++vectorized_records;
+                continue;
+            }
+#endif
+            for (ssize_t layer=0;layer<b.shape[0];++layer) {
+                auto *out=reinterpret_cast<float*>(static_cast<char*>(b.ptr)+layer*b.strides[0]);
+                const ssize_t channels=b.shape[1]*b.shape[2];
+                std::fill(out,out+channels,0.f);
+                for (ssize_t token=0;token<r.count;++token) {
+                    const char *row=static_cast<const char*>(a.ptr)+layer*a.strides[0]+token*a.strides[1];
+                    if (r.fp8) {
+                        for (ssize_t channel=0;channel<channels;++channel)
+                            out[channel]+=fp8_as_float(row+channel);
+                    } else {
+                        for (ssize_t channel=0;channel<channels;++channel)
+                            out[channel]+=bf16_as_float(row+channel*2);
+                    }
+                }
+            }
+          }
+        }
+        if (vectorized) return py::int_(vectorized_records);
+        return py::none();
+    }, py::arg("jobs"), py::arg("vectorized") = false);
     m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) {
         struct Row {
             py::buffer_info raw, values, dst_raw, dst_values, delta, sum;
@@ -442,6 +586,48 @@ PYBIND11_MODULE(_native, m) {
             }
         }
         return result;
+    });
+    m.def("pack_record_pairs", [](const std::vector<py::buffer> &sources, size_t record_bytes) {
+        // Independent immutable records, without a whole-batch slab or a
+        // second copy. Validate and allocate under the GIL, copy the complete
+        // admitted batch under one GIL release, then publish in the caller.
+        if (sources.empty() || sources.size()%2 || !record_bytes ||
+            record_bytes>static_cast<size_t>(PY_SSIZE_T_MAX))
+            throw std::invalid_argument("Invalid CPU record pair extent");
+        std::vector<py::buffer_info> views;
+        views.reserve(sources.size());
+        size_t pair_bytes=0;
+        for (const auto &source : sources) {
+            auto view=source.request();
+            if (view.ndim!=1 || view.itemsize!=1 || view.strides[0]!=1 ||
+                static_cast<size_t>(view.size)>record_bytes-pair_bytes)
+                throw std::invalid_argument("Invalid CPU record pair view");
+            pair_bytes+=static_cast<size_t>(view.size);
+            views.push_back(std::move(view));
+            if (views.size()%2==0) {
+                if (pair_bytes!=record_bytes)
+                    throw std::invalid_argument("CPU record pair size mismatch");
+                pair_bytes=0;
+            }
+        }
+        std::vector<py::bytes> records;
+        std::vector<char *> destinations;
+        records.reserve(sources.size()/2);
+        destinations.reserve(sources.size()/2);
+        for (size_t i=0;i<sources.size()/2;++i) {
+            PyObject *allocated=PyBytes_FromStringAndSize(nullptr, static_cast<Py_ssize_t>(record_bytes));
+            if (!allocated) throw py::error_already_set();
+            records.push_back(py::reinterpret_steal<py::bytes>(allocated));
+            destinations.push_back(PyBytes_AS_STRING(records.back().ptr()));
+        }
+        {
+            py::gil_scoped_release release;
+            for (size_t i=0;i<records.size();++i) {
+                std::memcpy(destinations[i],views[2*i].ptr,views[2*i].size);
+                std::memcpy(destinations[i]+views[2*i].size,views[2*i+1].ptr,views[2*i+1].size);
+            }
+        }
+        return records;
     });
     m.def("copy_record_slices", [](py::buffer source, const std::vector<size_t> &offsets,
                                    size_t record_bytes) {
@@ -773,8 +959,27 @@ PYBIND11_MODULE(_native, m) {
 #define HCFG(name) .def_readwrite(#name, &HistoryWorker::Config::name)
         HCFG(max_scopes) HCFG(scope_capacity) HCFG(poll_ms) HCFG(ready_low) HCFG(ready_high)
         HCFG(cpu_free_low) HCFG(cpu_free_high) HCFG(scan_blocks) HCFG(delete_blocks)
-        HCFG(mode) HCFG(keep_mandatory) HCFG(background)
+        HCFG(mode) HCFG(policy) HCFG(keep_mandatory) HCFG(background)
 #undef HCFG
+        .def_property("policy_params", [](const HistoryWorker::Config &config) {
+            return config.policy_params;
+        }, [](HistoryWorker::Config &config, py::dict values) {
+            vllm_kvmem::HistoricalPolicyParameters params;
+            for (auto item : values) {
+                if (!py::isinstance<py::str>(item.first))
+                    throw std::invalid_argument("historical_gc.policy_params keys must be strings");
+                const auto key = py::cast<std::string>(item.first);
+                const auto value = item.second;
+                // Check bool first and preserve scalar types. In particular,
+                // integer 0/1 must not silently become a boolean parameter.
+                if (PyBool_Check(value.ptr())) params[key] = py::cast<bool>(value);
+                else if (PyLong_Check(value.ptr())) params[key] = py::cast<int64_t>(value);
+                else if (PyFloat_Check(value.ptr())) params[key] = py::cast<double>(value);
+                else if (PyUnicode_Check(value.ptr())) params[key] = py::cast<std::string>(value);
+                else throw std::invalid_argument("historical_gc.policy_params values must be scalar");
+            }
+            config.policy_params = std::move(params);
+        })
         ;
     py::class_<HistoryCompletion>(m, "HistoricalCompletion")
         .def_readonly("handle", &HistoryCompletion::handle)

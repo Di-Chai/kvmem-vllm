@@ -20,7 +20,10 @@ def run(args):
     cfg=json.loads(args.config.read_text());kv=cfg['kvmem']
     graph_v2 = kv.get('graph_scoring_version', 'v1') == 'v2'
     if graph_v2:
-        import graph_v2_protocol as graph_protocol
+        if getattr(args, 'guided_comparison', False):
+            import guided_benchmark_protocol as graph_protocol
+        else:
+            import graph_v2_protocol as graph_protocol
         graph_protocol.validate_profile(cfg, graph_protocol.infer_arm(cfg), 'longmemeval_s')
     else:
         assert kv['archive_backend']=='cpu' and kv['prefill_attention'] and kv['action_pressure']

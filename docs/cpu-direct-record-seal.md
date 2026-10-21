@@ -7,10 +7,13 @@ path. It is intended for a separate, single-variable performance comparison.
 
 The original path packs all raw-K/V views into one immutable batch snapshot,
 hashes each record, then copies each record into an independent CPU authority
-allocation. The candidate calls the existing native `pack_record_views` for each
-raw-K/V pair, hashes those independent immutable `bytes`, and publishes those same
-objects together. A surviving record owns its own allocation and retains no
-batch slab. Packing and hashing finish before publication takes the tier lock.
+allocation. The candidate now calls native `pack_record_pairs` once for the
+admitted batch, hashes its independent immutable `bytes`, and publishes those
+same objects together. All source views and sizes are validated before any
+copy; native copying releases the GIL once for the batch. An older extension
+without that entry point retains the original per-record `pack_record_views`
+fallback. A surviving record owns its own allocation and retains no batch slab.
+Packing and hashing finish before publication takes the tier lock.
 
 The shared write protocol still admits twice the payload size, clones repository
 generation leases, reserves archive slots, rejects overwrites, and prevents reads

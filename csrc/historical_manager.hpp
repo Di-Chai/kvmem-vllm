@@ -2,6 +2,7 @@
 #pragma once
 
 #include "historical_kv_policy.hpp"
+#include "historical_policy_factory.hpp"
 #include "historical_payload.hpp"
 #include "qw3/kvmem_store.hpp"
 
@@ -101,7 +102,10 @@ public:
         uint64_t cpu_free_low = 0, cpu_free_high = 0;
         size_t scan_blocks = 256, delete_blocks = 64;
         HistoricalGcMode mode = HistoricalGcMode::Off;
+        // Compatibility fallback; explicit policy_params take precedence.
         bool keep_mandatory = true, background = true;
+        std::string policy = "lru";
+        HistoricalPolicyParameters policy_params;
     };
     HistoricalGcWorker(Config, std::shared_ptr<HistoricalPayloadArena>);
     ~HistoricalGcWorker();

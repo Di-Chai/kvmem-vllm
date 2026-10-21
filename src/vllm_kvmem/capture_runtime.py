@@ -47,6 +47,27 @@ class CapturedPacket:
     # Fully validated, accounted graph/Action reservations survive source-copy
     # handoff; their owner locks are detached before another thread publishes.
     graph_updates: dict | None = None
+    # Exact nonterminal prompt chunks with a frozen Action layout. Only these
+    # owners may run one further prefill while this packet is being published.
+    pipeline_requests: frozenset[str] = frozenset()
+    # A whole-batch score barrier, including frozen reference fallback. It
+    # precedes graph reservations and KV append even when graphs are disabled.
+    action_validation: object = None
+    # A single physical slot can carry exactly two original logical prefill
+    # transactions. The owner remains unpublished until its cursor is done.
+    logical_group: object = None
+    logical_slices: tuple = ()
+    logical_cursor: object = None
+    logical_confirmation: tuple | None = None
+    logical_payload: tuple | None = None
+
+
+@dataclass
+class _DeferredScatterStart:
+    # Engine-thread-only intent, bounded to one public forward. No new queue,
+    # resource slot, publication permission or GPU completion is introduced.
+    rows: tuple
+    batch: object = None
 
 
 class CaptureRuntime(EarlyCaptureFeedback):
@@ -79,6 +100,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
         output.mkdir(parents=True, exist_ok=True)
         max_tokens = runner.vllm_config.scheduler_config.max_num_batched_tokens
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
+        self._capture_pack_cache = None
+        self.capture_pack_stats = {}
+        if getattr(self.options, 'capture_fused_pack', False):
+            from .capture_pack import PackLimits
+            self._capture_pack_limits = PackLimits(len(self.layers), self.heads, self.dim, max_tokens, max_reqs)
         self._early_owner_limit = max_reqs
         self.gc_config = None
         self.gc_progress = Event()
@@ -93,6 +119,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         self._progress_lock = RLock()
         self.cpu_scatter_batches = 0
         self.cpu_scatter_seconds = self.cpu_scatter_join_seconds = 0.0
+        self.prefill_pipeline_stats = {}
         if self.options.async_cpu_scatter and not getattr(runner,'_kvmem_bounded_target',False):
             raise ValueError('Background CPU scatter requires native bounded terminal-prefix control')
         if self.options.repository_gc:
@@ -158,8 +185,17 @@ class CaptureRuntime(EarlyCaptureFeedback):
         try:
             with trace.stage('publication.batch_drain', kind='batch',
                              request_ids=list(batch.req_ids)) if trace else nullcontext():
-                if not self.drain_requests(batch.req_ids, wait=True):
+                action = getattr(self, 'action', None)
+                planned = getattr(action, 'prefill_plans', None)
+                pipeline = (set(getattr(action, 'pipeline_requests', ()))
+                    if self.prefill_pipeline_enabled and planned is not None and
+                    planned[0] is batch else set())
+                fenced = tuple(rid for rid in batch.req_ids if rid not in pipeline)
+                if not self.drain_requests(fenced, wait=True):
                     raise RuntimeError('Public capture preceded scheduler confirmation')
+                for request_id in pipeline:
+                    if not self.prefill_pipeline_can_advance(request_id):
+                        raise RuntimeError('Prefill pipeline lost its confirmed bounded predecessor')
         except BaseException:
             if profile is not None:
                 profile.finish_batch(status='error')
@@ -173,9 +209,16 @@ class CaptureRuntime(EarlyCaptureFeedback):
             # Keep the original pre-Action backpressure order in the disabled
             # control arm. Split mode must enqueue decode before a bulk wait.
             self.ensure_download_slot(batch.req_ids)
-        action_inputs = self.action.capture(captured,batch) if getattr(self,'action',None) is not None else {}
-        packets = {}
-        for lane, indices in groups:
+        ahead = (getattr(self.options, 'prefill_capture_ahead', False) and
+                 bool(batch.num_reqs) and pipeline == set(batch.req_ids) and
+                 all(batch.is_prefilling_np) and len(groups) == 1 and groups[0][0] == 'bulk' and
+                 all(planned[1].get(rid, {}).get('pipeline', False) for rid in batch.req_ids))
+        staged = None
+        if ahead:
+            # Enqueue read-only packing and D2H while this forward is running.
+            # Neither a publication packet nor mutable history is exposed until
+            # Action's original metadata check/native validation/fallback returns.
+            lane, indices = groups[0]
             pool = self._download_pool(lane)
             if len(pool.pending) == len(pool.buffers):
                 self.ensure_download_slot((batch.req_ids[i] for i in indices), lane=lane)
@@ -183,12 +226,76 @@ class CaptureRuntime(EarlyCaptureFeedback):
             download = pool.download(payload)
             if download is None:
                 raise RuntimeError("Capture queue failed to provide bounded staging after drain")
+            staged = payload, t, download
+            try:
+                action_inputs = self.action.capture(captured, batch)
+            except BaseException:
+                # This private slot is absent from queue and has no CPU readers.
+                # Recycle only after its own DMA; unrelated owners stay pending.
+                # A failed CUDA fence keeps the slot quarantined in pool.pending.
+                try:
+                    download.event.synchronize()
+                    if not pool.release(download):
+                        raise RuntimeError('Failed to release unsubmitted prefill capture')
+                except BaseException as cleanup_error:
+                    with self._publication_lock():
+                        self._publication_error = cleanup_error
+                        self._publication_condition.notify_all()
+                    raise
+                self._pipeline_count('capture_ahead_discarded')
+                raise
+        else:
+            action_inputs = self.action.capture(captured,batch) if getattr(self,'action',None) is not None else {}
+        try:
+            logical_group,logical_slices = self._logical_capture_inputs(action_inputs,batch)
+        except BaseException as error:
+            if staged is not None:
+                download = staged[2]
+                try:
+                    download.event.synchronize()
+                    if not self._download_pool(groups[0][0]).release(download):
+                        raise RuntimeError('Invalid logical prefill retained an unsubmitted DMA')
+                except BaseException as cleanup_error:
+                    error.add_note('Logical capture cleanup also failed: '+repr(cleanup_error))
+                    self.quarantine_publication(error)
+                    raise error
+            raise
+        packets = {}
+        for lane, indices in groups:
+            if staged is not None:
+                payload, t, download = staged
+            else:
+                pool = self._download_pool(lane)
+                if len(pool.pending) == len(pool.buffers):
+                    self.ensure_download_slot((batch.req_ids[i] for i in indices), lane=lane)
+                payload, t = self._capture_payload(captured, batch, rejected, indices)
+                download = pool.download(payload)
+                if download is None:
+                    raise RuntimeError("Capture queue failed to provide bounded staging after drain")
             packet = CapturedPacket(tuple(batch.req_ids[i] for i in indices), t, download, confirmed=False,
                 request_tokens=tuple(int(batch.query_start_loc_np[i+1]-batch.query_start_loc_np[i])
                                      for i in indices), lane=lane)
             packet.action_inputs = {rid: action_inputs[rid] for rid in packet.request_ids if rid in action_inputs}
+            packet.action_validation = getattr(action_inputs, 'validation', None)
+            packet.pipeline_requests = frozenset(pipeline.intersection(packet.request_ids))
+            if logical_group is not None:
+                packet.logical_group,packet.logical_slices = logical_group,logical_slices
+                self._logical_source_generation = getattr(self,'_logical_source_generation',0)+1
+                packet.source_generation = self._logical_source_generation
             with self._publication_lock():
+                if packet.pipeline_requests:
+                    self._pipeline_count('eligible_packets')
+                    self._pipeline_count('eligible_owners', len(packet.pipeline_requests))
+                    previous = {rid: sum(rid == old.request_ids[i]
+                        for old in self.queue for i in range(len(old.request_ids))
+                        if i not in old.published) for rid in packet.pipeline_requests}
+                    self._pipeline_count('submits_with_pending', sum(n > 0 for n in previous.values()))
+                    self._pipeline_max('max_pending_per_owner', max(previous.values()) + 1)
                 self.queue.append(packet)
+                if staged is not None:
+                    self._pipeline_count('capture_ahead_batches')
+                if self.prefill_pipeline_enabled:
+                    self._pipeline_max('max_bulk_pending', sum(p.lane == 'bulk' for p in self.queue))
                 if self.early_capture_packet(packet):
                     self._early_source_submitted(packet)
             packets.update((rid, packet) for rid in packet.request_ids)
@@ -198,7 +305,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self.batches += 1
         n = batch.num_reqs
         relevance_rows = []
-        if self.options.query_history and batch.has_prefill:
+        keep_guided = (getattr(self.options, 'guided_query_tokens', 0) and
+                       getattr(self.options, 'guided_reselect', 'boundary') in ('middecode', 'both'))
+        if (self.options.query_history or keep_guided) and batch.has_prefill:
             sessions = getattr(self.runner,'_kvmem_sessions',None)
             for i, request_id in enumerate(batch.req_ids):
                 binding = sessions.bindings.get(request_id) if sessions is not None else None
@@ -227,6 +336,39 @@ class CaptureRuntime(EarlyCaptureFeedback):
                             for c in captured[:len(self.runner._kvmem_layers)]]).clone()
                 packets[request_id].query_inputs[request_id] = (binding,queries)
 
+    def _logical_capture_inputs(self, action_inputs, batch):
+        """Require explicit worker-bound plans; never infer them from token count."""
+        groups = getattr(action_inputs,'logical_groups',{})
+        slices = getattr(action_inputs,'logical_slices',{})
+        if not groups and not slices:
+            return None,()
+        from .logical_prefill import LogicalPrefillGroup
+        from .logical_action import LogicalActionSlice
+        if (not getattr(self.options,'prefill_physical_coalescing',False) or
+                self.early_capture_enabled or getattr(action_inputs,'validation',None) is not None or
+                batch.num_reqs != 1 or len(groups) != 1 or set(groups) != set(slices) or
+                set(groups) != set(batch.req_ids) or not bool(batch.is_prefilling_np[0])):
+            raise RuntimeError('Logical prefill requires one ordinary fully validated physical owner')
+        rid = batch.req_ids[0]
+        group,parts = groups[rid],slices[rid]
+        if (not isinstance(group,LogicalPrefillGroup) or group.request_id != rid or
+                not 2 <= len(group.spans) <= getattr(self.options,'prefill_physical_max_chunks',2) or
+                type(parts) is not tuple or len(parts) != len(group.spans) or
+                any(not isinstance(part,LogicalActionSlice) or part.group is not group or
+                    part.plan.span != span for part,span in zip(parts,group.spans)) or
+                int(batch.num_computed_tokens_np[0]) != group.history_begin or
+                int(batch.query_start_loc_np[1]-batch.query_start_loc_np[0]) != group.count or
+                getattr(self.runner,'_kvmem_logical_prefill_step',None) != group.scheduler_step):
+            raise RuntimeError('Logical prefill capture differs from its immutable worker plan')
+        sessions = getattr(self.runner,'_kvmem_sessions',None)
+        binding = sessions.bindings.get(rid) if sessions is not None else None
+        if binding is not None:
+            query = binding.query_span
+            if (group.history_end >= len(binding.tokens) or
+                    query is not None and group.history_begin <= query[0] < query[1] <= group.history_end):
+                raise RuntimeError('Logical prefill cannot carry a Query seed or final-input observation')
+        return group,parts
+
     def _capture_groups(self, batch):
         all_indices = tuple(range(batch.num_reqs))
         if not getattr(self, 'split_capture_dma', False):
@@ -240,6 +382,17 @@ class CaptureRuntime(EarlyCaptureFeedback):
         return ([('decode', small)] if small else []) + ([('bulk', large)] if large else [])
 
     def _capture_payload(self, captured, batch, rejected, indices):
+        stats = self.__dict__.setdefault('capture_pack_stats', {})
+        if getattr(getattr(self, 'options', None), 'capture_fused_pack', False):
+            from .capture_pack import try_pack
+            payload, reason = try_pack(self, captured, batch, rejected, indices)
+            if payload is not None:
+                stats['fused_batches'] = stats.get('fused_batches', 0) + 1
+                stats['fused_payload_bytes'] = stats.get('fused_payload_bytes', 0) + payload.numel()
+                return payload, batch.num_tokens
+            name = 'fallback:' + reason
+            stats[name] = stats.get(name, 0) + 1
+        stats['reference_batches'] = stats.get('reference_batches', 0) + 1
         n = batch.num_reqs
         starts = batch.query_start_loc[:n+1].to(torch.int64)
         positions = captured[0].positions
@@ -298,7 +451,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
             return
         binding, queries = value
         authority = self.authorities[request_id]
-        history = authority.query_history
+        if (queries is not None and binding.query_span is not None and
+                getattr(self.options, 'guided_query_tokens', 0) and
+                getattr(self.options, 'guided_reselect', 'boundary') in ('middecode', 'both')):
+            from .guided_seed import publish_seed
+            publish_seed(self, authority, queries, binding.query_span[1])
+        history = getattr(authority, 'query_history', None)
+        if history is None:
+            return
         history.begin(request_id,binding.tokens)
         if queries is not None and history.observation is None:
             history.query = queries
@@ -331,6 +491,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
         error = getattr(self, '_publication_error', None)
         if error is not None:
             raise error
+
+    def quarantine_publication(self, error):
+        """Keep private/queued resources owned after a fatal submission failure."""
+        with self._publication_lock():
+            self._publication_error = error
+            self._publication_condition.notify_all()
 
     def _busy_requests(self):
         return {packet.request_ids[i] for packet in self.queue for i in
@@ -366,7 +532,15 @@ class CaptureRuntime(EarlyCaptureFeedback):
         with self._publication_lock():
             self._raise_publication_error()
             self._install_terminals(request_ids, terminal_prefixes)
+            action = getattr(self, 'action', None)
+            if self.prefill_pipeline_enabled and request_ids and action is not None:
+                action.invalidate_prefill_plans(request_ids)
             for packet in self.queue:
+                if getattr(packet,'logical_group',None) is not None:
+                    step = getattr(self.runner,'_kvmem_logical_prefill_step',None)
+                    if type(step) is not int or step <= packet.logical_group.scheduler_step:
+                        raise RuntimeError('Logical prefill confirmation must follow its scheduler decision')
+                    packet.logical_confirmation = (step,self.terminal_prefixes.get(packet.request_ids[0]))
                 packet.confirmed = True
             self._publication_condition.notify_all()
 
@@ -388,7 +562,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self._install_terminals(finished, prefixes)
         # A small completed decode needs no worker handoff, but must never wait
         # for DMA or for an unrelated in-flight owner on this control path.
-        small = (finished | set(deferred)) - self.publication_blocked_requests()
+        small = (finished | set(deferred)) - self._large_pending_requests()
         self.drain_requests(small, wait=False)
         with self._publication_lock():
             for request_id in list(finished):
@@ -412,7 +586,63 @@ class CaptureRuntime(EarlyCaptureFeedback):
             return not any(any(request_id in wanted and i not in packet.published
                 for i, request_id in enumerate(packet.request_ids)) for packet in self.queue)
 
+    @property
+    def prefill_pipeline_enabled(self):
+        return bool(getattr(self.options, 'prefill_publication_pipeline', False))
+
+    def _pipeline_count(self, name, value=1):
+        counters = self.__dict__.setdefault('prefill_pipeline_stats', {})
+        counters[name] = counters.get(name, 0) + value
+
+    def _pipeline_max(self, name, value):
+        counters = self.__dict__.setdefault('prefill_pipeline_stats', {})
+        counters[name] = max(counters.get(name, 0), value)
+
+    def prefill_pipeline_can_advance(self, request_id):
+        """Planning may lead a confirmed ordinary prompt prefix by one chunk.
+
+        This is not publication readiness: refresh, finish, restore and accepted
+        decode still use their full owner fence. Immutable plans are prepared on
+        the engine thread; the worker retains both old DMA sources until commit.
+        """
+        with self._publication_lock():
+            self._raise_publication_error()
+            if not self.prefill_pipeline_enabled or request_id in self.terminal_prefixes:
+                return False
+            pending = [packet for packet in self.queue
+                for i, rid in enumerate(packet.request_ids)
+                if rid == request_id and i not in packet.published]
+            allowed = len(pending) <= 1 and all(packet.confirmed and
+                request_id in packet.pipeline_requests for packet in pending)
+            if allowed and pending:
+                self._pipeline_count('advance_checks_with_pending')
+            return allowed
+
+    def _large_pending_requests(self):
+        """Publication workers still own large packets when admission overlaps."""
+        return self._publication_blocked_requests(allow_pipeline=False)
+
+    def note_prefill_pipeline_forward(self, batch):
+        """Nonblocking host evidence immediately before native model dispatch."""
+        if not self.prefill_pipeline_enabled:
+            return
+        action = getattr(self, 'action', None)
+        planned = getattr(action, 'prefill_plans', None)
+        if planned is None or planned[0] is not batch:
+            return
+        with self._publication_lock():
+            pending = [(packet, i) for packet in self.queue
+                       for i, rid in enumerate(packet.request_ids)
+                       if rid in action.pipeline_requests and i not in packet.published]
+            if pending:
+                self._pipeline_count('forwards_with_pending')
+                self._pipeline_count('forwards_with_background_publication',
+                                     int(any(i in packet.consuming for packet, i in pending)))
+
     def publication_blocked_requests(self):
+        return self._publication_blocked_requests(allow_pipeline=True)
+
+    def _publication_blocked_requests(self, *, allow_pipeline):
         """Large pending owners for scheduler admission, including newest DMA.
 
         A scheduler must still send confirmation/poll iterations when all such
@@ -422,12 +652,19 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self._raise_publication_error()
             threshold = self.options.cpu_scatter_min_tokens
             pending = {}
+            packets = {}
             for packet in self.queue:
                 sizes = packet.request_tokens or (packet.tokens,) * len(packet.request_ids)
                 for i, request_id in enumerate(packet.request_ids):
                     if i not in packet.published:
                         pending[request_id] = pending.get(request_id, 0) + sizes[i]
+                        packets.setdefault(request_id, []).append(packet)
             blocked = {request_id for request_id, count in pending.items() if count >= threshold}
+            if (allow_pipeline and self.prefill_pipeline_enabled and
+                    len(self.downloads.pending) < len(self.downloads.buffers)):
+                blocked.difference_update(request_id for request_id, owned in packets.items()
+                    if len(owned) == 1 and request_id in owned[0].pipeline_requests
+                    and request_id not in self.terminal_prefixes)
             if self.early_capture_enabled:
                 blocked.update(packet.request_ids[i] for packet in self.queue
                                if self.early_capture_packet(packet)
@@ -472,7 +709,167 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self._publication_metric('slot_wait_seconds', time.perf_counter()-started, lane=lane)
             self._publication_metric('slot_wait_calls', 1, lane=lane)
 
-    def advance_publication(self, scheduled_tokens, refresh=None):
+    def _scatter_start_count(self, name):
+        counts = self.__dict__.setdefault('prefill_scatter_after_target_stats', {})
+        counts[name] = counts.get(name, 0) + 1
+
+    def defer_prefill_scatter(self, output, refresh=None):
+        """Delay only a new worker for an exact ordinary pipeline successor.
+
+        This runs after scheduler confirmation, terminal handling and session
+        commands. Its CPU-only checks use the immutable planner, never mutable
+        archive contents. All other work keeps the original immediate start.
+        """
+        if not getattr(self.options, 'prefill_scatter_after_target', False):
+            return False
+        self._raise_publication_error()
+        if getattr(self, '_prefill_scatter_deferred', None) is not None:
+            error = RuntimeError('Deferred scatter escaped its public forward')
+            self.abort_prefill_scatter(error)
+            raise error
+
+        def decline(reason):
+            self._scatter_start_count('eligibility_declines')
+            self._scatter_start_count('declined:' + reason)
+            return False
+
+        future = getattr(self, '_cpu_scatter_future', None)
+        if future is not None:
+            if not future.done():
+                self._scatter_start_count('already_running_batches')
+                return decline('worker_running')
+            try:
+                self.join_cpu_scatter()
+            except BaseException as error:
+                self.quarantine_publication(error)
+                raise
+        scheduled = output.num_scheduled_tokens
+        control = getattr(output, 'kv_connector_metadata', None)
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
+        if (not scheduled or control is None or getattr(refresh, 'jobs', None) or
+                getattr(control, 'commands', None) or getattr(control, 'cancelled', None) or
+                getattr(control, 'terminal_prefixes', None) or output.finished_req_ids or
+                getattr(output, 'preempted_req_ids', None) or self.terminal_prefixes or
+                getattr(self, 'retiring', None) or
+                any(getattr(sessions, name, None) for name in
+                    ('imports', 'captures', 'terminal_captures', 'retiring'))):
+            return decline('lifecycle')
+        commands = getattr(control, 'sessions', None)
+        if any(getattr(commands, name, None) for name in
+               ('bindings', 'captures', 'evictions', 'terminals', 'release_requests')):
+            return decline('session_commands')
+        cached = getattr(output, 'scheduled_cached_reqs', None)
+        if (cached is None or output.scheduled_new_reqs or cached.resumed_req_ids or
+                output.scheduled_spec_decode_tokens or
+                getattr(output, 'scheduled_encoder_inputs', None) or
+                getattr(output, 'has_sync_kv_loads', False)):
+            return decline('nonordinary_batch')
+        computed = dict(zip(cached.req_ids, cached.num_computed_tokens, strict=True))
+        generated = dict(zip(cached.req_ids, cached.num_output_tokens, strict=True))
+        action = getattr(self, 'action', None)
+        native = getattr(action, 'native', None)
+        if (native is None or native.disabled or native.mode != 'reuse' or
+                not callable(getattr(action, 'prefill_pipeline_ready', None))):
+            return decline('native_plan')
+        states = self.runner.req_states
+        offsets = getattr(getattr(self.runner, '_kvmem_window_adapter', None), 'offsets', {})
+        rows = []
+        with self._publication_lock():
+            # One old packet and one free bulk slot preserve the existing
+            # one-chunk lookahead. Unrelated owners must never be held back.
+            if (len(self.queue) != 1 or len(self.downloads.pending) != 1 or
+                    len(self.downloads.pending) >= len(self.downloads.buffers)):
+                return decline('slot_or_queue')
+            packet = self.queue[0]
+            if (packet.lane != 'bulk' or not packet.confirmed or packet.published or packet.consuming or
+                    set(packet.request_ids) != set(scheduled) or
+                    packet.pipeline_requests != frozenset(scheduled) or
+                    (packet.tokens < self.options.cpu_scatter_min_tokens and
+                     packet.action_validation is None)):
+                return decline('predecessor')
+            for request_id, count in scheduled.items():
+                index = states.req_id_to_index.get(request_id)
+                history = computed.get(request_id)
+                if (index is None or history is None or generated.get(request_id) != 0 or count <= 0 or
+                        history + count >= int(states.prompt_len.np[index])):
+                    return decline('prompt_boundary')
+                local = history - offsets.get(request_id, 0)
+                authority = self.authorities.get(request_id)
+                excluded = getattr(getattr(authority, 'action_history', None), 'prefill_replay', None)
+                if (local < 0 or (excluded is not None and history < excluded[1] and
+                                 history + count > excluded[0]) or
+                        not action.prefill_pipeline_ready(request_id, history, local) or
+                        not self.prefill_pipeline_can_advance(request_id)):
+                    return decline('immutable_plan')
+                rows.append((request_id, history, local, count))
+            self._prefill_scatter_deferred = _DeferredScatterStart(tuple(rows))
+        self._scatter_start_count('deferred_batches')
+        return True
+
+    def recheck_prefill_scatter(self, batch):
+        """Restore immediate startup if prepared input differs from admission."""
+        pending = getattr(self, '_prefill_scatter_deferred', None)
+        if pending is None:
+            return
+        action = getattr(self, 'action', None)
+        prepared = getattr(action, 'prefill_plans', None)
+        native = getattr(action, 'native_plans', None)
+        requests = {row[0] for row in pending.rows}
+        valid = (set(batch.req_ids) == requests and all(batch.is_prefilling_np) and
+                 prepared is not None and prepared[0] is batch and
+                 native is not None and native[0] is batch and
+                 getattr(action, 'pipeline_requests', set()) == requests)
+        if valid:
+            expected = {row[0]: row[1:] for row in pending.rows}
+            for index, request_id in enumerate(batch.req_ids):
+                begin, end = map(int, batch.query_start_loc_np[index:index+2])
+                history, local, count = expected[request_id]
+                plans = (prepared[1].get(request_id), native[1].get(request_id))
+                if (int(batch.num_computed_tokens_np[index]) != history or end - begin != count or
+                        any(plan is None or not plan.get('pipeline', False) or
+                            (plan['history_begin'], plan['local_begin'], plan['count'], plan['index'], plan['begin']) !=
+                            (history, local, count, index, begin) for plan in plans)):
+                    valid = False
+                    break
+        if valid:
+            pending.batch = batch
+        else:
+            self._scatter_start_count('eligibility_declines')
+            self._scatter_start_count('declined:prepared_batch')
+            self.resume_prefill_scatter(after_target=False)
+
+    def resume_prefill_scatter(self, *, after_target, batch=None):
+        pending = getattr(self, '_prefill_scatter_deferred', None)
+        if pending is None:
+            return False
+        if after_target and (batch is None or pending.batch is not batch):
+            error = RuntimeError('Deferred scatter requires its fresh prepared public target')
+            self.abort_prefill_scatter(error)
+            raise error
+        try:
+            started = self.start_cpu_scatter()
+        except BaseException as error:
+            self.abort_prefill_scatter(error)
+            raise
+        self._prefill_scatter_deferred = None
+        if started:
+            self._scatter_start_count('after_target_started_batches' if after_target else
+                                      'resumed_before_target_batches')
+        else:
+            # A prepared-plan fallback can synchronously drain the old owner
+            # before recheck. Track the consumed intent even without a worker.
+            self._scatter_start_count('no_work_batches')
+        return started
+
+    def abort_prefill_scatter(self, error):
+        if getattr(self, '_prefill_scatter_deferred', None) is not None:
+            # Keep the queue and its DMA/score sources. A failed target never
+            # authorizes new publication or a physical-page retirement ACK.
+            self._prefill_scatter_deferred = None
+            self._scatter_start_count('quarantined_batches')
+            self.quarantine_publication(error)
+
+    def advance_publication(self, scheduled_tokens, refresh=None, *, defer_scatter=False):
         """Give confirmed packets to the scatter worker before public compute.
 
         Large owners advance independently in the background. Tiny owners can
@@ -481,7 +878,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
         Maintenance polls only jobs whose own publication fence is complete.
         """
         if self.options.async_cpu_scatter:
-            self.start_cpu_scatter()
+            if not defer_scatter:
+                self.start_cpu_scatter()
+            elif not scheduled_tokens or getattr(self, '_prefill_scatter_deferred', None) is None:
+                raise RuntimeError('Scatter deferral needs one qualified public forward')
             # An empty scheduler step must advance tiny confirmed packets too;
             # large packets remain on their owning worker. Lifecycle readers
             # use request fences, not a no-forward packet-wide barrier.
@@ -498,7 +898,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
     def _small_pending_requests(self):
         with self._publication_lock():
             return {request_id for packet in self.queue if packet.confirmed
-                    for request_id in packet.request_ids} - self.publication_blocked_requests()
+                    for request_id in packet.request_ids} - self._large_pending_requests()
 
     def start_cpu_scatter(self):
         """Called only after applying the next scheduler's EOS/cancel decision.
@@ -519,6 +919,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             return False
         feedback = any(self.early_capture_packet(packet) and
                        (packet.source_copied or packet.query_inputs) for packet in queued)
+        feedback = feedback or any(getattr(packet, 'action_validation', None) is not None
+                                   for packet in queued)
         if sum(packet.tokens for packet in queued)<self.options.cpu_scatter_min_tokens and not feedback:
             # Tiny decode packets cost less than a worker handoff/GIL contention.
             # submit drains them after current GPU work has been enqueued; keep
@@ -569,11 +971,16 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 # Never allocate authority state for a graph with temporary
                 # request ownership; its logical identities would be unstable.
                 raise ValueError('Block graph requires an owned session binding')
+            from .authority import MeanIndexStats
+            if getattr(self, 'cpu_mean_index_stats', None) is None:
+                self.cpu_mean_index_stats = MeanIndexStats()
             authority = RequestAuthority(request_id, self.config, self.archive,
                 len(self.layers), self.heads, self.dim, raw_dtype=self.raw_dtype,
                 resident_records=self.resident_records,
                 gc_config=self.gc_config, gc_progress=self.gc_progress,
-                scoring_layers=len(self.runner._kvmem_layers),mean_k_backend=self.options.mean_k_backend)
+                scoring_layers=len(self.runner._kvmem_layers),mean_k_backend=self.options.mean_k_backend,
+                cpu_mean_index_simd=getattr(self.options, 'cpu_mean_index_simd', False),
+                mean_index_stats=self.cpu_mean_index_stats)
             if getattr(self,'action',None) is not None:
                 from .action_attention import ActionHistory
                 authority.action_history = ActionHistory(self.options,self.action.ids)
@@ -632,6 +1039,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     continue
                 if earlier or i in packet.consuming:
                     continue
+                validation = getattr(packet, 'action_validation', None)
+                if validation is not None and not wait and not validation.ready:
+                    continue
                 if not wait and not packet.source_released and not packet.download.query():
                     continue
                 indices.append(i)
@@ -681,17 +1091,41 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 self._publication_metric('claim_seconds', time.perf_counter()-started, lane=packet.lane)
                 self._publication_metric('claim_calls', 1, lane=packet.lane)
             with condition:
-                packet.published.update(indices[:consumed])
-                packet.consuming.difference_update(indices)
-                while packet.next_request in packet.published:
-                    packet.next_request += 1
-                if len(packet.published) == len(packet.request_ids):
-                    assert not packet.consuming
-                    if self.early_capture_packet(packet):
-                        self._finish_early_packet(packet)
-                    else:
-                        assert self._download_pool(packet.lane).release(packet.download)
+                if getattr(packet,'logical_group',None) is not None and consumed:
+                    # A logical owner's publication ACK follows successful
+                    # source release. A failed finalizer keeps it quarantined
+                    # and cannot make publication_ready report completion.
+                    try:
+                        if consumed != 1 or indices != [0] or not packet.logical_cursor.done:
+                            raise RuntimeError('Incomplete logical owner reached source release')
+                        if packet.logical_cursor is not None:
+                            packet.logical_cursor.release()
+                            packet.logical_payload = None
+                            packet.logical_slices = ()
+                            packet.action_inputs.clear()
+                        if not self._download_pool(packet.lane).release(packet.download):
+                            raise RuntimeError('Completed logical owner retained its DMA lease')
+                    except BaseException as error:
+                        packet.logical_cursor.fail(error)
+                        self._publication_error = error
+                        condition.notify_all()
+                        raise
+                    packet.published.update(indices)
+                    packet.consuming.difference_update(indices)
+                    packet.next_request = 1
                     self.queue[:] = [queued for queued in self.queue if queued is not packet]
+                else:
+                    packet.published.update(indices[:consumed])
+                    packet.consuming.difference_update(indices)
+                    while packet.next_request in packet.published:
+                        packet.next_request += 1
+                    if len(packet.published) == len(packet.request_ids):
+                        assert not packet.consuming
+                        if self.early_capture_packet(packet):
+                            self._finish_early_packet(packet)
+                        else:
+                            assert self._download_pool(packet.lane).release(packet.download)
+                        self.queue[:] = [queued for queued in self.queue if queued is not packet]
                 condition.notify_all()
             if not consumed and not wait:
                 return False
@@ -707,6 +1141,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
         return getattr(prepared, 'graph_update', prepared)
 
     def _prepare_graph_acceptance(self, packet, index, accepted, history_begin):
+        if getattr(packet,'logical_group',None) is not None:
+            raise RuntimeError('A physical logical-prefill packet requires ordered child transactions')
         request_id = packet.request_ids[index]
         graph = getattr(self.authorities[request_id], 'block_graph', None)
         if graph is None:
@@ -731,10 +1167,134 @@ class CaptureRuntime(EarlyCaptureFeedback):
 
     def _publish_claim(self, packet, indices, wait):
         try:
+            if getattr(packet,'logical_group',None) is not None:
+                return self._publish_logical_claim(packet,indices,wait)
             return self._publish_reserved_claim(packet, indices, wait)
         except BaseException:
             self._abort_graph_updates(packet, indices)
             raise
+
+    def _publish_logical_claim(self, packet, indices, wait):
+        """One claimed physical owner, bounded original reserve/append/commit steps."""
+        from .logical_publication import LogicalPublicationCursor
+        group = packet.logical_group
+        if (list(indices) != [0] or packet.request_ids != (group.request_id,) or
+                packet.tokens != group.count or packet.query_inputs or packet.action_validation is not None or
+                self.early_capture_packet(packet) or packet.source_released):
+            raise RuntimeError('Logical publication lost its qualified physical owner')
+        cursor = packet.logical_cursor
+        try:
+            if not packet.download.query():
+                if not wait:
+                    return 0
+                started = time.perf_counter()
+                try:
+                    packet.download.event.synchronize()
+                finally:
+                    self._publication_metric('dma_wait_seconds',time.perf_counter()-started,lane=packet.lane)
+                    self._publication_metric('dma_wait_calls',1,lane=packet.lane)
+            if packet.logical_payload is None:
+                data = packet.download.payload
+                header_bytes = 5*8
+                raw_bytes = self.row_elements*group.count*self.raw_dtype.itemsize
+                value_bytes = self.row_elements*group.count
+                if data.numel() != header_bytes+raw_bytes+value_bytes:
+                    raise ValueError('Logical physical payload has an invalid byte extent')
+                header = data[:header_bytes].view(torch.int64).tolist()
+                if header != [0,group.count,group.history_begin,group.local_begin,0]:
+                    raise ValueError('Logical physical metadata differs from the admitted non-rejected span')
+                shape = (len(self.layers),group.count,self.heads,self.dim)
+                packet.logical_payload = (data[header_bytes:header_bytes+raw_bytes].view(self.raw_dtype).reshape(shape),
+                                          data[header_bytes+raw_bytes:].reshape(shape))
+            authority = self.ensure_authority(group.request_id)
+            action = self.action
+            if cursor is None:
+                epoch = action._prefill_identity(group.request_id,authority.action_history)
+                cursor = packet.logical_cursor = LogicalPublicationCursor(group,packet,authority,action,
+                    packet.logical_slices,owner_epoch=epoch,source_generation=packet.source_generation)
+            elif cursor.authority is not authority:
+                raise RuntimeError('Logical publication authority was replaced')
+            while not cursor.done:
+                with self._publication_lock():
+                    confirmation = packet.logical_confirmation
+                if confirmation is None:
+                    raise RuntimeError('Logical publication lacks a scheduler receipt')
+                epoch = action._prefill_identity(group.request_id,authority.action_history)
+                cursor.confirm(confirmation[0],owner_epoch=epoch,terminal_prefix=confirmation[1],
+                               native_accepted=group.count)
+                started = time.perf_counter()
+                receipt = cursor.advance(*packet.logical_payload,owner_epoch=epoch)
+                self._publication_metric('logical_transaction_seconds',time.perf_counter()-started,lane=packet.lane)
+                if receipt is None:
+                    if not wait:
+                        return 0
+                    self._wait_archive_progress({group.request_id})
+                    continue
+                # Only complete child transactions reach bookkeeping. A second
+                # child failure preserves this prefix and never replays it.
+                with self._publication_lock():
+                    rid = group.request_id
+                    # A cancellation can arrive while native append releases
+                    # the GIL. Reconcile it before exposing this child receipt,
+                    # including the final child which has no next loop visit.
+                    latest = packet.logical_confirmation
+                    if latest is None:
+                        raise RuntimeError('Logical scheduler receipt disappeared during append')
+                    cursor.confirm(latest[0],owner_epoch=epoch,terminal_prefix=latest[1],
+                                   native_accepted=group.count)
+                    self.accepted[rid] += receipt.accepted
+                    self.rejected[rid] += receipt.rejected
+                    self.terminal_discarded[rid] = self.terminal_discarded.get(rid,0)+receipt.terminal_discarded
+                    steps = self.last_steps[rid]
+                    steps.append(dict(history_begin=receipt.history_begin,scheduled=receipt.scheduled,
+                        accepted=receipt.accepted,rejected=receipt.rejected,
+                        terminal_discarded=receipt.terminal_discarded))
+                    if receipt.owner_done:
+                        # GDN/MTP checkpoint consumers need the actual physical
+                        # forward extent. Keep original 2K transaction fields
+                        # for logical diagnostics and attach its separate view.
+                        steps[-1]['physical_step'] = dict(history_begin=group.history_begin,
+                            scheduled=group.count,accepted=cursor.retained,rejected=0,
+                            terminal_discarded=group.count-cursor.retained)
+                    del steps[:max(0,len(steps)-self.runner.vllm_config.max_concurrent_batches-1)]
+                    self._snapshot_capacity(rid,authority)
+                    self.batched_append_calls = getattr(self,'batched_append_calls',0)+receipt.append_calls
+                    self.batched_append_requests = getattr(self,'batched_append_requests',0)+receipt.append_requests
+                    self._publication_metric('published_owners',1,lane=packet.lane)
+                    self._publication_metric('published_tokens',receipt.accepted,lane=packet.lane)
+                    self._publication_metric('logical_prefill_commits',1,lane=packet.lane)
+                    if receipt.owner_done:
+                        self._record_logical_publication(packet,cursor,latest[0])
+                    cursor.ack(receipt)
+            with self._publication_lock():
+                getattr(self,'_archive_request_deadlines',{}).pop(frozenset(packet.request_ids),None)
+            self._publication_metric('logical_prefill_physical_owners',1,lane=packet.lane)
+            return 1
+        except BaseException as error:
+            if cursor is not None:
+                cursor.fail(error)
+            raise
+
+    def _record_logical_publication(self, packet, cursor, confirmation_step):
+        """Audit each completed physical group before its final acknowledgement.
+
+        This small write is part of publication cost. A write failure follows
+        the same fail-stop path as other bookkeeping after a child commit;
+        the physical download is retained and never replayed or released.
+        """
+        group = packet.logical_group
+        spans = []
+        for part in packet.logical_slices:
+            plan,span = part.plan,part.plan.span
+            spans.append(dict(history_begin=span.history_begin,local_begin=span.local_begin,
+                count=span.count,sampled_rows=len(plan.rows),segments=len(plan.starts),
+                sampled_row_indices=plan.rows))
+        row = dict(request_id=group.request_id,scheduler_step=group.scheduler_step,
+            confirmation_step=confirmation_step,history_begin=group.history_begin,
+            local_begin=group.local_begin,count=group.count,retained=cursor.retained,
+            spans=spans,source_generation=packet.source_generation)
+        with (self.output/'logical_prefill_publication.jsonl').open('a') as stream:
+            stream.write(json.dumps(row,separators=(',',':'))+'\n')
 
     def _publish_reserved_claim(self, packet, indices, wait):
         metadata = self._copy_claim_metadata(packet, indices, wait)
@@ -829,6 +1389,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
         return result
 
     def _copy_source_owners(self, packet, indices, wait):
+        validation = getattr(packet, 'action_validation', None)
+        if validation is not None and not validation.resolve(wait=wait):
+            return []
         if not packet.download.query():
             started = time.perf_counter()
             try:
@@ -914,6 +1477,28 @@ class CaptureRuntime(EarlyCaptureFeedback):
             "pending_downloads": self._pending_download_count(),
             'split_capture_dma': getattr(self, 'split_capture_dma', False),
             'publication_metrics': self._publication_metrics_snapshot(),
+            'prefill_publication_pipeline': self.prefill_pipeline_enabled,
+            'prefill_capture_ahead': getattr(self.options, 'prefill_capture_ahead', False),
+            'capture_fused_pack': getattr(self.options, 'capture_fused_pack', False),
+            'capture_pack_stats': dict(getattr(self, 'capture_pack_stats', {})),
+            'capture_opaque_projection': getattr(self.options, 'capture_opaque_projection', False),
+            'capture_opaque_stats': (self.runner._kvmem_capture_opaque.snapshot()
+                if getattr(self.runner, '_kvmem_capture_opaque', None) is not None else {}),
+            'cpu_mean_index_simd': getattr(self.options, 'cpu_mean_index_simd', False),
+            'cpu_mean_index_stats': (self.cpu_mean_index_stats.snapshot()
+                if getattr(self, 'cpu_mean_index_stats', None) is not None else {}),
+            'prefill_action_before_mtp': getattr(self.options, 'prefill_action_before_mtp', False),
+            'prefill_action_before_mtp_stats': dict(getattr(getattr(self, 'action', None), 'mtp_stage_stats', {})),
+            'prefill_deferred_validation': getattr(self.options, 'prefill_deferred_validation', False),
+            'prefill_scatter_after_target': getattr(self.options, 'prefill_scatter_after_target', False),
+            'prefill_scatter_after_target_stats': dict(getattr(self, 'prefill_scatter_after_target_stats', {})),
+            'prefill_deferred_validation_pool': (self.action.deferred_score_pool.snapshot()
+                if getattr(getattr(self, 'action', None), 'deferred_score_pool', None) is not None else None),
+            'capture_pack_metadata_capacity_bytes': (self._capture_pack_cache.limits.metadata_bytes
+                if getattr(self, '_capture_pack_cache', None) is not None else 0),
+            'prefill_pipeline_stats': dict(getattr(self, 'prefill_pipeline_stats', {})),
+            'logical_prefill_stats': {'enabled':getattr(self.options,'prefill_physical_coalescing',False),
+                **dict(getattr(getattr(self,'action',None),'logical_prefill_stats',{}))},
             'publication_metrics_scope': 'Cumulative host durations by thread/lane; overlapping, not GPU idle. claim includes append and owner scores; slot wait may include claims.',
             'capture_staging_capacity_bytes': sum(getattr(pool, 'capacity_bytes', 0)
                 for pool in (self.downloads, getattr(self, 'decode_downloads', None)) if pool is not None),

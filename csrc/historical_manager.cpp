@@ -105,7 +105,9 @@ struct HistoricalScopeStorage {
     HistoricalScopeStorage(size_t capacity, const HistoricalGcWorker::Config &config)
         : capacity(capacity), records(new PublishedBlock[capacity]), jobs(capacity),
           completion_words((capacity+63)/64), completion_bits(new std::atomic<uint64_t>[completion_words]),
-          shadow(capacity, 0), policy(capacity, config.keep_mandatory), batch(config.delete_blocks) {
+          shadow(capacity, 0),
+          policy(make_historical_kv_policy(config.policy, config.policy_params, capacity, config.keep_mandatory)),
+          batch(config.delete_blocks) {
         snapshot.blocks.reserve(capacity);
         for (size_t i = 0; i < completion_words; ++i) completion_bits[i].store(0, std::memory_order_relaxed);
     }
@@ -117,7 +119,7 @@ struct HistoricalScopeStorage {
             shadow[i] = 0;
         }
         for (size_t i = 0; i < completion_words; ++i) completion_bits[i].store(0, std::memory_order_relaxed);
-        policy.reset();
+        policy->reset();
         batch.clear_after_ack();
         snapshot.blocks.clear();
         snapshot.incarnation = snapshot.round = 0;
@@ -128,7 +130,7 @@ struct HistoricalScopeStorage {
     size_t completion_words;
     std::unique_ptr<std::atomic<uint64_t>[]> completion_bits;
     std::vector<uint64_t> shadow;
-    HistoricalLruPolicy policy;
+    std::unique_ptr<HistoricalKvPolicy> policy;
     HistoricalDecisionBatch batch;
     HistoricalSnapshot snapshot;
 };
@@ -141,7 +143,7 @@ struct HistoricalScopeState {
           storage(std::move(buffers)), records(storage->records.get()), jobs(storage->jobs),
           completion_words(storage->completion_words), completion_bits(storage->completion_bits.get()),
           shadow(storage->shadow), custom_policy(std::move(p)),
-          policy(custom_policy ? custom_policy.get() : &storage->policy), batch(storage->batch), snapshot(storage->snapshot) {
+          policy(custom_policy ? custom_policy.get() : storage->policy.get()), batch(storage->batch), snapshot(storage->snapshot) {
         if (config.ready_high > repository->capacity())
             throw std::invalid_argument("Historical scope watermarks exceed repository capacity");
         snapshot.incarnation = incarnation;
@@ -608,6 +610,7 @@ struct HistoricalGcWorker::Worker {
 };
 
 HistoricalGcWorker::HistoricalGcWorker(Config config, std::shared_ptr<Payload> arena) {
+    validate_historical_kv_policy(config.policy, config.policy_params);
     if (!arena || !config.max_scopes || !config.poll_ms || !config.scan_blocks || !config.delete_blocks ||
             ((config.ready_low || config.ready_high) && (!config.ready_low || config.ready_low >= config.ready_high)) ||
             ((config.cpu_free_low || config.cpu_free_high) &&

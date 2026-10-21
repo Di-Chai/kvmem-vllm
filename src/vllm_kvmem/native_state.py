@@ -12,6 +12,7 @@ from importlib.metadata import distribution
 import torch
 
 from .checkpoint_timing import async_checkpoint_capture, checkpoint_stage
+from .publication_step import native_publication_step
 
 
 STATE_SOURCES = {
@@ -223,15 +224,20 @@ def canonicalize_before_non_speculative_batch(runner, batch):
     for i in candidates:
         request_id = batch.req_ids[i]
         steps = runtime.last_steps.get(request_id, ())
-        if not steps or steps[-1]['accepted'] <= 1:
+        if not steps:
+            continue
+        step = native_publication_step(steps[-1])
+        grouped_prefill = step is not steps[-1]
+        if grouped_prefill and step['accepted'] != step['scheduled']:
+            raise ValueError('Partial non-speculative query requires checkpoint replay')
+        if step['accepted'] <= 1:
             continue
         index = runner.req_states.req_id_to_index[request_id]
         if int(runner.model_state.num_accepted_tokens_gpu[index].item()) == 1:
             continue
-        step = steps[-1]
         if step['history_begin'] + step['accepted'] != int(batch.num_computed_tokens_np[i]):
             raise ValueError('Non-speculative continuation differs from its last accepted prefix')
         if adapter is None:
             adapter = NativeRecurrentState(runner)
         adapter.canonicalize_accepted(request_id, retained_tokens=step['accepted'],
-                                     query_tokens=step['scheduled'], speculative=True)
+                                     query_tokens=step['scheduled'], speculative=not grouped_prefill)

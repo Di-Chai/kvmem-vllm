@@ -5,11 +5,39 @@ Immutable records remain in their file layout:
 """
 import torch
 import time
+from dataclasses import dataclass
 from vllm.triton_utils import tl, triton
 
 
-def read_packed_records(authority, handles, *, destination=None, region=None):
-    """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
+@dataclass
+class PackedRead:
+    job: object
+    leases: list
+    owners: tuple
+    expected_bytes: int
+    destination: object
+    admission_wait_seconds: float
+
+    def result(self):
+        """Join an admitted read before releasing its immutable-source leases."""
+        try:
+            data, stats = self.job.result()
+            stats['admission_wait_seconds'] = self.admission_wait_seconds
+            if len(data) != self.expected_bytes:
+                raise ValueError('Archive returned an incomplete packed record batch')
+            result = torch.frombuffer(data, dtype=torch.uint8)
+            if self.destination is not None and result.data_ptr() != self.destination.data_ptr():
+                raise ValueError('Archive did not fill the requested staging buffer')
+            return result, stats
+        finally:
+            for lease in self.leases:
+                lease.reset()
+            self.leases.clear()
+            self.owners = ()
+
+
+def begin_read_packed_records(authority, handles, *, destination=None, region=None, wait=True):
+    """Submit through the existing archive executor; optionally decline busy admission."""
     from .authority import record_key
     if not handles:
         raise ValueError("No immutable records requested")
@@ -19,6 +47,8 @@ def read_packed_records(authority, handles, *, destination=None, region=None):
         raise ValueError("Packed assembly requires fully sealed, published records")
     admitted = [authority.memory.admitted_read(handle) for handle in handles]
     leases = [entry[0] for entry in admitted]
+    transferred = False
+    job = None
     try:
         if not all(leases):
             raise ValueError("Stale archive generation")
@@ -38,6 +68,8 @@ def read_packed_records(authority, handles, *, destination=None, region=None):
                    authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
             if job is not None:
                 break
+            if not wait:
+                return None
             # Background seal/writeback can fill the shared queue during a
             # restore. Drain it with the condition lock released; retain the
             # exact generation leases and exclusive staging buffer meanwhile.
@@ -46,18 +78,102 @@ def read_packed_records(authority, handles, *, destination=None, region=None):
             if remaining <= 0 or not authority.archive.wait_for_idle(remaining):
                 raise TimeoutError('Archive read admission did not drain')
             waited += time.monotonic() - start
-        data, stats = job.result()
-        stats['admission_wait_seconds'] = waited
         size = authority.record_bytes if region is None else region[1]
-        if len(data) != len(handles) * size:
-            raise ValueError("Archive returned an incomplete packed record batch")
-        result = torch.frombuffer(data, dtype=torch.uint8)
-        if destination is not None and result.data_ptr() != destination.data_ptr():
-            raise ValueError("Archive did not fill the requested staging buffer")
-        return result, stats
+        result = PackedRead(job, leases, (authority, *sources), len(handles)*size, destination, waited)
+        transferred = True
+        return result
+    except BaseException as error:
+        # Even failure constructing the completion holder must not return a
+        # reserved pinned slot while an already admitted writer still uses it.
+        if job is not None:
+            try:
+                job.result()
+            except BaseException as cleanup:
+                error.add_note('Archive read also failed while draining: '+repr(cleanup))
+        raise
     finally:
-        for lease in leases:
-            lease.reset()
+        if not transferred:
+            for lease in leases:
+                lease.reset()
+
+
+def read_packed_records(authority, handles, *, destination=None, region=None):
+    """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
+    return begin_read_packed_records(authority, handles, destination=destination, region=region).result()
+
+
+class PackedReadAhead:
+    """One lookahead within one immutable assembly plan, using existing slots."""
+    def __init__(self, authority, stats):
+        self.authority = authority
+        self.plan = authority.memory._plan
+        self.namespace = authority.memory.request_id
+        self.stats = stats
+        self.pending = None
+
+    def _key(self, handles, region):
+        if (self.authority.memory._plan is not self.plan or
+                self.authority.memory.request_id != self.namespace):
+            raise ValueError('Prefetched read belongs to a different assembly plan or owner')
+        return tuple((int(h.slot), int(h.generation)) for h in handles), region
+
+    def start(self, transfers, handles, region, size):
+        if self.pending is not None:
+            raise RuntimeError('Assembly permits only one prefetched read')
+        key = self._key(handles, region)
+        attempted = False
+        def begin(buffer):
+            nonlocal attempted
+            attempted = True
+            return begin_read_packed_records(self.authority, handles, destination=buffer,
+                                             region=region, wait=False)
+        ticket = transfers.prepare_from_reader(size, begin)
+        if ticket is None:
+            name = 'admission_busy' if attempted else 'slot_busy'
+            self.stats['assembly_prefetch_'+name] += 1
+            return
+        self.pending = key, transfers, ticket
+        self.stats['assembly_prefetch_submitted'] += 1
+
+    def take(self, transfers, handles, region, destination, ready):
+        if self.pending is None:
+            return None
+        key, pool, ticket = self.pending
+        if pool is not transfers or key != self._key(handles, region):
+            raise ValueError('Prefetched read does not match the next immutable chunk')
+        try:
+            transfer = pool.upload_prepared(ticket, destination, ready=ready)
+        except BaseException:
+            self.stats['assembly_prefetch_abandoned'] += 1
+            raise
+        else:
+            self.stats['assembly_prefetch_completed'] += 1
+            return transfer, ticket.filled[1]
+        finally:
+            self.pending = None
+
+    def close(self):
+        if self.pending is not None:
+            _, pool, ticket = self.pending
+            self.pending = None
+            try:
+                # ArchiveJob.cancel() intentionally cannot cancel an admitted
+                # writer. Its pinned storage remains exclusive until it drains.
+                pool.discard_prepared(ticket)
+            finally:
+                self.stats['assembly_prefetch_abandoned'] += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if error is None:
+                raise
+            error.add_note('Prefetched read also failed while draining: '+repr(cleanup))
+        return False
 
 
 @triton.jit

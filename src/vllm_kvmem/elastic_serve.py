@@ -37,7 +37,9 @@ def build_launch(profile, base, run_dir):
         'context_mode': 'full', 'draft_model': None, 'gen_budget_tokens': 16384,
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
-        'cpu_gather_workers': 8, 'async_seal': False, 'cpu_direct_record_seal': False, 'draft_method': 'dflash',
+        'cpu_gather_workers': 8, 'async_seal': False, 'cpu_direct_record_seal': False,
+        'cpu_seal_hash_workers': 1, 'cpu_seal_pack_workers': 1, 'cpu_mean_index_simd': False,
+        'assembly_read_prefetch': False, 'assembly_fused_layers': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
         'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None,
@@ -122,6 +124,32 @@ def build_launch(profile, base, run_dir):
         raise ValueError('cpu_direct_record_seal requires archive_backend=cpu and async_seal=true')
     if cfg['cpu_direct_record_seal'] and cfg['context_mode'] != 'meank':
         raise ValueError('cpu_direct_record_seal requires MeanK context management')
+    if type(cfg['cpu_seal_hash_workers']) is not int or not 1 <= cfg['cpu_seal_hash_workers'] <= 8:
+        raise ValueError('cpu_seal_hash_workers must be an integer in [1, 8]')
+    if type(cfg['cpu_seal_pack_workers']) is not int or not 1 <= cfg['cpu_seal_pack_workers'] <= 8:
+        raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
+    if cfg['cpu_seal_pack_workers'] > 1 and (not cfg['cpu_direct_record_seal'] or cfg['historical_gc'] is not None):
+        raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU record sealing without historical_gc')
+    if type(cfg['cpu_mean_index_simd']) is not bool:
+        raise ValueError('cpu_mean_index_simd must be boolean')
+    if cfg['cpu_mean_index_simd']:
+        if cfg['context_mode'] != 'meank':
+            raise ValueError('cpu_mean_index_simd requires MeanK context management')
+        if cfg['mean_k_backend'] != 'qw3_cuda':
+            raise ValueError('cpu_mean_index_simd requires mean_k_backend=qw3_cuda')
+    if type(cfg['assembly_read_prefetch']) is not bool:
+        raise ValueError('assembly_read_prefetch must be boolean')
+    if cfg['assembly_read_prefetch'] and (cfg['archive_backend'] != 'cpu' or cfg['context_mode'] != 'meank'):
+        raise ValueError('assembly_read_prefetch requires CPU archive and MeanK context management')
+    if type(cfg['assembly_fused_layers']) is not bool:
+        raise ValueError('assembly_fused_layers must be boolean')
+    if cfg['assembly_fused_layers'] and (cfg['archive_backend'] != 'cpu' or cfg['context_mode'] != 'meank'):
+        raise ValueError('assembly_fused_layers requires CPU archive and MeanK context management')
+    if cfg['cpu_seal_hash_workers'] > 1:
+        if cfg['archive_backend'] != 'cpu' or not cfg['async_seal']:
+            raise ValueError('cpu_seal_hash_workers > 1 requires archive_backend=cpu and async_seal=true')
+        if cfg['context_mode'] != 'meank':
+            raise ValueError('cpu_seal_hash_workers > 1 requires MeanK context management')
     if type(cfg['reuse_resident_v']) is not bool:
         raise ValueError('reuse_resident_v must be boolean')
     if type(cfg['batched_cpu_append']) is not bool:
@@ -142,7 +170,7 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - set(GRAPH_DEFAULTS) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'draft_method',
+                               'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'cpu_mean_index_simd', 'assembly_read_prefetch', 'assembly_fused_layers', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
                                'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
                                'query_history','query_history_decay','guided_query_tokens','repository_gc','historical_gc',
@@ -213,6 +241,11 @@ def build_launch(profile, base, run_dir):
                 'cpu_gather_workers': cfg['cpu_gather_workers'],
                 'async_seal': cfg['async_seal'],
                 'cpu_direct_record_seal': cfg['cpu_direct_record_seal'],
+                'cpu_seal_hash_workers': cfg['cpu_seal_hash_workers'],
+                'cpu_seal_pack_workers': cfg['cpu_seal_pack_workers'],
+                'cpu_mean_index_simd': cfg['cpu_mean_index_simd'],
+                'assembly_read_prefetch': cfg['assembly_read_prefetch'],
+                'assembly_fused_layers': cfg['assembly_fused_layers'],
                 'gpu_raw_k_cache_bytes': cfg['gpu_raw_k_cache_bytes'],
                 'reuse_resident_v': cfg['reuse_resident_v'],
                 'async_cpu_scatter':cfg['async_cpu_scatter'],

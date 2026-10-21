@@ -5,7 +5,12 @@ retirement and large CPU payload destruction remain on native workers.
 """
 import time
 from threading import Event
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+# Public schemas mirror the native factory. No Python policy callbacks execute
+# on the worker; adding a policy requires registering its native constructor.
+_POLICY_DEFAULTS = {'lru': {'keep_mandatory': True}}
 
 
 def historical_record_charge(record_bytes, block_tokens, raw_element_bytes=1):
@@ -24,10 +29,24 @@ class HistoricalGcSettings:
     delete_blocks: int = 64
     ready_low: int = 0
     ready_high: int = 0
+    policy: str = 'lru'
+    policy_params: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.mode not in ('off', 'shadow', 'delete'):
             raise ValueError('historical_gc.mode must be off, shadow or delete')
+        if not isinstance(self.policy, str) or self.policy not in _POLICY_DEFAULTS:
+            raise ValueError(f'Unknown historical_gc.policy: {self.policy!r} (supported: lru)')
+        if not isinstance(self.policy_params, dict):
+            raise ValueError('historical_gc.policy_params must be an object')
+        defaults = _POLICY_DEFAULTS[self.policy]
+        for key, value in self.policy_params.items():
+            if key not in defaults:
+                raise ValueError(f'Unknown historical_gc.policy_params.{self.policy} parameter: {key!r}')
+            if type(value) is not type(defaults[key]):
+                raise ValueError(f'historical_gc.policy_params.{key} must be boolean')
+        # Own the configuration and expand defaults without changing the input.
+        object.__setattr__(self, 'policy_params', {**defaults, **self.policy_params})
         for name in ('poll_ms', 'scan_blocks', 'delete_blocks'):
             value = getattr(self, name)
             if type(value) is not int or not 1 <= value <= 65536:
@@ -51,6 +70,7 @@ class HistoricalGcSettings:
         from . import _native
         config = _native.HistoricalGcConfig()
         config.mode = getattr(_native.HistoricalGcMode, self.mode.upper())
+        config.policy, config.policy_params = self.policy, self.policy_params
         config.max_scopes = max_scopes
         config.scope_capacity = memory.repository_blocks
         config.poll_ms, config.scan_blocks, config.delete_blocks = self.poll_ms, self.scan_blocks, self.delete_blocks

@@ -75,7 +75,7 @@ def test_runtime_retirements_bound_serving_reports_and_preserve_qualification(
             worker.bindings[request_id] = SessionBinding(('tenant', 'session'), 1, request_id, (1,))
             worker.retiring[request_id] = (NS(position=1, kind='P', rewind_started=False,
                 window=NS(window_tokens=1,records=((0,1,0,1,0),)),
-                authority=NS(memory=NS(repository=NS(ready_slots=2)))), {'request_id': request_id})
+                authority=NS(gc=None, memory=NS(repository=NS(ready_slots=2)))), {'request_id': request_id})
             assert worker.retirement_done(request_id)
             worker.completed.clear()  # Connector consumes notices after each engine step.
         assert len(runtime.completed) <= (SERVING_COMPLETION_LIMIT if serving else count)

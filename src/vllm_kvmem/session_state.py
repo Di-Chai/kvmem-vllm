@@ -175,9 +175,10 @@ class PromptStateAdapter:
                 raise ValueError('Speculative terminal state requires canonicalization or replay')
             runtime = self.runner._kvmem_capture_runtime
             steps = runtime.last_steps.get(request_id, [])
-            if not steps or steps[-1]['history_begin'] + steps[-1]['accepted'] != position:
+            from .publication_step import native_publication_step
+            step = native_publication_step(steps[-1]) if steps else None
+            if step is None or step['history_begin'] + step['accepted'] != position:
                 raise ValueError('Decode snapshot is missing its exact accepted sampling extent')
-            step = steps[-1]
             if terminal and runtime.authorities[request_id].history_end != position:
                 raise ValueError('Terminal state differs from the accepted KV authority')
             with checkpoint_stage(self.runner, 'canonicalize_submit'):

@@ -21,8 +21,10 @@ def test_default_false_and_existing_positional_constructor_arguments_keep_meanin
     baseline = RuntimeOptions()
     assert baseline.cpu_direct_record_seal is False
     names = [field.name for field in fields(RuntimeOptions)]
-    assert names[-3:] == ['_policy_explicit_fields', '_policy_resolved_values', 'cpu_direct_record_seal']
-    legacy_arguments = [getattr(baseline, name) for name in names[:-1]]
+    seal_index = names.index('cpu_direct_record_seal')
+    assert names[seal_index-2:seal_index+1] == [
+        '_policy_explicit_fields', '_policy_resolved_values', 'cpu_direct_record_seal']
+    legacy_arguments = [getattr(baseline, name) for name in names[:seal_index]]
     restored = RuntimeOptions(*legacy_arguments)
     assert restored == baseline and restored.cpu_direct_record_seal is False
     assert runtime().cpu_direct_record_seal is False

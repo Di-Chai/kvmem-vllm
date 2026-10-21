@@ -1,4 +1,6 @@
+import json
 import time
+from copy import deepcopy
 from dataclasses import replace
 
 import pytest
@@ -45,6 +47,50 @@ def test_connector_payload_is_parsed_without_mutating_user_configuration():
     assert parsed.historical_gc.mode == 'shadow'
     assert payload['historical_gc'] == {'mode':'shadow'}
     assert RuntimeOptions().historical_gc is None
+
+
+def test_policy_defaults_parameters_and_native_config_own_their_values():
+    legacy = HistoricalGcSettings.parse({'mode': 'delete'})
+    assert legacy.policy == 'lru' and legacy.policy_params == {'keep_mandatory': True}
+    payload = {'mode': 'shadow', 'policy': 'lru', 'policy_params': {'keep_mandatory': False}}
+    parsed = HistoricalGcSettings.parse(payload)
+    payload['policy_params']['keep_mandatory'] = True
+    native = parsed.native(settings().memory, 2)
+    assert native.policy == 'lru' and native.policy_params == {'keep_mandatory': False}
+    parsed.policy_params['keep_mandatory'] = True
+    assert native.policy_params == {'keep_mandatory': False}
+    assert legacy.policy_params == {'keep_mandatory': True}
+
+
+@pytest.mark.parametrize('value', [
+    {'policy': 'fifo'}, {'policy': ''}, {'policy': 'LRU'}, {'policy': None}, {'policy': []},
+    {'policy_params': None}, {'policy_params': []}, {'policy_params': False},
+    {'policy_params': {'unknown': True}}, {'policy_params': {1: True}},
+    *[{'policy_params': {'keep_mandatory': v}} for v in (0, 1, 'true', None, [], 1.0)],
+])
+def test_invalid_policy_settings_fail_before_startup(value):
+    with pytest.raises(ValueError, match='historical_gc.policy'):
+        HistoricalGcSettings.parse(value)
+
+
+@pytest.mark.parametrize('keep', [True, False])
+def test_policy_settings_survive_public_launch_worker_json_and_profile_replay(tmp_path, keep):
+    from test_graph_options import model_profile, worker_payload, runtime
+    from vllm_kvmem.serve import build_launch
+
+    profile = model_profile(tmp_path)
+    gc = dict(mode='shadow', policy='lru', policy_params={'keep_mandatory': keep})
+    profile['kvmem'].update(graph_mode='off', archive_backend='cpu', cpu_read_cache_bytes=1024**3,
+        async_seal=True, cpu_history_coordination=True, historical_gc=gc)
+    original = deepcopy(profile)
+    launch = build_launch(profile, tmp_path, tmp_path/'serve')
+    worker = worker_payload(launch)
+    assert worker['historical_gc'] == gc
+    parsed = runtime(worker).historical_gc
+    assert parsed.policy == 'lru' and parsed.policy_params == {'keep_mandatory': keep}
+    replay = build_launch(json.loads(json.dumps(launch['profile'])), tmp_path, tmp_path/'replay')
+    assert worker_payload(replay)['historical_gc'] == gc
+    assert profile == original
 
 
 @pytest.mark.parametrize('value', [False, 'delete', {'mode':'latest'}, {'poll_ms':True},

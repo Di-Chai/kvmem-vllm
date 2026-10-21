@@ -98,7 +98,6 @@ def test_experimental_query_plan_retains_native_draft_cache_and_full_graphs(tmp_
     ({'execution_mode':'eager'},'FULL graphs'),
     ({'draft_tokens':3},'k=7'),
     ({'async_refresh':True},'synchronous'),
-    ({'guided_query_tokens':32},'no guided Query'),
     ({'recent_blocks':63},'recent band'),
 ])
 def test_unqualified_modes_remain_rejected(tmp_path,change,match):
@@ -106,3 +105,32 @@ def test_unqualified_modes_remain_rejected(tmp_path,change,match):
     for key,value in change.items():
         (cfg['kvmem'] if key in cfg['kvmem'] or key in ('async_refresh','guided_query_tokens') else cfg)[key]=value
     with pytest.raises(ValueError,match=match):build_launch(cfg,tmp_path,tmp_path/'bad')
+
+
+@pytest.mark.parametrize('tokens', [32, 512])
+def test_guided_dflash_reserves_private_scratch_without_increasing_k_or_g(tmp_path,tokens):
+    cfg=configured(tmp_path)
+    cfg['kvmem']['guided_query_tokens']=tokens
+    plan=build_launch(cfg,tmp_path,tmp_path/'guided')
+    memory=plan['profile']['kvmem']
+    request=json.loads(plan['environment']['KVMEM_REQUEST_PLAN_CONFIG'])
+    assert memory['select_budget']==memory['gen_budget']==4096
+    assert memory['guided_query_tokens']==tokens
+    assert request['guided_reserve']==((256+tokens+31)//32)*32
+    assert plan['profile']['draft_method']=='dflash'
+    assert not memory.get('async_refresh',False) and not memory.get('async_restore',False)
+    assert build_launch(plan['profile'],tmp_path,tmp_path/'again')['vllm_argv']==plan['vllm_argv']
+
+
+def test_rolling_sync_dflash_keeps_full_output_quota_and_native_graphs(tmp_path):
+    cfg=configured(tmp_path)
+    cfg['kvmem'].update(rolling_active_window=True,cpu_history_coordination=True,
+        async_archive_retirement=True,session_capacity=4,archive_backend='cpu',repository_gc=False,
+        cpu_read_cache_bytes=8*1024**3,nvme_preallocate=False,nvme_max_bytes=0)
+    plan=build_launch(cfg,tmp_path,tmp_path/'rolling')
+    assert json.loads(plan['environment']['KVMEM_REQUEST_PLAN_CONFIG'])['rolling_active_window']
+    assert plan['profile']['kvmem']['gen_budget']==4096
+    assert plan['profile']['draft_method']=='dflash' and plan['profile']['draft_tokens']==7
+    assert not plan['profile']['kvmem'].get('async_refresh',False)
+    assert not plan['profile']['kvmem'].get('async_restore',False)
+    assert build_launch(plan['profile'],tmp_path,tmp_path/'again')['vllm_argv']==plan['vllm_argv']

@@ -64,6 +64,21 @@ _COUNTERS = ('public_batches', 'public_prefill_tokens', 'public_non_prefill_toke
              'prefill_request_batches', 'decode_request_batches')
 
 
+def public_work_idle(scheduler_output, request_ids):
+    """Distinguish request retirement from zero-token maintenance iterations.
+
+    An owner waiting for publication or refresh is still live. Treating each
+    such iteration as an idle boundary defeats the publication cadence and
+    serializes filesystem writes between otherwise independent model steps.
+    Finished owners may still be in the runner table until update_requests().
+    """
+    if scheduler_output.total_num_scheduled_tokens:
+        return False
+    finished = scheduler_output.finished_req_ids
+    return (not any(rid not in finished for rid in request_ids) and
+            not getattr(scheduler_output, 'scheduled_new_reqs', ()))
+
+
 class PublicWorkCounters:
     def __init__(self, output, *, interval=1., event_factory=None,
                  clock=time.monotonic, wall_clock=time.time):

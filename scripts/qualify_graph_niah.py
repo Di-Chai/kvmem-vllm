@@ -71,11 +71,12 @@ def audit_launch(profile, capture):
                   'Missing or ambiguous native launch flag: '+name)
         observed[name] = argv[argv.index(name)+1]
         q.require(observed[name] == value, 'Effective native launch differs: '+name)
-    q.require(environment.get('KVMEM_PREFILL_CHUNK_TOKENS') == '1024',
+    q.require(environment.get('KVMEM_PREFILL_CHUNK_TOKENS') == str(profile['prefill_chunk_tokens']),
               'Effective per-request prefill chunk differs')
     plan = json.loads(environment['KVMEM_REQUEST_PLAN_CONFIG'])
-    q.require(plan['query_replay_budget'] == 16384 and plan['gen_budget'] == 16384 and
-              plan['select_budget'] == 36864, 'Effective Query/K/G limits differ')
+    q.require(plan['query_replay_budget'] == profile['query_replay_budget'] and
+              plan['gen_budget'] == profile['kvmem']['gen_budget'] and
+              plan['select_budget'] == profile['kvmem']['select_budget'], 'Effective Query/K/G limits differ')
     q.require(environment.get('KVMEM_FULL_GRAPH') == '1' and '--enforce-eager' not in argv,
               'Native compiled/CUDA Graph execution changed')
     spec_flag = '--speculative-config'
@@ -86,6 +87,7 @@ def audit_launch(profile, capture):
               'Effective native MTP(k=4) differs')
     return dict(status='passed',scope='Actual saved launch argv/environment before the first case.',
                 expected=expected,observed=observed,query_replay_budget=plan['query_replay_budget'],
+                select_budget=plan['select_budget'],gen_budget=plan['gen_budget'],
                 prefill_chunk_tokens=int(environment['KVMEM_PREFILL_CHUNK_TOKENS']))
 
 

@@ -62,10 +62,31 @@ def query_score_frame(memory, records, mandatory=(), max_tokens=None):
         frame.close()
 
 
+class MeanIndexStats:
+    """Small shared counter; independent owner publishers can finish together."""
+    def __init__(self):
+        from threading import Lock
+        self._lock = Lock()
+        self._counts = dict(completed_batches=0, completed_records=0,
+                            vectorized_records=0, fallback_records=0)
+
+    def record(self, records, vectorized, enabled):
+        with self._lock:
+            self._counts['completed_batches'] += 1
+            self._counts['completed_records'] += records
+            self._counts['vectorized_records'] += vectorized
+            self._counts['fallback_records'] += records-vectorized if enabled else 0
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self._counts)
+
+
 class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
                  raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
-                 scoring_layers=None, mean_k_backend='torch_reference'):
+                 scoring_layers=None, mean_k_backend='torch_reference',
+                 cpu_mean_index_simd=False, mean_index_stats=None):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (
                 torch.bfloat16, torch.float16, torch.float8_e4m3fn):
             raise ValueError("Invalid authority geometry or staging budget")
@@ -79,6 +100,12 @@ class RequestAuthority:
         if mean_k_backend not in ('torch_reference','qw3_cuda'):
             raise ValueError('Invalid MeanK backend')
         self.mean_k_backend = mean_k_backend
+        if type(cpu_mean_index_simd) is not bool:
+            raise ValueError('cpu_mean_index_simd must be boolean')
+        if cpu_mean_index_simd and mean_k_backend != 'qw3_cuda':
+            raise ValueError('cpu_mean_index_simd requires mean_k_backend=qw3_cuda')
+        self.cpu_mean_index_simd = cpu_mean_index_simd
+        self.mean_index_stats = MeanIndexStats() if mean_index_stats is None else mean_index_stats
         self.raw_element_bytes = raw_dtype.itemsize
         self.record_elements = layers * config.block_tokens * heads * head_dim
         self.raw_record_bytes = self.record_elements * self.raw_element_bytes
@@ -329,6 +356,27 @@ class RequestAuthority:
         raw, values, count, rows = prepared
         if not count:
             return
+        finalize_batch = getattr(_native, 'finalize_mean_batch', None)
+        batched_index = (self.mean_k_backend == 'qw3_cuda' and
+                         self.raw_dtype in (torch.bfloat16, torch.float8_e4m3fn) and
+                         callable(finalize_batch))
+        if batched_index:
+            # Source scatter has completed and every destination is owned by
+            # this append. Keep token-order FP32 addition and the existing
+            # FP16 conversion; only batch the small native calls/GIL handoffs.
+            jobs = [(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(),
+                     record.count+n, self.raw_dtype == torch.float8_e4m3fn)
+                    for _, record, _, _, n in rows
+                    if record.count+n == self.shape[1]]
+            if jobs:
+                vectorized = 0
+                if self.cpu_mean_index_simd:
+                    vectorized = finalize_batch(jobs, vectorized=True)
+                    if type(vectorized) is not int or not 0 <= vectorized <= len(jobs):
+                        raise RuntimeError('Invalid native MeanK SIMD execution count')
+                else:
+                    finalize_batch(jobs)
+                self.mean_index_stats.record(len(jobs), vectorized, self.cpu_mean_index_simd)
         for key, record, offset, start, n in rows:
             record.count += n
             if record.count == self.shape[1]:
@@ -337,7 +385,8 @@ class RequestAuthority:
                         raise ValueError('Original content-index finalization requires a qualified raw source')
                     finalize = (_native.finalize_mean_fp8 if self.raw_dtype == torch.float8_e4m3fn
                                 else _native.finalize_mean_bf16)
-                    finalize(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(), record.count)
+                    if not batched_index:
+                        finalize(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(), record.count)
                     if record.index_owner is not None:
                         record.mean_key = torch.frombuffer(record.index_owner, dtype=torch.float16,
                             count=record.key_sum.numel(), offset=record.key_sum.numel()*4).view(record.key_sum.shape)
@@ -585,6 +634,7 @@ class RequestAuthority:
 
     def close(self):
         self.closing = True
+        self.guided_seed = None
         historical = getattr(self.gc, 'native_history', False)
         graph = getattr(self, 'block_graph', None)
         if graph is not None:

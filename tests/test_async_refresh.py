@@ -25,6 +25,24 @@ def manager():
     return obj
 
 
+@pytest.mark.parametrize('boundary,mode', [(False, 'boundary'), (False, 'both'), (None, 'off')])
+def test_agent_public_query_does_not_start_async_private_generation(boundary, mode):
+    import torch
+    obj = manager()
+    obj.options.refresh_quantum_tokens = 256
+    obj.options.guided_query_tokens = 512
+    obj.options.guided_reselect = mode
+    job = RefreshJob(replace(command(), query_span=(64, 66), guided_boundary=boundary))
+    job.stage = 'query'
+    obj._forward = lambda *args, **kwargs: (None, torch.ones(1, 2, 1, 2))
+    submitted = []
+    obj._submit = lambda value: submitted.append(value)
+    assert obj.step(job)
+    assert submitted == [job] and job.offset == 2
+    assert len(job.query_rows) == 1
+    assert not job.generated and job.guided_policy is None
+
+
 def test_first_eager_refresh_initializes_window_mapping_and_keeps_existing_neighbours():
     obj = manager()
     obj.options.memory = SimpleNamespace(select_budget=32, gen_budget=32)

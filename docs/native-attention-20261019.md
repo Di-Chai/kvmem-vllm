@@ -1,5 +1,12 @@
 # Native attention statistics, 2026-10-19
 
+2026-10-21 follow-up: a complete 256K single-request test with K=32K, G=16K
+and 2K chunks observes **4,717 → 4,277 input token/s (-9.3%)** with reuse.
+Both measured reuse requests have zero fallback, identical selected ranges,
+output IDs and MTP acceptance versus bypass. See
+[the 32K-budget report](native-qk-budget32k-20261021.md). The older C8 decode
+benefits below do not establish a single-request prefill benefit.
+
 Experimental and **default off**. Native kernel, fixed-input policy and component
 cost checks pass. Four alternating full C8 model runs are complete: the median
 full decode step falls from 42.895 to 40.124 ms (6.46%). Observed whole-batch

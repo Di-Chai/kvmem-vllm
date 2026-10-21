@@ -7,6 +7,8 @@ import json
 
 import torch
 
+from .publication_step import native_publication_step
+
 
 class RollingPressureOracle:
     def __init__(self, runner, job):
@@ -18,7 +20,7 @@ class RollingPressureOracle:
                        for key, tensor in self.bundle.tensors.items()}
         runtime = runner._kvmem_capture_runtime
         steps = runtime.last_steps.get(job.command.request_id, ())
-        self.last_step = dict(steps[-1]) if steps else None
+        self.last_step = dict(native_publication_step(steps[-1])) if steps else None
         if self.last_step is None or self.last_step['history_begin'] + self.last_step['accepted'] != job.history:
             raise RuntimeError('Rolling pressure oracle requires the exact accepted-prefix publication')
         session = runner._kvmem_sessions
@@ -28,12 +30,21 @@ class RollingPressureOracle:
         self.old_records = {r[0]: r for r in job.authority.memory._store.working_records()}
         self.old_native = session._target_bytes(job.command.request_id, self.old_tokens).clone()
         self.width = runtime.heads * runtime.dim
+        self.draft = []
+        contract = getattr(runner, '_kvmem_draft_contract', None)
+        if contract is not None and contract.method == 'dflash':
+            from .guided_query import snapshot_guided_draft
+            self.draft = snapshot_guided_draft(runner, runner._kvmem_last_batch, contract)
 
     def verify(self, job):
         self.adapter.validate(self.bundle)
-        if any(not torch.equal(tensor.detach().cpu(), self.before[key])
+        if any(not torch.equal(tensor.detach().contiguous().view(torch.uint8).cpu(),
+                               self.before[key].contiguous().view(torch.uint8))
                for key, tensor in self.bundle.tensors.items()):
             raise RuntimeError('Rolling pressure changed native recurrent or acceptance state')
+        for request_id, name, cache, pages, offsets, expected in self.draft:
+            if not torch.equal(cache[pages, offsets].contiguous().view(torch.uint8).cpu(), expected):
+                raise RuntimeError('Rolling pressure changed committed draft KV: '+request_id+'/'+name)
         target_bytes = None
         stable_tokens = 0
         if not job.cancelled:
@@ -72,6 +83,7 @@ class RollingPressureOracle:
             target_kv_byte_equal=target_bytes is not None, target_kv_bytes=target_bytes,
             oracle_kind='native_stable_rows_plus_fp8_rebuild', native_stable_tokens=stable_tokens,
             attention_layers=len(self.runner._kvmem_capture_runtime.names),
+            draft_byte_equal=True, draft_layers=len(self.draft),
             mtp_attention_layers=len(getattr(self.runner, '_kvmem_mtp_modules', {})),
             previous_accepted_step=self.last_step, private_forward_steps=job.steps)
         with (self.runner._kvmem_probe_output/'verified_rolling_pressure.jsonl').open('a') as stream:

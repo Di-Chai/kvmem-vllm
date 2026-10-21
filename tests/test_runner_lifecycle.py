@@ -40,7 +40,8 @@ def test_unarmed_native_warmup_does_not_access_temporarily_disabled_connector(mo
     runner._kvmem_probe_done = True
     runner._kvmem_continuous = False
     runner._kvmem_query_refresh = lambda command: command
-    batch = SimpleNamespace(total_num_scheduled_tokens=1, finished_req_ids=set())
+    batch = SimpleNamespace(total_num_scheduled_tokens=1, finished_req_ids=set(),
+                            kv_connector_metadata=None)
 
     def disabled():
         raise AssertionError("Native warmup disables the global connector agent")
