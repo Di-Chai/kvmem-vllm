@@ -47,6 +47,22 @@ def test_parallel_pack_requires_completed_bounded_work_and_explicit_worker_count
             {**disabled, 'seal_pack_parallel_batches_completed': 1})
 
 
+def test_serial_allocation_mode_requires_real_bounded_execution():
+    profile=dict(kvmem=dict(cpu_seal_serial_allocate=True,cpu_seal_pack_workers=1))
+    archive=dict(archive_io_pending_bytes=0,cpu_seal_serial_allocate=True,
+        cpu_seal_serial_copy_workers=8,seal_serial_allocate_batches_completed=5,seal_batches=5,
+        cpu_seal_pack_workers=1,seal_pack_parallel_batches_completed=5,
+        seal_pack_parallel_shards_completed=40)
+    result=variant.audit_optional_branches(profile,{},archive)
+    assert result['cpu_seal_serial_allocate']['completed_batches']==5
+    for change in [dict(cpu_seal_serial_allocate=False),
+                   dict(seal_serial_allocate_batches_completed=0),
+                   dict(cpu_seal_serial_copy_workers=9),
+                   dict(seal_pack_parallel_shards_completed=41)]:
+        with pytest.raises(ValueError):
+            variant.audit_optional_branches(profile,{},dict(archive,**change))
+
+
 def test_mean_index_simd_requires_actual_execution_without_fallback():
     profile = dict(kvmem=dict(cpu_mean_index_simd=True))
     stats = dict(completed_batches=128, completed_records=8192,

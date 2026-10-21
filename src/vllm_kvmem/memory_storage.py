@@ -208,7 +208,7 @@ class MemoryTier:
 
 class MemoryArchive(AsyncArchive):
     def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False, cpu_seal_hash_workers=1,
-                 cpu_seal_pack_workers=1,
+                 cpu_seal_pack_workers=1, cpu_seal_serial_allocate=False,
                  native_payloads=False, **kwargs):
         if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
             raise ValueError('CPU gather workers must be between 1 and 16')
@@ -220,6 +220,13 @@ class MemoryArchive(AsyncArchive):
             raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
         if cpu_seal_pack_workers > 1 and (not cpu_direct_record_seal or native_payloads):
             raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU records without native payloads')
+        if type(cpu_seal_serial_allocate) is not bool:
+            raise ValueError('cpu_seal_serial_allocate must be boolean')
+        if cpu_seal_serial_allocate:
+            if not cpu_direct_record_seal or native_payloads or cpu_seal_pack_workers != 1:
+                raise ValueError('cpu_seal_serial_allocate requires direct CPU records, no native payloads, and pack_workers=1')
+            if not callable(getattr(_native, 'PrivateRecordPack', None)):
+                raise ValueError('cpu_seal_serial_allocate requires the updated native extension')
         super().__init__(*args, **kwargs, memory_only=True, native_cpu_payloads=native_payloads)
         self._native_payload_arena = getattr(self.tier, 'payloads', None)
         self._history_worker = None
@@ -231,6 +238,8 @@ class MemoryArchive(AsyncArchive):
         self.cpu_direct_record_seal = cpu_direct_record_seal
         self.cpu_seal_hash_workers = cpu_seal_hash_workers
         self.cpu_seal_pack_workers = cpu_seal_pack_workers
+        self.cpu_seal_serial_allocate = cpu_seal_serial_allocate
+        self._seal_serial_allocate_batches_completed = 0
         self._seal_pack_parallel_batches_completed = 0
         self._seal_pack_parallel_shards_completed = 0
         self._seal_hash_parallel_batches_completed = 0
@@ -317,6 +326,12 @@ class MemoryArchive(AsyncArchive):
         generation leases plus 2x byte admission. Workers only allocate private
         independent records; hashing and publication wait for every shard.
         """
+        if self.cpu_seal_serial_allocate:
+            from .private_record_pack import serial_allocate_pack
+            try:
+                return serial_allocate_pack(self, views, workers=min(8, self.gather_workers))
+            finally:
+                views = None
         jobs, parts, error, job, records = [], [], None, None, None
         try:
             if getattr(self._gather_worker, 'active', False):
@@ -626,6 +641,9 @@ class MemoryArchive(AsyncArchive):
     def io_usage(self):
         with self._lock:
             hash_usage = dict(cpu_seal_hash_workers=self.cpu_seal_hash_workers,
+                cpu_seal_serial_allocate=self.cpu_seal_serial_allocate,
+                cpu_seal_serial_copy_workers=min(8,self.gather_workers) if self.cpu_seal_serial_allocate else 0,
+                seal_serial_allocate_batches_completed=self._seal_serial_allocate_batches_completed,
                 seal_hash_parallel_batches_completed=self._seal_hash_parallel_batches_completed,
                 seal_hash_parallel_shards_completed=self._seal_hash_parallel_shards_completed,
                 cpu_seal_pack_workers=self.cpu_seal_pack_workers,

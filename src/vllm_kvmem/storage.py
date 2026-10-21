@@ -99,6 +99,7 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
                                cpu_direct_record_seal=getattr(options, 'cpu_direct_record_seal', False),
                                cpu_seal_hash_workers=getattr(options, 'cpu_seal_hash_workers', 1),
                                cpu_seal_pack_workers=getattr(options, 'cpu_seal_pack_workers', 1),
+                               cpu_seal_serial_allocate=getattr(options, 'cpu_seal_serial_allocate', False),
                                native_payloads=getattr(options, 'historical_gc', None) is not None)
         archive.async_seal = options.async_seal
         archive.history_record_charge = charge

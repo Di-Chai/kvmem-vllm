@@ -7,6 +7,7 @@
 #include "qw3/kvmem_repository_gc.hpp"
 #include "historical_payload.hpp"
 #include "historical_manager.hpp"
+#include "private_record_pack.hpp"
 #include "kvmem_request_plan.hpp"
 #include "kvmem_prefix_reuse_policy.hpp"
 #include "kvmem_query_history.hpp"
@@ -587,6 +588,12 @@ PYBIND11_MODULE(_native, m) {
         }
         return result;
     });
+    py::class_<vllm_kvmem::PrivateRecordPack>(m, "PrivateRecordPack")
+        .def(py::init<const std::vector<py::buffer> &, size_t, size_t>(),
+             py::arg("sources"), py::arg("record_bytes"), py::arg("max_payload_bytes"))
+        .def("copy_range", &vllm_kvmem::PrivateRecordPack::copy_range)
+        .def("finish", &vllm_kvmem::PrivateRecordPack::finish)
+        .def("abort", &vllm_kvmem::PrivateRecordPack::abort);
     m.def("pack_record_pairs", [](const std::vector<py::buffer> &sources, size_t record_bytes) {
         // Independent immutable records, without a whole-batch slab or a
         // second copy. Validate and allocate under the GIL, copy the complete

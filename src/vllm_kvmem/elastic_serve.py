@@ -38,7 +38,7 @@ def build_launch(profile, base, run_dir):
         'session_checkpoint_bytes': 2 * 1024**3, 'verify_session_restore': False, 'draft_tokens': 7,
         'linear_backend_per_quant': None, 'draft_quantization': None, 'profiler_config': None,
         'cpu_gather_workers': 8, 'async_seal': False, 'cpu_direct_record_seal': False,
-        'cpu_seal_hash_workers': 1, 'cpu_seal_pack_workers': 1, 'cpu_mean_index_simd': False,
+        'cpu_seal_hash_workers': 1, 'cpu_seal_pack_workers': 1, 'cpu_seal_serial_allocate': False, 'cpu_mean_index_simd': False,
         'assembly_read_prefetch': False, 'assembly_fused_layers': False, 'draft_method': 'dflash',
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
@@ -130,6 +130,11 @@ def build_launch(profile, base, run_dir):
         raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
     if cfg['cpu_seal_pack_workers'] > 1 and (not cfg['cpu_direct_record_seal'] or cfg['historical_gc'] is not None):
         raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU record sealing without historical_gc')
+    if type(cfg['cpu_seal_serial_allocate']) is not bool:
+        raise ValueError('cpu_seal_serial_allocate must be boolean')
+    if cfg['cpu_seal_serial_allocate'] and (not cfg['cpu_direct_record_seal'] or
+            cfg['historical_gc'] is not None or cfg['cpu_seal_pack_workers'] != 1):
+        raise ValueError('cpu_seal_serial_allocate requires direct CPU records without historical_gc and pack_workers=1')
     if type(cfg['cpu_mean_index_simd']) is not bool:
         raise ValueError('cpu_mean_index_simd must be boolean')
     if cfg['cpu_mean_index_simd']:
@@ -170,7 +175,7 @@ def build_launch(profile, base, run_dir):
     _load_users(cfg['users_file'])
     for name in set(defaults) - set(GRAPH_DEFAULTS) - {'host', 'served_model_name', 'gpu_memory_utilization', 'active_context_tokens',
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
-                               'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'cpu_mean_index_simd', 'assembly_read_prefetch', 'assembly_fused_layers', 'draft_method',
+                               'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'cpu_seal_serial_allocate', 'cpu_mean_index_simd', 'assembly_read_prefetch', 'assembly_fused_layers', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
                                'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
                                'query_history','query_history_decay','guided_query_tokens','repository_gc','historical_gc',
@@ -243,6 +248,7 @@ def build_launch(profile, base, run_dir):
                 'cpu_direct_record_seal': cfg['cpu_direct_record_seal'],
                 'cpu_seal_hash_workers': cfg['cpu_seal_hash_workers'],
                 'cpu_seal_pack_workers': cfg['cpu_seal_pack_workers'],
+                'cpu_seal_serial_allocate': cfg['cpu_seal_serial_allocate'],
                 'cpu_mean_index_simd': cfg['cpu_mean_index_simd'],
                 'assembly_read_prefetch': cfg['assembly_read_prefetch'],
                 'assembly_fused_layers': cfg['assembly_fused_layers'],

@@ -275,6 +275,7 @@ class RuntimeOptions:
     capture_opaque_projection: bool = False
     action_native_prefill_static_aligned: bool = False
     cpu_seal_pack_workers: int = 1
+    cpu_seal_serial_allocate: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -632,6 +633,11 @@ class RuntimeOptions:
             raise ValueError('cpu_seal_pack_workers must be an integer in [1, 8]')
         if self.cpu_seal_pack_workers > 1 and (not self.cpu_direct_record_seal or self.historical_gc is not None):
             raise ValueError('cpu_seal_pack_workers > 1 requires direct CPU record sealing without historical_gc')
+        if type(self.cpu_seal_serial_allocate) is not bool:
+            raise ValueError('cpu_seal_serial_allocate must be boolean')
+        if self.cpu_seal_serial_allocate and (not self.cpu_direct_record_seal or
+                self.historical_gc is not None or self.cpu_seal_pack_workers != 1):
+            raise ValueError('cpu_seal_serial_allocate requires direct CPU record sealing without historical_gc and pack_workers=1')
         if (self.query_history or self.guided_query_tokens) and not self.request_planning:
             raise ValueError('Query history/guided refresh require explicit request planning')
         if self.query_history and not self.session_capacity:
@@ -715,6 +721,7 @@ class RuntimeOptions:
         direct_record_seal = payload.pop('cpu_direct_record_seal', False)
         seal_hash_workers = payload.pop('cpu_seal_hash_workers', 1)
         seal_pack_workers = payload.pop('cpu_seal_pack_workers', 1)
+        seal_serial_allocate = payload.pop('cpu_seal_serial_allocate', False)
         raw_cache = payload.pop('gpu_raw_k_cache_bytes', 0)
         reuse_v = payload.pop('reuse_resident_v', False)
         cpu_scatter = payload.pop('async_cpu_scatter', False)
@@ -797,4 +804,5 @@ class RuntimeOptions:
                    query_history,query_decay,guided_tokens,archive_backend,
                    cpu_direct_record_seal=direct_record_seal,cpu_seal_hash_workers=seal_hash_workers,
                    cpu_seal_pack_workers=seal_pack_workers,
+                   cpu_seal_serial_allocate=seal_serial_allocate,
                    historical_gc=historical_gc,**action,**graph)

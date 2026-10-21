@@ -241,6 +241,22 @@ def audit_optional_branches(profile, progress, archive, native=None):
     not execute. Hash counters describe completed hashing, before publication.
     """
     kv, result = profile['kvmem'], {}
+    serial_allocate = kv.get('cpu_seal_serial_allocate', False)
+    if 'cpu_seal_serial_allocate' in kv or 'cpu_seal_serial_allocate' in archive:
+        require(type(serial_allocate) is bool and
+                archive.get('cpu_seal_serial_allocate') is serial_allocate,
+                'Actual CPU serial allocation mode differs')
+        batches = archive.get('seal_serial_allocate_batches_completed')
+        require(type(batches) is int and batches >= 0, 'Invalid CPU serial allocation execution count')
+        copy_workers = archive.get('cpu_seal_serial_copy_workers')
+        if serial_allocate:
+            require(0 < batches <= archive.get('seal_batches',0) and
+                    copy_workers == min(8,kv.get('cpu_gather_workers',8)),
+                    'CPU serial allocation has no bounded completed execution evidence')
+        else:
+            require(batches == copy_workers == 0, 'Disabled CPU serial allocation executed')
+        result['cpu_seal_serial_allocate'] = dict(enabled=serial_allocate,
+            completed_batches=batches, copy_workers=copy_workers)
     if 'cpu_seal_pack_workers' in kv or 'cpu_seal_pack_workers' in archive:
         workers = kv.get('cpu_seal_pack_workers', 1)
         require(type(workers) is int and 1 <= workers <= 8 and
@@ -250,8 +266,9 @@ def audit_optional_branches(profile, progress, archive, native=None):
         shards = archive.get('seal_pack_parallel_shards_completed', 0)
         require(type(completed) is int and completed >= 0 and type(shards) is int and shards >= 0,
                 'Invalid CPU seal pack execution counts')
-        if workers > 1:
-            require(completed > 0 and 2*completed <= shards <= workers*completed,
+        parallel_workers = archive['cpu_seal_serial_copy_workers'] if serial_allocate else workers
+        if parallel_workers > 1:
+            require(completed > 0 and 2*completed <= shards <= parallel_workers*completed,
                     'Parallel CPU seal pack has no bounded completed execution evidence')
         else:
             require(completed == shards == 0, 'Single-worker CPU seal pack executed parallel work')
