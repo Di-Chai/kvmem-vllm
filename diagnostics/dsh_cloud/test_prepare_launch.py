@@ -167,6 +167,23 @@ class PreparedCaseTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertFalse(self.root.exists())
 
+    def test_nondefault_select_budget_is_recorded_without_runtime_changes(self):
+        manifest = self.prepare("--select-budget", "8192")
+        self.assertEqual(manifest["native_k"], 8192)
+        self.assertEqual(manifest["native_g"], 4096)
+        self.assertEqual(manifest["context_window"], 32768)
+        self.assertEqual(manifest["max_tokens"], 8192)
+        code, _, err = self.plan("csgo")
+        self.assertEqual(code, 0, err)
+
+    def test_invalid_select_budget_rejected_before_preparation(self):
+        for budget in ("0", "-32", "4097", "16384", "4096.0"):
+            with self.subTest(budget=budget):
+                code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
+                                        "--context-window", "16384", "--select-budget", budget)
+                self.assertEqual(code, 2)
+                self.assertFalse(self.root.exists())
+
     def test_configuration_fingerprint_still_checked(self):
         self.prepare()
         with (self.root / "configuration/provider.patch.yml").open("a") as stream:

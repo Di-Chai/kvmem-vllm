@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--harness", type=Path, default=Path("/root/data/kvmem-vllm-gc/dsh-harness"))
     parser.add_argument("--context-window", type=int, default=24576,
                         help="Must match the already validated backend max_model_len")
+    parser.add_argument("--select-budget", type=int, default=4096,
+                        help="Record the backend K budget; positive multiple of 32, with K + fixed G=4096 <= context")
     parser.add_argument("--max-output-tokens", type=int, default=8192,
                         help="Provider output cap; must fit context and the separately configured bridge segment limit")
     parser.add_argument("--case-name", help="Additional independent queued-session case, e.g. expense-tracker")
@@ -49,6 +51,10 @@ def main():
         parser.error("Pinned Node and DSH installation are required")
     if args.context_window < 8192:
         parser.error("context-window must be at least 8192 for this native K/G profile")
+    if args.select_budget <= 0 or args.select_budget % 32:
+        parser.error("select-budget must be positive and aligned to 32 tokens")
+    if args.select_budget + 4096 > args.context_window:
+        parser.error("select-budget plus fixed native G=4096 must not exceed context-window")
     if not 1 <= args.max_output_tokens <= args.context_window:
         parser.error("max-output-tokens must be positive and no larger than context-window")
     root = args.run_root.resolve()
@@ -68,7 +74,7 @@ def main():
         "harness": str(harness), "node": str(node), "cli": str(cli),
         "provider": "gc-local", "model": "kvmem-gc-qwen38",
         "base_url": "http://127.0.0.1:18387/v1", "context_window": args.context_window, "max_tokens": args.max_output_tokens,
-        "native_k": 4096, "native_g": 4096, "query_replay_budget": 128, "max_inflight": 1,
+        "native_k": args.select_budget, "native_g": 4096, "query_replay_budget": 128, "max_inflight": 1,
         "configuration_sha256": {name: hashlib.sha256((snapshots / name).read_bytes()).hexdigest() for name in names},
         "prepared_only": True,
     }

@@ -106,7 +106,13 @@ python3 /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud/launch.py \
   --run-root /root/data/kvmem-vllm-gc/runs/dsh-expense-01 --case expense-tracker
 ```
 
-The context value must match the validated backend and bridge. The provider's
+The context value must match the validated backend and bridge. Pass
+`--select-budget 8192` when the backend uses K=8192; its default is 4096.
+This records K in the manifest only and does not reconfigure the runtime.
+K must be a positive multiple of 32, and K plus the fixed native G=4096 must
+fit the declared context. The operator must independently verify K, G and context
+against the actual backend profile; preparation does not load that profile or
+query a running service. The provider's
 8192 default output cap remains subject to the installed pi-ai client's context
 estimate and 4096-token reserve; an explicit output cap does not bypass that
 clamp. `prepare.py --max-output-tokens N` changes the new provider snapshot and
