@@ -918,7 +918,57 @@
         "Different context and quantization from prior NVFP4 attempts; not a matched quality comparison.",
         "A capacity check passed for 32K, but this was not a successful 32K workload.",
         "System/tool frame exceeds K4096; pinning is a hypothesis to test, not established sole cause."
-      ]
+      ],
+      "system_frame_coverage_audit": {
+        "report": "/root/data/kvmem-vllm-gc/logs/dsh-gptq06-system-frame-coverage.json",
+        "sha256": "beb33260eac69bb49f543df3922170cf878df923cc452e996891775469938d90",
+        "system_frame": [
+          0,
+          4226
+        ],
+        "refresh_union_covered_tokens": [
+          4098,
+          3906,
+          3778,
+          3650,
+          32
+        ],
+        "refresh_missing_ranges": [
+          [
+            [
+              2656,
+              2784
+            ]
+          ],
+          [
+            [
+              32,
+              352
+            ]
+          ],
+          [
+            [
+              32,
+              480
+            ]
+          ],
+          [
+            [
+              32,
+              608
+            ]
+          ],
+          [
+            [
+              32,
+              4226
+            ]
+          ]
+        ],
+        "third_reply_second_segment": "No refresh coverage record; unknown rather than inferred retention. Restore event exists.",
+        "independent_cross_check": "Token-set union and14 source digests matched.",
+        "causality": "Missing system/tool context alone does not establish sole cause of malformed output."
+      }
     }
   },
   "limits": [
