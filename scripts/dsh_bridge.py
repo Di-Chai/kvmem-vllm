@@ -1,4 +1,4 @@
-"""Local DSH chat transport with exact accepted-token history and no extra pins.
+"""Local DSH chat transport with exact accepted-token history and opt-in control-frame pins.
 
 The DSH OpenAI-compatible provider sends its stable session as prompt_cache_key
 using cacheRetention=long and supportsLongCacheRetention=true. Native prefix
@@ -197,6 +197,66 @@ async def native_events(result):
     raise ValueError('Model stream ended without [DONE]')
 
 
+def apply_mandatory_policy(prepared, protocol):
+    """Keep only the explicitly enabled audited control-frame pin."""
+    tokens, plan, rendered, _, _, _, locations = prepared
+    plan['kvmem_mandatory_parts'] = 'none'
+    if not getattr(protocol, 'pin_system', False):
+        plan['kvmem_mandatory_spans'] = []
+        return
+    control_end = rendered.get('control_end')
+    end = locations.get((-1, control_end))
+    expected = [dict(begin=0, end=end, kind='system')]
+    if (type(control_end) is not int or control_end <= 0 or
+            locations.get((-1, 0)) != 0 or type(end) is not int or not 0 < end <= len(tokens) or
+            plan.get('kvmem_mandatory_spans') != expected):
+        raise ValueError('System pin lacks exact accepted-prefix token coordinates')
+    # Encode only the audited immutable frame, never accepted generated history.
+    frame = rendered['prompt'].encode()[:control_end].decode()
+    if protocol.tokenizer.encode(frame, add_special_tokens=False) != tokens[:end]:
+        raise ValueError('System pin differs from the actual accepted control-frame IDs')
+
+
+def validate_system_pin_budget(data, protocol):
+    """Conservative bridge admission for the explicitly declared backend profile.
+
+    Native `system` spans can be capacity-fitted. This guard therefore leaves
+    the full declared replay budget and two alignment/speculation blocks free,
+    rather than relying on a pin's priority to prevent fitting. Runtime profile
+    equality and actual worker coverage must still be qualified separately.
+    """
+    if not getattr(protocol, 'pin_system', False):
+        return None
+    from vllm_kvmem.request_plan import FIELDS, RequestPlan
+    cfg = protocol.system_pin_policy
+    block = cfg['block_tokens']
+    plan = RequestPlan.parse({k:v for k,v in data.items() if k in FIELDS},
+        len(data['prompt']), block, cfg['gen_budget'])
+    if (data.get('max_tokens', 0) <= 0 or data['max_tokens'] > cfg['gen_budget'] or
+            plan.probe_tokens or plan.pressure_probe_tokens):
+        raise ValueError('System-pin admission requires the declared generation and replay profile')
+    if plan.query_mode != 'agent' or plan.reselect != 'auto' or plan.query is None or not plan.query_id:
+        raise ValueError('System-pin admission requires a verified agent Query epoch')
+    replay = plan.replay_end - plan.replay_begin if plan.query is not None else 0
+    if replay > cfg['query_replay_budget']:
+        raise ValueError('System-pin admission: complete Query exceeds the declared replay budget')
+    if len(plan.mandatory) != 1 or plan.mandatory[0][0] != 0 or plan.mandatory[0][2] != 'system':
+        raise ValueError('System-pin admission requires exactly one complete system/tool frame')
+    begin, end, _ = plan.mandatory[0]
+    pinned = set(range(begin // block, (end + block - 1) // block))
+    pinned.update(range(cfg['sink_blocks']))
+    reserve = (cfg['query_replay_budget'] // block + cfg['recent_blocks'] +
+               cfg['rounding_reserve_blocks'])
+    required = (len(pinned) + reserve) * block
+    if required > cfg['select_budget']:
+        raise ValueError('Insufficient selected capacity for complete system/tool frame: '
+            f'requires at least {required} tokens including replay/sink/recent/alignment reserve, '
+            f'declared K={cfg["select_budget"]}; no model request was sent')
+    return dict(system_tokens=end, pinned_blocks=len(pinned), reserved_blocks=reserve,
+                required_select_tokens=required, declared_select_budget=cfg['select_budget'],
+                actual_query_replay_tokens=replay)
+
+
 def restore_trajectory(planner,owner,directories):
     """Rebuild only completed turns using their actual accepted IDs.
 
@@ -218,11 +278,14 @@ def restore_trajectory(planner,owner,directories):
         if turn!=state.turns+1:raise ValueError('Accepted history has a missing turn; refusing an inexact restore')
         body=json.loads((path/'request.json').read_text());payload=to_anthropic(body)
         prepared=planner.prepare(payload,state);saved=json.loads((path/'plan.json').read_text())
-        apply_query_provenance(body, prepared)
+        apply_query_provenance(body, prepared, required=getattr(planner.protocol, 'pin_system', False))
         if len(prepared[0])!=saved['prompt_tokens'] or prepared[5]!=saved['exact_output_prefix_reused']:
             raise ValueError('Accepted history does not match its recorded prompt prefix')
-        # Extra mandatory pins were removed by this deployment before submit.
-        prepared[1].update(kvmem_mandatory_parts='none',kvmem_mandatory_spans=[])
+        apply_mandatory_policy(prepared, planner.protocol)
+        if getattr(planner.protocol, 'pin_system', False) and (
+                saved.get('kvmem_mandatory_spans') != prepared[1]['kvmem_mandatory_spans'] or
+                saved.get('kvmem_mandatory_parts') != 'none'):
+            raise ValueError('Accepted history differs from the explicit system-pin policy')
         wire=json.loads((path/'response.json').read_text())
         content=to_anthropic(dict(model=body['model'],messages=[wire['choices'][0]['message']]))['messages'][0]['content']
         ids=json.loads((path/'accepted.json').read_text())['token_ids']
@@ -235,6 +298,13 @@ def create_app(args,tokenizer):
     max_inflight=getattr(args,'max_inflight',0)
     if type(max_inflight) is not int or max_inflight<0:
         raise ValueError('max_inflight must be a nonnegative integer')
+    pin_system=getattr(args,'pin_system',False)
+    if type(pin_system) is not bool:
+        raise ValueError('pin_system must be boolean')
+    if pin_system and not getattr(args,'tokenizer_protocol',False):
+        raise ValueError('--pin-system requires --tokenizer-protocol')
+    if pin_system and not getattr(args,'require_query_provenance',False):
+        raise ValueError('--pin-system requires --require-query-provenance')
     disable_thinking=getattr(args,'disable_thinking',False)
     if type(disable_thinking) is not bool:
         raise ValueError('disable_thinking must be boolean')
@@ -245,7 +315,8 @@ def create_app(args,tokenizer):
         from scripts.dsh_model_protocol import TokenizerProtocol
         protocol=TokenizerProtocol(tokenizer,args.tokenizer,
             reasoning_effort=getattr(args,'reasoning_effort','low'),
-            enable_thinking=not disable_thinking)
+            enable_thinking=not disable_thinking, pin_system=pin_system,
+            select_budget=getattr(args,'select_budget',None), gen_budget=args.gen_budget)
     else:
         protocol=Protocol(args.protocol)
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
@@ -305,9 +376,7 @@ def create_app(args,tokenizer):
                 tokens,plan,rendered,*_=prepared
                 query_source = apply_query_provenance(body, prepared,
                     required=getattr(args, 'require_query_provenance', False))
-                # Locality/query coordinates remain available for graph recall;
-                # transport policy explicitly disables all semantic extra pins.
-                plan['kvmem_mandatory_parts']='none';plan['kvmem_mandatory_spans']=[]
+                apply_mandatory_policy(prepared, planner.protocol)
                 if len(tokens)+min(limit,args.gen_budget)>args.max_model_len:
                     raise ValueError('Complete history plus output exceeds the logical context limit')
                 # Reserve the same first native segment as the original route.
@@ -319,6 +388,7 @@ def create_app(args,tokenizer):
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
                 if disable_thinking:
                     data.pop('thinking_token_budget',None)
+                pin_admission=validate_system_pin_budget(data, planner.protocol)
                 for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed'):
                     if k in body:data[k]=body[k]
                 directory=args.output/owner/f'{state.turns+1:05d}'
@@ -328,7 +398,8 @@ def create_app(args,tokenizer):
                 (directory/'request.json').write_text(json.dumps(body,ensure_ascii=False))
                 (directory/'plan.json').write_text(json.dumps({k:v for k,v in data.items() if k!='prompt'}|
                     dict(prompt_tokens=len(tokens),exact_output_prefix_reused=prepared[5],
-                         query_source=query_source),indent=2))
+                         query_source=query_source)|
+                    (dict(system_pin_admission=pin_admission) if pin_admission is not None else {}),indent=2))
                 data.update(stream=True,stream_options=dict(include_usage=True))
                 wire=QwenStream(planner.protocol,rendered['tools']);output_ids=[];usage=None;finish=None
                 decoder=AcceptedTextDecoder(tokenizer) if segments>1 else None
@@ -341,6 +412,7 @@ def create_app(args,tokenizer):
                         segment_data.pop('thinking_token_budget',None)
                         # The unchanged auto Query is suppressed only after the
                         # native ledger proves this exact accepted prefix.
+                    segment_pin_admission=validate_system_pin_budget(segment_data, planner.protocol)
                     async with client.stream('POST',args.backend+'/v1/completions',json=segment_data) as result:
                         if result.status_code!=200:
                             raise ValueError('Model request failed: '+(await result.aread()).decode()[:2000])
@@ -368,6 +440,9 @@ def create_app(args,tokenizer):
                         raise ValueError('Incomplete model stream or accepted-token/usage mismatch')
                     report=dict(index=segment,id=request_id,prompt_tokens=len(segment_data['prompt']),
                         output_tokens=len(output_ids)-begin,finish_reason=finish,metrics=segment_metrics)
+                    if segment_pin_admission is not None:
+                        report['system_pin_admission']=segment_pin_admission
+                        report['mandatory_spans']=segment_data['kvmem_mandatory_spans']
                     segment_reports.append(report)
                     (directory/f'segment-{segment:03d}.json').write_text(json.dumps(dict(**report,
                         token_ids=output_ids[begin:]),ensure_ascii=False))
@@ -405,7 +480,8 @@ def create_app(args,tokenizer):
                     raise
                 log(dict(at=time.time(),owner=owner,turn=state.turns,request_id=request_id,
                     prompt_tokens=len(tokens),output_tokens=len(output_ids),
-                    query_span=plan.get('kvmem_query_span'),mandatory_spans=[],mandatory_parts='none',
+                    query_span=plan.get('kvmem_query_span'),
+                    mandatory_spans=plan['kvmem_mandatory_spans'],mandatory_parts=plan['kvmem_mandatory_parts'],
                     exact_output_prefix_reused=prepared[5],seconds=time.time()-started,
                     tool_calls=len(output['choices'][0]['message'].get('tool_calls',[])),
                     transport='native_sse',native_chunks=chunks,metrics=metrics,
@@ -466,6 +542,10 @@ if __name__=='__main__':
     protocol.add_argument('--tokenizer-protocol',action='store_true',help='Use the audited current Qwen3.8 tokenizer chat template')
     p.add_argument('--tokenizer',required=True)
     p.add_argument('--reasoning-effort',choices=('low','medium','xhigh'),default='low')
+    p.add_argument('--select-budget',type=int,
+        help='Explicit backend K for --pin-system; backend must use block32/sink1/recent1/replay128')
+    p.add_argument('--pin-system',action='store_true',
+        help='Preserve the complete audited system/tool frame; requires tokenizer protocol and sufficient K')
     p.add_argument('--disable-thinking',action='store_true',
         help='Close the official tokenizer think frame before generation; incompatible with thinking-enabled history')
     p.add_argument('--backend',default='http://127.0.0.1:18846');p.add_argument('--model',default='kvmem-dsh-dflash2')

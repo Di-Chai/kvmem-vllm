@@ -89,8 +89,22 @@ def _convert(payload):
 class TokenizerProtocol:
     implicit_tool_reasoning_end = True
 
-    def __init__(self, tokenizer, directory, *, reasoning_effort='low', enable_thinking=True):
+    def __init__(self, tokenizer, directory, *, reasoning_effort='low', enable_thinking=True, pin_system=False,
+                 select_budget=None, gen_budget=4096):
         directory = Path(directory)
+        if type(pin_system) is not bool:
+            raise ValueError('pin_system must be boolean')
+        self.pin_system = pin_system
+        self.system_pin_policy = None
+        if pin_system:
+            if type(select_budget) is not int or select_budget <= 0 or select_budget % 32:
+                raise ValueError('--pin-system requires an explicit positive block-aligned --select-budget')
+            if type(gen_budget) is not int or gen_budget < 192 or gen_budget % 32:
+                raise ValueError('System pin requires a block-aligned G with Query/replay headroom')
+            self.system_pin_policy = dict(version=1, select_budget=select_budget,
+                gen_budget=gen_budget, block_tokens=32, sink_blocks=1, recent_blocks=1,
+                query_replay_budget=128, rounding_reserve_blocks=2,
+                query_mode='agent', require_query_provenance=True)
         if type(enable_thinking) is not bool:
             raise ValueError('enable_thinking must be boolean')
         if reasoning_effort not in ('low', 'medium', 'xhigh'):
@@ -115,6 +129,8 @@ class TokenizerProtocol:
         self.provenance = dict(schema_version=1, source='tokenizer.apply_chat_template',
                                files=fingerprints, chat_template_kwargs=self.kwargs,
                                tool_parser='vllm.parser.qwen3.Qwen3Parser')
+        if pin_system:
+            self.provenance['mandatory_policy'] = dict(system_frame='complete-v1', **self.system_pin_policy)
         self.template = 'qwen38_tokenizer:'+hashlib.sha256(_json(self.provenance).encode()).hexdigest()
         self._parsers, self._parser_lock = OrderedDict(), Lock()
 
@@ -148,6 +164,8 @@ class TokenizerProtocol:
                     self.kwargs['enable_thinking'] and self.kwargs['reasoning_effort'] != 'medium'):
                 raise ValueError('Rendered system/control framing is incomplete')
             messages = messages[1:]
+        if self.pin_system and not control_end:
+            raise ValueError('System pin requires a complete audited system/tool frame')
         spans, index = [], 0
         for frame in frames:
             role = frame.group(1).decode()
@@ -193,7 +211,9 @@ class TokenizerProtocol:
         query = next((i for i in range(len(messages)-1, -1, -1)
                       if messages[i]['role'] == 'user'), None)
         return dict(prompt=prompt, messages=messages, tools=tools, spans=spans,
-                    control_end=control_end, pins=[], query_index=query)
+                    control_end=control_end,
+                    pins=[dict(begin=0, end=control_end, reason=0)] if self.pin_system else [],
+                    query_index=query)
 
     def parse(self, text, tools):
         """Use exact reasoning boundaries and the official typed tool parser."""
