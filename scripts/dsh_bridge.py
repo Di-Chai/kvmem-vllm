@@ -377,13 +377,13 @@ def create_app(args,tokenizer):
                 query_source = apply_query_provenance(body, prepared,
                     required=getattr(args, 'require_query_provenance', False))
                 apply_mandatory_policy(prepared, planner.protocol)
-                if len(tokens)+min(limit,args.gen_budget)>args.max_model_len:
-                    raise ValueError('Complete history plus output exceeds the logical context limit')
-                # Reserve the same first native segment as the original route.
-                # A larger logical reply cap must not discard input or reduce
-                # the formerly supported input size. Later segments stop at
-                # the remaining context boundary and return finish=length.
-                output_limit=min(limit,args.max_model_len-len(tokens))
+                remaining_context=args.max_model_len-len(tokens)
+                if remaining_context<=0:
+                    raise ValueError('Complete history leaves no output space within the logical context limit')
+                # Preserve every input/accepted ID. The public output cap is a
+                # maximum, so even the first native segment can use a smaller
+                # positive remainder. Full tool parsing remains authoritative.
+                output_limit=min(limit,remaining_context)
                 data=backend_request(model=args.model,tokens=tokens,session=owner,
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
                 if disable_thinking:
@@ -398,7 +398,8 @@ def create_app(args,tokenizer):
                 (directory/'request.json').write_text(json.dumps(body,ensure_ascii=False))
                 (directory/'plan.json').write_text(json.dumps({k:v for k,v in data.items() if k!='prompt'}|
                     dict(prompt_tokens=len(tokens),exact_output_prefix_reused=prepared[5],
-                         query_source=query_source)|
+                         query_source=query_source,requested_output_cap=limit,
+                         effective_output_cap=output_limit,logical_remaining_tokens=remaining_context)|
                     (dict(system_pin_admission=pin_admission) if pin_admission is not None else {}),indent=2))
                 data.update(stream=True,stream_options=dict(include_usage=True))
                 wire=QwenStream(planner.protocol,rendered['tools']);output_ids=[];usage=None;finish=None

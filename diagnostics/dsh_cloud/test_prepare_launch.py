@@ -49,6 +49,8 @@ class PreparedCaseTests(unittest.TestCase):
             self.assertEqual(set(manifest["cases"]), {"marker", "csgo"})
             self.assertEqual(manifest["stream_idle_timeout_ms"], 300000)
             self.assertEqual(manifest["max_tokens"], 8192)
+            self.assertEqual(manifest["native_g"], 4096)
+            self.assertEqual(manifest["bridge_max_output_segments"], 2)
             self.assertEqual(manifest["context_window"], 32768)
             for case, queued in (("marker", False), ("csgo", True)):
                 code, out, err = self.plan(case)
@@ -154,6 +156,7 @@ class PreparedCaseTests(unittest.TestCase):
         manifest = self.prepare("--max-output-tokens", "16384")
         self.assertEqual(manifest["max_tokens"], 16384)
         self.assertEqual(manifest["native_g"], 4096)
+        self.assertEqual(manifest["bridge_max_output_segments"], 4)
         provider = (self.root / "configuration/provider.patch.yml").read_text()
         self.assertIn("maxTokens: 16384", provider)
         self.assertIn("contextWindow: 32768", provider)
@@ -215,6 +218,44 @@ class PreparedCaseTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Prepared configuration changed", err)
 
+
+    def test_large_native_budget_and_reply_segments_are_explicit(self):
+        for index, (cap, explicit_segments, expected_segments) in enumerate([
+            (16384, 1, 1), (32768, 2, 2), (32768, None, 2),
+        ]):
+            with self.subTest(cap=cap, segments=explicit_segments):
+                self.root = self.base / f"large-{index}"
+                flags = ["--context-window", "262144", "--select-budget", "36864",
+                         "--gen-budget", "16384", "--max-output-tokens", str(cap)]
+                if explicit_segments is not None:
+                    flags += ["--max-output-segments", str(explicit_segments)]
+                manifest = self.prepare(*flags)
+                self.assertEqual(manifest["native_k"], 36864)
+                self.assertEqual(manifest["native_g"], 16384)
+                self.assertEqual(manifest["bridge_max_output_segments"], expected_segments)
+                self.assertEqual(manifest["max_tokens"], cap)
+                provider = (self.root / "configuration/provider.patch.yml").read_text()
+                self.assertIn(f"maxTokens: {cap}", provider)
+                self.assertIn("contextWindow: 262144", provider)
+                self.assertEqual((self.root / "csgo/task.txt").read_text().strip(), "做个网页版的csgo。")
+                code, _, err = self.plan("csgo")
+                self.assertEqual(code, 0, err)
+
+    def test_native_budget_and_segment_mismatches_reject_before_preparation(self):
+        variants = [
+            ["--gen-budget", "0"], ["--gen-budget", "-32"],
+            ["--gen-budget", "16385"], ["--gen-budget", "1.5"],
+            ["--gen-budget", "262144"],
+            ["--gen-budget", "16384", "--max-output-tokens", "32768", "--max-output-segments", "1"],
+            ["--gen-budget", "16384", "--max-output-tokens", "65537"],
+            ["--max-output-segments", "0"], ["--max-output-segments", "5"],
+        ]
+        for extra in variants:
+            with self.subTest(extra=extra):
+                code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
+                                        "--context-window", "262144", "--select-budget", "36864", *extra)
+                self.assertEqual(code, 2)
+                self.assertFalse(self.root.exists())
 
 if __name__ == "__main__":
     unittest.main()

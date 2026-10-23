@@ -23,7 +23,11 @@ def main():
     parser.add_argument("--context-window", type=int, default=24576,
                         help="Must match the already validated backend max_model_len")
     parser.add_argument("--select-budget", type=int, default=4096,
-                        help="Record the backend K budget; positive multiple of 32, with K + fixed G=4096 <= context")
+                        help="Record the backend K budget; positive multiple of 32, with K + G <= context")
+    parser.add_argument("--gen-budget", type=int, default=4096,
+                        help="Backend/bridge native segment G; positive multiple of 32")
+    parser.add_argument("--max-output-segments", type=int, choices=range(1, 5),
+                        help="Match the bridge segment limit; default is ceil(max-output-tokens / G)")
     parser.add_argument("--max-output-tokens", type=int, default=8192,
                         help="Provider output cap; must fit context and the separately configured bridge segment limit")
     parser.add_argument("--stream-idle-timeout-ms", type=int, default=300000,
@@ -55,10 +59,17 @@ def main():
         parser.error("context-window must be at least 8192 for this native K/G profile")
     if args.select_budget <= 0 or args.select_budget % 32:
         parser.error("select-budget must be positive and aligned to 32 tokens")
-    if args.select_budget + 4096 > args.context_window:
-        parser.error("select-budget plus fixed native G=4096 must not exceed context-window")
+    if args.gen_budget <= 0 or args.gen_budget % 32:
+        parser.error("gen-budget must be positive and aligned to 32 tokens")
+    if args.select_budget + args.gen_budget > args.context_window:
+        parser.error("select-budget plus gen-budget must not exceed context-window")
     if not 1 <= args.max_output_tokens <= args.context_window:
         parser.error("max-output-tokens must be positive and no larger than context-window")
+    segments = args.max_output_segments
+    if segments is None:
+        segments = (args.max_output_tokens + args.gen_budget - 1) // args.gen_budget
+    if not 1 <= segments <= 4 or args.max_output_tokens > args.gen_budget * segments:
+        parser.error("max-output-tokens must fit G times the bridge max-output-segments (1 to 4)")
     if not 1 <= args.stream_idle_timeout_ms <= 2147483647:
         parser.error("stream-idle-timeout-ms must be in [1, 2147483647]")
     root = args.run_root.resolve()
@@ -80,7 +91,8 @@ def main():
         "provider": "gc-local", "model": "kvmem-gc-qwen38",
         "base_url": "http://127.0.0.1:18387/v1", "context_window": args.context_window, "max_tokens": args.max_output_tokens,
         "stream_idle_timeout_ms": args.stream_idle_timeout_ms,
-        "native_k": args.select_budget, "native_g": 4096, "query_replay_budget": 128, "max_inflight": 1,
+        "native_k": args.select_budget, "native_g": args.gen_budget,
+        "bridge_max_output_segments": segments, "query_replay_budget": 128, "max_inflight": 1,
         "configuration_sha256": {name: hashlib.sha256((snapshots / name).read_bytes()).hexdigest() for name in names},
         "prepared_only": True,
     }

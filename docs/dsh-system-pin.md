@@ -22,7 +22,8 @@ fails. Pin mode requires verified agent Query provenance and auto reselection.
 Every request and continuation segment is checked before its model call. The
 union of system and sink blocks, one recent block, the full 128-token replay
 budget and two alignment blocks must fit the explicitly declared K. The actual
-Query replay must fit 128 tokens, and each segment's output must fit G. Admission
+Query replay must fit 128 tokens, and each segment's output must fit the explicit
+bridge --gen-budget G (including G=16384); no fixed G4096 assumption is used. Admission
 proofs are saved in plan.json and each segment report. Missing system frames,
 unknown coordinates and insufficient declared capacity fail closed.
 

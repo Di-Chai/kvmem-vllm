@@ -106,20 +106,37 @@ python3 /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud/launch.py \
   --run-root /root/data/kvmem-vllm-gc/runs/dsh-expense-01 --case expense-tracker
 ```
 
-The context value must match the validated backend and bridge. Pass
-`--select-budget 8192` when the backend uses K=8192; its default is 4096.
-This records K in the manifest only and does not reconfigure the runtime.
-K must be a positive multiple of 32, and K plus the fixed native G=4096 must
-fit the declared context. The operator must independently verify K, G and context
-against the actual backend profile; preparation does not load that profile or
-query a running service. The provider's
-8192 default output cap remains subject to the installed pi-ai client's context
-estimate and 4096-token reserve; an explicit output cap does not bypass that
-clamp. `prepare.py --max-output-tokens N` changes the new provider snapshot and
-manifest only. It does not change the backend's decode budget or the bridge's
-segment count. Before execution, the operator must ensure the bridge supports
-at least `N` output tokens across its configured segments and that the logical
-context has room for both input and output. Existing prepared runs are unchanged.
+The context value must match the validated backend and bridge.
+`--select-budget` declares K and `--gen-budget` declares native segment G; both
+default to 4096 and must be positive multiples of 32, with K+G fitting the
+declared context. Preparation records `native_k` and `native_g` in the manifest;
+it does not reconfigure the backend or inspect a running service.
+
+`--max-output-tokens N` changes the new provider snapshot and manifest.
+`--max-output-segments S` declares the matching bridge limit (1–4). If omitted,
+the minimum `ceil(N/G)` is recorded as `bridge_max_output_segments`; N must fit
+G*S. The old default N8192/G4096 therefore declares two segments. Pass the same
+G and segment count to the bridge before execution. The provider cap remains
+subject to the installed pi-ai client's context estimate and its own 4096-token
+reserve, which is independent of native G. Existing prepared runs are unchanged.
+
+For the requested large-history experiment, prepare with
+`--context-window 262144 --select-budget 36864 --gen-budget 16384`,
+`--max-output-tokens 16384 --max-output-segments 1` and
+`--stream-idle-timeout-ms 900000`. Use matching bridge
+`--gen-budget 16384 --max-output-segments 1 --max-model-len 262144`.
+A separate explicit N32768/S2 configuration is supported by CPU tests, but is
+not the selected experiment. These arguments do not qualify GPU capacity or
+change task text, thinking mode or sampling.
+
+The bridge retains the complete prompt and accepted IDs. When fewer than G
+logical tokens remain, the first segment uses that positive remainder; later
+segments likewise use `min(G, effective_output_cap - accepted_output_tokens)`.
+Only a zero/negative remainder fails logical admission. A boundary-limited
+text response may finish with `length`; an incomplete tool still fails the
+authoritative parser and receives no accepted-history commit or complete tool
+response. Requested/effective caps and logical remainder are recorded before
+the model call. Native Query/capacity checks and cancellation remain unchanged.
 
 Each added case gets its own workspace, home and Session. Its copied task and
 initial queue entry are fingerprinted in `manifest.json`, as are the default
@@ -323,3 +340,28 @@ Timer tests use short real intervals after a warm-up, with an independent
 call only at completion; no file is written. The report records the adapter
 source hash. The Python configuration and bridge regressions also cover frozen
 configuration, exact accepted IDs, prefix reuse, system pins and cancellation.
+
+
+## Native generation budget and logical-limit CPU regression
+
+Run the selected regression files from the repository root with only the local
+tokenizer (the upstream transport is a fake HTTP transport):
+
+```sh
+CUDA_VISIBLE_DEVICES='' HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+KVMEM_QWEN38_TOKENIZER=/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4 \
+PYTHONPATH=src:. /root/data/kvmem-vllm-gc/.venv/bin/python -m pytest -q \
+  diagnostics/dsh_cloud/test_prepare_launch.py \
+  tests/test_dsh_output_budget.py tests/test_dsh_bridge_admission.py \
+  tests/test_dsh_system_pin.py tests/test_dsh_model_protocol.py
+```
+
+The isolated candidate passed **87 tests and 36 subtests**, with no skips.
+Coverage includes unchanged default G4096/cap8192/two-segment preparation;
+explicit G16384 with one 16K or two 16K segments; rejected K/G/cap mismatch;
+first-segment positive and exhausted logical remainders; complete versus
+context-truncated tools in streaming and nonstreaming routes; a complete
+tool spanning 16384 accepted IDs plus a short final segment; actual G-aware
+system-pin admission and cross-G restore rejection; and the existing C1,
+upstream cancellation, commit recovery and protocol checks. The tests use
+the real local tokenizer and CPU planner, but no model inference or GPU.
