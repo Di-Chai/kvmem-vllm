@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebCSGO — 网页版反恐精英</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- 主菜单 -->
+  <div id="menu" class="screen">
+    <h1 class="logo">WEB<span>CSGO</span></h1>
+    <p class="tagline">纯前端 2D 俯视角射击 · 经典回合制</p>
+    <div class="menu-panel">
+      <div class="row">
+        <label>玩家昵称</label>
+        <input id="nameInput" type="text" maxlength="12" value="Player">
+      </div>
+      <div class="row">
+        <label>地图</label>
+        <select id="mapSelect">
+          <option value="de_dust">de_dust（经典沙地）</option>
+          <option value="de_nuke">de_nuke（工业风）</option>
+          <option value="de_inferno">de_inferno（意大利红砖）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>回合数</label>
+        <select id="roundSelect">
+          <option value="5">5 回合（快速）</option>
+          <option value="10" selected>10 回合（标准）</option>
+          <option value="15">15 回合（加长）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>机器人数量</label>
+        <select id="botSelect">
+          <option value="3">3 个</option>
+          <option value="5" selected>5 个</option>
+          <option value="7">7 个</option>
+        </select>
+      </div>
+      <button id="startBtn" class="btn primary">开始游戏</button>
+    </div>
+    <div class="controls-hint">
+      <b>操作说明</b>
+      <span>WASD 移动</span><span>鼠标 瞄准/射击</span><span>左键 射击</span>
+      <span>R 换弹</span><span>1/2/3 切枪</span><span>Shift 疾跑</span><span>C 蹲下</span>
+      <span>买枪阶段按 B 打开商店</span>
+    </div>
+  </div>
+
+  <!-- 游戏画面 -->
+  <div id="game" class="screen hidden">
+    <canvas id="canvas"></canvas>
+
+    <!-- 顶部信息 -->
+    <div id="topbar">
+      <div class="score-box ct"><span id="ctScore">0</span><span class="score-label">CT 反恐</span></div>
+      <div id="roundTimer">1:55</div>
+      <div class="score-box t"><span id="tScore">0</span><span class="score-label">T 恐怖</span></div>
+    </div>
+    <div id="roundInfo">回合 1 / 10 · 购买阶段</div>
+
+    <!-- 准星 -->
+    <div id="crosshair"></div>
+
+    <!-- 商店 -->
+    <div id="shop" class="hidden">
+      <h2>武器商店</h2>
+      <div class="shop-money">💰 <span id="shopMoney">800</span></div>
+      <div class="shop-cols">
+        <div class="shop-col">
+          <h3>主武器</h3>
+          <div id="shopPrimary"></div>
+        </div>
+        <div class="shop-col">
+          <h3>手枪 / 装备</h3>
+          <div id="shopSecondary"></div>
+        </div>
+      </div>
+      <p class="shop-hint">按 B 或 ESC 关闭</p>
+    </div>
+
+    <!-- 击杀提示 -->
+    <div id="killfeed"></div>
+
+    <!-- 回合结果 -->
+    <div id="roundResult" class="hidden">
+      <div id="roundResultText"></div>
+      <div id="roundResultSub"></div>
+    </div>
+
+    <!-- 死亡画面 -->
+    <div id="deathScreen" class="hidden">
+      <h2>你被击杀了</h2>
+      <p>等待回合结束…</p>
+    </div>
+
+    <!-- 结算 -->
+    <div id="finalScreen" class="hidden">
+      <h2 id="finalText">胜利！</h2>
+      <p id="finalSub"></p>
+      <button id="backToMenu" class="btn primary">返回主菜单</button>
+    </div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div class="hud-left">
+        <div id="healthBar"><div id="healthFill"></div><span id="healthText">100</span></div>
+        <div id="armorBar"><div id="armorFill"></div><span id="armorText">0</span></div>
+      </div>
+      <div class="hud-center" id="weaponName">USP-S</div>
+      <div class="hud-right">
+        <div id="ammoBox"><span id="ammoNow">12</span> / <span id="ammoReserve">24</span></div>
+        <div id="moneyBox">💰 <span id="moneyText">800</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>个人记账本</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #22292f;
+      --muted: #6b7683;
+      --border: #e3e8ee;
+      --income: #1a9e6e;
+      --expense: #d9534f;
+      --accent: #3b6fe0;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin: 0 0 16px;
+      text-align: center;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    /* 统计卡片 */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .stat {
+      text-align: center;
+      padding: 12px 8px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+    .stat .label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .stat .value {
+      font-size: 1.15rem;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .stat.income .value { color: var(--income); }
+    .stat.expense .value { color: var(--expense); }
+    .stat.balance .value { color: var(--accent); }
+    /* 表单 */
+    .form-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .form-row:last-child { margin-bottom: 0; }
+    input, select, button {
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+    }
+    input:focus, select:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+      border-color: var(--accent);
+    }
+    #amount { flex: 1; min-width: 100px; }
+    #desc { flex: 2; min-width: 140px; }
+    #date { min-width: 140px; }
+    #type { min-width: 90px; }
+    button {
+      cursor: pointer;
+      border: none;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    .btn-add {
+      background: var(--accent);
+      color: #fff;
+      width: 100%;
+      padding: 10px;
+    }
+    /* 月份筛选 */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .filter-bar label { color: var(--muted); font-size: 0.9rem; }
+    .filter-bar select { min-width: 150px; }
+    .filter-bar .hint { color: var(--muted); font-size: 0.8rem; }
+    /* 记录列表 */
+    .record {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .record:last-child { border-bottom: none; }
+    .record .badge {
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .record .badge.income { background: var(--income); }
+    .record .badge.expense { background: var(--expense); }
+    .record .info { flex: 1; min-width: 0; }
+    .record .desc {
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .record .date { font-size: 0.78rem; color: var(--muted); }
+    .record .amt {
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .record .amt.income { color: var(--income); }
+    .record .amt.expense { color: var(--expense); }
+    .btn-del {
+      background: #fff;
+      color: var(--expense);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      flex-shrink: 0;
+    }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 24px 0;
+      font-size: 0.9rem;
+    }
+    .error-msg {
+      color: var(--expense);
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      margin-top: 6px;
+    }
+    @media (max-width: 480px) {
+      .stats { grid-template-columns: 1fr; }
+      .stat { text-align: left; display: flex; justify-content: space-between; align-items: baseline; }
+      .stat .label { margin-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>💰 个人记账本</h1>
+
+    <!-- 本月统计 -->
+    <div class="stats" id="stats">
+      <div class="stat income">
+        <div class="label">本月收入</div>
+        <div class="value" id="stat-income">¥0.00</div>
+      </div>
+      <div class="stat expense">
+        <div class="label">本月支出</div>
+        <div class="value" id="stat-expense">¥0.00</div>
+      </div>
+      <div class="stat balance">
+        <div class="label">本月余额</div>
+        <div class="value" id="stat-balance">¥0.00</div>
+      </div>
+    </div>
+
+    <!-- 新增记录 -->
+    <div class="card">
+      <h2 style="font-size:1rem;margin:0 0 10px;">新增记录</h2>
+      <form id="add-form">
+        <div class="form-row">
+          <select id="type" title="类型">
+            <option value="income">收入</option>
+            <option value="expense">支出</option>
+          </select>
+          <input id="amount" type="number" step="0.01" min="0.01" placeholder="金额" required />
+        </div>
+        <div class="form-row">
+          <input id="desc" type="text" maxlength="50" placeholder="描述（如：午餐、工资）" required />
+          <input id="date" type="date" required />
+        </div>
+        <div class="form-row">
+          <button type="submit" class="btn-add">添加记录</button>
+        </div>
+      </form>
+      <div class="error-msg" id="form-error"></div>
+    </div>
+
+    <!-- 月份筛选 -->
+    <div class="card filter-bar">
+      <label for="month-filter">查看月份</label>
+      <select id="month-filter"></select>
+      <span class="hint">（统计卡片始终显示当前月份）</span>
+    </div>
+
+    <!-- 记录列表 -->
+    <div class="card">
+      <h2 style="font-size:1rem;margin:0 0 6px;" id="list-title">记录列表</h2>
+      <div id="record-list"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

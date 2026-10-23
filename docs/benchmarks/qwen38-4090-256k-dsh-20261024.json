@@ -1,0 +1,397 @@
+{
+  "schema": 1,
+  "date": "2026-10-24",
+  "scope": "Real serial DSH task execution under logical256K/K36K/G16K; not semantic-GC effectiveness or long-history task-quality qualification",
+  "model_repository": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+  "model_revision": "2232b67a2ef5480e97c4450838a712de1346eccc",
+  "download_source": "hf-mirror",
+  "source_commit": "9ec24096ed7140d44bc568f90a9f0bbaf036dcfa",
+  "cloud_gpu": "single NVIDIA RTX4090",
+  "concurrency": 1,
+  "profile": {
+    "host": "127.0.0.1",
+    "port": 8186,
+    "served_model_name": "kvmem-gc-qwen38",
+    "model_format": "safetensors",
+    "execution_mode": "eager",
+    "verify_session_restore": false,
+    "experimental_dflash_query_planning": false,
+    "draft_tokens": 1,
+    "draft_method": "mtp",
+    "draft_quantization": null,
+    "profiler_config": null,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 130,
+    "long_prefill_token_threshold": 0,
+    "gpu_memory_utilization": 0.86,
+    "max_model_len": 262144,
+    "q8_tensorcore": false,
+    "prefill_chunk_tokens": 128,
+    "query_replay_budget": 128,
+    "reasoning_end_str": null,
+    "cuda_allocator_conf": null,
+    "bounded_kv_capacity": true,
+    "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "tokenizer": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "hf_config_path": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "kvmem": {
+      "block_tokens": 32,
+      "select_budget": 36864,
+      "gen_budget": 16384,
+      "repository_blocks": 8196,
+      "sink_blocks": 1,
+      "recent_blocks": 1,
+      "cpu_read_cache_bytes": 12884901888,
+      "archive_backend": "cpu",
+      "archive_io_max_bytes": 67108864,
+      "async_seal": true,
+      "async_archive_retirement": true,
+      "packed_assembly": true,
+      "direct_pinned_reads": true,
+      "async_cpu_scatter": true,
+      "batched_cpu_append": true,
+      "request_planning": true,
+      "session_capacity": 1,
+      "session_checkpoint_bytes": 2147483648,
+      "session_checkpoint_policy": "pm",
+      "session_capture_terminal": true,
+      "mean_k_backend": "torch_reference",
+      "async_refresh": true,
+      "refresh_quantum_tokens": 128,
+      "cpu_history_coordination": true,
+      "maintenance_max_steps": 8,
+      "async_restore": true,
+      "step_latency_interval": 0,
+      "verify_archive_on_finish": false,
+      "historical_gc": {
+        "mode": "delete",
+        "policy": "statistical",
+        "poll_ms": 10,
+        "scan_blocks": 128,
+        "delete_blocks": 8
+      },
+      "assembly_chunk_blocks": 8,
+      "graph_scoring_version": "v1",
+      "graph_aggregation": "sum",
+      "pressure_policy": "recency"
+    }
+  },
+  "harness": {
+    "node": "24.19.0",
+    "cli": "0.1.0-rc.7",
+    "bundled_packages": "0.1.0-rc.8",
+    "thinking": false,
+    "pin_system": true,
+    "compaction": false,
+    "sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "presence_penalty": 0,
+      "repetition_penalty": 1,
+      "seed": 1000
+    },
+    "logical_output_profiles": [
+      {
+        "cases": [
+          "expense-tracker",
+          "csgo-first"
+        ],
+        "max_tokens": 16384,
+        "native_gen_budget": 16384,
+        "segments": 1,
+        "idle_ms": 900000,
+        "turn_budget_ms": 1800000
+      },
+      {
+        "cases": [
+          "csgo-segmented"
+        ],
+        "max_tokens": 32768,
+        "native_gen_budget": 16384,
+        "segments": 2,
+        "idle_ms": 1800000,
+        "turn_budget_ms": 2700000
+      }
+    ]
+  },
+  "cases": [
+    {
+      "case": "expense-tracker",
+      "task_sha256": "53d24ba80e8f0a3f60fc7149214595e27a5bed229a7582453e343dc2ccf9b992",
+      "status": "naturally_completed_and_browser_checks_passed",
+      "official_reason": {
+        "kind": "completed"
+      },
+      "started_at": "2026-10-23T16:33:10.985Z",
+      "finished_at": "2026-10-23T16:39:24.850Z",
+      "native_calls": 12,
+      "committed_native_calls": 12,
+      "accepted_output_tokens": 8705,
+      "exact_prefix_reuses": 11,
+      "max_prompt_tokens": 13474,
+      "tool_calls": {
+        "bash": 5,
+        "todo_write": 4,
+        "write": 2
+      },
+      "browser_summary": {
+        "boot_pass": true,
+        "no_console_errors": true,
+        "no_blocked_dependencies": true,
+        "no_failed_requests": true,
+        "no_http_errors": true,
+        "action_errors": 0,
+        "state_checks_total": 33,
+        "state_checks_passed": 33,
+        "specified_state_checks_pass": true,
+        "default_observations_are_not_gameplay_assertions": true
+      },
+      "artifact_directory": "docs/benchmarks/samples/expense-tracker-256k-20261024",
+      "artifact_sha256": {
+        "index.html": "a5415aed412fbc8bf6dca24daf0f9c60feefd869f8833d8f93d431cd81627722",
+        "app.js": "6d5d54409836d3699b42945c9ad74e7e3c914bfe8c57762d1a509b9e71c2db5e",
+        "browser-plan.json": "142e163b4def9d52a38400a38c8fd60347838eb2ec4ae76ac53cc8c7e92cfb2f",
+        "browser-results.json": "b01e31794b348383d7ae5ab801853e8ac074a3c6d2f8b6c18e189a9c12a77e2f"
+      },
+      "historical_gc_before_release": {
+        "mode": "delete",
+        "policy": "statistical",
+        "policy_params": {
+          "max_importance": 0.1,
+          "min_cold_observations": 3,
+          "min_model_reclaim_score": -1.0,
+          "min_observations": 3,
+          "proactive": true
+        },
+        "active_scopes": 1,
+        "published": 444,
+        "ticks": 579761,
+        "examined": 2339087,
+        "decisions": 0,
+        "retired": 0,
+        "cpu_released": 0,
+        "slots_released": 0,
+        "pending_slots": 0,
+        "pending_cpu_bytes": 0,
+        "retries": 0,
+        "stale": 0,
+        "policy_failures": 0,
+        "shadow_decisions": 0,
+        "admission_attempts": 3450,
+        "admission_retries": 0,
+        "metadata": {
+          "allocations": 2,
+          "recycles": 0,
+          "pooled_scopes": 2,
+          "scope_capacity": 8196
+        }
+      },
+      "release_status": 200,
+      "release_confirmed_absent": true,
+      "lifecycle_cleanup_is_gc": false,
+      "evidence_sha256": {
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/turns/000001.result.json": "1d3f803727fb72b0caf696a4de7c0b6a0bbd522c58bb4af4c8046695664819f7",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/browser-validation-01/report.json": "b6e9c58d90915a076cea7645e1630a5b5dd71b5c99fc22f9be143a1fab28f29e",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/lifecycle-before-release.json": "5adfa3179c88d5bfc1d977cc85cc751b0eb48f06b6b26af23e75edf592cce49c",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/lifecycle-after-release.json": "eac178099fb92441ee4e0ba9989f188f7f7df4ee91a2c4986d2900af85c6aa0c",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/release.json": "ec78b71e19c546a86d76cd58443100308e7101a2af286651133520dca3ad2d98",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-09-gptq-256k/expense-tracker/exit.json": "7ac571e4c473105a97ddeeae77fea231a03a294919aec6363124bcda6db798d9"
+      },
+      "run": "dsh-live-09-gptq-256k",
+      "manifest_sha256": "b904463ac22ce2498c2b830b2822de79f15ba3a2ed2e8d46f0f712a19c75c7dd",
+      "natural_turn_duration_seconds": 373.865
+    },
+    {
+      "case": "csgo",
+      "status": "failed_single_response_cap",
+      "task_sha256": "40430f7f5c80a5f0fbac06447f8f7092f02dae76b9af98a197cda7123bd6a4e4",
+      "native_calls": 6,
+      "committed_calls": 5,
+      "committed_output_tokens": 5685,
+      "failed_segment_output_tokens": 16384,
+      "failed_segment_finish_reason": "length",
+      "reason": {
+        "kind": "error",
+        "error": {
+          "message": "Incomplete or malformed Qwen tool call; no tool was executed",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "artifact_files": [
+        "styles.css",
+        "index.html"
+      ],
+      "release_confirmed_absent": true,
+      "gc_before_release": {
+        "mode": "delete",
+        "policy": "statistical",
+        "policy_params": {
+          "max_importance": 0.1,
+          "min_cold_observations": 3,
+          "min_model_reclaim_score": -1.0,
+          "min_observations": 3,
+          "proactive": true
+        },
+        "active_scopes": 1,
+        "published": 1279,
+        "ticks": 2180635,
+        "examined": 13465908,
+        "decisions": 0,
+        "retired": 0,
+        "cpu_released": 444,
+        "slots_released": 446,
+        "pending_slots": 0,
+        "pending_cpu_bytes": 0,
+        "retries": 0,
+        "stale": 0,
+        "policy_failures": 0,
+        "shadow_decisions": 0,
+        "admission_attempts": 4562,
+        "admission_retries": 0,
+        "metadata": {
+          "allocations": 2,
+          "recycles": 2,
+          "pooled_scopes": 2,
+          "scope_capacity": 8196
+        }
+      },
+      "evidence_sha256": {
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-09-gptq-256k/dsh-gptq-256k-37b78157efb6dbf853fe5cf613e2634be854882e/00006/segment-000.json": "d648bc0b4cbe18959e7ee09faa2385b65644e4d9b615ebf5ef9547c0e66b6f14",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-10-gptq-256k/csgo/status.json": "8ed54bce8bb342adc868acf5b69f79c8c5ca5c7dc06d5da18f9ff4a38920176a",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-10-gptq-256k/csgo/lifecycle-before-release.json": "54ef5e5e6692a53b47397de2b538f417d04a6bb24aca4bcbaf9025c191700c2e",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-10-gptq-256k/csgo/lifecycle-after-release.json": "809493dab213b022244afff0f46aaec10bba260f097abf3fe98e0fb32f5ad47d"
+      },
+      "run": "dsh-live-10-gptq-256k",
+      "manifest_sha256": "51f5dbc8fbe0c5a2985d35baa75a58cc9e7992aaa0d761bfc5a77e631c30011a",
+      "browser_negative_summary": {
+        "schema": "dsh-static-game-validation-v1",
+        "status": "issues-observed",
+        "summary": {
+          "boot_pass": true,
+          "no_console_errors": false,
+          "no_blocked_dependencies": true,
+          "no_failed_requests": false,
+          "no_http_errors": false,
+          "action_errors": 0,
+          "state_checks_total": 0,
+          "state_checks_passed": 0,
+          "specified_state_checks_pass": null,
+          "default_observations_are_not_gameplay_assertions": true
+        },
+        "main_status": 200,
+        "http_errors": [
+          {
+            "url": "http://127.0.0.1:35797/game.js",
+            "status": 404
+          }
+        ],
+        "console_errors": [
+          "Failed to load resource: the server responded with a status of 404 (Not Found)"
+        ],
+        "page_errors": [],
+        "request_failures": [
+          {
+            "url": "http://127.0.0.1:35797/game.js",
+            "failure": {
+              "errorText": "net::ERR_ABORTED"
+            }
+          }
+        ],
+        "blocked_requests": []
+      },
+      "artifact_directory": "docs/benchmarks/samples/csgo-incomplete-256k-20261024",
+      "artifact_sha256": {
+        "styles.css": "db373677b78fdbfb79fd11828c73497cfc67536b4b17e5ba86fdc51b99100dc9",
+        "browser-results.json": "72553c021fde3fb4d39fd13163a1e5e474fda66ce4cd570f318a0c51af080bf8",
+        "index.html": "7b53c05fb1b03c2073891043b8d15522d31353203e1179635b397249ff2be72c"
+      }
+    },
+    {
+      "case": "csgo-segmented",
+      "status": "failed_model_tool_schema",
+      "task_sha256": "40430f7f5c80a5f0fbac06447f8f7092f02dae76b9af98a197cda7123bd6a4e4",
+      "logical_output_cap": 32768,
+      "native_gen_budget": 16384,
+      "max_output_segments": 2,
+      "native_calls": 1,
+      "committed_calls": 0,
+      "failed_segment_prompt_tokens": 4373,
+      "failed_segment_output_tokens": 147,
+      "failed_segment_finish_reason": "stop",
+      "reason": {
+        "kind": "error",
+        "error": {
+          "message": "Qwen tool arguments do not satisfy the declared schema",
+          "code": "PI_AI_ERROR"
+        }
+      },
+      "artifact_files": [],
+      "release_confirmed_absent": true,
+      "gc_before_release": {
+        "mode": "delete",
+        "policy": "statistical",
+        "policy_params": {
+          "max_importance": 0.1,
+          "min_cold_observations": 3,
+          "min_model_reclaim_score": -1.0,
+          "min_observations": 3,
+          "proactive": true
+        },
+        "active_scopes": 1,
+        "published": 1420,
+        "ticks": 2463751,
+        "examined": 16616901,
+        "decisions": 0,
+        "retired": 0,
+        "cpu_released": 1279,
+        "slots_released": 1283,
+        "pending_slots": 0,
+        "pending_cpu_bytes": 0,
+        "retries": 0,
+        "stale": 0,
+        "policy_failures": 0,
+        "shadow_decisions": 0,
+        "admission_attempts": 4562,
+        "admission_retries": 0,
+        "metadata": {
+          "allocations": 2,
+          "recycles": 4,
+          "pooled_scopes": 2,
+          "scope_capacity": 8196
+        }
+      },
+      "segmented_continuation_exercised": false,
+      "evidence_sha256": {
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-10-gptq-256k-segmented/dsh-gptq-256k-segmented-856bb76e575ecdceae5f487ec516b11bdac76ca7/00001/segment-000.json": "b2fd24ca36d2a0d67e6818460d3112645fd8345e4b2e008450e87c90639dd4ea",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-11-gptq-256k-segmented/csgo/status.json": "dbe28ac4ddbe76a8086e91822d1e2708600825c6a6e913c93940340abf0f7a93",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-11-gptq-256k-segmented/csgo/lifecycle-before-release.json": "5857998d57e6c15a574bfbafe55bddaebcf08d373171455109b40e449250d718",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-11-gptq-256k-segmented/csgo/lifecycle-after-release.json": "6ef3ff629e99d303cc8b9d8b3b3ebe52617bdbe7c3f0d293d7926bd3cb185db0"
+      },
+      "run": "dsh-live-11-gptq-256k-segmented",
+      "manifest_sha256": "7e6a4d59b6fc05252211582d996a92cb73dcc9089cbeb33ce96c4bddcc35b88f"
+    }
+  ],
+  "final_shutdown": {
+    "finished_unix": 1792775339.7477355,
+    "gpu_final": "3 MiB, 100 %",
+    "active_compute_processes": [],
+    "owners_absent": true,
+    "cpu_admission_reserved_records": 0,
+    "free_native_blocks": 44,
+    "native_blocks": 45,
+    "sampled_service_gpu_peak_MiB": 22255.0,
+    "engine_RSS_peak_MiB": 4221.84765625,
+    "services_stopped": true,
+    "gpu_final_after_settle": "0 MiB, 0 %"
+  },
+  "limitations": [
+    "No genuine semantic eligibility producer is installed; all real-task GC decision and retirement counts remain zero.",
+    "The expense task naturally completed within a max13474-token prompt. Full256K capacity was tested separately with synthetic exact-prefix continuation.",
+    "The first CSGO run exhausted a harness16K logical response cap, independently of the KVMem generation-window budget.",
+    "The32K segmented configuration failed on147-token malformed model JSON before continuation; successful long segmented tool completion is unproven in this rerun.",
+    "No game.js was created; the browser observed its404. No CSGO gameplay claim is made.",
+    "Owner-release frees are lifecycle cleanup, not proactive GC."
+  ]
+}

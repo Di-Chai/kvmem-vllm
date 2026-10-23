@@ -1,0 +1,328 @@
+{
+  "probe_expression": "(() => { const money = s => Number(document.querySelector(s).textContent.replace(/[^0-9.\\\\-]/g,'')); return {stored:JSON.parse(localStorage.getItem('expense-tracker-records-v1')||'[]').length,visible:document.querySelectorAll('#record-list .record').length,visible_names:[...document.querySelectorAll('#record-list .record .desc')].map(e=>e.textContent).join('|'),income:money('#stat-income'),expense:money('#stat-expense'),balance:money('#stat-balance')}; })()",
+  "initial_wait_ms": 100,
+  "actions": [
+    {
+      "name": "initial-empty",
+      "type": "wait",
+      "ms": 100,
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "income-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "income"
+    },
+    {
+      "name": "income-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "1000"
+    },
+    {
+      "name": "income-desc",
+      "type": "fill",
+      "selector": "#desc",
+      "value": "工资"
+    },
+    {
+      "name": "income-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-10-15"
+    },
+    {
+      "name": "income-submit",
+      "type": "click",
+      "selector": "#add-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "name": "expense-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "expense"
+    },
+    {
+      "name": "expense-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "123.45"
+    },
+    {
+      "name": "expense-desc",
+      "type": "fill",
+      "selector": "#desc",
+      "value": "午餐"
+    },
+    {
+      "name": "expense-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-10-16"
+    },
+    {
+      "name": "expense-submit",
+      "type": "click",
+      "selector": "#add-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "prior-income-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "income"
+    },
+    {
+      "name": "prior-income-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "200"
+    },
+    {
+      "name": "prior-income-desc",
+      "type": "fill",
+      "selector": "#desc",
+      "value": "旧收入"
+    },
+    {
+      "name": "prior-income-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-09-20"
+    },
+    {
+      "name": "prior-income-submit",
+      "type": "click",
+      "selector": "#add-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "filter-prior",
+      "type": "select-option",
+      "selector": "#month-filter",
+      "value": "2026-09"
+    },
+    {
+      "name": "filter-prior-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入"
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "filter-current",
+      "type": "select-option",
+      "selector": "#month-filter",
+      "value": "2026-10"
+    },
+    {
+      "name": "filter-current-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "show-all",
+      "type": "select-option",
+      "selector": "#month-filter",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3
+        }
+      ],
+      "value": ""
+    },
+    {
+      "name": "reload-persistence",
+      "type": "reload",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "delete-expense",
+      "type": "click",
+      "selector": "#record-list .record:has-text(\"午餐\") .btn-del",
+      "expect_dialog": {
+        "type": "confirm",
+        "accept": true
+      },
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "name": "reload-deletion",
+      "type": "reload",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    }
+  ]
+}

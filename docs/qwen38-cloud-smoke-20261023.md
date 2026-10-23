@@ -187,3 +187,8 @@ and failures, separate profiles, source digests and release evidence. All task
 owners were released and the inference services stopped after evaluation;
 the cloud 4090 was observed at 0 MiB allocated. The local working tree was not used
 for inference or changed by this cloud development phase.
+
+
+## Follow-up with corrected 36K/16K/256K budgets
+
+The [follow-up evaluation](qwen38-256k-evaluation-20261023.md) records actual256K CPU-history qualification, the guarded native-capacity and MeanK workspace fixes, a new36K five-pair throughput run (inconclusive against1%), and a naturally completed expense task with33/33 browser checks. It also preserves two further CSGO failures.

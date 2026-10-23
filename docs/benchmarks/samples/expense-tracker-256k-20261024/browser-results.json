@@ -1,0 +1,1222 @@
+{
+  "schema": "dsh-static-game-validation-v1",
+  "status": "observational-checks-passed",
+  "summary": {
+    "boot_pass": true,
+    "no_console_errors": true,
+    "no_blocked_dependencies": true,
+    "no_failed_requests": true,
+    "no_http_errors": true,
+    "action_errors": 0,
+    "state_checks_total": 33,
+    "state_checks_passed": 33,
+    "specified_state_checks_pass": true,
+    "default_observations_are_not_gameplay_assertions": true
+  },
+  "main_status": 200,
+  "artifact_sha256": {
+    "index.html": "a5415aed412fbc8bf6dca24daf0f9c60feefd869f8833d8f93d431cd81627722",
+    "app.js": "6d5d54409836d3699b42945c9ad74e7e3c914bfe8c57762d1a509b9e71c2db5e"
+  },
+  "http_errors": [],
+  "console_errors": [],
+  "page_errors": [],
+  "request_failures": [],
+  "blocked_requests": [],
+  "actions": [
+    {
+      "action": {
+        "name": "initial-empty",
+        "type": "wait",
+        "ms": 100,
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 0
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 0
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:03.052Z",
+      "finished_at": "2026-10-23T16:41:03.480Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 0,
+          "before": 0,
+          "after": 0,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0,
+          "before": 0,
+          "after": 0,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "68436385f42cd1d91c6747225d08dcce8b6bd0e92b5185583485bee8bb7a75c2",
+      "screenshot_after_sha256": "68436385f42cd1d91c6747225d08dcce8b6bd0e92b5185583485bee8bb7a75c2",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      }
+    },
+    {
+      "action": {
+        "name": "income-type",
+        "type": "select-option",
+        "selector": "#type",
+        "value": "income"
+      },
+      "started_at": "2026-10-23T16:41:03.554Z",
+      "finished_at": "2026-10-23T16:41:03.922Z",
+      "checks": [],
+      "selected_values": [
+        "income"
+      ],
+      "screenshot_before_sha256": "68436385f42cd1d91c6747225d08dcce8b6bd0e92b5185583485bee8bb7a75c2",
+      "screenshot_after_sha256": "e03568da2b5377f90ff83522c57046e0f5efea7f4f590f6dc71dda222347fa53",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      }
+    },
+    {
+      "action": {
+        "name": "income-amount",
+        "type": "fill",
+        "selector": "#amount",
+        "value": "1000"
+      },
+      "started_at": "2026-10-23T16:41:03.988Z",
+      "finished_at": "2026-10-23T16:41:04.364Z",
+      "checks": [],
+      "screenshot_before_sha256": "e03568da2b5377f90ff83522c57046e0f5efea7f4f590f6dc71dda222347fa53",
+      "screenshot_after_sha256": "5c3c8b0d65f8b2bea9022603e0921fc2c8eb0d8e301a991046dc814048ad500b",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      }
+    },
+    {
+      "action": {
+        "name": "income-desc",
+        "type": "fill",
+        "selector": "#desc",
+        "value": "工资"
+      },
+      "started_at": "2026-10-23T16:41:04.532Z",
+      "finished_at": "2026-10-23T16:41:04.874Z",
+      "checks": [],
+      "screenshot_before_sha256": "5c3c8b0d65f8b2bea9022603e0921fc2c8eb0d8e301a991046dc814048ad500b",
+      "screenshot_after_sha256": "ba039e74c004f928ead8a2407dc928d503006c9f25155b30cee449b11356c9df",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      }
+    },
+    {
+      "action": {
+        "name": "income-date",
+        "type": "fill",
+        "selector": "#date",
+        "value": "2026-10-15"
+      },
+      "started_at": "2026-10-23T16:41:04.955Z",
+      "finished_at": "2026-10-23T16:41:05.297Z",
+      "checks": [],
+      "screenshot_before_sha256": "d620760770572adfe5c25dcbdbe27b4893edf0122ea0dfd0cc901de1a7203256",
+      "screenshot_after_sha256": "327107a727230b4684e493e0b281e72cb7398e07c88b3f990b3ccef34949e411",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      }
+    },
+    {
+      "action": {
+        "name": "income-submit",
+        "type": "click",
+        "selector": "#add-form button[type=submit]",
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 1
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 1
+          },
+          {
+            "path": "income",
+            "op": "equals",
+            "value": 1000
+          },
+          {
+            "path": "expense",
+            "op": "equals",
+            "value": 0
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 1000
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:05.371Z",
+      "finished_at": "2026-10-23T16:41:05.724Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1,
+          "before": 0,
+          "after": 1,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1,
+          "before": 0,
+          "after": 1,
+          "pass": true
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000,
+          "before": 0,
+          "after": 1000,
+          "pass": true
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0,
+          "before": 0,
+          "after": 0,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000,
+          "before": 0,
+          "after": 1000,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "1ad1cc01d16020400b3e4fbbc2912f79690206bdf612920583086d5d0cd49fba",
+      "screenshot_after_sha256": "f35e7f94c99d8e686fbf34d13396531b4a53e560f3ca27baa46615993c553027",
+      "before_probe": {
+        "stored": 0,
+        "visible": 0,
+        "visible_names": "",
+        "income": 0,
+        "expense": 0,
+        "balance": 0
+      },
+      "after_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "expense-type",
+        "type": "select-option",
+        "selector": "#type",
+        "value": "expense"
+      },
+      "started_at": "2026-10-23T16:41:05.789Z",
+      "finished_at": "2026-10-23T16:41:06.132Z",
+      "checks": [],
+      "selected_values": [
+        "expense"
+      ],
+      "screenshot_before_sha256": "f35e7f94c99d8e686fbf34d13396531b4a53e560f3ca27baa46615993c553027",
+      "screenshot_after_sha256": "f35e7f94c99d8e686fbf34d13396531b4a53e560f3ca27baa46615993c553027",
+      "before_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "expense-amount",
+        "type": "fill",
+        "selector": "#amount",
+        "value": "123.45"
+      },
+      "started_at": "2026-10-23T16:41:06.206Z",
+      "finished_at": "2026-10-23T16:41:06.524Z",
+      "checks": [],
+      "screenshot_before_sha256": "f35e7f94c99d8e686fbf34d13396531b4a53e560f3ca27baa46615993c553027",
+      "screenshot_after_sha256": "2c24572b1be29c6cd5eadc70b1d9b2e06b66b60fa94a0d6ccb58546531328e6f",
+      "before_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "expense-desc",
+        "type": "fill",
+        "selector": "#desc",
+        "value": "午餐"
+      },
+      "started_at": "2026-10-23T16:41:06.606Z",
+      "finished_at": "2026-10-23T16:41:06.924Z",
+      "checks": [],
+      "screenshot_before_sha256": "2c24572b1be29c6cd5eadc70b1d9b2e06b66b60fa94a0d6ccb58546531328e6f",
+      "screenshot_after_sha256": "4fdfb240897793b55ede3956be71d0dcd2ff3712c54dbf5d4008b623a86edaf8",
+      "before_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "expense-date",
+        "type": "fill",
+        "selector": "#date",
+        "value": "2026-10-16"
+      },
+      "started_at": "2026-10-23T16:41:07.008Z",
+      "finished_at": "2026-10-23T16:41:07.325Z",
+      "checks": [],
+      "screenshot_before_sha256": "5caa114bc913f1671510cbe3cc259fd0e4167fcab446627b85927f1a91496ded",
+      "screenshot_after_sha256": "ebebf777f14daad4ed4d6de902604c332d861db4bc4470a3fd64084f3091bc27",
+      "before_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "expense-submit",
+        "type": "click",
+        "selector": "#add-form button[type=submit]",
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "income",
+            "op": "equals",
+            "value": 1000
+          },
+          {
+            "path": "expense",
+            "op": "equals",
+            "value": 123.45
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 876.55
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:07.407Z",
+      "finished_at": "2026-10-23T16:41:07.759Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2,
+          "before": 1,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2,
+          "before": 1,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000,
+          "before": 1000,
+          "after": 1000,
+          "pass": true
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45,
+          "before": 0,
+          "after": 123.45,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55,
+          "before": 1000,
+          "after": 876.55,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "1aec6bda8f18004b866880b784a7815fd93d2b2b6f7cdea1d26b196a26dd8e52",
+      "screenshot_after_sha256": "5f111f1929e91e41884f98cab59c4af6eb067ce67d8b84f5c9895a178f9a12f3",
+      "before_probe": {
+        "stored": 1,
+        "visible": 1,
+        "visible_names": "工资",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "prior-income-type",
+        "type": "select-option",
+        "selector": "#type",
+        "value": "income"
+      },
+      "started_at": "2026-10-23T16:41:07.843Z",
+      "finished_at": "2026-10-23T16:41:08.163Z",
+      "checks": [],
+      "selected_values": [
+        "income"
+      ],
+      "screenshot_before_sha256": "5f111f1929e91e41884f98cab59c4af6eb067ce67d8b84f5c9895a178f9a12f3",
+      "screenshot_after_sha256": "5f111f1929e91e41884f98cab59c4af6eb067ce67d8b84f5c9895a178f9a12f3",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "prior-income-amount",
+        "type": "fill",
+        "selector": "#amount",
+        "value": "200"
+      },
+      "started_at": "2026-10-23T16:41:08.240Z",
+      "finished_at": "2026-10-23T16:41:08.561Z",
+      "checks": [],
+      "screenshot_before_sha256": "5f111f1929e91e41884f98cab59c4af6eb067ce67d8b84f5c9895a178f9a12f3",
+      "screenshot_after_sha256": "f09ecd822b21be8d7c134e1992282232e735876959f51bb61e84205e5b3d27a6",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "prior-income-desc",
+        "type": "fill",
+        "selector": "#desc",
+        "value": "旧收入"
+      },
+      "started_at": "2026-10-23T16:41:08.641Z",
+      "finished_at": "2026-10-23T16:41:08.963Z",
+      "checks": [],
+      "screenshot_before_sha256": "f09ecd822b21be8d7c134e1992282232e735876959f51bb61e84205e5b3d27a6",
+      "screenshot_after_sha256": "32818da572867293bad3bc44bff8b53066f4ed17b9ff6a4cad6cf56e4f0a5245",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "prior-income-date",
+        "type": "fill",
+        "selector": "#date",
+        "value": "2026-09-20"
+      },
+      "started_at": "2026-10-23T16:41:09.041Z",
+      "finished_at": "2026-10-23T16:41:09.366Z",
+      "checks": [],
+      "screenshot_before_sha256": "a546b755f85d9fb06517b30444cefa34a9af3910c1ef31560b33d2161d27b318",
+      "screenshot_after_sha256": "0610e7f739c282ee1d16ddc5793ed23f8a06d9d5e86ffdaeb02eb63a135e9391",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "prior-income-submit",
+        "type": "click",
+        "selector": "#add-form button[type=submit]",
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 3
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 3
+          },
+          {
+            "path": "income",
+            "op": "equals",
+            "value": 1000
+          },
+          {
+            "path": "expense",
+            "op": "equals",
+            "value": 123.45
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 876.55
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:09.440Z",
+      "finished_at": "2026-10-23T16:41:09.796Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3,
+          "before": 2,
+          "after": 3,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3,
+          "before": 2,
+          "after": 3,
+          "pass": true
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000,
+          "before": 1000,
+          "after": 1000,
+          "pass": true
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45,
+          "before": 123.45,
+          "after": 123.45,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55,
+          "before": 876.55,
+          "after": 876.55,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "9c3056aeff7ed06778ff0a0307cf5a13374c097f36ecabd37e119001a08d8ba5",
+      "screenshot_after_sha256": "9e93899d77220a7896feb3818d0198b985ee3a2b273f6bb96e7f4ac18484231b",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "filter-prior",
+        "type": "select-option",
+        "selector": "#month-filter",
+        "value": "2026-09"
+      },
+      "started_at": "2026-10-23T16:41:09.875Z",
+      "finished_at": "2026-10-23T16:41:10.193Z",
+      "checks": [],
+      "selected_values": [
+        "2026-09"
+      ],
+      "screenshot_before_sha256": "9e93899d77220a7896feb3818d0198b985ee3a2b273f6bb96e7f4ac18484231b",
+      "screenshot_after_sha256": "4f380b5fc30f375f132fbad733b95a40de445b86999cc6af5f2d70eabc77fce4",
+      "before_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 1,
+        "visible_names": "旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "filter-prior-commit",
+        "type": "key-press",
+        "key": "Tab",
+        "checks": [
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 1
+          },
+          {
+            "path": "visible_names",
+            "op": "equals",
+            "value": "旧收入"
+          },
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 3
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:10.275Z",
+      "finished_at": "2026-10-23T16:41:10.591Z",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1,
+          "before": 1,
+          "after": 1,
+          "pass": true
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入",
+          "before": "旧收入",
+          "after": "旧收入",
+          "pass": true
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3,
+          "before": 3,
+          "after": 3,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "4f380b5fc30f375f132fbad733b95a40de445b86999cc6af5f2d70eabc77fce4",
+      "screenshot_after_sha256": "6320c434220362dee7b7ea2492759a02b3279211df028acef0e81a5bba59914a",
+      "before_probe": {
+        "stored": 3,
+        "visible": 1,
+        "visible_names": "旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 1,
+        "visible_names": "旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "filter-current",
+        "type": "select-option",
+        "selector": "#month-filter",
+        "value": "2026-10"
+      },
+      "started_at": "2026-10-23T16:41:10.677Z",
+      "finished_at": "2026-10-23T16:41:10.993Z",
+      "checks": [],
+      "selected_values": [
+        "2026-10"
+      ],
+      "screenshot_before_sha256": "87cc3d3ef0a5a20a300245479c384c402afca030af4438c1d3295afe2cd69878",
+      "screenshot_after_sha256": "e077caeddbedbdc991950e603653efc6554b12fbf74b006b49edab40a7f5a4f4",
+      "before_probe": {
+        "stored": 3,
+        "visible": 1,
+        "visible_names": "旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "filter-current-commit",
+        "type": "key-press",
+        "key": "Tab",
+        "checks": [
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 2
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:11.071Z",
+      "finished_at": "2026-10-23T16:41:11.371Z",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2,
+          "before": 2,
+          "after": 2,
+          "pass": true
+        }
+      ],
+      "screenshot_before_sha256": "e077caeddbedbdc991950e603653efc6554b12fbf74b006b49edab40a7f5a4f4",
+      "screenshot_after_sha256": "659edadfce043a1e7c0919dbd8caff19096a745b03b6491f6fddfb9137a1252e",
+      "before_probe": {
+        "stored": 3,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "show-all",
+        "type": "select-option",
+        "selector": "#month-filter",
+        "checks": [
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 3
+          }
+        ],
+        "value": ""
+      },
+      "started_at": "2026-10-23T16:41:11.457Z",
+      "finished_at": "2026-10-23T16:41:11.796Z",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3,
+          "before": 2,
+          "after": 3,
+          "pass": true
+        }
+      ],
+      "selected_values": [
+        ""
+      ],
+      "screenshot_before_sha256": "2007b361f0b68099d189cd35a4837ebbf7c9c6ba5d88c7f19da9c5d95cb73801",
+      "screenshot_after_sha256": "aa2fbac1c35932b8b7cd41842e317bf5786175bbf0bfe52f3fc67923976de4ee",
+      "before_probe": {
+        "stored": 3,
+        "visible": 2,
+        "visible_names": "午餐|工资",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "reload-persistence",
+        "type": "reload",
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 3
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 3
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 876.55
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:11.892Z",
+      "finished_at": "2026-10-23T16:41:12.261Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3,
+          "before": 3,
+          "after": 3,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 3,
+          "before": 3,
+          "after": 3,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55,
+          "before": 876.55,
+          "after": 876.55,
+          "pass": true
+        }
+      ],
+      "reload_status": 200,
+      "screenshot_before_sha256": "f6950b8cf5883f58c3f89517508010bca92c0b1123f6161a772f9fa7983a195c",
+      "screenshot_after_sha256": "514c7096fb012c3f81819b951ab9822129199a51e7823d3f5d22a66b43889b62",
+      "before_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      }
+    },
+    {
+      "action": {
+        "name": "delete-expense",
+        "type": "click",
+        "selector": "#record-list .record:has-text(\"午餐\") .btn-del",
+        "expect_dialog": {
+          "type": "confirm",
+          "accept": true
+        },
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "income",
+            "op": "equals",
+            "value": 1000
+          },
+          {
+            "path": "expense",
+            "op": "equals",
+            "value": 0
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 1000
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:12.332Z",
+      "finished_at": "2026-10-23T16:41:12.727Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2,
+          "before": 3,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2,
+          "before": 3,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000,
+          "before": 1000,
+          "after": 1000,
+          "pass": true
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0,
+          "before": 123.45,
+          "after": 0,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000,
+          "before": 876.55,
+          "after": 1000,
+          "pass": true
+        }
+      ],
+      "dialogs": [
+        {
+          "type": "confirm",
+          "message": "确定删除这条记录吗？\n2026-10-16 支出 ¥123.45 午餐",
+          "decision": "accept",
+          "matches_expected_type": true,
+          "handled": true
+        }
+      ],
+      "screenshot_before_sha256": "514c7096fb012c3f81819b951ab9822129199a51e7823d3f5d22a66b43889b62",
+      "screenshot_after_sha256": "8fa96927fdd81021907f7fab670320147d9277ee92493fcee077caade09812fe",
+      "before_probe": {
+        "stored": 3,
+        "visible": 3,
+        "visible_names": "午餐|工资|旧收入",
+        "income": 1000,
+        "expense": 123.45,
+        "balance": 876.55
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "工资|旧收入",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    },
+    {
+      "action": {
+        "name": "reload-deletion",
+        "type": "reload",
+        "checks": [
+          {
+            "path": "stored",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "visible",
+            "op": "equals",
+            "value": 2
+          },
+          {
+            "path": "balance",
+            "op": "equals",
+            "value": 1000
+          }
+        ]
+      },
+      "started_at": "2026-10-23T16:41:12.798Z",
+      "finished_at": "2026-10-23T16:41:13.149Z",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2,
+          "before": 2,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2,
+          "before": 2,
+          "after": 2,
+          "pass": true
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000,
+          "before": 1000,
+          "after": 1000,
+          "pass": true
+        }
+      ],
+      "reload_status": 200,
+      "screenshot_before_sha256": "8fa96927fdd81021907f7fab670320147d9277ee92493fcee077caade09812fe",
+      "screenshot_after_sha256": "39a1fbee9761805d36927ea40e198c949c435116843beeeec875a2b5e1a38fbb",
+      "before_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "工资|旧收入",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      },
+      "after_probe": {
+        "stored": 2,
+        "visible": 2,
+        "visible_names": "工资|旧收入",
+        "income": 1000,
+        "expense": 0,
+        "balance": 1000
+      }
+    }
+  ],
+  "initial_probe": {
+    "stored": 0,
+    "visible": 0,
+    "visible_names": "",
+    "income": 0,
+    "expense": 0,
+    "balance": 0
+  },
+  "final_probe": {
+    "stored": 2,
+    "visible": 2,
+    "visible_names": "工资|旧收入",
+    "income": 1000,
+    "expense": 0,
+    "balance": 1000
+  },
+  "raw_report_sha256": "b6e9c58d90915a076cea7645e1630a5b5dd71b5c99fc22f9be143a1fab28f29e"
+}
