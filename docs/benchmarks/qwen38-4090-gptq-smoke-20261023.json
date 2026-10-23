@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "model": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+  "revision": "2232b67a2ef5480e97c4450838a712de1346eccc",
+  "download_source": "hf-mirror.com",
+  "gpu": "one cloud RTX4090",
+  "concurrency": 1,
+  "scope": "Plain vLLM single-request smoke; no KVMem, MTP, GC or CPU weight offload",
+  "run": "/root/data/kvmem-vllm-gc/runs/qwen38-plain-gptq-smoke-01",
+  "model_load_memory_gib": 16.83,
+  "settings": {
+    "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "args": {
+      "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+      "tokenizer": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+      "dtype": "bfloat16",
+      "load_format": "safetensors",
+      "safetensors_load_strategy": "eager",
+      "language_model_only": true,
+      "kv_cache_dtype": "fp8_e4m3",
+      "max_model_len": 2048,
+      "max_num_seqs": 1,
+      "max_num_batched_tokens": 128,
+      "gpu_memory_utilization": 0.93,
+      "enforce_eager": true,
+      "enable_prefix_caching": false,
+      "async_scheduling": false,
+      "disable_log_stats": false,
+      "seed": 20261023
+    },
+    "prompt": "计算 37 × 19，只用一句中文给出结果。",
+    "num_requests": 1,
+    "mtp": false
+  },
+  "result": {
+    "load_s": 73.64581062085927,
+    "generation_s": 1.1622393056750298,
+    "requests": [
+      {
+        "prompt_tokens": 27,
+        "metrics": {
+          "num_generation_tokens": 15,
+          "num_preemptions": 0,
+          "arrival_time": 1792762477.6314352,
+          "queued_ts": 13660196.251717761,
+          "scheduled_ts": 13660196.251747321,
+          "first_token_ts": 13660196.374660764,
+          "last_token_ts": 13660197.398598053,
+          "first_token_latency": 0.13857197761535645,
+          "is_corrupted": false
+        },
+        "completions": [
+          {
+            "text": "37 乘以 19 等于 703。",
+            "token_ids": [
+              18,
+              22,
+              220,
+              133270,
+              220,
+              16,
+              24,
+              220,
+              102149,
+              220,
+              22,
+              15,
+              18,
+              1710,
+              248046
+            ],
+            "finish_reason": "stop"
+          }
+        ]
+      }
+    ],
+    "elapsed_s": 74.8080499265343
+  },
+  "run_summary": {
+    "exit_code": 0,
+    "peak_gpu_memory_mib": 23155,
+    "memory_samples": 263,
+    "wall_seconds": 89.07693099975586
+  },
+  "artifacts": {
+    "settings.json": "d0267049fcfa59b2a8f8d79c497b6447fb726ed77b5cae615199e81f5d940858",
+    "result.json": "85ba83b04695c1ec115b66d03cad446b8732e1bfff1fdc7dd4caaa7f4e5e9d3f",
+    "run-summary.json": "a706b0a5ee02440234529080e42aa7a25fd370971a5e94fe95c799547ce5dab5",
+    "model.log": "230ca1f019771ade21c224476e0b7e0a1fcc13ab8f7457892db93ebd901b5487",
+    "gpu-memory.jsonl": "ee886d42ecc9bea081007f49dcfe68dd7a725b585c19b6e8c8982630663e85de"
+  },
+  "limitations": [
+    "One short arithmetic response does not establish sustained throughput or quality.",
+    "Sampled peak includes loading and profiled KV allocation; it is not weights-only memory.",
+    "NVFP4 and GPTQ used the same plain smoke settings, but generated different response lengths."
+  ]
+}

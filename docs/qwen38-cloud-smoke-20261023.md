@@ -118,5 +118,11 @@ does not qualify successful M restoration after GC.
 The smaller sokada4/Qwen3.8-27B-GPTQ-Int4 fallback at revision
 2232b67a2ef5480e97c4450838a712de1346eccc was also downloaded through hf-mirror
 and all 16 files verified. Its five weight files total 19,559,451,008 bytes.
-It has not been used for inference in this report. The actual loaded tokenizer
+It subsequently passed the same plain single-request smoke, answering
+“37 乘以 19 等于 703。”. Model loading used 16.83 GiB versus NVFP4 19.09 GiB;
+the sampled whole-process GPU peak was 23,155 MiB. The 27-token input produced
+15 output tokens including stop, with 0.139 s time to first token and 1.162 s
+for the generation call. Different response lengths make these short timings
+unsuitable as a sustained speed comparison. The [GPTQ smoke report](benchmarks/qwen38-4090-gptq-smoke-20261023.json)
+records the exact settings and evidence digests. The actual loaded tokenizer
 backend and chat template match NVFP4, while the padding token ID differs.
