@@ -72,7 +72,19 @@ property change.
 Additional actions: click (selector), key-press (key), mouse-move (x/y/steps).
 Optional viewport, initial_wait_ms, hold_ms and per-action settle_ms are supported.
 All unspecified delays are bounded. Page exceptions cause a failed report.
-Favicon or other missing assets are recorded rather than silently ignored.
+HTTP 4xx/5xx responses are recorded separately as http_errors (URL and status),
+and fail the no_http_errors gate even if the browser reports no transport failure
+or console error. Favicon or other missing assets are not silently ignored.
+
+A minimal local 404 script-resource regression check is available:
+
+    python3 diagnostics/dsh_validation/test_http_errors.py \
+      --runtime-root /tmp/kvmem-gc-browser-runtime-1248 \
+      --output /root/data/kvmem-vllm-gc/runs/browser-validator-http404-01
+
+It creates an infrastructure fixture outside any model artifact directory, fetches
+a missing .js resource, and checks that transport success with HTTP 404 still fails
+the report. It never sends a model request.
 
 External requests are blocked by default, including all model/API endpoints.
 If the actual source depends on a known CDN, an explicitly reviewed plan may set

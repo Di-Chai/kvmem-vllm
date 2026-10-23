@@ -43,7 +43,7 @@ const report = {
     'Behavior claims require explicit state probes, action checks and source review.',
     'This evaluates a DSH task artifact, not semantic GC quality or model throughput.',
   ],
-  browser: {}, requests: [], console_errors: [], console_warnings: [],
+  browser: {}, requests: [], http_errors: [], console_errors: [], console_warnings: [],
   page_errors: [], request_failures: [], blocked_requests: [], actions: [],
   artifact_sha256: {}, plan,
 };
@@ -133,7 +133,11 @@ try {
   });
   page.on('pageerror', error => report.page_errors.push(String(error)));
   page.on('requestfailed', req => report.request_failures.push({url:req.url(), failure:req.failure()}));
-  page.on('response', res => report.requests.push({url:res.url(), status:res.status()}));
+  page.on('response', res => {
+    const response = {url:res.url(), status:res.status()};
+    report.requests.push(response);
+    if (response.status >= 400 && response.status <= 599) report.http_errors.push(response);
+  });
   await page.addInitScript(() => {
     window.__dshValidationEvents = [];
     for (const kind of ['keydown','keyup','mousedown','mouseup','click','mousemove','pointerlockchange']) {
@@ -266,6 +270,7 @@ try {
     no_console_errors:!report.console_errors.length,
     no_blocked_dependencies:!report.blocked_requests.length,
     no_failed_requests:!report.request_failures.length,
+    no_http_errors:!report.http_errors.length,
     action_errors:report.actions.filter(x => x.error).length,
     state_checks_total:actionChecks.length,
     state_checks_passed:actionChecks.filter(x => x.pass).length,
@@ -274,6 +279,7 @@ try {
   };
   report.status = report.summary.boot_pass && report.summary.no_console_errors
     && report.summary.no_blocked_dependencies && report.summary.no_failed_requests
+    && report.summary.no_http_errors
     && !report.summary.action_errors && actionChecks.every(x => x.pass) ? 'observational-checks-passed' : 'issues-observed';
 } catch (error) {
   report.status = 'harness-or-page-failure';
