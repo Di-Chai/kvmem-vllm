@@ -7,6 +7,7 @@ import torch
 import time
 from dataclasses import dataclass
 from vllm.triton_utils import tl, triton
+from .fp8_compat import fp8_storage, fp8_to_float, float_to_fp8
 
 
 @dataclass
@@ -184,7 +185,8 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
                      LAYERS: tl.constexpr, LAYER: tl.constexpr, HEADS: tl.constexpr,
                      DIM: tl.constexpr, HALF: tl.constexpr, PAGE: tl.constexpr,
                      BLOCK: tl.constexpr, RAW_TYPE: tl.constexpr,
-                     RAW_BYTES: tl.constexpr, ROPE_TYPE: tl.constexpr):
+                     RAW_BYTES: tl.constexpr, ROPE_TYPE: tl.constexpr,
+                     SOFTWARE_FP8: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     record, offset = token // RECORD_TOKENS, token % RECORD_TOKENS
     position = tl.load(bases + record).to(tl.int64) + offset
@@ -196,9 +198,9 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     mask = d < DIM
     raw = payload.to(tl.pointer_type(RAW_TYPE))
     raw_base = record * (raw_elements * (RAW_BYTES + 1) // RAW_BYTES) + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
-    x = tl.load(raw + raw_base + d, mask=mask, other=0.0).to(tl.float32)
+    x = fp8_to_float(tl.load(raw + raw_base + d, mask=mask, other=0.0), SOFTWARE_FP8 and RAW_BYTES == 1)
     other_d = tl.where(d < HALF, d + HALF, d - HALF)
-    mate = tl.load(raw + raw_base + other_d, mask=d < 2*HALF, other=0.0).to(tl.float32)
+    mate = fp8_to_float(tl.load(raw + raw_base + other_d, mask=d < 2*HALF, other=0.0), SOFTWARE_FP8 and RAW_BYTES == 1)
     freq = d % HALF
     cos = tl.load(trig + position * TRIG_STRIDE + freq).to(tl.float32)
     sin = tl.load(trig + position * TRIG_STRIDE + HALF + freq).to(tl.float32)
@@ -212,6 +214,8 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     else:
         scaled = rotated / tl.load(scale)
     quantized = tl.minimum(tl.maximum(scaled, -448.0), 448.0)
+    if SOFTWARE_FP8:
+        quantized = float_to_fp8(quantized)
     tl.store(kcache + page*k0 + cache_offset*k1 + head*k2 + d, quantized, mask=mask)
     value_base = record * raw_elements * (RAW_BYTES + 1) + raw_elements * RAW_BYTES + LAYER * layer_elements + offset * HEADS * DIM + head * DIM
     value = tl.load(payload + value_base + d, mask=mask, other=0)
@@ -243,14 +247,17 @@ def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_t
         raise ValueError("Invalid native scale, rotary geometry or inner stride")
     if not bases.numel():
         return
+    key_input,software = fp8_storage(key)
+    value_input,_ = fp8_storage(value)
     _assemble_packed[(bases.numel() * block_tokens, heads)](
-        payload, bases, layer.kernel_page_table, layer.cos_sin, key, value, layer.key_scale,
+        payload, bases, layer.kernel_page_table, layer.cos_sin, key_input, value_input, layer.key_scale,
         *key.stride()[:3], *value.stride()[:3], layer.cos_sin.stride(0), block_tokens,
         layers, layer_index, heads, dim, layer.cos_sin.shape[1] // 2, key.shape[1],
         triton.next_power_of_2(dim),
-        (tl.float8e4nv if raw_dtype == torch.float8_e4m3fn else
+        ((tl.uint8 if software else tl.float8e4nv) if raw_dtype == torch.float8_e4m3fn else
          tl.bfloat16 if raw_dtype == torch.bfloat16 else tl.float16),
         raw_dtype.itemsize,
         (tl.float32 if raw_dtype == torch.float8_e4m3fn else
          tl.bfloat16 if raw_dtype == torch.bfloat16 else tl.float16),
+        software,
         num_warps=4, enable_fp_fusion=raw_dtype != torch.float8_e4m3fn)

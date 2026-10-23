@@ -1205,6 +1205,23 @@ PYBIND11_MODULE(_native, m) {
         .def("pick", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory) {
             return s.pick_topk_blocks(mandatory);
         })
+        .def("pick_groups", [](const KvMemStore &s,
+                const std::vector<std::pair<uint64_t, uint64_t>> &groups,
+                const std::vector<double> &scores, const std::vector<uint32_t> &mandatory) {
+            if (groups.size() != scores.size())
+                throw std::invalid_argument("Group spans and scores must have equal lengths");
+            for (size_t i = 0; i < groups.size(); ++i) {
+                if (groups[i].second <= groups[i].first || groups[i].second > s.history_end())
+                    throw std::invalid_argument("Group span is outside accepted logical history");
+                if (!std::isfinite(scores[i]))
+                    throw std::invalid_argument("Group scores must be finite");
+            }
+            // Logical-span lookup validates live generations and skips an
+            // incomplete group as a whole. Actual execution admission remains
+            // in Store.select; neither scoring nor graph masks grant access.
+            return s.pick_repository_semantic_groups(groups, scores, mandatory);
+        }, py::arg("groups"), py::arg("group_scores"),
+           py::arg("mandatory") = std::vector<uint32_t>{})
         .def("pick_with_prefill", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory,
                                     const KvMemStore::PrefillSelectionScores &scores) {
             for (const auto &[key,value]:scores)

@@ -16,6 +16,32 @@ def v2_settings(**updates):
     return settings(graph_scoring_version='v2', **updates)
 
 
+@pytest.mark.parametrize('aggregation', ['sum', 'max'])
+def test_pooling_roundtrips_direct_launch_and_runtime(tmp_path, aggregation):
+    profile = model_profile(tmp_path)
+    profile['kvmem'].update(graph_scoring_version='v2', graph_aggregation=aggregation,
+                            pressure_policy='attention')
+    plan = build_launch(profile, tmp_path, tmp_path/'pool')
+    worker = worker_payload(plan)
+    assert runtime(worker).graph_aggregation == aggregation
+    assert worker['pressure_policy'] == 'attention'
+    reloaded = build_launch(json.loads(json.dumps(plan['profile'])), tmp_path, tmp_path/'reload-pool')
+    assert worker_payload(reloaded) == worker
+
+
+@pytest.mark.parametrize('value', [False, None, [], {}, 'mean'])
+def test_invalid_pooling_is_rejected_before_launch(value):
+    with pytest.raises(ValueError, match='graph_aggregation'):
+        runtime(v2_settings(graph_aggregation=value))
+
+
+def test_max_pooling_requires_v2_and_can_be_preserved_by_dataclass_replacement():
+    with pytest.raises(ValueError, match='requires graph_scoring_version=v2'):
+        runtime(settings(graph_aggregation='max'))
+    result = runtime(v2_settings(graph_aggregation='max'))
+    assert replace(result, graph_trace=True).graph_aggregation == 'max'
+
+
 def test_legacy_pressure_alias_and_v2_defaults_are_resolved_without_input_mutation():
     default = runtime()
     assert (default.graph_scoring_version, default.graph_alpha, default.pressure_policy,
@@ -140,8 +166,10 @@ def elastic_profile(tmp_path):
         graph_mode='multi', graph_scoring_version='v2', pressure_policy='graph')
 
 
-def test_elastic_default_injection_and_serialized_profile_roundtrip(tmp_path):
+@pytest.mark.parametrize('aggregation', ['sum', 'max'])
+def test_elastic_default_injection_and_serialized_profile_roundtrip(tmp_path, aggregation):
     profile = elastic_profile(tmp_path)
+    profile['graph_aggregation'] = aggregation
     before = deepcopy(profile)
     resolved, _ = build_elastic(profile, tmp_path, tmp_path / 'elastic')
     backend = resolved['mean_k_backend_profile']
@@ -149,6 +177,7 @@ def test_elastic_default_injection_and_serialized_profile_roundtrip(tmp_path):
     for payload in (resolved, backend['kvmem'], native):
         assert payload['graph_scoring_version'] == 'v2'
         assert payload['graph_alpha'] == .2 and payload['pressure_policy'] == 'graph'
+        assert payload['graph_aggregation'] == aggregation
         assert not {'graph_locality_weight', 'graph_attention_weight', 'action_pressure'} & payload.keys()
     restored, _ = build_elastic(json.loads(json.dumps(resolved)), tmp_path, tmp_path / 'elastic2')
     assert restored['mean_k_backend_profile'] == backend

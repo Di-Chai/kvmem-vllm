@@ -979,6 +979,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 resident_records=self.resident_records,
                 gc_config=self.gc_config, gc_progress=self.gc_progress,
                 scoring_layers=len(self.runner._kvmem_layers),mean_k_backend=self.options.mean_k_backend,
+                query_score_mode=getattr(self.options, 'query_score_mode', 'mean_k'),
+                query_window_cache_bytes=getattr(self.options, 'query_window_cache_bytes', 2147483648),
                 cpu_mean_index_simd=getattr(self.options, 'cpu_mean_index_simd', False),
                 mean_index_stats=self.cpu_mean_index_stats)
             if getattr(self,'action',None) is not None:
@@ -1485,6 +1487,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             'capture_opaque_stats': (self.runner._kvmem_capture_opaque.snapshot()
                 if getattr(self.runner, '_kvmem_capture_opaque', None) is not None else {}),
             'cpu_mean_index_simd': getattr(self.options, 'cpu_mean_index_simd', False),
+            'query_score_mode': getattr(self.options, 'query_score_mode', 'mean_k'),
+            'query_window_cache_bytes': getattr(self.options, 'query_window_cache_bytes', 2147483648),
             'cpu_mean_index_stats': (self.cpu_mean_index_stats.snapshot()
                 if getattr(self, 'cpu_mean_index_stats', None) is not None else {}),
             'prefill_action_before_mtp': getattr(self.options, 'prefill_action_before_mtp', False),

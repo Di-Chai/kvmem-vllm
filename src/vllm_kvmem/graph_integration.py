@@ -18,6 +18,7 @@ _MAX_REPLAY_RECORD_BYTES = 2 * 1024 * 1024
 def propagation_options(options):
     result = dict(mode=options.graph_mode,
         scoring_version=getattr(options, 'graph_scoring_version', 'v1'),
+        aggregation=getattr(options, 'graph_aggregation', 'sum'),
         alpha=getattr(options, 'graph_alpha', .2),
         locality_weight=options.graph_locality_weight,
         attention_weight=options.graph_attention_weight,
@@ -79,8 +80,26 @@ def _score_and_select(authority, records, raw_scores, eligible, snapshot,
     propagated = {record.handle.slot: score for record, score in zip(records, result.scores)}
     old = set(baseline)
     positions = {record.handle.slot: record.history_begin for record in records}
-    selected = set(authority.memory.preview_selection(propagated, mandatory_slots,
-        action=False, prefill_scores=None, max_tokens=max_tokens))
+    halo = getattr(options, 'query_fps_halo_blocks', 0)
+    group_evidence = None
+    if halo:
+        from .query_group_recall import build_halo_groups, describe_halo_selection, halo_summary
+        if (getattr(authority, 'query_score_mode', 'mean_k') != 'key_fps_4'
+                or not result.diagnostics['identity'] or list(result.scores) != list(raw_scores)):
+            raise ValueError('FPS halo requires unchanged alpha-zero FPS seeds')
+        groups, group_scores, metadata = build_halo_groups(records, raw_scores,
+            radius=halo, message_spans=snapshot.message_spans)
+        selected = set(authority.memory.preview_group_selection(groups, group_scores,
+            mandatory_slots, max_tokens=max_tokens))
+        budget = max_tokens if max_tokens is not None else authority.memory.config.select_budget
+        fixed = authority.memory._store.fixed_selection_blocks(list(mandatory_slots),
+            pressure=False, budget=budget)
+        group_evidence = describe_halo_selection(metadata, records, selected, old, fixed, budget)
+        record_query_inputs(authority, records, raw_scores, eligible, snapshot,
+            mandatory_slots, max_tokens, group_selection=group_evidence)
+    else:
+        selected = set(authority.memory.preview_selection(propagated, mandatory_slots,
+            action=False, prefill_scores=None, max_tokens=max_tokens))
     trace = ()
     if options.graph_trace:
         # Detailed diagnostics are opt-in and bounded. Explain newly selected
@@ -95,7 +114,8 @@ def _score_and_select(authority, records, raw_scores, eligible, snapshot,
     graph.validate_binding(binding)
     report = dict(result.diagnostics)
     domain = getattr(authority, 'query_score_domain', {})
-    report.update(phase='query', seed_source='mean_k',
+    report.update(phase='query', seed_source=getattr(authority, 'query_score_mode', 'mean_k'),
+        propagation_applied=not result.diagnostics['identity'],
         pressure_policy=getattr(options,'pressure_policy','recency'),
         score_domain_version=domain.get('version', 'unknown'),
         score_mask_count=sum(domain.get('score_mask', ())),
@@ -109,6 +129,8 @@ def _score_and_select(authority, records, raw_scores, eligible, snapshot,
         snapshot_bytes=snapshot.bytes, graph_global_bytes=graph.budget.used,
         selected_tokens=sum(r.count for r in records if r.handle.slot in selected), added_blocks=len(selected-old),
         displaced_blocks=len(old-selected), graph_selection_seconds=time.perf_counter()-started)
+    if group_evidence is not None:
+        report['query_group_selection'] = halo_summary(group_evidence)
     if options.graph_trace:
         report['selected_starts'] = sorted(positions[slot] for slot in selected)[:256]
         report['baseline_starts'] = sorted(positions[slot] for slot in old)[:256]
@@ -120,8 +142,13 @@ def _score_and_select(authority, records, raw_scores, eligible, snapshot,
     # beginning an assembly transaction that the caller does not yet own.
     emit_graph_report(authority, report)
     graph.validate_binding(binding)
-    plan = authority.memory.select(propagated, mandatory_slots,
-        action=False, prefill_scores=None, max_tokens=max_tokens)
+    if group_evidence is not None:
+        plan = authority.memory.select_groups(groups, group_scores, mandatory_slots,
+            max_tokens=max_tokens, expected_slots=selected)
+        authority.query_group_selection = halo_summary(group_evidence)
+    else:
+        plan = authority.memory.select(propagated, mandatory_slots,
+            action=False, prefill_scores=None, max_tokens=max_tokens)
     authority.graph_selection_report = report
     authority._graph_selection_binding = binding
     # Retain only an epoch/revision token, never an unaccounted snapshot closure.
@@ -253,6 +280,7 @@ def record_pressure_inputs(authority, candidates, raw, mask, snapshot, mandatory
     cfg = authority.memory.config
     row = dict(version=2, phase='pressure', seed_source=source,
         scoring_version=options.graph_scoring_version, alpha=options.graph_alpha,
+        aggregation=getattr(options, 'graph_aggregation', 'sum'),
         locality_weight=options.graph_locality_weight, attention_weight=options.graph_attention_weight,
         cross_message_weight=options.graph_cross_message_weight,
         score_domain_version=SCORE_DOMAIN_VERSION, pressure_policy='graph', mode=options.graph_mode,
@@ -286,20 +314,31 @@ def record_pressure_inputs(authority, candidates, raw, mask, snapshot, mandatory
         authority._graph_input_count=getattr(authority,'_graph_input_count',0)+1
 
 
-def record_query_inputs(authority, records, scores, eligible, snapshot, mandatory_slots, max_tokens):
+def record_query_inputs(authority, records, scores, eligible, snapshot, mandatory_slots, max_tokens,
+                        *, group_selection=None):
     """Opt-in bounded replay evidence, never a per-decode graph dump."""
     options = getattr(authority, 'graph_options', None)
+    if getattr(options, 'query_fps_halo_blocks', 0) and group_selection is None:
+        # The halo branch exports once after native preview, before assembly.
+        return
     path = getattr(authority, 'graph_report_path', None)
+    overlap = getattr(authority, 'query_score_mode', 'mean_k') in ('overlap_16_8', 'key_fps_4')
+    counter = '_window_query_input_count' if overlap else '_graph_input_count'
     if (snapshot is None or options is None or not options.graph_trace or path is None or
-            len(records) > _MAX_REPLAY_NODES or getattr(authority, '_graph_input_count', 0) >= 8):
+            getattr(authority, counter, 0) >= 8):
+        return
+    if len(records) > _MAX_REPLAY_NODES:
+        if overlap:
+            raise BufferError('Overlap Query trace exceeds its bounded node capacity')
         return
     from dataclasses import asdict
     cfg = authority.memory.config
     action = getattr(authority, 'action_history', None)
     prefill = getattr(action, 'prefill', None)
-    row = dict(version=2, phase='query', seed_source='mean_k',
+    row = dict(version=2, phase='query', seed_source=getattr(authority, 'query_score_mode', 'mean_k'),
         scoring_version=getattr(options, 'graph_scoring_version', 'v1'),
         alpha=getattr(options, 'graph_alpha', .2),
+        aggregation=getattr(options, 'graph_aggregation', 'sum'),
         locality_weight=options.graph_locality_weight, attention_weight=options.graph_attention_weight,
         cross_message_weight=options.graph_cross_message_weight,
         accepted_boundary=authority.history_end,
@@ -324,17 +363,27 @@ def record_query_inputs(authority, records, scores, eligible, snapshot, mandator
             revision=snapshot.revision),
         legacy_action_scores=getattr(action, 'scores', {}),
         prefill_scores=prefill.scores() if prefill is not None and not action.samples else None)
+    if group_selection is not None:
+        row['query_group_selection'] = group_selection
     if options.graph_mode in ('locality','attention','multi'):
         baseline=authority.memory.preview_selection({r.handle.slot:s for r,s in zip(records,scores)},
             mandatory_slots,action=False,max_tokens=max_tokens)
         row['baseline_selected_starts']=[r.history_begin for r in records if r.handle.slot in baseline]
     encoded = json.dumps(row, separators=(',', ':'), allow_nan=False)
-    if len(encoded.encode()) > _MAX_REPLAY_RECORD_BYTES:
+    # The full 256K overlap qualification exports 8K nodes with four edges
+    # each, plus original seeds and masks. Its public Query has a separate
+    # counter so pressure diagnostics cannot consume this evidence quota.
+    limit = (3 if group_selection is not None else 2) * _MAX_REPLAY_RECORD_BYTES if overlap else _MAX_REPLAY_RECORD_BYTES
+    if len(encoded.encode()) > limit:
+        if overlap:
+            raise BufferError('Overlap Query trace exceeds its bounded record byte capacity')
         return
     path = path.with_name('block_graph_inputs.jsonl')
     with _LOG_LOCK:
         if path.exists() and path.stat().st_size + len(encoded.encode()) + 1 > _MAX_LOG_BYTES:
+            if overlap:
+                raise BufferError('Overlap Query trace exceeds its bounded log byte capacity')
             return
         with path.open('a') as stream:
             stream.write(encoded + '\n')
-        authority._graph_input_count = getattr(authority, '_graph_input_count', 0) + 1
+        setattr(authority, counter, getattr(authority, counter, 0) + 1)

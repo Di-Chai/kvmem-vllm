@@ -2,13 +2,15 @@
 import torch
 import triton
 import triton.language as tl
+from .fp8_compat import fp8_storage, fp8_to_float
 
 
 @triton.jit
 def _segment_stats(Q,K,Table,Positions,Scale,Starts,Counts,Maxima,Sums,
                  QS:tl.constexpr,QH:tl.constexpr,KP:tl.constexpr,KT:tl.constexpr,KH:tl.constexpr,
                  HEADS:tl.constexpr,GROUP:tl.constexpr,DIM:tl.constexpr,PAGE:tl.constexpr,
-                 LENGTH,SEGMENTS,ATTENTION_SCALE:tl.constexpr,B:tl.constexpr,D:tl.constexpr):
+                 LENGTH,SEGMENTS,ATTENTION_SCALE:tl.constexpr,B:tl.constexpr,D:tl.constexpr,
+                 Q_BYTES:tl.constexpr,K_BYTES:tl.constexpr):
     row,head,segment=tl.program_id(0),tl.program_id(1),tl.program_id(2)
     offset,dim=tl.arange(0,B),tl.arange(0,D)
     begin,count=tl.load(Starts+segment),tl.load(Counts+segment)
@@ -16,8 +18,9 @@ def _segment_stats(Q,K,Table,Positions,Scale,Starts,Counts,Maxima,Sums,
     valid=(offset<count)&(pos<LENGTH)&(pos<=tl.load(Positions+row))
     pages=tl.load(Table+pos//PAGE,mask=valid,other=0).to(tl.int64)
     keys=tl.load(K+pages[:,None]*KP+(pos%PAGE)[:,None]*KT+(head//GROUP)*KH+dim[None,:],
-        mask=valid[:,None]&(dim[None,:]<DIM),other=0.).to(tl.float32)
-    query=tl.load(Q+row*QS+head*QH+dim,mask=dim<DIM,other=0.).to(tl.float32)
+        mask=valid[:,None]&(dim[None,:]<DIM),other=0.)
+    keys=fp8_to_float(keys,K_BYTES)
+    query=fp8_to_float(tl.load(Q+row*QS+head*QH+dim,mask=dim<DIM,other=0.),Q_BYTES)
     # Match the reference FP32 point product/reduction and scale order. This
     # is the existing bypass QK, not native FlashInfer/XQA accumulator reuse.
     logits=tl.sum(keys*query[None,:],axis=1)*tl.load(Scale)*ATTENTION_SCALE
@@ -69,9 +72,11 @@ def fused_page_attention(q,positions,key,table,effective_scale,starts,counts,len
     maxima=torch.empty((rows,heads,segments),device=q.device,dtype=torch.float32)
     sums=torch.empty_like(maxima)
     mass=torch.empty((rows,segments),device=q.device,dtype=torch.float32)
-    _segment_stats[(rows,heads,segments)](q,key,table,positions,effective_scale,starts,counts,maxima,sums,
+    q_input,q_bytes=fp8_storage(q)
+    key_input,key_bytes=fp8_storage(key)
+    _segment_stats[(rows,heads,segments)](q_input,key_input,table,positions,effective_scale,starts,counts,maxima,sums,
         q.stride(0),q.stride(1),*key.stride()[:3],heads,heads//key.shape[2],dim,key.shape[1],
-        length,segments,scale,triton.next_power_of_2(block_tokens),triton.next_power_of_2(dim),
+        length,segments,scale,triton.next_power_of_2(block_tokens),triton.next_power_of_2(dim),q_bytes,key_bytes,
         enable_fp_fusion=False)
     _normalize_segments[(rows,heads)](maxima,sums,heads,segments,triton.next_power_of_2(segments),enable_fp_fusion=False)
     _mass[(rows,segments)](sums,mass,heads,segments,triton.next_power_of_2(heads),enable_fp_fusion=False)

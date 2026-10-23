@@ -124,7 +124,7 @@ def test_reference_preflight_rejects_full_history_or_sampling_drift(mutation):
     with pytest.raises(ValueError): protocol.preflight_reference(rows,sampling,profile,'memoryagentbench')
 
 
-@pytest.mark.parametrize('mutation', ['budget', 'pressure', 'domain', 'capture', 'query_history', 'legacy_weights'])
+@pytest.mark.parametrize('mutation', ['budget', 'pressure', 'domain', 'capture', 'query_history', 'legacy_weights', 'pooling'])
 def test_invalid_or_unfair_arms_are_rejected(mutation):
     profiles = protocol.profiles(base(), 1234)
     kv = profiles['D']['kvmem']
@@ -134,6 +134,7 @@ def test_invalid_or_unfair_arms_are_rejected(mutation):
     elif mutation == 'domain': kv['graph_scoring_version'] = 'v1'
     elif mutation == 'capture': kv['prefill_attention'] = False
     elif mutation == 'query_history': kv['query_history'] = True
+    elif mutation == 'pooling': kv['graph_aggregation'] = 'max'
     else: kv['graph_locality_weight'] = .1
     with pytest.raises(ValueError): protocol.validate_profiles(profiles)
 

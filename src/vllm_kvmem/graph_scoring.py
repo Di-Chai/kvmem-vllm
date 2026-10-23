@@ -1,8 +1,9 @@
-"""Versioned one-hop propagation over original logical block starts.
+"""Versioned one-hop sum transport or max pooling over logical block starts.
 
 Both operators read one immutable seed vector. V1 uses stored attention mass;
-V2 normalizes its surviving edges for each selection's transport mask. Neither
-version changes the stored rows or refills edges excluded from their top-k.
+V2 sum normalizes surviving edges for each selection's transport mask. Max
+pools raw source seeds before alpha mixing. Neither operator changes stored
+rows, refills excluded top-k edges, or forwards newly received scores.
 """
 from dataclasses import dataclass, field
 from bisect import bisect_right
@@ -110,7 +111,8 @@ def _operator_weights(mode, scoring_version, alpha, locality_weight,
 def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                 scoring_version='v1', alpha=.2,
                 locality_weight=.1, attention_weight=.2, cross_message_weight=.25,
-                block_tokens=None, trace=False, trace_targets=(), native=False):
+                block_tokens=None, trace=False, trace_targets=(), native=False,
+                aggregation='sum'):
     """Propagate Query or pressure seeds; ``eligible`` is the transport mask.
 
     Ineligible seeds remain exactly unchanged, including nonzero mandatory
@@ -118,7 +120,12 @@ def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
     its operators; multi always assigns half to each, including identity rows.
     Legacy weight conflicts are resolved by the user-facing configuration
     parser; these compatibility arguments have no effect on the V2 operator.
+    ``aggregation='max'`` instead pools raw source scores per target, retaining
+    identity for operators with no incoming relation. Max is V2-only and does
+    not conserve total score; multi averages its two independently pooled seeds.
     """
+    from .options import validate_graph_aggregation
+    validate_graph_aggregation(aggregation, scoring_version)
     if len(raw_scores) != len(starts) or len(eligible) != len(starts):
         raise ValueError('Graph scoring/index shapes differ')
     reserve = getattr(snapshot, 'reserve_scoring_scratch', None)
@@ -138,16 +145,25 @@ def score_graph(raw_scores, starts, eligible, snapshot, *, mode='multi',
                 raise ValueError('Graph scoring requires a live immutable snapshot')
             from .native_graph_scoring import score_native
             result=score_native(raw_scores,starts,eligible,snapshot,mode=mode,alpha=alpha,
-                cross_message_weight=cross_message_weight,block_tokens=block_tokens)
+                cross_message_weight=cross_message_weight,block_tokens=block_tokens,
+                aggregation=aggregation)
         else:
-            result = _score_graph(raw_scores, starts, eligible, snapshot, mode=mode,
-            scoring_version=scoring_version, alpha=alpha,
-            locality_weight=locality_weight, attention_weight=attention_weight,
-            cross_message_weight=cross_message_weight, block_tokens=block_tokens,
-            trace=trace, trace_targets=trace_targets)
+            if aggregation == 'max':
+                from .graph_max_pooling import score_max
+                result = score_max(raw_scores, starts, eligible, snapshot, mode=mode,
+                    alpha=alpha, cross_message_weight=cross_message_weight,
+                    block_tokens=block_tokens, trace=trace, trace_targets=trace_targets)
+            else:
+                result = _score_graph(raw_scores, starts, eligible, snapshot, mode=mode,
+                    scoring_version=scoring_version, alpha=alpha,
+                    locality_weight=locality_weight, attention_weight=attention_weight,
+                    cross_message_weight=cross_message_weight, block_tokens=block_tokens,
+                    trace=trace, trace_targets=trace_targets)
             if native:
                 result.diagnostics.update(backend='python_reference',native_fallback=
                     'trace' if trace else 'scoring_version' if scoring_version!='v2' else 'identity')
+        result.diagnostics['aggregation'] = aggregation
+        result.diagnostics['score_sum_conserved'] = aggregation == 'sum'
         object.__setattr__(result, '_charge', charge)
         charge = None
         return result

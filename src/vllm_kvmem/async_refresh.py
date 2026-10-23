@@ -78,6 +78,17 @@ class RefreshJob:
     service_started: float = 0.0
     pressure_oracle: object = None
     graph_binding: object = None
+    query_execution_counts: dict = field(default_factory=dict)
+    guided_witness: tuple | None = None
+    guided_state_verified: bool = False
+
+    @property
+    def guided_pressure(self):
+        return self.command.selection == 'pressure' and self.command.guided_reason == 'prefill-pressure'
+
+    @property
+    def guided_base(self):
+        return self.history if self.guided_pressure else self.history + len(self.command.input_tokens)
 
     def query(self):return self.done
 
@@ -108,6 +119,13 @@ class AsyncRefresh:
         self.stream=None;self.adapter=None;self.tokenizer=None
         self.trace_lock=threading.Lock()
         self.maintenance = None
+        if getattr(options, 'query_replay_backend', 'eager') == 'compiled' and not getattr(
+                runner, '_kvmem_native_compilation', False):
+            raise ValueError('Compiled Query replay requires the qualified native compiled model')
+        self.cobatch = None
+        if getattr(options, 'query_replay_cobatch', False):
+            from .query_replay_batch import QueryReplayCoBatch
+            self.cobatch = QueryReplayCoBatch(self)
 
     def initialize_cache(self):
         # load_model installs this adapter before native KV geometry exists.
@@ -203,6 +221,8 @@ class AsyncRefresh:
             if job.done and rid not in self.deferred:
                 del self.jobs[rid]
         jobs=list(self.jobs.values())
+        if getattr(self, 'cobatch', None) is not None:
+            self.cobatch.begin_turn(ready_requests)
         if not jobs:return
         if getattr(self.runner,'_kvmem_pending_capture',None) is not None:
             raise RuntimeError('Private refresh would overwrite unpublished public capture')
@@ -237,16 +257,28 @@ class AsyncRefresh:
         runner=self.runner;batch=maintenance_batch(runner,job.command.request_id,tokens,begin)
         saved=(getattr(runner,'_kvmem_last_batch',None),runner._kvmem_window_batch)
         started=time.perf_counter()
+        compiled = (job.stage == 'query' and
+                    getattr(self.options, 'query_replay_backend', 'eager') == 'compiled')
         try:
             tables,slots=runner.prepare_attn(batch)
             metadata=runner.model_state.prepare_attn(batch,CUDAGraphMode.NONE,tables,slots,
                                                       runner.attn_groups,runner.kv_cache_config)
-            inputs={'input_ids':batch.input_ids,'positions':batch.positions,'inputs_embeds':None,
+            input_ids, inputs_embeds = batch.input_ids, None
+            if compiled and getattr(runner, 'uses_inputs_embeds', False):
+                # AOT warmup specializes the native embedding-input signature.
+                # Token-ID-only private forwards cannot reuse that artifact.
+                # Use the same text/MM preparation and raw-token policy as the
+                # native runner, before its model-specific input overrides.
+                from vllm.model_executor.models.interfaces import requires_raw_input_tokens
+                inputs_embeds = runner.model_state.prepare_inputs_embeds({}, batch, runner.req_states)
+                if inputs_embeds is not None and not requires_raw_input_tokens(runner.model):
+                    input_ids = None
+            inputs={'input_ids':input_ids,'positions':batch.positions,'inputs_embeds':inputs_embeds,
                     'intermediate_tensors':None,**runner.model_state.prepare_inputs(batch,runner.req_states)}
             captures=[]
             with set_forward_context(metadata,runner.vllm_config,num_tokens=len(tokens),
                     slot_mapping=build_slot_mappings_by_layer(slots,runner.kv_cache_config),
-                    skip_compiled=True,is_padding=batch.is_padding),capture_to(captures.append):
+                    skip_compiled=not compiled,is_padding=batch.is_padding),capture_to(captures.append):
                 hidden=self.original(**inputs)
             if getattr(runner,'_kvmem_graph',False):captures=runner._kvmem_graph_captures
             if tuple(c.name for c in captures)!=tuple(runner._kvmem_layers):
@@ -257,8 +289,10 @@ class AsyncRefresh:
                 hidden=hidden[0] if isinstance(hidden,tuple) else hidden
                 token=int(runner.model.compute_logits(hidden[-1:]).argmax(-1).item())
             job.steps+=1
+            mode = 'compiled' if compiled else 'eager'
+            job.query_execution_counts[mode] = job.query_execution_counts.get(mode, 0) + 1
             self.emit(job,job.stage,tokens=len(tokens),host_seconds=time.perf_counter()-started,
-                      public_peers=len(job.peers))
+                      public_peers=len(job.peers),execution_mode=mode)
             return token,q
         finally:
             runner._kvmem_last_batch,runner._kvmem_window_batch=saved
@@ -268,11 +302,35 @@ class AsyncRefresh:
             bundle,checkpoints,before=job.state
             self.adapter.validate(bundle)
             job.restore_event=checkpoints.restore(before,bundle.tensors)
+            if job.guided_pressure:
+                if job.guided_witness != self.pressure_witness(job.authority):
+                    raise RuntimeError('Private guided pressure changed accepted history/statistics')
+                if os.getenv('KVMEM_VERIFY_GUIDED_PRESSURE') == '1':
+                    from .guided_query import verify_guided_rollback
+                    audit = verify_guided_rollback(before, bundle.tensors, [])
+                    with (self.runner._kvmem_probe_output/'verified_guided_pressure.jsonl').open('a') as stream:
+                        stream.write(json.dumps(dict(request_id=job.command.request_id,
+                            history=job.history, **audit))+'\n')
+                    job.guided_state_verified = True
+
+    @staticmethod
+    def pressure_witness(authority):
+        action = getattr(authority, 'action_history', None)
+        prefill = getattr(action, 'prefill', None)
+        graph = getattr(authority, 'block_graph', None)
+        return (authority.history_end, id(getattr(action, 'scores', None)),
+                id(getattr(action, 'mass', None)), getattr(action, 'samples', None),
+                getattr(prefill, 'end', None), getattr(prefill, 'samples', None),
+                getattr(prefill, 'chunks', None), getattr(graph, 'binding', None))
 
     def _submit(self, job):
         self._restore_state(job)
         ready=torch.cuda.Event();ready.record()
-        query=torch.cat(job.guided_rows or job.query_rows,dim=1) if job.query_rows else None
+        rows = job.guided_rows or job.query_rows
+        query=torch.cat(rows,dim=1) if rows else None
+        if os.getenv('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
+            from .retrieval_diagnostics import capture_native
+            capture_native(self, job, query)
         if self.stream is None:self.stream=torch.cuda.Stream(device=self.runner.device,priority=0)
         job.stage='assembly_wait'
         job.assembly_inputs=(query,ready)
@@ -295,6 +353,9 @@ class AsyncRefresh:
             selection_started = time.perf_counter()
             authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
             published = time.perf_counter()
+            if os.getenv('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
+                from .retrieval_diagnostics import capture_archive
+                capture_archive(self, job, queries)
             fit=RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
                 mandatory=job.command.mandatory_spans).mandatory_fit(job.history,cfg)
             required=set(fit['hard_blocks'])
@@ -302,9 +363,18 @@ class AsyncRefresh:
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory}!=required:
                 raise ValueError('Missing required historical evidence')
             if job.command.selection=='pressure':
-                from .prefill_attention import select_pressure
-                plan=select_pressure(authority,mandatory,max_tokens=cfg.select_budget)
+                if job.guided_pressure and queries is not None:
+                    plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget,
+                                                     guided_pressure=True)
+                else:
+                    from .prefill_attention import select_pressure
+                    plan=select_pressure(authority,mandatory,max_tokens=cfg.select_budget)
             elif job.history<=cfg.select_budget:plan=authority.memory.select({})
+            elif os.getenv('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum':
+                if job.guided_rows or job.command.query_span is None:
+                    raise ValueError('Token answer experiment requires the original public Query')
+                from .query_token_experiment import select_token_queries
+                plan=select_token_queries(authority,queries,mandatory,max_tokens=cfg.select_budget)
             else:plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget)
             if (getattr(self.options, 'action_profiling', False) or
                     getattr(self.runner, '_kvmem_step_timing', None) is not None):
@@ -418,52 +488,31 @@ class AsyncRefresh:
             if not job.command.input_tokens and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
                 from .rolling_verification import RollingPressureOracle
                 job.pressure_oracle = RollingPressureOracle(self.runner, job)
-            if job.command.selection=='pressure' or job.history<=job.command.groups[0][1].window_tokens:
+            if ((job.command.selection=='pressure' and not job.guided_pressure) or
+                    job.history<=job.command.groups[0][1].window_tokens):
                 self._submit(job);return True
             from .native_state import NativeRecurrentState
             from .state import StateCheckpoints
             if self.adapter is None:self.adapter=NativeRecurrentState(self.runner)
             bundle=self.adapter.borrow([rid]);checkpoints=StateCheckpoints(rid,bundle.bytes,1)
             job.state=(bundle,checkpoints,checkpoints.capture(job.history,bundle.tensors))
+            if job.guided_pressure:
+                job.guided_witness = self.pressure_witness(authority)
+                self.start_guided(job)
+                return True
             job.stage='query';return True
         if job.stage=='query':
+            if getattr(self, 'cobatch', None) is not None and self.cobatch.defer(job):
+                return False
             end=min(len(job.command.input_tokens),job.offset+self.options.refresh_quantum_tokens)
             _,q=self._forward(job,job.command.input_tokens[job.offset:end],job.history+job.offset)
-            qb,qe=job.command.query_span or (job.history,job.history+len(job.command.input_tokens))
-            lo=max(qb,job.history+job.offset)-job.history-job.offset
-            hi=min(qe,job.history+end)-job.history-job.offset
-            if hi>lo:job.query_rows.append(q[:,lo:hi].clone())
-            job.offset=end
-            if end==len(job.command.input_tokens):
-                boundary_guided = (job.command.guided_boundary if job.command.guided_boundary is not None
-                    else self.options.guided_reselect in ('boundary', 'both'))
-                if self.options.guided_query_tokens and job.command.query_span is not None and boundary_guided:
-                    local_end=job.history+end-self.runner._kvmem_window_adapter.offsets.get(job.command.request_id,0)
-                    reserve=self.options.guided_reserve
-                    available=local_end+reserve<=self.options.memory.select_budget+self.options.memory.gen_budget
-                    for group,ticket in job.command.groups:
-                        spec=self.runner.kv_cache_config.kv_cache_groups[group].kv_cache_spec
-                        available &= local_end+reserve<=len(ticket.original_block_ids)*spec.block_size
-                    if available:
-                        if self.tokenizer is None:
-                            from vllm.tokenizers import get_tokenizer
-                            c=self.runner.vllm_config.model_config
-                            self.tokenizer=get_tokenizer(c.tokenizer,tokenizer_mode=c.tokenizer_mode,trust_remote_code=c.trust_remote_code)
-                            from .guided_query import PRIVATE_PROMPT
-                            self.guided_prompt=self.tokenizer.encode(PRIVATE_PROMPT,add_special_tokens=False)
-                            if not self.guided_prompt or len(self.guided_prompt)+self.options.guided_query_tokens>reserve:
-                                raise ValueError('Private Query exceeds its scheduler scratch reservation')
-                        from .guided_query import GuidedQueryPolicy
-                        job.guided_policy=GuidedQueryPolicy(self.tokenizer,self.options.guided_query_tokens)
-                        job.stage='guided_prompt'
-                    else:job.guided_fallback='capacity';self._submit(job)
-                else:self._submit(job)
+            self.accept_query(job, q, end)
             return True
         if job.stage=='guided_prompt':
             end=min(len(self.guided_prompt),job.guided_offset+self.options.refresh_quantum_tokens)
             started=time.perf_counter()
             token,_=self._forward(job,self.guided_prompt[job.guided_offset:end],
-                job.history+len(job.command.input_tokens)+job.guided_offset,next_token=end==len(self.guided_prompt))
+                job.guided_base+job.guided_offset,next_token=end==len(self.guided_prompt))
             job.guided_seconds+=time.perf_counter()-started;job.guided_offset=end
             if token is not None:job.next_token=token;job.stage='guided_decode'
             return True
@@ -477,13 +526,49 @@ class AsyncRefresh:
                 if policy.fallback is not None:job.guided_rows.clear()
                 self._submit(job);return True
             started=time.perf_counter()
-            token,q=self._forward(job,[job.next_token],job.history+len(job.command.input_tokens)+len(self.guided_prompt)+len(job.generated),next_token=True)
+            token,q=self._forward(job,[job.next_token],job.guided_base+len(self.guided_prompt)+len(job.generated),next_token=True)
             policy.commit();job.generated.append(job.next_token)
             job.guided_seconds+=time.perf_counter()-started
             if capture:job.guided_rows.append(q)
             job.next_token=token
             return True
         raise RuntimeError('Unknown refresh stage')
+
+    def accept_query(self, job, q, end):
+        """Retain only the logical Query span for either execution path."""
+        qb,qe=job.command.query_span or (job.history,job.history+len(job.command.input_tokens))
+        lo=max(qb,job.history+job.offset)-job.history-job.offset
+        hi=min(qe,job.history+end)-job.history-job.offset
+        if hi>lo:job.query_rows.append(q[:,lo:hi].clone())
+        job.offset=end
+        if end==len(job.command.input_tokens):
+            boundary_guided = (job.command.guided_boundary if job.command.guided_boundary is not None
+                else self.options.guided_reselect in ('boundary', 'both'))
+            if self.options.guided_query_tokens and job.command.query_span is not None and boundary_guided:
+                self.start_guided(job)
+            else:self._submit(job)
+
+    def start_guided(self, job):
+        """Probe only the accepted prefix for pressure, before public replay."""
+        local_end=job.guided_base-self.runner._kvmem_window_adapter.offsets.get(job.command.request_id,0)
+        reserve=self.options.guided_reserve
+        available=local_end+reserve<=self.options.memory.select_budget+self.options.memory.gen_budget
+        for group,ticket in job.command.groups:
+            spec=self.runner.kv_cache_config.kv_cache_groups[group].kv_cache_spec
+            available &= local_end+reserve<=len(ticket.original_block_ids)*spec.block_size
+        if not available:
+            job.guided_fallback='capacity';self._submit(job);return
+        if self.tokenizer is None:
+            from vllm.tokenizers import get_tokenizer
+            c=self.runner.vllm_config.model_config
+            self.tokenizer=get_tokenizer(c.tokenizer,tokenizer_mode=c.tokenizer_mode,trust_remote_code=c.trust_remote_code)
+            from .guided_query import PRIVATE_PROMPT
+            self.guided_prompt=self.tokenizer.encode(PRIVATE_PROMPT,add_special_tokens=False)
+        if not self.guided_prompt or len(self.guided_prompt)+self.options.guided_query_tokens>reserve:
+            raise ValueError('Private Query exceeds its scheduler scratch reservation')
+        from .guided_query import GuidedQueryPolicy
+        job.guided_policy=GuidedQueryPolicy(self.tokenizer,self.options.guided_query_tokens)
+        job.stage='guided_prompt'
 
     def _release(self,job):
         if job.state is not None:
@@ -513,9 +598,24 @@ class AsyncRefresh:
             assembly_fused_layers=getattr(self.options, 'assembly_fused_layers', False),
             refresh_started_at=job.started,refresh_finished_at=time.perf_counter(),asynchronous=True,
             public_peer_count=len(job.peers),private_forward_steps=job.steps,cancelled=job.cancelled,
+            query_execution_counts=dict(job.query_execution_counts),
+            query_replay_cobatch=(self.cobatch.snapshot() if getattr(self, 'cobatch', None) is not None else None),
             maintenance=self.maintenance.snapshot() if getattr(self, 'maintenance', None) is not None else None,
             **selection_report(authority, phase=job.command.selection))
         row.update(job.guided_diagnostics)
+        if job.command.selection == 'query':
+            row['query_scoring_method'] = ('content_token_softmax_page_sum' if
+                os.getenv('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum' else
+                getattr(authority, 'query_score_mode', 'mean_k'))
+            if getattr(authority, 'query_score_mode', 'mean_k') == 'overlap_16_8':
+                row['query_window_scoring'] = dict(authority.query_window_stats)
+            if getattr(authority, 'query_score_mode', 'mean_k') == 'key_fps_4':
+                row['query_key_fps_scoring'] = dict(authority.query_key_fps_stats)
+                if getattr(self.options, 'query_fps_halo_blocks', 0):
+                    row['query_group_selection'] = dict(authority.query_group_selection)
+        if job.guided_pressure:
+            row.update(guided_scope='prefill-pressure', guided_context_end=job.guided_base,
+                public_input_replayed_for_guidance=0, guided_state_verified=job.guided_state_verified)
         if (getattr(self.options, 'action_profiling', False) or
                 getattr(self.runner, '_kvmem_step_timing', None) is not None):
             row.update(assembly_read_stats=assembly.read_stats, assembly_chunks=assembly.chunks,

@@ -192,6 +192,9 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
+    if (options.query_score_mode in ('overlap_16_8', 'key_fps_4') and
+            os.environ.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES')):
+        raise ValueError('Indexed Query scoring cannot be combined with experimental Query token scores')
     if cfg['experimental_dflash_query_planning'] and (
             cfg['draft_method'] != 'dflash' or not options.request_planning):
         raise ValueError('experimental_dflash_query_planning requires DFlash2 and request planning')
@@ -336,12 +339,16 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if cfg['reasoning_end_str'] is not None:
         argv += ['--reasoning-config',json.dumps({'reasoning_end_str':cfg['reasoning_end_str']})]
     if cfg['execution_mode'] in ('full_graph', 'compiled_graph'):
+        if options.query_replay_backend == 'compiled' and cfg['execution_mode'] != 'compiled_graph':
+            raise ValueError('Compiled Query replay requires compiled_graph execution')
         compilation = ({'mode': 3, 'cudagraph_mode': 'FULL_AND_PIECEWISE'}
                        if cfg['execution_mode'] == 'compiled_graph' else
                        {'mode': 0, 'cudagraph_mode': 'FULL'})
         argv += ['--compilation-config', json.dumps(compilation)]
         env['KVMEM_FULL_GRAPH'] = '1'
     else:
+        if options.query_replay_backend == 'compiled':
+            raise ValueError('Compiled Query replay requires compiled_graph execution')
         argv += ['--enforce-eager']
     if getattr(options, 'capture_opaque_projection', False):
         if cfg['execution_mode'] != 'compiled_graph':
@@ -390,7 +397,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'gen_budget': options.memory.gen_budget, 'select_budget': options.memory.select_budget,
             'sink_blocks': options.memory.sink_blocks, 'recent_blocks': options.memory.recent_blocks,
             'pressure_policy': options.pressure_policy,
-            'guided_reserve':options.guided_reserve,'max_model_len':cfg['max_model_len'],
+            'guided_reserve':options.guided_reserve,'guided_reselect':options.guided_reselect,
+            'max_model_len':cfg['max_model_len'],
             'query_replay_budget':cfg['query_replay_budget'],
             'rolling_active_window':options.rolling_active_window})
     return {'scope': 'experimental mainline serving; see support matrix for qualification limits',
@@ -403,6 +411,12 @@ def main(argv=None):
         help='Explicit JSON profile; omit for the bundled DFlash2 k7 / GPU .80 agent profile')
     parser.add_argument('--run-dir', type=Path, required=True, help='New owned telemetry/archive directory')
     parser.add_argument('--dry-run', action='store_true', help='Validate local inputs and print the exact launch without importing vLLM')
+    parser.add_argument('--verify-guided-pressure', action='store_true',
+        help='Diagnostic: verify exact native state restoration after every private pressure Query')
+    parser.add_argument('--retrieval-diagnostics', action='store_true',
+        help='Diagnostic: save original Query, archived K and native-cache attention; synchronous and expensive')
+    parser.add_argument('--experimental-query-token-scores', choices=('sum',),
+        help='Answer experiment only: read archived raw K and sum global token attention by page')
     args = parser.parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
     if args.config is None:
@@ -412,6 +426,23 @@ def main(argv=None):
         source = args.config.expanduser().resolve()
         profile, base = json.loads(source.read_text()), source.parent
     plan = build_launch(profile, base, run_dir)
+    if args.retrieval_diagnostics:
+        if profile.get('kvmem', {}).get('guided_query_tokens', 0):
+            raise ValueError('Retrieval diagnostics require guided generation off')
+        plan['environment']['KVMEM_RETRIEVAL_DIAGNOSTICS'] = '1'
+    if args.experimental_query_token_scores:
+        cfg = plan['profile'].get('kvmem', {})
+        if cfg.get('query_score_mode', 'mean_k') != 'mean_k':
+            raise ValueError('Indexed Query scoring cannot be combined with experimental Query token scores')
+        if (cfg.get('guided_query_tokens', 0) or cfg.get('graph_alpha', .2) != 0 or
+                cfg.get('query_history', False) or cfg.get('graph_mode') != 'multi' or
+                cfg.get('block_tokens', 32) != 32):
+            raise ValueError('Token answer experiment requires Query-only multi, 32-token blocks, no guidance/history')
+        plan['environment']['KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES'] = args.experimental_query_token_scores
+    if args.verify_guided_pressure:
+        if profile.get('kvmem', {}).get('guided_reselect') != 'prefill':
+            raise ValueError('Guided pressure verification requires guided_reselect=prefill')
+        plan['environment']['KVMEM_VERIFY_GUIDED_PRESSURE'] = '1'
     if 'multi_user' in plan['profile'] and os.environ.get('VLLM_RUST_FRONTEND_PATH'):
         raise ValueError('Multi-user admission requires the Python API frontend')
     if args.dry_run:

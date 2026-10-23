@@ -56,7 +56,8 @@ def _cache(snapshot):
     return cache
 
 
-def score_native(raw,starts,eligible,snapshot,*,mode,alpha,cross_message_weight,block_tokens=None):
+def score_native(raw,starts,eligible,snapshot,*,mode,alpha,cross_message_weight,block_tokens=None,
+                 aggregation='sum'):
     from .graph_scoring import GraphScores,_operator_weights
     started=time.perf_counter()
     block=snapshot.block_tokens if block_tokens is None else block_tokens
@@ -64,6 +65,18 @@ def score_native(raw,starts,eligible,snapshot,*,mode,alpha,cross_message_weight,
         raise ValueError('Graph scoring requires distinct original block starts')
     cache=_cache(snapshot);entry=cache.get(snapshot)
     wl,wa=_operator_weights(mode,'v2',alpha,0.,0.,cross_message_weight)
+    if aggregation == 'max':
+        from .graph_max_pooling import metadata
+        scores,values=entry.index.max_pool(raw,starts,eligible,block,snapshot.completed_through,wl,wa,cross_message_weight)
+        diagnostics=metadata(snapshot,mode,alpha,wl,wa)
+        diagnostics.update(values)
+        for key in diagnostics:
+            if key.endswith(('_count','_edges')) or key=='eligible':
+                diagnostics[key]=int(diagnostics[key])
+        diagnostics['identity']=bool(diagnostics['identity'])
+        diagnostics.update(scoring_seconds=time.perf_counter()-started,backend='cpp_v2',
+            native_index_bytes=entry.charge.amount,native_index_builds=cache.builds,native_index_hits=cache.hits)
+        return GraphScores(raw if diagnostics['identity'] else scores,diagnostics)
     scores,values=entry.index.score(raw,starts,eligible,block,snapshot.completed_through,wl,wa,cross_message_weight)
     diagnostics=dict(mode=mode,scoring_version='v2',alpha=alpha,locality_weight=wl,attention_weight=wa,
         locality_share=.5 if mode=='multi' else 1. if mode=='locality' else 0.,

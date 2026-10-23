@@ -13,7 +13,7 @@ import signal
 from .multi_user import _load_users
 from .serve import _validate_safetensors_config, _validate_profiler_config
 from .options import (GRAPH_DEFAULTS, canonical_policy_payload, resolve_graph_policy,
-                      validate_graph_options)
+                      validate_graph_options, validate_query_score_mode, validate_query_fps_experiments)
 
 
 def build_launch(profile, base, run_dir):
@@ -43,6 +43,8 @@ def build_launch(profile, base, run_dir):
         'gpu_raw_k_cache_bytes': 0, 'reuse_resident_v': False,'async_cpu_scatter':False,
         'cpu_scatter_min_tokens':128, 'execution_mode': 'full_graph', 'batched_cpu_append': False,
         'request_planning': False, 'mean_k_backend': 'torch_reference', 'session_checkpoint_policy':None,
+        'query_score_mode': 'mean_k', 'query_window_cache_bytes': 2147483648,
+        'query_fps_halo_blocks': 0, 'query_fps_optimized': False,
         'query_history':False,'query_history_decay':0.5,'guided_query_tokens':0,
         'action_attention':False,'action_scope':'tool-call','action_layers':'spread3',
         'action_interval':16,'action_fraction':.25,'action_decay':.5,'action_combine':'quota',
@@ -51,6 +53,7 @@ def build_launch(profile, base, run_dir):
         'action_fused_scoring':True,
         'action_native_scores':'off','action_native_max_rows':256,'action_native_max_bytes':2147483648,
         'archive_backend':'nvme','async_refresh':False,'refresh_quantum_tokens':256,
+        'query_replay_backend':'eager','query_replay_cobatch':False,'query_replay_max_bytes':67108864,
         'prefill_attention':False,'action_pressure':False,'pressure_policy':None,'prefill_attention_interval':1024,
         'prefill_attention_stride':32,'prefill_attention_half_life':8192,'prefill_chunk_tokens':0,
         'block_tokens':128,'sink_blocks':None,'recent_blocks':None,
@@ -66,6 +69,14 @@ def build_launch(profile, base, run_dir):
         raise ValueError('Invalid elastic serving profile')
     cfg = {**defaults, **profile}
     cfg = resolve_graph_policy(cfg, explicit_fields=profile)
+    validate_query_score_mode(cfg['query_score_mode'], cfg['query_window_cache_bytes'],
+        block_tokens=cfg['block_tokens'], graph_mode=cfg['graph_mode'],
+        graph_scoring_version=cfg['graph_scoring_version'],
+        graph_aggregation=cfg['graph_aggregation'], graph_alpha=cfg['graph_alpha'],
+        query_history=cfg['query_history'], guided_query_tokens=cfg['guided_query_tokens'],
+        context_mode=cfg['context_mode'])
+    validate_query_fps_experiments(cfg['query_score_mode'],
+        cfg['query_fps_halo_blocks'], cfg['query_fps_optimized'])
     if type(cfg['repository_gc']) is not bool:
         raise ValueError('repository_gc must be boolean')
     if cfg['historical_gc'] is not None:
@@ -135,6 +146,15 @@ def build_launch(profile, base, run_dir):
     if cfg['cpu_seal_serial_allocate'] and (not cfg['cpu_direct_record_seal'] or
             cfg['historical_gc'] is not None or cfg['cpu_seal_pack_workers'] != 1):
         raise ValueError('cpu_seal_serial_allocate requires direct CPU records without historical_gc and pack_workers=1')
+    if cfg['query_replay_backend'] not in ('eager', 'compiled') or type(cfg['query_replay_cobatch']) is not bool:
+        raise ValueError('Invalid Query replay backend or cobatch setting')
+    if type(cfg['query_replay_max_bytes']) is not int or cfg['query_replay_max_bytes'] <= 0:
+        raise ValueError('Query replay memory budget must be positive')
+    if cfg['query_replay_backend'] != 'eager' or cfg['query_replay_cobatch']:
+        if cfg['context_mode'] != 'meank' or not cfg['async_refresh'] or cfg['draft_method'] != 'mtp':
+            raise ValueError('Optimized Query replay requires asynchronous MeanK MTP')
+        if cfg['query_replay_backend'] == 'compiled' and cfg['execution_mode'] != 'compiled_graph':
+            raise ValueError('Compiled Query replay requires compiled_graph execution')
     if type(cfg['cpu_mean_index_simd']) is not bool:
         raise ValueError('cpu_mean_index_simd must be boolean')
     if cfg['cpu_mean_index_simd']:
@@ -177,8 +197,10 @@ def build_launch(profile, base, run_dir):
                                'context_mode', 'draft_model', 'verify_session_restore', 'linear_backend_per_quant',
                                'draft_quantization', 'profiler_config', 'async_seal', 'cpu_direct_record_seal', 'cpu_seal_serial_allocate', 'cpu_mean_index_simd', 'assembly_read_prefetch', 'assembly_fused_layers', 'draft_method',
                                'reuse_resident_v', 'gpu_raw_k_cache_bytes','async_cpu_scatter', 'execution_mode', 'batched_cpu_append',
-                               'request_planning', 'mean_k_backend', 'session_checkpoint_policy',
+                               'request_planning', 'mean_k_backend', 'query_score_mode', 'session_checkpoint_policy',
+                               'query_fps_halo_blocks', 'query_fps_optimized',
                                'query_history','query_history_decay','guided_query_tokens','repository_gc','historical_gc',
+                               'query_replay_backend','query_replay_cobatch',
                                'action_attention','action_scope','action_layers','action_interval',
                                'action_native_scores','action_native_max_rows','action_native_max_bytes',
                                'action_native_decode_commit','action_commit_max_bytes',
@@ -259,6 +281,9 @@ def build_launch(profile, base, run_dir):
                 'cpu_scatter_min_tokens':cfg['cpu_scatter_min_tokens'],
                 'async_refresh':cfg['async_refresh'],
                 'refresh_quantum_tokens':cfg['refresh_quantum_tokens'],
+                'query_replay_backend':cfg['query_replay_backend'],
+                'query_replay_cobatch':cfg['query_replay_cobatch'],
+                'query_replay_max_bytes':cfg['query_replay_max_bytes'],
                 **{key:cfg[key] for key in ('cpu_history_coordination','cpu_progress_reserve',
                     'maintenance_max_steps','maintenance_busy_ms','maintenance_idle_ms',
                     'maintenance_aging_ms','maintenance_inflight_bytes','async_restore',
@@ -275,6 +300,10 @@ def build_launch(profile, base, run_dir):
                 'session_capture_decode': cfg['request_planning'] and cfg['session_checkpoint_policy']=='sealed',
                 'session_checkpoint_policy':cfg['session_checkpoint_policy'],
                 'request_planning': cfg['request_planning'], 'mean_k_backend': cfg['mean_k_backend'],
+                'query_score_mode': cfg['query_score_mode'],
+                'query_window_cache_bytes': cfg['query_window_cache_bytes'],
+                'query_fps_halo_blocks': cfg['query_fps_halo_blocks'],
+                'query_fps_optimized': cfg['query_fps_optimized'],
                 'query_history':cfg['query_history'],'query_history_decay':cfg['query_history_decay'],
                 'guided_query_tokens':cfg['guided_query_tokens'],
                 **{key:cfg[key] for key in ('action_attention','action_scope','action_layers',

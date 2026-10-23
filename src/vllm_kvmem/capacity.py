@@ -225,8 +225,11 @@ class ReservedKVCacheManager:
             local_end = at-manager.offsets.get(request_id,0)+num_new_tokens
             control = getattr(self, 'guided_refresh_control', None)
             guided = control(request, at, manager.offsets.get(request_id, 0)) if control else None
+            pressure_private = (plan is not None and plan.pressure_probe_tokens and
+                at < request.num_prompt_tokens and plan.action(at, request.num_prompt_tokens,
+                    manager.offsets.get(request_id, 0), manager.capacity) == 'pressure')
             if (plan is not None and (plan.query is not None and at == plan.replay_begin or
-                    guided is not None and guided[2])
+                    guided is not None and guided[2] or pressure_private)
                     and local_end+self.guided_reserve<=manager.capacity):
                 kwargs = {**kwargs,'num_lookahead_tokens':max(kwargs.get('num_lookahead_tokens',0),self.guided_reserve)}
         if view is not None and permit is None:

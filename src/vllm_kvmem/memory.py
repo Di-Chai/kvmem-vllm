@@ -159,6 +159,69 @@ class RequestMemory:
                 return result
         return self.repository.pin(handle), None
 
+    def select_groups(self, groups, group_scores, mandatory_slots=(), *, max_tokens=None,
+                      expected_slots=None):
+        """Select complete logical groups through ordinary assembly admission.
+
+        The caller must retain its generation-qualified history snapshot while
+        choosing groups. Retirement may make a whole group unavailable between
+        preview and admission; retry the native picker, never admit its surviving
+        members individually or reinterpret a recycled slot as the old history.
+        If evidence was exported from an earlier preview, expected_slots binds
+        admission to that selection; a changed retry fails before any assembly.
+        """
+        # Materialize once so a retry sees the same candidates and priorities.
+        groups, group_scores, mandatory_slots = tuple(groups), tuple(group_scores), tuple(mandatory_slots)
+        expected = None if expected_slots is None else frozenset(expected_slots)
+        for _ in range(self.config.repository_blocks + 1):
+            selected = self.preview_group_selection(groups, group_scores, mandatory_slots,
+                max_tokens=max_tokens)
+            if expected is not None and frozenset(selected) != expected:
+                raise RuntimeError('Historical group selection changed after preview; refusing stale selection evidence')
+            try:
+                plan = self._store.select([self._store.handle(slot) for slot in selected])
+                break
+            except _native.HistoryAdmissionRetry:
+                # The native failure precedes mutation/assembly, just as in
+                # select(). Rebuild whole groups from currently live history.
+                continue
+        else:
+            raise RuntimeError('Historical group execution admission did not converge')
+        self._plan = plan
+        self.phase = Phase.ASSEMBLING
+        self._submitted = False
+        return plan
+
+    def preview_group_selection(self, groups, group_scores, mandatory_slots=(), *, max_tokens=None):
+        """Native atomic groups within the existing block budget and keep bands.
+
+        Spans are half-open original logical token positions, not physical slot
+        ranges. Shared members cost one physical block. This does not change
+        stored per-block scores, action scores, or the working-frame transaction.
+        All-fit history follows the original native all-fit behavior.
+        """
+        self._require(Phase.READY)
+        groups, group_scores = tuple(groups), tuple(group_scores)
+        if len(groups) != len(group_scores):
+            raise ValueError('Group spans and scores must have equal lengths')
+        for span in groups:
+            if (not isinstance(span, (tuple, list)) or len(span) != 2
+                    or any(type(position) is not int for position in span)
+                    or not 0 <= span[0] < span[1] <= self.history_end):
+                raise ValueError('Group span is outside accepted logical history')
+        if any(not isinstance(score, (int, float)) or isinstance(score, bool)
+                or not math.isfinite(score) for score in group_scores):
+            raise ValueError('Group scores must be finite numbers')
+        previous_budget = self._store.runtime_select_budget
+        if max_tokens is not None:
+            self._store.set_runtime_select_budget(max_tokens)
+        try:
+            selected = self._store.pick_groups(groups, group_scores, list(mandatory_slots))
+        finally:
+            if max_tokens is not None:
+                self._store.set_runtime_select_budget(previous_budget)
+        return tuple(selected)
+
     def preview_selection(self, scores, mandatory_slots=(), *, action=True,
                           prefill_scores=None, pressure_scores=None, max_tokens=None):
         """Use the original native picker without changing the working frame.

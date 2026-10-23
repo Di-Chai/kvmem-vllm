@@ -56,6 +56,23 @@ def test_pressure_propagates_then_uses_original_picker(tmp_path):
     assert a.close() and archive.close()
 
 
+def test_query_max_pooling_does_not_change_cumulative_attention_pressure(tmp_path):
+    a,archive,graph=fixture(tmp_path)
+    state=configure(a,policy='attention')
+    a.graph_options.graph_aggregation='max'
+    state.prefill.values={4:(.1,1.),20:(1.,1.)}
+    raw,source=pressure_seed(a,tuple(a.memory._store.working_records()))
+    before=state.snapshot(),graph.binding
+    expected=a.memory.preview_selection({},action=False,pressure_scores=raw,max_tokens=8)
+    plan=select_pressure(a,max_tokens=8)
+    assert tuple(r.block_id for r in plan.remaps)==expected
+    assert a.graph_selection_report['propagation_applied'] is False
+    assert a.graph_selection_report['seed_source']==source=='prefill'
+    assert (state.snapshot(),graph.binding)==before
+    complete(a);del plan
+    assert a.close() and archive.close()
+
+
 def test_cold_target_cannot_be_recalled_and_zero_candidates_remain(tmp_path):
     a, archive, graph = fixture(tmp_path)
     state = configure(a, alpha=1)

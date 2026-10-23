@@ -63,6 +63,28 @@ def test_query_graph_changes_native_selection_same_budget_and_skips_legacy(tmp_p
     assert graph.budget.used == 0
 
 
+@pytest.mark.parametrize('native', [False, True])
+def test_max_pooling_coselects_adjacent_value_block_with_same_query_budget(tmp_path, monkeypatch, native):
+    authority, archive, graph = fixture(tmp_path, 'locality')
+    authority.graph_options.graph_scoring_version = 'v2'
+    authority.graph_options.graph_aggregation = 'max'
+    authority.graph_options.graph_alpha = .5
+    authority.graph_options.graph_native_propagation = native
+    authority.graph_options.graph_trace = not native
+    # The query strongly matches the key at 8. Its value is on block 12;
+    # independent raw ranking would instead choose blocks 0, 4 and 8.
+    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+        lambda *a: torch.tensor([.30,.29,1.,.001,.28,.27]))
+    plan = authority.select_for_queries(torch.zeros(2,1,1,2), max_tokens=12)
+    assert selected_starts(authority,plan) == [4,8,12]
+    assert plan.total_window_tokens == 12
+    assert authority.graph_selection_report['aggregation'] == 'max'
+    assert authority.graph_selection_report['score_sum_conserved'] is False
+    assert authority.graph_selection_report['added_blocks'] == 1
+    complete(authority); del plan
+    assert authority.close() and archive.close() and graph.budget.used == 0
+
+
 def test_collect_keeps_native_selection_and_observe_only_never_selects(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path, 'collect')
     monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',

@@ -33,6 +33,7 @@ def full_selected_starts(record, query):
 
 def derived_record(record, arm):
     require(record.get('version') == 2 and record.get('phase') == 'query', 'Require an actual versioned Query snapshot')
+    require(record.get('aggregation', 'sum') == 'sum', 'Historical four-arm ablation requires sum aggregation')
     value = deepcopy(record)
     version, mode, known = campaign.POLICY[arm]
     value.update(scoring_version=version, mode=mode, alpha=.2,

@@ -171,12 +171,103 @@ public:
         }
         return py::make_tuple(result,stats);
     }
+
+    py::tuple max_pool(const std::vector<double>& raw,const std::vector<int64_t>& starts,
+            const std::vector<bool>& eligible,int64_t block,int64_t completed,double wl,double wa,double cross) const {
+        if (raw.size()!=starts.size() || raw.size()!=eligible.size() || block<=0)
+            throw std::invalid_argument("Graph scoring/index shapes differ");
+        std::vector<double> result=raw;
+        std::map<std::string,double> stats;
+        {
+            py::gil_scoped_release release;
+            std::unordered_map<int64_t,size_t> live;
+            ExactSum seed_sum,all_seed;
+            size_t count=0;
+            for (size_t i=0;i<raw.size();++i) {
+                if (starts[i]<0 || starts[i]%block || !live.emplace(starts[i],i).second)
+                    throw std::invalid_argument("Graph scoring requires distinct original block starts");
+                if (!std::isfinite(raw[i]) || raw[i]<0.)
+                    throw std::invalid_argument("Graph input scores must be finite and nonnegative");
+                all_seed.add(raw[i]);
+                if (eligible[i]) {seed_sum.add(raw[i]);++count;}
+            }
+            const auto total=seed_sum.value();
+            if (!std::isfinite(total) || !std::isfinite(all_seed.value()))
+                throw std::invalid_argument("Graph input score sum must be finite");
+            for (auto key:{"locality_pool_edges","attention_pool_edges","locality_masked_count",
+                    "locality_missing_count","locality_fallback_count","locality_same_message_count",
+                    "locality_cross_message_count","attention_masked_count","attention_missing_count"}) stats[key]=0.;
+            if (count>1 && total>0. && wl+wa>0.) {
+                std::vector<double> locality=raw,attention=raw;
+                std::vector<bool> seen_l(raw.size()),seen_a(raw.size());
+                auto offer=[](std::vector<double>& pool,std::vector<bool>& seen,size_t j,double candidate) {
+                    if (!seen[j] || candidate>pool[j]) pool[j]=candidate;
+                    seen[j]=true;
+                };
+                if (wl) for (size_t i=0;i<starts.size();++i) if (eligible[i]) {
+                    for (auto target:{starts[i]-block,starts[i]+block}) {
+                        auto found=live.find(target);
+                        if (found==live.end() || !eligible[found->second]) {
+                            ++stats[found==live.end() ? "locality_missing_count" : "locality_masked_count"];
+                            continue;
+                        }
+                        const auto category=classify(starts[i],target,block);
+                        ++stats[category==0 ? "locality_fallback_count" : category==1 ?
+                            "locality_same_message_count" : "locality_cross_message_count"];
+                        const double factor=category==2 ? cross : 1.;
+                        if (factor>0.) {
+                            ++stats["locality_pool_edges"];
+                            offer(locality,seen_l,found->second,factor*raw[i]);
+                        }
+                    }
+                }
+                if (wa) for (size_t row=0;row<sources.size();++row) {
+                    auto source=live.find(sources[row]);
+                    if (source==live.end() || !eligible[source->second] || samples[row]==0 ||
+                            sources[row]+block>completed) continue;
+                    for (size_t e=offsets[row];e<offsets[row+1];++e) {
+                        if (targets[e]==sources[row] || weights[e]==0.) continue;
+                        auto target=live.find(targets[e]);
+                        if (target==live.end() || !eligible[target->second]) {
+                            ++stats[target==live.end() ? "attention_missing_count" : "attention_masked_count"];
+                            continue;
+                        }
+                        ++stats["attention_pool_edges"];
+                        offer(attention,seen_a,target->second,raw[source->second]);
+                    }
+                }
+                for (size_t i=0;i<raw.size();++i) if (eligible[i] &&
+                        ((wl && locality[i]!=raw[i]) || (wa && attention[i]!=raw[i]))) {
+                    // Preserve Python's three products and ordered additions.
+                    volatile double own=(1.-wl-wa)*raw[i],l=wl*locality[i],a=wa*attention[i];
+                    result[i]=(own+l)+a;
+                    if (!std::isfinite(result[i]) || result[i]<0.)
+                        throw std::runtime_error("Graph max pooling produced an invalid score");
+                }
+            }
+            ExactSum output,output_eligible,change;
+            bool identity=true;
+            for (size_t i=0;i<raw.size();++i) {
+                output.add(result[i]);
+                if (eligible[i]) {output_eligible.add(result[i]);change.add(std::abs(result[i]-raw[i]));}
+                identity=identity && result[i]==raw[i];
+            }
+            if (!std::isfinite(output.value())) throw std::runtime_error("Graph max pooling score sum overflow");
+            stats["raw_score_sum"]=all_seed.value();stats["raw_eligible_sum"]=total;
+            stats["propagated_score_sum"]=output.value();stats["eligible"]=count;stats["identity"]=identity;
+            stats["normalized_input_sum"]=total ? 1. : 0.;
+            stats["normalized_output_sum"]=total ? output_eligible.value()/total : 0.;
+            stats["raw_l1_change"]=change.value();stats["normalized_l1_change"]=total ? change.value()/total : 0.;
+        }
+        return py::make_tuple(result,stats);
+    }
 };
 
 inline void bind(py::module_& module) {
     py::class_<Index>(module,"GraphPropagationIndex")
         .def(py::init<py::iterable,py::iterable,py::object>())
         .def_property_readonly("bytes",&Index::bytes)
-        .def("score",&Index::score);
+        .def("score",&Index::score)
+        .def("max_pool",&Index::max_pool);
 }
 }

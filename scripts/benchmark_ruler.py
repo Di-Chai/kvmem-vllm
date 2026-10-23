@@ -14,6 +14,7 @@ from types import SimpleNamespace as NS
 import uuid
 
 import ruler_protocol as protocol
+from ruler_execution import optimized, validate_execution
 
 
 def sha(path):
@@ -52,14 +53,26 @@ def render_case(tokenizer, task, input_text):
 
 
 def write_report(path, fixture, scores, results, elapsed):
+    pooling = fixture.get('execution_profile') == 'pooling-pro6000-20261022'
+    policy_line = ('Query max pooling；累计 attention pressure；guided ' +
+        ('最多512 tokens，自然结束或明确回退。' if fixture['pooling_arm'] == 'max_guided' else '关闭。')
+        if pooling and fixture['pooling_arm'] != 'query_only' else
+        'Query 原始分数直接召回（α=0）；累计 attention pressure；guided 关闭。' if pooling else
+        '采用修复后四项优化全开、guided 关闭、累计 attention pressure、V2 multi Query 图传播（α=0.2）。')
+    if fixture.get('execution_profile') == 'guided-pressure-pro6000-20261023':
+        policy_line = 'Prefill pressure使用generated guided Query评分（失败显式回退累计attention）；末尾原始Query＋max图传播。'
     lines = ['# RULER v1 256K：13 类各 20 题', '',
         f"完成 {len(results)} 题，官方规则宏平均分 **{scores['macro_score']:.2f}%**。", '',
-        '采用修复后四项优化全开、guided 关闭、累计 attention pressure、V2 multi Query 图传播（α=0.2）。',
+        policy_line,
         'NVFP4 / FP8 KV / MTP4；K=36,864，G=16,384。', '',
         '256K 是官方生成器长度档位，下面列出实际完整输入长度。使用官方子串评分，',
         '只对最终答案评分；整题目标命中不等于严格 exact match。每类 20 题属于初筛样本。', '',
         '| 任务 | 题数 | 分数 | 整题目标命中 | 实际输入 tokens 范围 |',
         '|---|---:|---:|---:|---:|']
+    if optimized(fixture):
+        lines[4:4] = [('本轮启用原生 QK 复用、普通 2K prefill（本轮三组均关闭物理合并）、' if pooling else
+                       '本轮另启用原生 QK 复用、2K 逻辑 prefill / 最多 14K 合并执行、'),
+                      '有界异步发布、capture 优化及 CPU 归档分配/复制优化。', '']
     for task in protocol.TASK_FAMILIES:
         row = scores['per_task'][task]
         lengths = [r['served_input_tokens'] for r in fixture['rows'] if r['task'] == task]
@@ -212,13 +225,14 @@ def run(args):
     root = args.campaign.resolve()
     profile = json.loads((root / 'profile.json').read_text())
     fixture = json.loads((root / 'fixture.json').read_text())
+    if fixture.get('execution_profile') == 'pooling-pro6000-20261022':
+        import ruler_pooling_protocol as policy
+    elif fixture.get('execution_profile') == 'guided-pressure-pro6000-20261023':
+        import ruler_guided_pressure_protocol as policy
     diagnostic_gen_budget = getattr(args, 'diagnostic_gen_budget', 16384)
     diagnostic_chunk = getattr(args, 'diagnostic_chunk', 1024)
-    q.require((diagnostic_gen_budget == 16384 and diagnostic_chunk == 1024) or
-              getattr(args, 'diagnostic_cases', None) is not None,
-              'Changing budget or chunk is restricted to an explicit diagnostic cohort')
-    policy.validate_profile(profile, 'off', 'niah', expected_gen_budget=diagnostic_gen_budget,
-                            expected_chunk=diagnostic_chunk)
+    validate_execution(profile, fixture, diagnostic_cases=getattr(args, 'diagnostic_cases', None),
+                       diagnostic_gen_budget=diagnostic_gen_budget, diagnostic_chunk=diagnostic_chunk)
     q.require(sha(root / 'profile.json') == fixture['profile_sha256'], 'Frozen profile changed')
     tokenizer_path = Path(profile['tokenizer']) / 'tokenizer.json'
     q.require(sha(tokenizer_path) == fixture['tokenizer_sha256'], 'Tokenizer changed')
@@ -276,6 +290,11 @@ def run(args):
                   'Rejected/private/thinking rows contaminated accepted action statistics')
         save(directory / 'evidence.json', dict(**evidence, terminal=terminal, action=action))
         save(directory / 'release.json', release)
+        if optimized(fixture):
+            from benchmark_matched_prefill import audit_native_stats
+            native = json.loads((capture / 'native_attention_stats.json').read_text())
+            audit_native_stats(native)
+            save(directory / 'native-stats.json', native)
         result = summarize_result(row, session, len(tokens), response, evidence, scorer,
                                   starts_in_thinking=fixture['starts_in_thinking'])
         save(directory / 'result.json', result)

@@ -10,6 +10,7 @@ import triton
 import triton.language as tl
 
 from .codec import neox_rope
+from .fp8_compat import fp8_storage, fp8_to_float
 
 
 @triton.jit
@@ -18,7 +19,8 @@ def _paged_logits(Q, K, Table, Positions, Scale, Out,
                   KP: tl.constexpr, KT: tl.constexpr, KH: tl.constexpr,
                   HEADS: tl.constexpr, GROUP: tl.constexpr, DIM: tl.constexpr,
                   PAGE: tl.constexpr, LENGTH, WIDTH: tl.constexpr,
-                  ATTENTION_SCALE: tl.constexpr, TILE: tl.constexpr, D: tl.constexpr):
+                  ATTENTION_SCALE: tl.constexpr, TILE: tl.constexpr, D: tl.constexpr,
+                  Q_BYTES: tl.constexpr, K_BYTES: tl.constexpr):
     row, head, tile = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     pos = tile*TILE + tl.arange(0,TILE)
     dim = tl.arange(0,D)
@@ -29,8 +31,9 @@ def _paged_logits(Q, K, Table, Positions, Scale, Out,
     pages = tl.load(Table+pos//PAGE,mask=valid,other=0).to(tl.int64)
     keys = tl.load(K+pages[:,None]*KP+(pos%PAGE)[:,None]*KT+
                    (head//GROUP)*KH+dim[None,:],
-                   mask=valid[:,None] & (dim[None,:]<DIM),other=0.0).to(tl.float32)
-    query = tl.load(Q+row*QS+head*QH+dim,mask=dim<DIM,other=0.0).to(tl.float32)
+                   mask=valid[:,None] & (dim[None,:]<DIM),other=0.0)
+    keys = fp8_to_float(keys, K_BYTES)
+    query = fp8_to_float(tl.load(Q+row*QS+head*QH+dim,mask=dim<DIM,other=0.0), Q_BYTES)
     logits = tl.sum(keys*query[None,:],axis=1)*tl.load(Scale)*ATTENTION_SCALE
     tl.store(Out+(row*HEADS+head)*WIDTH+pos,
              tl.where(valid,logits,-float('inf')),mask=pos<WIDTH)
@@ -101,9 +104,11 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
     with profile.stage('score.logits_allocate', allocation_bytes=rows*heads*width*4) if profile else nullcontext():
         logits=torch.empty((rows,heads,width),device=q.device,dtype=torch.float32)
     with profile.stage('score.logits', gpu=True, grid=[rows,heads,triton.cdiv(width,32)]) if profile else nullcontext():
-        _paged_logits[(rows,heads,triton.cdiv(width,32))](q,key,table,positions,effective_scale,logits,
+        q_input,q_bytes=fp8_storage(q)
+        key_input,key_bytes=fp8_storage(key)
+        _paged_logits[(rows,heads,triton.cdiv(width,32))](q_input,key_input,table,positions,effective_scale,logits,
             q.stride(0),q.stride(1),*key.stride()[:3],heads,heads//key.shape[2],dim,
-            key.shape[1],length,width,scale,32,triton.next_power_of_2(dim),enable_fp_fusion=False)
+            key.shape[1],length,width,scale,32,triton.next_power_of_2(dim),q_bytes,key_bytes,enable_fp_fusion=False)
     with profile.stage('score.softmax', gpu=True, allocation_bytes=rows*heads*width*4) if profile else nullcontext():
         probabilities=logits.softmax(-1)
     with profile.stage('score.mass_allocate', allocation_bytes=rows*starts.numel()*4) if profile else nullcontext():

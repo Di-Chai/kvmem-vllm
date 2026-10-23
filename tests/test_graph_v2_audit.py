@@ -28,11 +28,12 @@ def test_refresh_entry_reaches_native_pressure_below_query_recent_budget(
         del previous
         assert [row[2] for row in authority.memory._store.working_records()] == [0, 4]
     options = NS(memory=authority.memory.config, pressure_policy=policy,
-                 packed_assembly=False, direct_pinned_reads=False, async_refresh=False)
+                 packed_assembly=False, direct_pinned_reads=False, async_refresh=False,
+                 guided_query_tokens=0, rolling_active_window=False)
     if policy == 'legacy_attention':
         del options.pressure_policy
         options.action_pressure = True
-    command = NS(request_id='selection', command_id=1, selection='pressure',
+    command = NS(request_id='selection', command_id=1, selection='pressure', guided_reason='',
         query_span=None, mandatory_spans=(),
         groups=((0, NS(window_tokens=24 if all_fit else 8, history_end=24, replay_tokens=1,
                        original_block_ids=())),))
@@ -75,7 +76,7 @@ def test_refresh_entry_reaches_native_pressure_below_query_recent_budget(
                 cache_config=NS(enable_prefix_caching=False, mamba_cache_mode='none')),
             model=NS(forward=lambda *a, **kw: pytest.fail('Pressure must not run a probe')),
             _kvmem_last_batch=batch, _kvmem_capture_runtime=runtime, kv_cache_config=None,
-            _kvmem_window_adapter=NS(), req_states=NS(req_id_to_index={'selection': 0}),
+            _kvmem_window_adapter=NS(offsets={}), req_states=NS(req_id_to_index={'selection': 0}),
             block_tables=NS(blocks_per_kv_block={0: 1}, num_blocks=NS(np=np.array([[0]])),
                 block_tables={0: NS(gpu=torch.empty((1, 0))) }))
         bounded_runtime.install_bounded_target(runner)

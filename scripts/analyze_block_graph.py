@@ -70,6 +70,8 @@ def _validate_record(record):
     version = record.get('version')
     if type(version) is not int or version not in (1, 2):
         raise ValueError('Unsupported recorded graph input version')
+    from vllm_kvmem.options import validate_graph_aggregation
+    validate_graph_aggregation(record.get('aggregation', 'sum'), record.get('scoring_version', 'v1'))
     if version == 1 and (record.get('phase', 'query') != 'query' or
                          record.get('scoring_version', 'v1') != 'v1'):
         raise ValueError('Recorded graph input version 1 only supports legacy Query scoring')
@@ -395,12 +397,13 @@ def summarize_records(results):
     metrics = ('required_evidence_coverage','required_dependency_coselection',
         'source_span_complete','dependency_span_complete','full_evidence_coselection',
         'displaced_mean_k_evidence','duplicate_blocks','outdated_blocks','irrelevant_blocks','answer_correctness')
-    groups = list(dict.fromkeys((record['phase'], record['scoring_version'], arm)
+    groups = list(dict.fromkeys((record['phase'], record['scoring_version'], record.get('aggregation','sum'), arm)
                                for record in results for arm in record['arms']))
-    mixed = len({(phase, version) for phase, version, _arm in groups}) > 1
-    for phase, version, arm in groups:
+    mixed = len({(phase, version, aggregation) for phase, version, aggregation, _arm in groups}) > 1
+    for phase, version, aggregation, arm in groups:
         data = [record['arms'][arm] for record in results if arm in record['arms'] and
-                record['phase'] == phase and record['scoring_version'] == version]
+                record['phase'] == phase and record['scoring_version'] == version and
+                record.get('aggregation','sum') == aggregation]
         summary = dict(records=len(data),added_blocks=sum(len(row['added_starts']) for row in data),
                        displaced_blocks=sum(len(row['displaced_starts']) for row in data))
         for metric in metrics:
@@ -409,7 +412,8 @@ def summarize_records(results):
             summary[metric] = dict(labeled_records=len(known),
                 mean=math.fsum(known)/len(known) if known else None,
                 total=math.fsum(known) if known else None)
-        summaries[f'{phase}:{version}:{arm}' if mixed else arm] = summary
+        prefix = f'{phase}:{version}:' + ('max:' if aggregation == 'max' else '')
+        summaries[prefix+arm if mixed else arm] = summary
     return summaries
 
 
@@ -422,6 +426,7 @@ def analyze_record(record, *, locality_weight=None, attention_weight=None,
     if scoring_version == 'v2' and (locality_weight is not None or attention_weight is not None):
         raise ValueError('Legacy weight overrides do not apply to V2; its recorded alpha fixes both shares')
     alpha = record.get('alpha', .2)
+    aggregation = record.get('aggregation', 'sum')
     locality_weight = record.get('locality_weight', .1) if locality_weight is None else locality_weight
     attention_weight = record.get('attention_weight', .2) if attention_weight is None else attention_weight
     cross_message_weight = record.get('cross_message_weight', .25) if cross_message_weight is None else cross_message_weight
@@ -442,7 +447,7 @@ def analyze_record(record, *, locality_weight=None, attention_weight=None,
         try:
             _validate_native_masks(record, memory, handles)
             propagated = score_graph(raw,starts,eligible,snapshot,mode=modes[arm],
-                scoring_version=scoring_version, alpha=alpha,
+                scoring_version=scoring_version, alpha=alpha, aggregation=aggregation,
                 locality_weight=locality_weight,attention_weight=attention_weight,
                 cross_message_weight=cross_message_weight,block_tokens=cfg.block_tokens)
             if legacy:
@@ -492,6 +497,7 @@ def analyze_record(record, *, locality_weight=None, attention_weight=None,
                 propagated.close()
             assert memory.close()
     return dict(version=2,input_version=record['version'],phase=phase,scoring_version=scoring_version,
+        aggregation=aggregation,
         alpha=alpha if scoring_version == 'v2' else None,
         score_domain_version=record.get('score_domain_version', 'legacy-python-v1'),
         seed_source=record.get('seed_source', 'mean_k'),

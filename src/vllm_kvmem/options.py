@@ -8,6 +8,7 @@ GRAPH_DEFAULTS = {
     'graph_mode': 'off',
     'graph_scoring_version': 'v1',
     'graph_alpha': 0.2,
+    'graph_aggregation': 'sum',
     'graph_locality_weight': 0.1,
     'graph_attention_weight': 0.2,
     'graph_attention_topk': 4,
@@ -24,6 +25,13 @@ _LEGACY_GRAPH_WEIGHTS = frozenset(('graph_locality_weight', 'graph_attention_wei
 _POLICY_FIELDS = frozenset((*GRAPH_DEFAULTS, 'pressure_policy', 'action_pressure'))
 
 
+def validate_graph_aggregation(aggregation, version):
+    if not isinstance(aggregation, str) or aggregation not in ('sum', 'max'):
+        raise ValueError('graph_aggregation must be sum or max')
+    if aggregation == 'max' and version != 'v2':
+        raise ValueError('graph_aggregation=max requires graph_scoring_version=v2')
+
+
 def resolve_graph_policy(values, *, explicit_fields=None):
     """Resolve policy aliases before defaults erase which fields were supplied."""
     import math
@@ -32,6 +40,7 @@ def resolve_graph_policy(values, *, explicit_fields=None):
     version = cfg['graph_scoring_version']
     if not isinstance(version, str) or version not in ('v1', 'v2'):
         raise ValueError('graph_scoring_version must be v1 or v2')
+    validate_graph_aggregation(cfg['graph_aggregation'], version)
     alpha = cfg['graph_alpha']
     if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
         raise ValueError('graph_alpha must be finite and in [0, 1]')
@@ -66,6 +75,7 @@ def canonical_policy_payload(values, resolved):
     get = resolved.get if isinstance(resolved, dict) else lambda name: getattr(resolved, name)
     version = get('graph_scoring_version')
     payload['graph_scoring_version'] = version
+    payload['graph_aggregation'] = get('graph_aggregation')
     payload['pressure_policy'] = get('pressure_policy')
     if version == 'v2':
         payload['graph_alpha'] = get('graph_alpha')
@@ -87,6 +97,7 @@ def validate_graph_options(values, *, context_mode='meank', request_planning=Fal
     version = cfg['graph_scoring_version']
     if not isinstance(version, str) or version not in ('v1', 'v2'):
         raise ValueError('graph_scoring_version must be v1 or v2')
+    validate_graph_aggregation(cfg['graph_aggregation'], version)
     alpha = cfg['graph_alpha']
     if type(alpha) not in (int, float) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
         raise ValueError('graph_alpha must be finite and in [0, 1]')
@@ -138,6 +149,39 @@ def validate_graph_options(values, *, context_mode='meank', request_planning=Fal
                 not action_attention or not prefill_attention or action_scope != 'non-thinking'):
             raise ValueError('Attention graph scoring requires action_attention, prefill_attention '
                              'and action_scope=non-thinking')
+
+
+def validate_query_score_mode(mode, cache_bytes, *, block_tokens, graph_mode,
+                              graph_scoring_version, graph_aggregation, graph_alpha,
+                              query_history=False, guided_query_tokens=0,
+                              context_mode='meank'):
+    """Keep experimental block scorers separate from graph aggregation."""
+    if not isinstance(mode, str) or mode not in ('mean_k', 'overlap_16_8', 'key_fps_4'):
+        raise ValueError('query_score_mode must be mean_k, overlap_16_8 or key_fps_4')
+    if type(cache_bytes) is not int or cache_bytes <= 0:
+        raise ValueError('query_window_cache_bytes must be a positive integer')
+    if mode == 'mean_k':
+        return
+    if context_mode != 'meank' or block_tokens != 32:
+        raise ValueError(f'query_score_mode={mode} requires MeanK context management and block_tokens=32')
+    alphas = (0,) if mode == 'key_fps_4' else (0, .2)
+    alpha_description = '0' if mode == 'key_fps_4' else '0 or 0.2'
+    if (graph_mode != 'multi' or graph_scoring_version != 'v2' or
+            graph_aggregation != 'sum' or type(graph_alpha) not in (int, float) or
+            graph_alpha not in alphas):
+        raise ValueError(f'query_score_mode={mode} requires graph_mode=multi, '
+                         f'graph_scoring_version=v2, graph_aggregation=sum and graph_alpha={alpha_description}')
+    if query_history or guided_query_tokens:
+        raise ValueError(f'query_score_mode={mode} requires query_history=false and guided_query_tokens=0')
+
+
+def validate_query_fps_experiments(mode, halo_blocks, optimized):
+    if type(halo_blocks) is not int or halo_blocks not in (0, 1):
+        raise ValueError('query_fps_halo_blocks must be 0 or 1')
+    if type(optimized) is not bool:
+        raise ValueError('query_fps_optimized must be boolean')
+    if (halo_blocks or optimized) and mode != 'key_fps_4':
+        raise ValueError('FPS halo/optimization require query_score_mode=key_fps_4')
 
 
 @dataclass(frozen=True)
@@ -247,6 +291,7 @@ class RuntimeOptions:
     graph_trace: bool = False
     graph_native_propagation: bool = True
     graph_scoring_version: str = 'v1'
+    graph_aggregation: str = 'sum'
     graph_alpha: float = _UNSET
     pressure_policy: str = _UNSET
     _policy_explicit_fields: frozenset | None = field(default=None, repr=False, compare=False)
@@ -276,6 +321,13 @@ class RuntimeOptions:
     action_native_prefill_static_aligned: bool = False
     cpu_seal_pack_workers: int = 1
     cpu_seal_serial_allocate: bool = False
+    query_replay_backend: str = 'eager'
+    query_replay_cobatch: bool = False
+    query_replay_max_bytes: int = 67108864
+    query_score_mode: str = 'mean_k'
+    query_window_cache_bytes: int = 2147483648
+    query_fps_halo_blocks: int = 0
+    query_fps_optimized: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -325,6 +377,16 @@ class RuntimeOptions:
         object.__setattr__(self, '_policy_explicit_fields', explicit)
         object.__setattr__(self, '_policy_resolved_values',
                            tuple((name, resolved[name]) for name in sorted(_POLICY_FIELDS)))
+        validate_query_score_mode(self.query_score_mode, self.query_window_cache_bytes,
+            block_tokens=self.memory.block_tokens, graph_mode=self.graph_mode,
+            graph_scoring_version=self.graph_scoring_version,
+            graph_aggregation=self.graph_aggregation, graph_alpha=self.graph_alpha,
+            query_history=self.query_history, guided_query_tokens=self.guided_query_tokens)
+        validate_query_fps_experiments(self.query_score_mode,
+            self.query_fps_halo_blocks, self.query_fps_optimized)
+        if self.query_score_mode in ('overlap_16_8', 'key_fps_4'):
+            from .query_window_budget import split_cpu_history_budget
+            split_cpu_history_budget(self)
         validate_graph_options({name: getattr(self, name) for name in GRAPH_DEFAULTS},
             request_planning=self.request_planning, session_capacity=self.session_capacity,
             repository_gc=self.repository_gc, query_history=self.query_history,
@@ -570,6 +632,14 @@ class RuntimeOptions:
             raise ValueError('Invalid asynchronous refresh settings')
         if self.async_refresh and (not self.request_planning or self.repository_gc):
             raise ValueError('Asynchronous refresh requires request planning and bounded non-GC history')
+        if self.query_replay_backend not in ('eager', 'compiled'):
+            raise ValueError('Query replay backend must be eager or compiled')
+        if type(self.query_replay_cobatch) is not bool:
+            raise ValueError('Query replay cobatch must be boolean')
+        if type(self.query_replay_max_bytes) is not int or self.query_replay_max_bytes <= 0:
+            raise ValueError('Query replay memory budget must be positive')
+        if (self.query_replay_backend != 'eager' or self.query_replay_cobatch) and not self.async_refresh:
+            raise ValueError('Optimized Query replay requires asynchronous refresh')
         if (type(self.action_interval) is not int or not 1<=self.action_interval<=4096 or
                 type(self.action_decay) not in (float,int) or not math.isfinite(self.action_decay) or
                 not 0<=self.action_decay<=1 or not isinstance(self.action_scope,str) or
@@ -586,8 +656,13 @@ class RuntimeOptions:
             raise ValueError('Query history decay must be in [0, 1]')
         if self.guided_query_backend not in ('eager', 'cuda_graph'):
             raise ValueError('Guided Query backend must be eager or cuda_graph')
-        if self.guided_reselect not in ('off', 'boundary', 'middecode', 'both'):
-            raise ValueError('guided_reselect must be off, boundary, middecode or both')
+        if self.guided_reselect not in ('off', 'boundary', 'middecode', 'both', 'prefill'):
+            raise ValueError('guided_reselect must be off, boundary, middecode, both or prefill')
+        if self.guided_query_tokens and self.guided_reselect == 'prefill':
+            if not self.async_refresh or self.pressure_policy != 'attention':
+                raise ValueError('Guided prefill pressure requires async_refresh and attention fallback')
+            if self.query_history or self.memory.recent_blocks:
+                raise ValueError('Guided prefill pressure requires query_history=false and recent_blocks=0')
         if type(self.guided_trigger_tokens) is not int or self.guided_trigger_tokens < 0:
             raise ValueError('guided_trigger_tokens must be a nonnegative integer')
         if type(self.guided_max_refreshes) is not int or not 0 <= self.guided_max_refreshes <= 8:
@@ -737,8 +812,12 @@ class RuntimeOptions:
         graph = {name: payload.pop(name) for name in GRAPH_DEFAULTS if name in payload}
         graph['pressure_policy'] = payload.pop('pressure_policy', _UNSET)
         action = {name: payload.pop(name, default) for name, default in (
+            ('query_score_mode', 'mean_k'), ('query_window_cache_bytes', 2147483648),
+            ('query_fps_halo_blocks', 0), ('query_fps_optimized', False),
             ('assembly_chunk_blocks', 32),
             ('guided_query_backend', 'eager'),
+            ('query_replay_backend', 'eager'), ('query_replay_cobatch', False),
+            ('query_replay_max_bytes', 67108864),
             ('guided_reselect', 'boundary'), ('guided_trigger_tokens', 0),
             ('guided_max_refreshes', 2),
             ('action_scope', 'tool-call'), ('action_layers', 'spread3'),

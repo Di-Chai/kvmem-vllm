@@ -21,19 +21,20 @@ def graph(owner='g',seed=17):
 @pytest.mark.parametrize('mode',['locality','attention','multi'])
 @pytest.mark.parametrize('alpha',[0.,.2,1.])
 @pytest.mark.parametrize('cross',[0.,.25,1.])
-def test_native_matches_python_scores_diagnostics_and_selected_pages(mode,alpha,cross):
+@pytest.mark.parametrize('aggregation',['sum','max'])
+def test_native_matches_python_scores_diagnostics_and_selected_pages(mode,alpha,cross,aggregation):
     g=graph()
     try:
         with g.snapshot() as snap:
             starts=list(range(0,52,4));raw=[0.,13.,1.,0.,3.,5.,0.,.5,.25,.125,.01,1.,2.]
             for mask in [[True]*13,[False,True,False,True]*3+[True], [True]*2+[False]*11]:
-                kwargs=dict(mode=mode,scoring_version='v2',alpha=alpha,cross_message_weight=cross)
+                kwargs=dict(mode=mode,scoring_version='v2',alpha=alpha,cross_message_weight=cross,aggregation=aggregation)
                 with score_graph(raw,starts,mask,snap,**kwargs) as ref,score_graph(raw,starts,mask,snap,**kwargs,native=True) as fast:
                     assert fast.scores==ref.scores
                     for key,value in ref.diagnostics.items():
                         if key!='scoring_seconds':assert fast.diagnostics[key]==pytest.approx(value) if isinstance(value,float) else fast.diagnostics[key]==value
                     assert sorted(starts,key=lambda p:(-fast.scores[starts.index(p)],p))[:4]==sorted(starts,key=lambda p:(-ref.scores[starts.index(p)],p))[:4]
-                    if cross==.25:
+                    if cross==.25 and aggregation=='sum':
                         assert fast.scores==pytest.approx(matrix_oracle(raw,starts,mask,snap,mode,alpha),abs=1e-12)
     finally:g.close()
     assert g.budget.used==0

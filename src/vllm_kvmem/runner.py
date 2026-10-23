@@ -255,11 +255,33 @@ def make_probe_runner(base):
             event.record()
             return event
 
+        def prepare_inputs(self, *args, **kwargs):
+            batch = super().prepare_inputs(*args, **kwargs)
+            refresh = getattr(self, '_kvmem_async_refresh', None)
+            cobatch = getattr(refresh, 'cobatch', None)
+            return cobatch.prepare(batch) if cobatch is not None else batch
+
+        def _kvmem_rebuild_public_metadata(self, batch):
+            from vllm.config.compilation import CUDAGraphMode
+            from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
+            self._kvmem_projecting_query = True
+            try:
+                tables, slots = self.prepare_attn(batch)
+                metadata = self.model_state.prepare_attn(batch, CUDAGraphMode.NONE,
+                    tables, slots, self.attn_groups, self.kv_cache_config)
+                return metadata, build_slot_mappings_by_layer(slots, self.kv_cache_config)
+            finally:
+                self._kvmem_projecting_query = False
+
         def prepare_attn(self, input_batch):
+            projecting = getattr(self, '_kvmem_projecting_query', False)
+            refresh = getattr(self, '_kvmem_async_refresh', None)
+            cobatch = getattr(refresh, 'cobatch', None)
+            public = cobatch.public_batch(input_batch) if cobatch is not None else input_batch
             sessions = getattr(self, '_kvmem_sessions', None)
-            if sessions is not None:
-                sessions.before_attention(input_batch)
-            if getattr(self, '_kvmem_bounded_target', False):
+            if sessions is not None and not projecting:
+                sessions.before_attention(public)
+            if getattr(self, '_kvmem_bounded_target', False) and not projecting:
                 from .native_state import canonicalize_before_non_speculative_batch, initialize_cold_single_token_state
                 initialize_cold_single_token_state(self, input_batch)
                 canonicalize_before_non_speculative_batch(self, input_batch)
@@ -273,16 +295,18 @@ def make_probe_runner(base):
                     if active_groups != set(window.groups):
                         raise ValueError("Window mapping must cover exactly the full-attention cache groups")
                     result = super().prepare_attn(replace(input_batch, positions=window.positions))
-                    self._kvmem_prepare_action_metadata(input_batch, window.positions)
+                    if not projecting:
+                        self._kvmem_prepare_action_metadata(public, window.positions[:public.num_tokens_after_padding])
                     timing = getattr(self, '_kvmem_step_timing', None)
-                    if timing is not None:
-                        timing.model_begin(input_batch, self._kvmem_window_adapter.offsets)
+                    if timing is not None and not projecting:
+                        timing.model_begin(public, self._kvmem_window_adapter.offsets)
                     return result
             result = super().prepare_attn(input_batch)
-            self._kvmem_prepare_action_metadata(input_batch, input_batch.positions)
+            if not projecting:
+                self._kvmem_prepare_action_metadata(public, input_batch.positions[:public.num_tokens_after_padding])
             timing = getattr(self, '_kvmem_step_timing', None)
-            if timing is not None:
-                timing.model_begin(input_batch)
+            if timing is not None and not projecting:
+                timing.model_begin(public)
             return result
 
         def _kvmem_prepare_action_metadata(self, batch, positions):
@@ -336,6 +360,14 @@ def make_probe_runner(base):
             # produce no output tokens or do not reach sample_tokens.
             before = getattr(self, 'execute_model_state', None)
             runtime = getattr(self, '_kvmem_capture_runtime', None)
+            refresh = getattr(self, '_kvmem_async_refresh', None)
+            cobatch = getattr(refresh, 'cobatch', None)
+            if (cobatch is not None and observe_work and not kwargs.get('dummy_run') and
+                    not kwargs.get('is_profile') and cobatch.arm(scheduler_output)):
+                # Native dispatch then uses an unpadded NONE descriptor. The
+                # model's existing torch.compile path remains enabled; only
+                # replaying a public-only FULL graph is excluded for this turn.
+                kwargs['is_profile'] = True
             self._kvmem_public_action_forward = observe_work
             try:
                 try:
@@ -343,6 +375,9 @@ def make_probe_runner(base):
                 finally:
                     self._kvmem_public_action_forward = False
                 state = getattr(self, 'execute_model_state', None)
+                if cobatch is not None and cobatch.frame is not None:
+                    state = cobatch.complete(state)
+                    self.execute_model_state = state
                 fresh = observe_work and state is not None and state is not before
                 work = getattr(self, '_kvmem_public_work', None)
                 if fresh and work is not None:
@@ -356,6 +391,8 @@ def make_probe_runner(base):
                         batch=state.input_batch if fresh else None)
                 return result
             except BaseException as error:
+                if cobatch is not None:
+                    cobatch.abort(error)
                 if runtime is not None and getattr(runtime, '_prefill_scatter_deferred', None) is not None:
                     runtime.abort_prefill_scatter(error)
                 raise

@@ -64,6 +64,7 @@
   "refresh_quantum_tokens": 256,
   "repository_gc": false,
   "graph_mode": "multi",
+  "graph_aggregation": "sum",
   "graph_locality_weight": 0.1,
   "graph_attention_weight": 0.2,
   "graph_attention_topk": 4,

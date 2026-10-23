@@ -7,6 +7,7 @@ published to the immutable archive; repeated decode appends extend it in memory.
 from dataclasses import dataclass, field
 from contextlib import contextmanager, nullcontext
 import hashlib
+import time
 
 import torch
 
@@ -86,7 +87,8 @@ class RequestAuthority:
     def __init__(self, request_id, config, archive, layers, heads, head_dim,
                  raw_dtype=torch.bfloat16, resident_records=16, gc_config=None, gc_progress=None,
                  scoring_layers=None, mean_k_backend='torch_reference',
-                 cpu_mean_index_simd=False, mean_index_stats=None):
+                 cpu_mean_index_simd=False, mean_index_stats=None,
+                 query_score_mode='mean_k', query_window_cache_bytes=2147483648):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (
                 torch.bfloat16, torch.float16, torch.float8_e4m3fn):
             raise ValueError("Invalid authority geometry or staging budget")
@@ -100,6 +102,20 @@ class RequestAuthority:
         if mean_k_backend not in ('torch_reference','qw3_cuda'):
             raise ValueError('Invalid MeanK backend')
         self.mean_k_backend = mean_k_backend
+        if query_score_mode not in ('mean_k', 'overlap_16_8', 'key_fps_4') or (query_score_mode != 'mean_k' and config.block_tokens != 32):
+            raise ValueError('Invalid Query window mode or physical block geometry')
+        self.query_score_mode = query_score_mode
+        self.query_window_cache = None
+        if query_score_mode == 'overlap_16_8':
+            from .query_window_scoring import WindowMeanCache
+            self.query_window_cache = WindowMeanCache(archive, self.scoring_layers, heads, head_dim,
+                dtype=torch.float16 if mean_k_backend == 'qw3_cuda' else torch.float32,
+                max_bytes=query_window_cache_bytes)
+        elif query_score_mode == 'key_fps_4':
+            from .query_key_fps import KeyFPSCache
+            self.query_window_cache = KeyFPSCache(archive, self.scoring_layers, heads, head_dim,
+                dtype=torch.float16 if mean_k_backend == 'qw3_cuda' else torch.float32,
+                max_bytes=query_window_cache_bytes)
         if type(cpu_mean_index_simd) is not bool:
             raise ValueError('cpu_mean_index_simd must be boolean')
         if cpu_mean_index_simd and mean_k_backend != 'qw3_cuda':
@@ -459,6 +475,71 @@ class RequestAuthority:
     def read_record(self, handle):
         return self.read_records([handle])[0]
 
+    def read_score_keys(self, handles, *, pin_memory=False):
+        """Owned, bounded raw-K slab for the scoring layers only.
+
+        The [record, layer, token, KV head, dim] destination is written directly
+        by archive region gathers. V and appended draft layers are excluded.
+        Read leases and source owners survive every asynchronous gather until
+        its completion; the returned tensor owns independent copied storage.
+        """
+        self._require_open()
+        if not handles or len(handles) > 32 or type(pin_memory) is not bool:
+            raise ValueError('Scoring Key reads require one to 32 records')
+        keys = [record_key(handle) for handle in handles]
+        if len(set(keys)) != len(keys):
+            raise ValueError('Duplicate scoring Key read handle')
+        self.poll()
+        records = [self.records[key] for key in keys]
+        layers, tokens, heads, dim = self.scoring_layers, *self.shape[1:]
+        amount = layers*tokens*heads*dim*self.raw_element_bytes
+        if len(handles)*amount > 64*1024**2:
+            raise MemoryError('Scoring Key read scratch exceeds 64 MiB')
+        admitted = []
+        stats = dict(key_read_bytes=0, value_read_bytes=0, draft_key_read_bytes=0,
+            key_read_batches=0, key_resident_bytes=0, key_region_seconds=0.)
+        try:
+            for handle in handles:
+                admitted.append(self.memory.admitted_read(handle))
+            if not all(entry[0] for entry in admitted):
+                raise ValueError('Stale authority scoring Key handle')
+            archived = [i for i, record in enumerate(records) if record.raw is None]
+            if any(not records[i].archived for i in archived):
+                raise BlockingIOError('Immutable scoring Key write is still in flight')
+            result = torch.zeros((len(records), layers, tokens, heads, dim),
+                dtype=self.raw_dtype, pin_memory=pin_memory)
+            for i, record in enumerate(records):
+                if record.raw is not None:
+                    result[i, :, :record.count].copy_(record.raw[:layers, :record.count])
+                    stats['key_resident_bytes'] += layers*record.count*heads*dim*self.raw_element_bytes
+            # Usually all records are immutable. Separate only contiguous runs
+            # around resident tails so no second packed slab or clone is needed.
+            cursor = 0
+            while cursor < len(archived):
+                stop = cursor+1
+                while stop < len(archived) and archived[stop] == archived[stop-1]+1:
+                    stop += 1
+                indices = archived[cursor:stop]
+                sources = [admitted[i][1] for i in indices]
+                kwargs = {'_sources': sources} if sources and all(sources) else {}
+                destination = result[indices[0]:indices[-1]+1].view(torch.uint8).numpy().reshape(-1)
+                started = time.perf_counter()
+                job = self.archive.read_region(self.memory.request_id,
+                    [admitted[i][0] for i in indices], 0, amount, destination=destination, **kwargs)
+                if job is None:
+                    raise BlockingIOError('Archive scoring Key read queue is full')
+                _, counters = job.result()
+                stats['key_region_seconds'] += time.perf_counter()-started
+                stats['key_read_bytes'] += len(indices)*amount
+                stats['key_read_batches'] += 1
+                for name in ('read_queue_wait_seconds', 'cache_copy_seconds', 'cache_hit_bytes'):
+                    stats[name] = stats.get(name, 0)+counters.get(name, 0)
+                cursor = stop
+            return result, stats
+        finally:
+            for lease, _ in admitted:
+                lease.reset()
+
     def read_records(self, handles):
         """Read a bounded batch through one coalescible native archive I/O job."""
         self._require_open()
@@ -497,7 +578,8 @@ class RequestAuthority:
             for lease in leases:
                 lease.reset()
 
-    def select_for_queries(self, queries, mandatory_handles=(), *, observe_only=False, max_tokens=None):
+    def select_for_queries(self, queries, mandatory_handles=(), *, observe_only=False, max_tokens=None,
+                           guided_pressure=False):
         """Reference MeanK-to-native-selection bridge over accepted history only.
 
         The returned plan still needs fenced GPU assembly and commit_selection.
@@ -524,7 +606,22 @@ class RequestAuthority:
                 score_mask = frame.score_mask
                 transport_mask = frame.transport_mask
                 eligible = torch.tensor(score_mask, dtype=torch.bool, device=queries.device)
-                scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+                if self.query_score_mode == 'overlap_16_8':
+                    from .query_window_scoring import score_authority_windows
+                    if guided_pressure:
+                        raise ValueError('16/8 window mode is qualified for the public Query only')
+                    values, stats = score_authority_windows(self, records, queries, means, score_mask)
+                    self.query_window_stats = stats
+                    scores = values.cpu().tolist()
+                elif self.query_score_mode == 'key_fps_4':
+                    from .query_key_fps import score_authority_fps
+                    if guided_pressure:
+                        raise ValueError('4-Key FPS mode is qualified for the public Query only')
+                    values, stats = score_authority_fps(self, records, queries, means, score_mask)
+                    self.query_key_fps_stats = stats
+                    scores = values.cpu().tolist()
+                else:
+                    scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
             # index_snapshot retains the same generation-qualified records
             # through the remaining synchronous picker/assembly preparation.
             self.query_score_domain = dict(version=SCORE_DOMAIN_VERSION,
@@ -536,6 +633,10 @@ class RequestAuthority:
                 scores = [scores_by_start.get(r.history_begin, 0.0) for r in records]
             if observe_only:
                 return
+            if guided_pressure:
+                from .guided_pressure import select_guided_pressure
+                return select_guided_pressure(self, records, scores, graph_snapshot,
+                    tuple(slot for slot, _ in mandatory), max_tokens)
             graph_options = getattr(self, 'graph_options', None)
             if graph_snapshot is not None:
                 from .graph_integration import record_query_inputs
@@ -559,7 +660,7 @@ class RequestAuthority:
                 selected = set(self.memory.preview_selection(by_slot, pins,
                     prefill_scores=prefill_scores, max_tokens=max_tokens))
                 report = dict(mode='collect', revision=graph_snapshot.revision,
-                    phase='query', seed_source='mean_k', score_domain_version=SCORE_DOMAIN_VERSION,
+                    phase='query', seed_source=self.query_score_mode, score_domain_version=SCORE_DOMAIN_VERSION,
                     scoring_version=getattr(graph_options,'graph_scoring_version','v1'),
                     alpha=getattr(graph_options,'graph_alpha',.2),
                     pressure_policy=getattr(graph_options,'pressure_policy','recency'),
@@ -598,6 +699,8 @@ class RequestAuthority:
             graph.invalidate()
         self._rewind_position = checkpoint.position
         self._rewind_committed = False
+        if self.query_window_cache is not None:
+            self.query_window_cache.clear()
         return spans
 
     def attach_rewind_completion(self, fence):
@@ -634,6 +737,8 @@ class RequestAuthority:
 
     def close(self):
         self.closing = True
+        if self.query_window_cache is not None:
+            self.query_window_cache.clear()
         self.guided_seed = None
         historical = getattr(self.gc, 'native_history', False)
         graph = getattr(self, 'block_graph', None)

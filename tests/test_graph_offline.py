@@ -305,6 +305,21 @@ def test_v2_query_uses_recorded_version_alpha_domain_and_provenance():
     assert result['baseline_selected_starts'] == [8, 12, 20]
 
 
+def test_recorded_max_pooling_replays_as_max_and_is_not_merged_with_sum():
+    summed=v2_query_fixture()
+    pooled=deepcopy(summed)
+    pooled['aggregation']='max'
+    before=deepcopy(pooled)
+    result=analysis.analyze_record(pooled)
+    assert pooled==before
+    assert result['aggregation']=='max'
+    assert result['arms']['multi']['diagnostics']['aggregation']=='max'
+    assert result['arms']['multi']['diagnostics']['score_sum_conserved'] is False
+    summary=analysis.summarize_records([analysis.analyze_record(summed),result])
+    assert summary['query:v2:multi']['records']==1
+    assert summary['query:v2:max:multi']['records']==1
+
+
 def test_v2_export_can_explicitly_replay_v1_operator_with_recorded_weights():
     record = v2_query_fixture()
     record.update(scoring_version='v1', locality_weight=.03, attention_weight=.4,

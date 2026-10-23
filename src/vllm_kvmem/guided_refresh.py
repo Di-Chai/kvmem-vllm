@@ -117,7 +117,7 @@ def prepare_request(request, plan, entry, options, *, imported=False):
     if plan is None or not options.guided_query_tokens:
         return plan
     mode = options.guided_reselect
-    if mode == 'off':
+    if mode in ('off', 'prefill'):
         return plan
     budget, generation = options.memory.select_budget, options.memory.gen_budget
     trigger = options.guided_trigger

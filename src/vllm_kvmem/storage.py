@@ -83,6 +83,8 @@ def _submit_archive_job(executor, work):
 
 def make_shared_archive(options, directory, record_bytes, max_requests, *, max_query_tokens=0):
     """One process-wide arena; each admitted authority has a lifetime partition."""
+    from .query_window_budget import split_cpu_history_budget
+    history_bytes, query_cache_bytes = split_cpu_history_budget(options)
     capacity = options.memory.repository_blocks * (max_requests + options.session_capacity)
     if options.archive_backend == 'cpu':
         # Immutable authority, not an evictable read cache. No file or mmap is
@@ -92,7 +94,9 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
         if getattr(options, 'historical_gc', None) is not None:
             from .historical_gc import historical_record_charge
             charge = historical_record_charge(record_bytes, options.memory.block_tokens)
-        capacity = min(capacity, options.cpu_read_cache_bytes // charge)
+        capacity = min(capacity, history_bytes // charge)
+        if capacity <= 0:
+            raise ValueError('CPU history budget cannot fit one record after Query cache reservation')
         archive = MemoryArchive(str(directory), record_bytes, capacity,
                                io_max_bytes=options.archive_io_max_bytes,
                                gather_workers=options.cpu_gather_workers,
@@ -103,6 +107,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
                                native_payloads=getattr(options, 'historical_gc', None) is not None)
         archive.async_seal = options.async_seal
         archive.history_record_charge = charge
+        archive._query_window_cache_reserved_bytes = query_cache_bytes
+        archive._query_window_cache_bytes = 0
         if getattr(options, 'historical_gc', None) is not None:
             archive.enable_history_gc(options.historical_gc.native(options.memory, max_requests+options.session_capacity))
         return archive
@@ -120,7 +126,7 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
     if options.cpu_read_cache_bytes:
         from .cached_storage import CachedArchive
         cls = CachedArchive
-        kwargs.update(cache_bytes=options.cpu_read_cache_bytes,
+        kwargs.update(cache_bytes=history_bytes,
                       gather_workers=options.cpu_gather_workers,
                       namespace_bytes=(min(options.cpu_history_cache_bytes_per_request,
                                            options.memory.repository_blocks * record_bytes)
@@ -130,6 +136,8 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
     archive = cls(str(directory), record_bytes, capacity, preallocate=options.nvme_preallocate,
                max_bytes=options.nvme_max_bytes, io_max_bytes=options.archive_io_max_bytes, **kwargs)
     archive.async_seal = options.async_seal
+    archive._query_window_cache_reserved_bytes = query_cache_bytes
+    archive._query_window_cache_bytes = 0
     return archive
 
 
@@ -219,6 +227,8 @@ class AsyncArchive:
                         archive_io_pending_bytes=self._io_bytes,
                         archive_io_peak_bytes=self._io_peak_bytes,
                         archive_io_deferrals=self._io_deferrals,
+                        query_window_cache_reserved_bytes=getattr(self, '_query_window_cache_reserved_bytes', 0),
+                        query_window_cache_bytes=getattr(self, '_query_window_cache_bytes', 0),
                         **(self._seal_totals or {}))
 
     def wait_for_capacity(self, timeout, *, size=None):

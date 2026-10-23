@@ -7,6 +7,7 @@ always uses the original RoPE and FP8 rounding sequence at its new dense positio
 import torch
 from dataclasses import dataclass
 from vllm.triton_utils import tl, triton
+from .fp8_compat import fp8_storage, software_fp8, fp8_to_float, float_to_fp8
 
 
 @dataclass(frozen=True)
@@ -146,9 +147,10 @@ def _store_raw(payload, slots, cache, E:tl.constexpr, SRC_BYTES:tl.constexpr,
 
 def store_raw_records(payload, slots, cache, source_record_bytes):
     elements=cache[0].numel()
+    cache_input,software=fp8_storage(cache)
     _store_raw[(slots.numel(),triton.cdiv(elements,4096))](
-        payload,slots,cache,elements,source_record_bytes,cache.element_size(),
-        (tl.float8e4nv if cache.dtype==torch.float8_e4m3fn else
+        payload,slots,cache_input,elements,source_record_bytes,cache.element_size(),
+        ((tl.uint8 if software else tl.float8e4nv) if cache.dtype==torch.float8_e4m3fn else
          tl.bfloat16 if cache.dtype==torch.bfloat16 else tl.float16),4096,num_warps=4)
 
 
@@ -161,7 +163,8 @@ def _assemble_split(raw_payload, raw_indices, values, value_indices, bases,
                     TRIG:tl.constexpr,TOKENS:tl.constexpr,LAYERS:tl.constexpr,LAYER:tl.constexpr,
                     HEADS:tl.constexpr,DIM:tl.constexpr,HALF:tl.constexpr,PAGE:tl.constexpr,
                     BLOCK:tl.constexpr,RAW_TYPE:tl.constexpr,
-                    RAW_ELEMENT_BYTES:tl.constexpr,ROPE_TYPE:tl.constexpr):
+                    RAW_ELEMENT_BYTES:tl.constexpr,ROPE_TYPE:tl.constexpr,
+                    SOFTWARE_FP8:tl.constexpr):
     token,head=tl.program_id(0),tl.program_id(1)
     record,offset=token//TOKENS,token%TOKENS
     position=tl.load(bases+record).to(tl.int64)+offset
@@ -173,9 +176,9 @@ def _assemble_split(raw_payload, raw_indices, values, value_indices, bases,
     d=tl.arange(0,BLOCK)
     raw=raw_payload.to(tl.pointer_type(RAW_TYPE))
     base=raw_record*(RAW_BYTES//RAW_ELEMENT_BYTES)+inner
-    x=tl.load(raw+base+d,mask=d<DIM,other=0.0).to(tl.float32)
+    x=fp8_to_float(tl.load(raw+base+d,mask=d<DIM,other=0.0),SOFTWARE_FP8 and RAW_ELEMENT_BYTES == 1)
     mate_d=tl.where(d<HALF,d+HALF,d-HALF)
-    mate=tl.load(raw+base+mate_d,mask=d<2*HALF,other=0.0).to(tl.float32)
+    mate=fp8_to_float(tl.load(raw+base+mate_d,mask=d<2*HALF,other=0.0),SOFTWARE_FP8 and RAW_ELEMENT_BYTES == 1)
     freq=d%HALF
     cos=tl.load(trig+position*TRIG+freq).to(tl.float32)
     sin=tl.load(trig+position*TRIG+HALF+freq).to(tl.float32)
@@ -186,6 +189,8 @@ def _assemble_split(raw_payload, raw_indices, values, value_indices, bases,
     else:
         scaled=rotated/tl.load(scale)
     quantized=tl.minimum(tl.maximum(scaled,-448.0),448.0)
+    if SOFTWARE_FP8:
+        quantized=float_to_fp8(quantized)
     tl.store(key+page*K0+(position%PAGE)*K1+head*K2+d,quantized,mask=d<DIM)
     v=tl.load(values+value_record*VALUE_BYTES+VALUE_OFFSET+inner+d,mask=d<DIM,other=0)
     tl.store(value.to(tl.pointer_type(tl.uint8))+page*V0+(position%PAGE)*V1+head*V2+d,v,mask=d<DIM)
@@ -196,17 +201,21 @@ def assemble_split_layer(raw, raw_indices, values, value_indices, bases, layer, 
                          value_record_bytes,value_offset=0,raw_dtype=torch.bfloat16):
     key,value=layer.key,layer.value
     heads,dim=key.shape[-2:]
+    key_input,software=fp8_storage(key)
+    value_input,_=fp8_storage(value)
+    raw_input,_=fp8_storage(raw)
+    values_input,_=fp8_storage(values)
     _assemble_split[(bases.numel()*block_tokens,heads)](
-        raw,raw_indices,values,value_indices,bases,layer.kernel_page_table,
-        layer.cos_sin,key,value,layer.key_scale,*key.stride()[:3],*value.stride()[:3],
+        raw_input,raw_indices,values_input,value_indices,bases,layer.kernel_page_table,
+        layer.cos_sin,key_input,value_input,layer.key_scale,*key.stride()[:3],*value.stride()[:3],
         raw_record_bytes,value_record_bytes,value_offset,layer.cos_sin.stride(0),block_tokens,
         layers,layer_index,heads,dim,layer.cos_sin.shape[1]//2,key.shape[1],
         triton.next_power_of_2(dim),
-        (tl.float8e4nv if raw_dtype==torch.float8_e4m3fn else
+        ((tl.uint8 if software else tl.float8e4nv) if raw_dtype==torch.float8_e4m3fn else
          tl.bfloat16 if raw_dtype==torch.bfloat16 else tl.float16),
         raw_dtype.itemsize,
         (tl.float32 if raw_dtype==torch.float8_e4m3fn else
-         tl.bfloat16 if raw_dtype==torch.bfloat16 else tl.float16),num_warps=4,
+         tl.bfloat16 if raw_dtype==torch.bfloat16 else tl.float16),software,num_warps=4,
         enable_fp_fusion=raw_dtype != torch.float8_e4m3fn)
 
 
@@ -217,12 +226,16 @@ def _assemble_split_layers(raw_payload, raw_indices, values, value_indices, base
                     HEADS:tl.constexpr,DIM:tl.constexpr,HALF:tl.constexpr,PAGE:tl.constexpr,
                     BLOCK:tl.constexpr,RAW_TYPE:tl.constexpr,
                     RAW_ELEMENT_BYTES:tl.constexpr,ROPE_TYPE:tl.constexpr,
-                    TABLE_TYPE:tl.constexpr,TRIG_TYPE:tl.constexpr):
+                    TABLE_TYPE:tl.constexpr,TRIG_TYPE:tl.constexpr,
+                    SOFTWARE_FP8:tl.constexpr):
     token,head,layer=tl.program_id(0).to(tl.int64),tl.program_id(1),tl.program_id(2).to(tl.int64)
     row=table+layer*12
     pages=tl.load(row+0).to(tl.pointer_type(TABLE_TYPE))
     trig=tl.load(row+1).to(tl.pointer_type(TRIG_TYPE))
-    key=tl.load(row+2).to(tl.pointer_type(tl.float8e4nv))
+    if SOFTWARE_FP8:
+        key=tl.load(row+2).to(tl.pointer_type(tl.uint8))
+    else:
+        key=tl.load(row+2).to(tl.pointer_type(tl.float8e4nv))
     value=tl.load(row+3).to(tl.pointer_type(tl.uint8))
     scale=tl.load(row+4).to(tl.pointer_type(tl.float32))
     K0,K1,K2=tl.load(row+5),tl.load(row+6),tl.load(row+7)
@@ -238,9 +251,9 @@ def _assemble_split_layers(raw_payload, raw_indices, values, value_indices, base
     d=tl.arange(0,BLOCK)
     raw=raw_payload.to(tl.pointer_type(RAW_TYPE))
     base=raw_record*(RAW_BYTES//RAW_ELEMENT_BYTES)+inner
-    x=tl.load(raw+base+d,mask=d<DIM,other=0.0).to(tl.float32)
+    x=fp8_to_float(tl.load(raw+base+d,mask=d<DIM,other=0.0),SOFTWARE_FP8 and RAW_ELEMENT_BYTES == 1)
     mate_d=tl.where(d<HALF,d+HALF,d-HALF)
-    mate=tl.load(raw+base+mate_d,mask=d<2*HALF,other=0.0).to(tl.float32)
+    mate=fp8_to_float(tl.load(raw+base+mate_d,mask=d<2*HALF,other=0.0),SOFTWARE_FP8 and RAW_ELEMENT_BYTES == 1)
     freq=d%HALF
     cos=tl.load(trig+position*TRIG+freq).to(tl.float32)
     sin=tl.load(trig+position*TRIG+HALF+freq).to(tl.float32)
@@ -251,6 +264,8 @@ def _assemble_split_layers(raw_payload, raw_indices, values, value_indices, base
     else:
         scaled=rotated/tl.load(scale)
     quantized=tl.minimum(tl.maximum(scaled,-448.0),448.0)
+    if SOFTWARE_FP8:
+        quantized=float_to_fp8(quantized)
     tl.store(key+page*K0+(position%PAGE)*K1+head*K2+d,quantized,mask=d<DIM)
     v=tl.load(values+value_record*VALUE_BYTES+VALUE_OFFSET+inner+d,mask=d<DIM,other=0)
     tl.store(value+page*V0+(position%PAGE)*V1+head*V2+d,v,mask=d<DIM)
@@ -260,15 +275,19 @@ def assemble_split_layers(raw,raw_indices,values,value_indices,bases,table,geome
                           layers,block_tokens,raw_record_bytes,value_record_bytes,
                           value_offset=0,raw_dtype=torch.bfloat16):
     """Launch a prevalidated whole layer bundle; launch errors never fall back."""
+    software=software_fp8(raw.device)
+    raw_input,_=fp8_storage(raw)
+    values_input,_=fp8_storage(values)
     _assemble_split_layers[(bases.numel()*block_tokens,geometry.heads,layers)](
-        raw,raw_indices,values,value_indices,bases,table,
+        raw_input,raw_indices,values_input,value_indices,bases,table,
         raw_record_bytes,value_record_bytes,value_offset,block_tokens,layers,
         geometry.heads,geometry.dim,geometry.half,geometry.page,triton.next_power_of_2(geometry.dim),
-        (tl.float8e4nv if raw_dtype==torch.float8_e4m3fn else
+        ((tl.uint8 if software else tl.float8e4nv) if raw_dtype==torch.float8_e4m3fn else
          tl.bfloat16 if raw_dtype==torch.bfloat16 else tl.float16),raw_dtype.itemsize,
         (tl.float32 if raw_dtype==torch.float8_e4m3fn else
          tl.bfloat16 if raw_dtype==torch.bfloat16 else tl.float16),
         tl.int32 if geometry.table_dtype==torch.int32 else tl.int64,
         (tl.float32 if geometry.trig_dtype==torch.float32 else
          tl.bfloat16 if geometry.trig_dtype==torch.bfloat16 else tl.float16),
+        software,
         num_warps=4,enable_fp_fusion=raw_dtype != torch.float8_e4m3fn)

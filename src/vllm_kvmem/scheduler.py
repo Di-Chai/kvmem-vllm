@@ -173,15 +173,17 @@ class KVMemScheduler(Scheduler):
         if options.cpu_history_coordination:
             from .coordination import HistoryAdmission
             from .cache_manifest import archive_bytes_per_token
+            from .query_window_budget import split_cpu_history_budget
+            history_bytes, _ = split_cpu_history_budget(options)
             row_bytes = archive_bytes_per_token(self.kv_cache_config)
             record_bytes = row_bytes * config.block_tokens
-            capacity = min(options.cpu_read_cache_bytes,
+            capacity = min(history_bytes,
                 record_bytes * config.repository_blocks * (self.scheduler_config.max_num_seqs + options.session_capacity))
             if options.historical_gc is not None:
                 from .historical_admission import HistoricalHistoryAdmission
                 from .historical_gc import historical_record_charge
                 record_bytes = historical_record_charge(record_bytes, config.block_tokens)
-                capacity = min(options.cpu_read_cache_bytes,
+                capacity = min(history_bytes,
                     record_bytes*config.repository_blocks*(self.scheduler_config.max_num_seqs+options.session_capacity))
                 self.connector.history_admission = HistoricalHistoryAdmission(capacity, record_bytes,
                     config.repository_blocks, config.block_tokens, self.connector.sessions,
@@ -234,6 +236,13 @@ class KVMemScheduler(Scheduler):
                 options.phase_prefill_wave_tokens, options.phase_max_wait_ms)
 
     def begin_refresh(self, request, window_tokens, *, replay_tokens=0, query_span=None, selection='chunk',mandatory_spans=(), input_tokens=(), asynchronous=False, speculative_padding=0, message_spans=(), locality_spans=(), locality_provenance=(), guided_reason='', guided_private=False, guided_boundary=None):
+        options = getattr(self, 'guided_options', None)
+        if (selection == 'pressure' and request.num_computed_tokens < request.num_prompt_tokens
+                and getattr(options, 'guided_reselect', None) == 'prefill'
+                and getattr(options, 'guided_query_tokens', 0)):
+            if not asynchronous or not input_tokens:
+                raise ValueError('Guided prefill pressure requires a replayable asynchronous transaction')
+            guided_reason, guided_private, guided_boundary = 'prefill-pressure', True, False
         if getattr(request, "num_in_flight_tokens", 0):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:

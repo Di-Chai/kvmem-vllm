@@ -97,6 +97,7 @@ class RequestPlan:
     query_mode: str = 'raw'
     query_id: str | None = None
     evidence_changed: bool = False
+    pressure_probe_tokens: int = 0
 
     @property
     def output_reserve(self):
@@ -262,6 +263,7 @@ class RequestPlan:
         # Reserve a replay block AND native MTP allocation lookahead. Pressure
         # must be visited before allocation; a filled old view cannot be probed.
         boundary = capacity - (1 if self.prefill_window == 'keep_selected' else 2) * self.block_tokens
+        boundary -= self.pressure_probe_tokens
         if self.query is not None and history < self.replay_begin:
             query_boundary = (capacity - (self.replay_end - self.replay_begin) - self.block_tokens - self.probe_tokens) // self.block_tokens * self.block_tokens
             boundary = min(boundary, query_boundary)
@@ -404,7 +406,9 @@ def request_plan(request, block_tokens, gen_budget):
     payload = params.get('kvmem_request_plan')
     if payload is None:
         return None
-    plan = RequestPlan.parse(payload, request.num_prompt_tokens, block_tokens, gen_budget,reserve)
+    pressure_reserve = reserve if config.get('guided_reselect') == 'prefill' else 0
+    plan = RequestPlan.parse(payload, request.num_prompt_tokens, block_tokens, gen_budget,
+                             0 if pressure_reserve else reserve)
     from .session_control import SessionLedger
     return replace(plan, output_tokens=SessionLedger.output_tokens(request),
-                   rolling_active_window=rolling)
+                   rolling_active_window=rolling, pressure_probe_tokens=pressure_reserve)

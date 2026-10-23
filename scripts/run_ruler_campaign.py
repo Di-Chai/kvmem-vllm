@@ -11,13 +11,17 @@ import time
 import benchmark_block_graph as lifecycle
 from benchmark_ruler import save, sha
 from guided_benchmark_protocol import require, validate_profile
+from ruler_execution import optimized, validate_execution, audit_optimized
 import reference_service
 
 
 def audit_execution(root, count):
     capture = root / 'run/server/capture'
     config = json.loads((capture / 'action_config.json').read_text())
-    require(config['native_scores'] == 'off' and all(config[k] is True for k in
+    fixture = json.loads((root / 'fixture.json').read_text())
+    profile = json.loads((root / 'profile.json').read_text())
+    use_optimized = optimized(fixture)
+    require(config['native_scores'] == ('reuse' if use_optimized else 'off') and all(config[k] is True for k in
         ('native_decode_commit', 'download_pool', 'fused_scoring')), 'Optimization mode drift')
     actions = [json.loads(line) for line in (capture / 'action_attention.jsonl').open()]
     require(len(actions) == count, 'Missing terminal accepted-attention reports')
@@ -28,16 +32,25 @@ def audit_execution(root, count):
     require(all(not p['exhaustions'] and not p['quarantined_slots'] for p in pools), 'Download pool failure')
     fused = max(r['scoring_backend_counts'].get('fused', 0) for r in actions)
     commits = max(r.get('decode_commit_native_calls', 0) for r in actions)
-    require(fused > 0, 'No fused scores were computed')
+    require(use_optimized or fused > 0, 'No fused scores were computed')
+    auditor = audit_optimized
+    if fixture.get('execution_profile') == 'pooling-pro6000-20261022':
+        from ruler_pooling_protocol import audit_optimized as auditor
+    elif fixture.get('execution_profile') == 'guided-pressure-pro6000-20261023':
+        from ruler_guided_pressure_protocol import audit_optimized as auditor
+    execution = auditor(capture, profile) if use_optimized else None
     graphs = [json.loads(line) for line in (capture / 'block_graph.jsonl').open()]
     queries = [r for r in graphs if r['phase'] == 'query']
-    require(len(queries) == count and all(r['mode'] == 'multi' and r['alpha'] == .2 for r in queries),
+    require(len(queries) == count and all(r['mode'] == 'multi'
+            and r['alpha'] == profile['kvmem']['graph_alpha']
+            and r.get('aggregation','sum') == profile['kvmem'].get('graph_aggregation','sum') for r in queries),
             'Wrong Query policy or missing Query reports')
     require(all(r.get('backend') == 'cpp_v2' or r.get('native_fallback') == 'identity' for r in queries),
             'Unexpected graph fallback')
     require(all(not r.get('propagation_applied') for r in graphs if r['phase'] == 'pressure'),
             'Pressure selection unexpectedly used graph propagation')
     save(root / 'run/execution-audit.json', dict(passed=True, query_count=count, action_config=config,
+        execution_profile=fixture.get('execution_profile', 'historical'), optimized_execution=execution,
         fused_calls=fused, native_decode_calls=commits, reference_score_calls=0,
         native_graph_calls=sum(r.get('backend') == 'cpp_v2' for r in queries),
         graph_identity_fallbacks=sum(r.get('native_fallback') == 'identity' for r in queries),
@@ -50,7 +63,7 @@ def run(root, diagnostic_cases=None, diagnostic_gen_budget=16384, diagnostic_chu
     validate_service_policy(existing_service=existing_service, restore_service=restore_service)
     root = root.resolve()
     runtime = root / 'runtime'
-    require(Path(__file__).resolve() == runtime / 'scripts/run_ruler_campaign.py', 'Use the frozen controller')
+    require(Path(__file__).resolve() == (runtime / 'scripts/run_ruler_campaign.py').resolve(), 'Use the frozen controller')
     proof = json.loads((root / 'runtime-proof.json').read_text())
     for name, digest in proof['files'].items():
         require(sha(runtime / name) == digest, 'Frozen runtime changed: ' + name)
@@ -59,10 +72,8 @@ def run(root, diagnostic_cases=None, diagnostic_gen_budget=16384, diagnostic_chu
     fixture = json.loads((root / 'fixture.json').read_text())
     profile = json.loads((root / 'profile.json').read_text())
     require(sha(root / 'profile.json') == fixture['profile_sha256'], 'Frozen profile changed')
-    require((diagnostic_gen_budget == 16384 and diagnostic_chunk == 1024) or diagnostic_cases is not None,
-            'Changing budget or chunk is restricted to an explicit diagnostic cohort')
-    validate_profile(profile, 'off', 'niah', expected_gen_budget=diagnostic_gen_budget,
-                     expected_chunk=diagnostic_chunk)
+    validate_execution(profile, fixture, diagnostic_cases=diagnostic_cases,
+                       diagnostic_gen_budget=diagnostic_gen_budget, diagnostic_chunk=diagnostic_chunk)
     require(fixture['cases'] == 260 and fixture['samples_per_task'] == 20 and
             fixture['target_length'] == 262144, 'Requested 13 x 20 at 256K differs')
     count = 260 if diagnostic_cases is None else diagnostic_cases
@@ -76,6 +87,7 @@ def run(root, diagnostic_cases=None, diagnostic_gen_budget=16384, diagnostic_chu
     for toolkit in ('/usr/local/cuda-13', '/usr/local/cuda'):
         if (Path(toolkit) / 'bin/nvcc').exists():
             env['CUDA_HOME'] = toolkit
+            env['PATH'] = str(Path(toolkit) / 'bin') + os.pathsep + env.get('PATH', '')
             break
     target = root / 'run'
     target.mkdir(exist_ok=False)
@@ -103,6 +115,8 @@ def run(root, diagnostic_cases=None, diagnostic_gen_budget=16384, diagnostic_chu
             require(not lifecycle.gpu_processes(), 'Foreign GPU process is active')
             command = [sys.executable, '-B', '-m', 'vllm_kvmem', 'serve',
                 '--config', str(root / 'profile.json'), '--run-dir', str(target / 'server')]
+            if diagnostic and fixture.get('execution_profile') == 'guided-pressure-pro6000-20261023':
+                command.append('--verify-guided-pressure')
             started = time.monotonic()
             with (target / 'server.log').open('x') as log:
                 server = subprocess.Popen(command, cwd=runtime, env=env, stdout=log,

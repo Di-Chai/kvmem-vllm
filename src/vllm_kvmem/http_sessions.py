@@ -51,6 +51,8 @@ def normalize_query_plan(payload, session_header=None):
             raise ValueError('Explicit Query coordinates require a token-ID completion prompt')
         return False  # Native chat remains an independent legacy entry.
     reserve = cfg.get('guided_reserve',0)
+    if cfg.get('guided_reselect') == 'prefill':
+        reserve = 0  # Private scratch precedes pressure, not the final Query.
     plan = RequestPlan.parse(fields or {}, len(prompt), cfg['block_tokens'], cfg['gen_budget'],reserve)
     if (plan.query is not None and
             plan.replay_end - plan.replay_begin > cfg.get('query_replay_budget', cfg['gen_budget'])):

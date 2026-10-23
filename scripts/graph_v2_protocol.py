@@ -100,6 +100,7 @@ def validate_profile(profile, arm, suite='niah'):
     require((kv.get('graph_mode'), kv.get('pressure_policy')) == ARM_POLICY[arm],
         'V2 graph mode / pressure policy does not match arm')
     require(kv.get('graph_scoring_version') == 'v2' and kv.get('graph_alpha') == .2 and
+        kv.get('graph_aggregation', 'sum') == 'sum' and
         not {'graph_locality_weight', 'graph_attention_weight', 'action_pressure'} & kv.keys(),
         'V2 requires canonical version/alpha/policy fields')
     require(kv.get('action_attention') and kv.get('prefill_attention') and

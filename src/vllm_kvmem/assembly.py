@@ -6,6 +6,7 @@ V is already quantized with this layer's unchanged V scale; copy its bytes once.
 """
 import torch
 from vllm.triton_utils import tl, triton
+from .fp8_compat import fp8_storage, fp8_to_float, float_to_fp8
 
 
 @triton.jit
@@ -16,17 +17,18 @@ def _assemble(raw, values, positions, slots, trig, kcache, vcache, kscale,
               c0: tl.constexpr, c1: tl.constexpr, c2: tl.constexpr,
               trig_stride: tl.constexpr, PAGE: tl.constexpr,
               DIM: tl.constexpr, HALF: tl.constexpr, BLOCK: tl.constexpr,
-              COPY_V: tl.constexpr, RAW_TYPE: tl.constexpr):
+              COPY_V: tl.constexpr, RAW_TYPE: tl.constexpr,
+              RAW_BYTES: tl.constexpr, SOFTWARE_FP8: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     slot = tl.load(slots + token)
     if slot >= 0:
         position = tl.load(positions + token).to(tl.int64)
         d = tl.arange(0, BLOCK)
         mask = d < DIM
-        x = tl.load(raw + token*r0 + head*r1 + d, mask=mask, other=0.0).to(tl.float32)
+        x = fp8_to_float(tl.load(raw + token*r0 + head*r1 + d, mask=mask, other=0.0), RAW_BYTES)
         other_d = tl.where(d < HALF, d + HALF, d - HALF)
-        mate = tl.load(raw + token*r0 + head*r1 + other_d,
-                       mask=d < 2*HALF, other=0.0).to(tl.float32)
+        mate = fp8_to_float(tl.load(raw + token*r0 + head*r1 + other_d,
+                       mask=d < 2*HALF, other=0.0), RAW_BYTES)
         freq = d % HALF
         cos = tl.load(trig + position*trig_stride + freq).to(tl.float32)
         sin = tl.load(trig + position*trig_stride + HALF + freq).to(tl.float32)
@@ -37,6 +39,8 @@ def _assemble(raw, values, positions, slots, trig, kcache, vcache, kscale,
         else:
             scaled = rotated / tl.load(kscale)
         scaled = tl.minimum(tl.maximum(scaled, -448.0), 448.0)
+        if SOFTWARE_FP8:
+            scaled = float_to_fp8(scaled)
         page, offset = slot // PAGE, slot % PAGE
         tl.store(kcache + page*k0 + offset*k1 + head*k2 + d, scaled, mask=mask)
         if COPY_V:
@@ -80,14 +84,19 @@ def assemble_fp8(raw_k, values, positions, slots, cos_sin_cache, key_cache, valu
         raise ValueError("Require contiguous inner dimensions and a validated per-tensor K scale")
     if not tokens:
         return
+    raw_input,raw_bytes = fp8_storage(raw_k)
+    key_input,software = fp8_storage(key_cache)
+    value_input,_ = fp8_storage(value_cache)
+    values_input,_ = fp8_storage(values if values is not None else value_cache)
     _assemble[(tokens, heads)](
-        raw_k, values if values is not None else value_cache, positions, slots,
-        cos_sin_cache, key_cache, value_cache, k_scale,
+        raw_input, values_input, positions, slots,
+        cos_sin_cache, key_input, value_input, k_scale,
         *raw_k.stride()[:2], *(values.stride()[:2] if values is not None else (0, 0)),
         *key_cache.stride()[:3], *value_cache.stride()[:3], cos_sin_cache.stride(0),
         key_cache.shape[1], dim, cos_sin_cache.shape[1] // 2,
         triton.next_power_of_2(dim), values is not None,
         (tl.float32 if raw_k.dtype == torch.float8_e4m3fn else
          tl.bfloat16 if raw_k.dtype == torch.bfloat16 else tl.float16),
+        raw_bytes,software,
         num_warps=4, enable_fp_fusion=raw_k.dtype != torch.float8_e4m3fn,
     )
