@@ -12,6 +12,10 @@ in GPU window assembly with an allocation error. The failure is preserved in
 `/root/data/kvmem-vllm-gc/runs/dsh-live-01/marker`. Do not treat 24576 as proven
 runtime capacity; pass the backend's subsequently validated limit when preparing
 a fresh run. Changing the provider limit alone does not change backend capacity.
+The subsequent 16384-context backend completed the real marker case in
+`dsh-live-02/marker`; its saved validator report proves the read tool, its returned
+value and the final answer. This is a functional result, not a maximum-capacity
+or throughput measurement.
 
 ## Prepare and launch
 
@@ -104,6 +108,27 @@ all tool, system prompt and provider rows were identical. The CSGO runner has no
 tool registration or prompt injection. Its queue guarantees serial user turns;
 the bridge's separate global C1 gate must still enforce the backend request limit.
 
+The repository runner patch is a template. `prepare.py` replaces its placeholder
+with an absolute **literal string** pointing to the copied runner. Cordis does
+not evaluate a `!!js` expression in the plugin `name` field as a config value.
+Do not pass the unprepared template directly to DSH. The runner's official
+`agents.create({setup})` callback must return `undefined`: `installModelSelection`
+returns a disposer, while the Agent creation API interprets a non-void setup
+return as a transaction and calls its `commit()` method. The explicit block
+callback deliberately discards the disposer, matching official headless code;
+its listeners are already scoped to the Agent context.
+
+The real loader guard test at `dsh-runner-boot-guard-01/validation.json` reached
+the new plugin and exited before Agent creation. The stronger integration at
+`dsh-runner-fake-provider-01/validation.json` created an actual Agent and captured
+its first complete request at the fake provider on port 18388. It verified all
+15 tool schemas against the earlier capture, then returned the intentional 503:
+one durable session, zero model output messages, zero executed tools and no
+request to the real model. Its `integration-launch.json` records exact commands;
+the fake provider and DSH both exited. This closes the loader and Agent setup
+gaps that a mocked lifecycle test alone cannot cover. The real-route Query hook
+remains specific to port 18387 and is validated by the real marker evidence.
+
 The current Web bundle is not substituted: it disables the flat base-agent rows
 and selects session agent presets, and its runtime adds Web-surface context. A
 Web RPC test would need a matching custom preset, removal of surface prompt
@@ -137,6 +162,34 @@ Full DSH persistence files contain concatenated Zstandard frames. A single
 Node `zstdDecompressSync` call may return only the first frame: use the DSH frame
 scanner or decode every frame before judging missing tool/assistant events.
 
+## Validate a completed marker case
+
+```sh
+/root/data/kvmem-vllm-gc/.venv/bin/python \
+  /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud/validate_marker.py \
+  --case-dir /root/data/kvmem-vllm-gc/runs/dsh-live-02/marker \
+  --bridge-output /root/data/kvmem-vllm-gc/runs/dsh-bridge-02 \
+  --tokenizer /root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4 \
+  --output /root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/validation.json
+```
+
+This is read-only except for the specified report. It uses system libzstd to
+decode all frames, and only local tokenizer assets for CPU prefix reconstruction.
+No model, network client or GPU operation is started. Missing exit/commit evidence
+reports `pending` (exit 2); inconsistent evidence reports `failed` (exit 1);
+success reports `passed` (exit 0). It checks the actual `read` call and its matching
+successful result, exact final marker and exit status, both committed bridge
+responses, the owner derived from DSH session/system/tools, and Query provenance
+against the durable human message rather than the later runtime context.
+
+The successful marker02 report decoded 28 Zstd frames. Its model responses
+accepted 85 then 78 tokens; the second native prompt reconstructed the preceding
+4396 prompt tokens plus the exact 85 accepted IDs as a 4481-token prefix. The
+validator checks native/segment/commit IDs agree and retokenizes only according
+to the saved audited protocol. It does not infer GPU page reuse from that prefix.
+Any included GC counters come from the saved `lifecycle-before-release.json`,
+never later live server state. This case does not prove proactive statistical GC.
+
 ## Pinned runtime and CPU checks
 
 `locks/` preserves the installation manifest, pnpm lock and overrides, package
@@ -158,3 +211,8 @@ and do not contact a model. They cover same-session serial followups and genuine
 user provenance, stopping after turn failure, rejecting an invalid queue index,
 and refusing to create an Agent without the launch guard. They do not establish
 real backend correctness or GPU memory capacity.
+The setup mock also invokes the actual model-selection callback and checks its
+void return. `test_validate_marker.py` covers concatenated frames, truncated
+trailing data, pending runs and failed exit status. A saved negative check at
+`dsh-live-02/marker/validator-negative-check.json` altered one accepted ID in a
+temporary copy; validation rejected it against the untouched native evidence.

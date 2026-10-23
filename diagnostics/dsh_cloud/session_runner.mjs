@@ -64,7 +64,11 @@ async function run(ctx, runDir, log, exit) {
     sessionId: SessionId(`session-${randomUUID()}`),
     meta: { cwd: process.cwd() },
     agentOptions: { provider: selection.provider, model: selection.model },
-    setup: agentCtx => installModelSelection(agentCtx, { current: selection, assembled: undefined }),
+    setup: agentCtx => {
+      // setup may return a transaction with commit(); installModelSelection
+      // returns a disposer instead. Match the official headless void callback.
+      installModelSelection(agentCtx, { current: selection, assembled: undefined });
+    },
   });
   await agent.whenIdle();
   const sessionId = agent.session.id;

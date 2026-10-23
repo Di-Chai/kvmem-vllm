@@ -49,7 +49,12 @@ async function simulate({ failFirst = false, allow = true, invalid = false } = {
   const services = {
     appExit: code => resolveExit(code),
     agentDefaultModel: { currentSelection: () => ({ provider: "gc-local", model: "kvmem-gc-qwen38" }) },
-    agents: { create: async () => { createCount++; return { agent }; } },
+    agents: { create: async options => {
+      createCount++;
+      const setupResult = await options.setup({ on: () => () => {} });
+      assert.equal(setupResult, undefined, "setup must not return the model-selection disposer as a commit transaction");
+      return { agent };
+    } },
     sessions: { flush: async current => { assert.equal(current, session); flushCount++; } },
   };
   try {

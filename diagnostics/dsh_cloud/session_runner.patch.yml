@@ -3,4 +3,5 @@
   disabled: true
 - insert:
     - id: gc-single-session-runner
-      name: !!js process.env.DSH_GC_RUNNER
+      # prepare.py replaces this with the snapshot's absolute literal path.
+      name: __DSH_GC_RUNNER__

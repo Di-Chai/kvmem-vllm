@@ -40,6 +40,9 @@ def main():
         shutil.copy2(source / name, snapshots / name)
     provider = snapshots / "provider.patch.yml"
     provider.write_text(provider.read_text().replace("contextWindow: 24576", f"contextWindow: {args.context_window}"))
+    runner_patch = snapshots / "session_runner.patch.yml"
+    runner_patch.write_text(runner_patch.read_text().replace(
+        "__DSH_GC_RUNNER__", json.dumps(str(snapshots / "session_runner.mjs"))))
     manifest = {
         "harness": str(harness), "node": str(node), "cli": str(cli),
         "provider": "gc-local", "model": "kvmem-gc-qwen38",

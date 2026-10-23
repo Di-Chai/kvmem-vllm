@@ -1,0 +1,87 @@
+{
+  "schema": "dsh-cpu-browser-validation-environment-v1",
+  "node": "24.19.0",
+  "playwright": "1.64.1",
+  "pngjs": "7.0.0",
+  "browser": {
+    "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.4/linux64/chrome-headless-shell-linux64.zip",
+    "bytes": 125797539,
+    "md5": "743dac7baf99eaa72e221335ea966f07",
+    "sha256": "c3e50596aef52c58f8fda3c6b3411c33d34c88b177b3ed1c2243359fd3b8ba20",
+    "target": "/root/data/kvmem-vllm-gc/dsh-harness/browser-validation/browsers/chromium_headless_shell-1248"
+  },
+  "ubuntu_library_packages": [
+    "libdbus-1-3=1.12.20-2ubuntu4.1",
+    "libfribidi0=1.0.8-2ubuntu3.1",
+    "libdrm-common=2.4.113-2~ubuntu0.22.04.1",
+    "libdrm2=2.4.113-2~ubuntu0.22.04.1",
+    "libpng16-16=1.6.37-3ubuntu0.7",
+    "libfreetype6=2.11.1+dfsg-1ubuntu0.4",
+    "fonts-dejavu-core=2.37-2build1",
+    "fontconfig-config=2.13.1-4.2ubuntu5",
+    "libfontconfig1=2.13.1-4.2ubuntu5",
+    "fontconfig=2.13.1-4.2ubuntu5",
+    "libasound2-data=1.2.6.1-1ubuntu1.2",
+    "libasound2=1.2.6.1-1ubuntu1.2",
+    "libatk1.0-data=2.36.0-3build1",
+    "libatk1.0-0=2.36.0-3build1",
+    "libxi6=2:1.8-1build1",
+    "libatspi2.0-0=2.44.0-3",
+    "libatk-bridge2.0-0=2.38.0-3",
+    "libavahi-common-data=0.8-5ubuntu5.5",
+    "libavahi-common3=0.8-5ubuntu5.5",
+    "libavahi-client3=0.8-5ubuntu5.5",
+    "libpixman-1-0=0.40.0-1ubuntu0.22.04.1",
+    "libxcb-render0=1.14-3ubuntu3",
+    "libxcb-shm0=1.14-3ubuntu3",
+    "libcairo2=1.16.0-5ubuntu2.1",
+    "libcups2=2.4.1op1-1ubuntu4.21",
+    "libdatrie1=0.2.13-2",
+    "libwayland-server0=1.20.0-1ubuntu0.1",
+    "libxcb-randr0=1.14-3ubuntu3",
+    "libgbm1=23.2.1-1ubuntu3.1~22.04.4",
+    "libgraphite2-3=1.3.14-1ubuntu0.1",
+    "libharfbuzz0b=2.7.4-1ubuntu3.2",
+    "libnspr4=2:4.35-0ubuntu0.22.04.1",
+    "libnss3=2:3.98-0ubuntu0.22.04.5",
+    "libthai-data=0.1.29-1build1",
+    "libthai0=0.1.29-1build1",
+    "libpango-1.0-0=1.50.6+ds-2ubuntu1",
+    "libxcomposite1=1:0.4.5-1build2",
+    "libxdamage1=1:1.1.5-2build2",
+    "libxfixes3=1:6.0.0-1",
+    "libxkbcommon0=1.4.0-1",
+    "libxrandr2=2:1.5.2-1build1"
+  ],
+  "runtime_root": "/tmp/kvmem-gc-browser-runtime-1248",
+  "library_installation": "download and extract only; no dpkg/apt install",
+  "selftest": {
+    "artifact_root": "/root/data/kvmem-vllm-gc/runs/browser-validator-selftest-02",
+    "positive_status": "observational-checks-passed",
+    "positive_summary": {
+      "boot_pass": true,
+      "no_console_errors": true,
+      "no_blocked_dependencies": true,
+      "no_failed_requests": true,
+      "action_errors": 0,
+      "state_checks_total": 2,
+      "state_checks_passed": 2,
+      "specified_state_checks_pass": true,
+      "default_observations_are_not_gameplay_assertions": true
+    },
+    "positive_seconds": 2.895,
+    "renderer": {
+      "available": true,
+      "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+    },
+    "negative_status": "issues-observed",
+    "blocked_requests": [
+      {
+        "url": "https://blocked.invalid/test.js",
+        "method": "GET",
+        "resource_type": "script"
+      }
+    ],
+    "scope": "Infrastructure button/key fixture only; not a game or model output."
+  }
+}
