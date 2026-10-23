@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -50,6 +51,7 @@ class PreparedCaseTests(unittest.TestCase):
             self.assertEqual(manifest["stream_idle_timeout_ms"], 300000)
             self.assertEqual(manifest["max_tokens"], 8192)
             self.assertEqual(manifest["native_g"], 4096)
+            self.assertEqual(manifest["turn_timeout_ms"], 0)
             self.assertEqual(manifest["bridge_max_output_segments"], 2)
             self.assertEqual(manifest["context_window"], 32768)
             for case, queued in (("marker", False), ("csgo", True)):
@@ -254,6 +256,62 @@ class PreparedCaseTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
                                         "--context-window", "262144", "--select-budget", "36864", *extra)
+                self.assertEqual(code, 2)
+                self.assertFalse(self.root.exists())
+
+    def test_turn_timeout_is_fingerprinted_and_launch_env_is_isolated(self):
+        manifest = self.prepare("--turn-timeout-ms", "1800000")
+        self.assertEqual(manifest["turn_timeout_ms"], 1800000)
+        policy = self.root / "configuration/session_runner.policy.json"
+        self.assertIn(policy.name, manifest["configuration_sha256"])
+        self.assertEqual(json.loads(policy.read_text()), {"schema_version": 1, "turn_timeout_ms": 1800000})
+        with patch.dict(os.environ, {"DSH_GC_TURN_TIMEOUT_MS": "1"}), patch("subprocess.Popen") as spawn:
+            spawn.return_value.pid = 12345
+            spawn.return_value.wait.return_value = 0
+            code, out, err = self.plan("csgo", "--execute")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["turn_timeout_ms"], 1800000)
+            self.assertEqual(spawn.call_args.kwargs["env"]["DSH_GC_TURN_TIMEOUT_MS"], "1800000")
+        code, out, err = self.plan("marker")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["turn_timeout_ms"], 0)
+
+    def test_turn_timeout_tampering_rejected_before_launch(self):
+        manifest = self.prepare("--turn-timeout-ms", "1800000")
+        policy = self.root / "configuration/session_runner.policy.json"
+        original = policy.read_text()
+        policy.write_text(original.replace("1800000", "1"))
+        with patch("subprocess.Popen") as spawn:
+            code, _, err = self.plan("csgo", "--execute")
+            self.assertEqual(code, 2)
+            self.assertIn("Prepared configuration changed", err)
+            spawn.assert_not_called()
+        policy.write_text(original)
+        manifest["turn_timeout_ms"] = 1
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        code, _, err = self.plan("csgo", "--execute")
+        self.assertEqual(code, 2)
+        self.assertIn("differs from its configuration snapshot", err)
+
+    def test_legacy_manifest_without_timeout_snapshot_keeps_it_disabled(self):
+        manifest = self.prepare()
+        del manifest["turn_timeout_ms"]
+        del manifest["configuration_sha256"]["session_runner.policy.json"]
+        (self.root / "configuration/session_runner.policy.json").unlink()
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        with patch.dict(os.environ, {"DSH_GC_TURN_TIMEOUT_MS": "1"}), patch("subprocess.Popen") as spawn:
+            spawn.return_value.pid = 12345
+            spawn.return_value.wait.return_value = 0
+            code, out, err = self.plan("csgo", "--execute")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["turn_timeout_ms"], 0)
+            self.assertEqual(spawn.call_args.kwargs["env"]["DSH_GC_TURN_TIMEOUT_MS"], "0")
+
+    def test_invalid_turn_timeout_rejected_before_preparation(self):
+        for value in ("-1", "1.5", "2147483648", "inf"):
+            with self.subTest(value=value):
+                code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
+                                        "--turn-timeout-ms", value)
                 self.assertEqual(code, 2)
                 self.assertFalse(self.root.exists())
 

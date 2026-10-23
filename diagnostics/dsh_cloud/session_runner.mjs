@@ -46,6 +46,11 @@ async function run(ctx, runDir, log, exit) {
   if (process.env.DSH_GC_ALLOW_MODEL_REQUESTS !== "1") {
     throw new Error("Explicit launch required: DSH_GC_ALLOW_MODEL_REQUESTS=1");
   }
+  const timeoutSetting = process.env.DSH_GC_TURN_TIMEOUT_MS ?? "0";
+  if (!/^(0|[1-9][0-9]*)$/.test(timeoutSetting) || Number(timeoutSetting) > 2147483647) {
+    throw new Error("DSH_GC_TURN_TIMEOUT_MS must be an integer in [0, 2147483647]");
+  }
+  const turnTimeoutMs = Number(timeoutSetting);
   const harness = process.env.DSH_GC_HARNESS;
   if (!harness || !path.isAbsolute(harness)) throw new Error("DSH_GC_HARNESS must be absolute");
   const require = createRequire(path.join(harness,
@@ -75,7 +80,7 @@ async function run(ctx, runDir, log, exit) {
   writeJSON(path.join(runDir, "session.json"), {
     session_id: sessionId, agent_id: agent.id, pid: process.pid,
     cwd: process.cwd(), dsh_home: process.env.DSH_HOME, provider: selection.provider,
-    model: selection.model, started_at: new Date().toISOString(),
+    model: selection.model, started_at: new Date().toISOString(), turn_timeout_ms: turnTimeoutMs,
   });
   log({ event: "runner.ready", session_id: sessionId });
   for (let index = 1; ; index++) {
@@ -95,13 +100,39 @@ async function run(ctx, runDir, log, exit) {
     const startedAt = new Date().toISOString();
     writeJSON(path.join(runDir, "status.json"), { state: "running", session_id: sessionId, index });
     log({ event: "runner.followup", session_id: sessionId, index, first_seq: firstSeq });
-    // User provenance is required by the installed route-specific Query hook.
-    agent.followup(createUserMessage({ content: [{ type: "text", text: command.text }], source: { kind: "user" } }));
-    await agent.whenIdle();
-    await sessions.flush(agent.session);
+    let timer, resourceBudget;
+    const startedMs = Date.now();
+    try {
+      if (turnTimeoutMs > 0) timer = setTimeout(() => {
+        const cause = { kind: "hook", reason: "resource-budget:turn-timeout" };
+        resourceBudget = {
+          kind: "resource-budget", resource: "turn-timeout",
+          limit_ms: turnTimeoutMs, elapsed_ms: Date.now() - startedMs,
+          triggered_at: new Date().toISOString(), cancel_cause: cause,
+        };
+        // Persist the budget decision before cancellation converges to idle.
+        try {
+          writeJSON(path.join(runDir, "turns", `${key}.budget.json`), resourceBudget);
+          log({ event: "runner.resource_budget", session_id: sessionId, index, ...resourceBudget });
+        } catch (error) {
+          // An evidence-write failure must not leave a timed-out turn running.
+          resourceBudget.evidence_error = String(error);
+        }
+        agent.cancel(cause);
+      }, turnTimeoutMs);
+      // User provenance is required by the installed route-specific Query hook.
+      agent.followup(createUserMessage({ content: [{ type: "text", text: command.text }], source: { kind: "user" } }));
+      await agent.whenIdle();
+    } finally {
+      clearTimeout(timer);
+      await sessions.flush(agent.session);
+    }
     if (agent.session.id !== sessionId) throw new Error("Agent changed session during followup");
     const events = [...agent.session.events].filter(event => event.seq >= firstSeq);
-    const outcome = summarize(events, firstSeq);
+    const agentOutcome = summarize(events, firstSeq);
+    const outcome = resourceBudget
+      ? { ...agentOutcome, agent_reason: agentOutcome.reason, reason: resourceBudget }
+      : agentOutcome;
     writeJSON(path.join(runDir, "turns", `${key}.events.json`), events);
     writeJSON(path.join(runDir, "turns", `${key}.result.json`), {
       index, session_id: sessionId, first_seq: firstSeq, last_seq: agent.session.seq,

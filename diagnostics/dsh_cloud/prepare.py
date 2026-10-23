@@ -32,6 +32,8 @@ def main():
                         help="Provider output cap; must fit context and the separately configured bridge segment limit")
     parser.add_argument("--stream-idle-timeout-ms", type=int, default=300000,
                         help="Finite pi-ai semantic-stream idle timeout; raise explicitly for strictly buffered large tools")
+    parser.add_argument("--turn-timeout-ms", type=int, default=0,
+                        help="Queued-session turn wall deadline; 0 disables, explicit resource-budget cancellation on expiry")
     parser.add_argument("--case-name", help="Additional independent queued-session case, e.g. expense-tracker")
     parser.add_argument("--task-file", type=Path, help="UTF-8 initial task for --case-name; copied into the fresh run")
     args = parser.parse_args()
@@ -72,6 +74,8 @@ def main():
         parser.error("max-output-tokens must fit G times the bridge max-output-segments (1 to 4)")
     if not 1 <= args.stream_idle_timeout_ms <= 2147483647:
         parser.error("stream-idle-timeout-ms must be in [1, 2147483647]")
+    if not 0 <= args.turn_timeout_ms <= 2147483647:
+        parser.error("turn-timeout-ms must be in [0, 2147483647]")
     root = args.run_root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     snapshots = root / "configuration"
@@ -86,11 +90,15 @@ def main():
     runner_patch = snapshots / "session_runner.patch.yml"
     runner_patch.write_text(runner_patch.read_text().replace(
         "__DSH_GC_RUNNER__", json.dumps(str(snapshots / "session_runner.mjs"))))
+    policy_name = "session_runner.policy.json"
+    write_json(snapshots / policy_name, {"schema_version": 1, "turn_timeout_ms": args.turn_timeout_ms})
+    names.append(policy_name)
     manifest = {
         "harness": str(harness), "node": str(node), "cli": str(cli),
         "provider": "gc-local", "model": "kvmem-gc-qwen38",
         "base_url": "http://127.0.0.1:18387/v1", "context_window": args.context_window, "max_tokens": args.max_output_tokens,
         "stream_idle_timeout_ms": args.stream_idle_timeout_ms,
+        "turn_timeout_ms": args.turn_timeout_ms,
         "native_k": args.select_budget, "native_g": args.gen_budget,
         "bridge_max_output_segments": segments, "query_replay_budget": 128, "max_inflight": 1,
         "configuration_sha256": {name: hashlib.sha256((snapshots / name).read_bytes()).hexdigest() for name in names},

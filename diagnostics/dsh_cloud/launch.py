@@ -35,6 +35,18 @@ def main():
     for name, digest in manifest["configuration_sha256"].items():
         if hashlib.sha256((configuration / name).read_bytes()).hexdigest() != digest:
             parser.error(f"Prepared configuration changed: {name}; prepare a fresh run")
+    turn_timeout_ms = manifest.get("turn_timeout_ms", 0)
+    if type(turn_timeout_ms) is not int or not 0 <= turn_timeout_ms <= 2147483647:
+        parser.error("Invalid prepared turn timeout")
+    policy_name = "session_runner.policy.json"
+    if policy_name in manifest["configuration_sha256"]:
+        policy = json.loads((configuration / policy_name).read_text())
+        if policy != {"schema_version": 1, "turn_timeout_ms": turn_timeout_ms}:
+            parser.error("Prepared turn timeout differs from its configuration snapshot")
+    elif turn_timeout_ms != 0 or "turn_timeout_ms" in manifest:
+        parser.error("Prepared turn timeout requires its fingerprinted configuration snapshot")
+    # The official one-shot marker driver does not load our session runner.
+    effective_turn_timeout_ms = turn_timeout_ms if runner == "session" else 0
     env = dict(os.environ)
     # Remove task-relevant inherited switches and credential routes from this isolated launch.
     for key in list(env):
@@ -42,7 +54,8 @@ def main():
             env.pop(key)
     env.update({"DSH_HOME": str(case / "home"), "DSH_GC_RUN_DIR": str(case),
                 "DSH_GC_HARNESS": manifest["harness"], "DSH_GC_ALLOW_MODEL_REQUESTS": "1",
-                "DSH_GC_RUNNER": str(configuration / "session_runner.mjs")})
+                "DSH_GC_RUNNER": str(configuration / "session_runner.mjs"),
+                "DSH_GC_TURN_TIMEOUT_MS": str(effective_turn_timeout_ms)})
     env["PATH"] = str(Path(manifest["node"]).parent) + os.pathsep + env.get("PATH", "")
     command = [manifest["node"], manifest["cli"], "--profile", "headless",
                "--patch", str(configuration / "provider.patch.yml"),
@@ -51,7 +64,8 @@ def main():
         command.extend(["--patch", str(configuration / "session_runner.patch.yml")])
     command.append((case / "task.txt").read_text().strip())
     plan = {"command": command, "cwd": str(case / "workspace"), "dsh_home": env["DSH_HOME"],
-            "execute": args.execute, "provider": manifest["base_url"], "case": args.case}
+            "execute": args.execute, "provider": manifest["base_url"], "case": args.case,
+            "turn_timeout_ms": effective_turn_timeout_ms}
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
     if not args.execute:
         return

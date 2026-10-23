@@ -365,3 +365,42 @@ tool spanning 16384 accepted IDs plus a short final segment; actual G-aware
 system-pin admission and cross-G restore rejection; and the existing C1,
 upstream cancellation, commit recovery and protocol checks. The tests use
 the real local tokenizer and CPU planner, but no model inference or GPU.
+
+
+## Optional per-turn wall deadline
+
+For a new queued-session run, add `--turn-timeout-ms 1800000` to preparation
+to request cancellation after 30 minutes for each submitted user turn.
+The default is `0` (disabled); supported values are integer milliseconds
+in `[0, 2147483647]`. This is separate from the provider's semantic-stream
+idle timeout. It counts the whole active turn, including all model and tool
+steps, and resets for the next queued user turn. Waiting for a queue command
+and initial Agent setup do not count. The official one-shot marker driver
+does not load the custom runner, so its launch plan explicitly records an
+effective timeout of zero.
+
+Preparation writes a fingerprinted `session_runner.policy.json` alongside
+the copied runner and records the value in `manifest.json`. The launcher
+requires agreement between both, strips inherited `DSH_*` settings and sets
+`DSH_GC_TURN_TIMEOUT_MS` from that validated policy. Older prepared runs
+without this setting remain disabled. Changed snapshot bytes or a manifest
+value that disagrees with the snapshot are rejected before launch.
+
+At expiry the runner saves `turns/NNNNNN.budget.json` and calls the official
+`agent.cancel({kind: "hook", reason: "resource-budget:turn-timeout"})`.
+It waits for the Agent to become idle and flushes its official session.
+Timers are cleared in `finally`, including followup errors. The result
+and failed status use `reason.kind = "resource-budget"`; `agent_reason`
+retains the actual durable Agent end reason. The runner exits nonzero and
+does not start another queued task. This is an explicit resource limit,
+not evidence of natural completion or context exhaustion. Cancellation is
+cooperative: the deadline initiates abort at that time, and cleanup may
+finish later. It is not a process hard-kill or a tool-call-count limit.
+
+CPU checks passed **10 runner tests plus 20 Python tests and 40 subtests**.
+Use the existing `test_session_runner.mjs` command above and
+`pytest -q diagnostics/dsh_cloud/test_prepare_launch.py`. They exercise
+deadline cancellation/flush, early completion without a stale timer,
+disabled defaults and legacy manifests, exception cleanup, completion-race
+classification, inherited-environment isolation and snapshot mismatch
+rejection. The Agent is simulated; no real model or tool is invoked.
