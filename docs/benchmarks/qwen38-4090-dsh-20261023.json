@@ -837,6 +837,88 @@
       "session_release_elapsed_seconds": 0.22092747688293457,
       "session_release_all_resources_empty": true,
       "gpu_sampled_peak_mib": 23763
+    },
+    "gptq_32k_unpinned": {
+      "status": "failed-task",
+      "run": "dsh-live-06-gptq/csgo",
+      "bridge_run": "dsh-bridge-06-gptq",
+      "model": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+      "thinking_enabled": false,
+      "configured_logical_context": 32768,
+      "selection_budget": 4096,
+      "generation_window": 4096,
+      "bounded_capacity_adapter": false,
+      "native_pool_pages": 68,
+      "model_with_mtp_load_gib": 17.62,
+      "user_turns": 1,
+      "completed_model_replies": 3,
+      "failed_model_replies": 1,
+      "prompt_output_tokens": [
+        [
+          4357,
+          105
+        ],
+        [
+          4496,
+          42
+        ],
+        [
+          4619,
+          4623
+        ],
+        [
+          9366,
+          974
+        ]
+      ],
+      "tool_calls_executed": 4,
+      "failed_reply": {
+        "prompt_tokens": 9366,
+        "output_tokens": 974,
+        "finish_reason": "stop",
+        "reason": "Raw model emitted malformed function/content/path tags and an incorrect workspace path; not output truncation. Strict parser executed no partial tool."
+      },
+      "continuation_evidence": {
+        "third_reply_segments": [
+          4096,
+          527
+        ],
+        "accepted_prefix_reused_replies": [
+          2,
+          3
+        ],
+        "multi_segment_reply_completed": true
+      },
+      "files": [
+        {
+          "path": "index.html",
+          "bytes": 5342,
+          "sha256": "42197df7c6c73016360a6717fec17040b9e73ee6c02cf84b589aa784db6c9b08"
+        },
+        {
+          "path": "style.css",
+          "bytes": 6406,
+          "sha256": "89f1772b5ab52ce70bfd4755e9db4c88b6b53ba04caf0ca961b1332058afe4c4"
+        }
+      ],
+      "browser_validation": {
+        "status": "issues-observed",
+        "gameplay_pass": false,
+        "reason": "Required JavaScript files were not written; local resource HTTP errors."
+      },
+      "gpu_sampled_peak_mib": 23715,
+      "statistical_candidate_retirements": 0,
+      "semantic_gc_active": false,
+      "session_release": {
+        "http_status": 200,
+        "elapsed_seconds": 0.30245447158813477,
+        "all_resources_empty": true
+      },
+      "limits": [
+        "Different context and quantization from prior NVFP4 attempts; not a matched quality comparison.",
+        "A capacity check passed for 32K, but this was not a successful 32K workload.",
+        "System/tool frame exceeds K4096; pinning is a hypothesis to test, not established sole cause."
+      ]
     }
   },
   "limits": [
