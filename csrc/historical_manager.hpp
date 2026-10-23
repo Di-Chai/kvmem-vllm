@@ -52,6 +52,20 @@ private:
     std::vector<qw3::KvMemRepository::Lease> leases_;
 };
 
+// Short-lived selection transaction guard. Unlike P/M frame retention, this
+// is a mechanism-level retirement veto for every policy.
+class HistoricalSelectionHold {
+public:
+    ~HistoricalSelectionHold();
+    HistoricalSelectionHold(const HistoricalSelectionHold &) = delete;
+    HistoricalSelectionHold &operator=(const HistoricalSelectionHold &) = delete;
+private:
+    friend class HistoricalGcScope;
+    explicit HistoricalSelectionHold(std::shared_ptr<HistoricalScopeState>);
+    std::shared_ptr<HistoricalScopeState> state_;
+    std::vector<qw3::KvMemRepository::Lease> leases_;
+};
+
 class HistoricalGcScope : public qw3::KvMemHistoryObserver {
 public:
     ~HistoricalGcScope();
@@ -71,6 +85,10 @@ public:
     bool observes(const std::shared_ptr<qw3::KvMemRepository> &) const override;
     qw3::KvMemExecutionAdmission admit(qw3::KvMemBlockHandle) override;
     std::shared_ptr<HistoricalFrameHold> protect(const std::vector<qw3::KvMemBlockHandle> &);
+    std::shared_ptr<HistoricalSelectionHold> protect_selection(const std::vector<qw3::KvMemBlockHandle> &);
+    // Try-publish; false means contention, stale revision/generation, or close.
+    // The caller may retry the same revision only if it was not accepted.
+    bool publish_evidence(qw3::KvMemBlockHandle, const HistoricalEvidence &);
     void pause_policy(bool paused);
     bool policy_paused() const;
     void request_capacity(uint32_t ready_slots, uint64_t retained_cpu_bytes = UINT64_MAX);

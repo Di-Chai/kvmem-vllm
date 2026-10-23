@@ -4,13 +4,20 @@ The engine consumes bounded completion descriptors. Policy, irreversible
 retirement and large CPU payload destruction remain on native workers.
 """
 import time
+import math
+from itertools import count
 from threading import Event
 from dataclasses import dataclass, field
 
 
 # Public schemas mirror the native factory. No Python policy callbacks execute
 # on the worker; adding a policy requires registering its native constructor.
-_POLICY_DEFAULTS = {'lru': {'keep_mandatory': True}}
+_POLICY_DEFAULTS = {
+    'lru': {'keep_mandatory': True},
+    'statistical': {'min_observations': 3, 'min_cold_observations': 3,
+                    'max_importance': 0.1, 'proactive': True,
+                    'min_model_reclaim_score': -1.0},
+}
 
 
 def historical_record_charge(record_bytes, block_tokens, raw_element_bytes=1):
@@ -36,15 +43,24 @@ class HistoricalGcSettings:
         if self.mode not in ('off', 'shadow', 'delete'):
             raise ValueError('historical_gc.mode must be off, shadow or delete')
         if not isinstance(self.policy, str) or self.policy not in _POLICY_DEFAULTS:
-            raise ValueError(f'Unknown historical_gc.policy: {self.policy!r} (supported: lru)')
+            raise ValueError(f'Unknown historical_gc.policy: {self.policy!r} (supported: lru, statistical)')
         if not isinstance(self.policy_params, dict):
             raise ValueError('historical_gc.policy_params must be an object')
         defaults = _POLICY_DEFAULTS[self.policy]
         for key, value in self.policy_params.items():
             if key not in defaults:
                 raise ValueError(f'Unknown historical_gc.policy_params.{self.policy} parameter: {key!r}')
-            if type(value) is not type(defaults[key]):
-                raise ValueError(f'historical_gc.policy_params.{key} must be boolean')
+            default = defaults[key]
+            if type(default) is bool:
+                valid = type(value) is bool
+            elif type(default) is int:
+                valid = type(value) is int and 1 <= value <= 2**31-1
+            else:
+                valid = (type(value) in (int, float) and
+                         (0 <= value <= 1 or key == 'min_model_reclaim_score' and value == -1) and
+                         math.isfinite(value))
+            if not valid:
+                raise ValueError(f'Invalid historical_gc.policy_params.{key}: {value!r}')
         # Own the configuration and expand defaults without changing the input.
         object.__setattr__(self, 'policy_params', {**defaults, **self.policy_params})
         for name in ('poll_ms', 'scan_blocks', 'delete_blocks'):
@@ -94,6 +110,37 @@ class HistoricalAuthorityGc:
         self.retired_index = {}
         self.pending_index = {}
         self.stopped = False
+        self.on_retire = None
+        self.evidence = None
+        self._evidence_versions = count(1)
+
+    def open_evidence(self, records, *, epoch, max_spans=64):
+        """Create an explicit semantic ledger for the current accepted branch."""
+        if self.archive._history_policy != 'statistical':
+            raise ValueError('Semantic evidence requires historical_gc.policy=statistical')
+        if self.stopped:
+            raise RuntimeError('Historical GC is stopped')
+        if self.evidence is not None and not self.evidence.closed:
+            raise RuntimeError('An evidence ledger already owns this branch')
+        from .historical_evidence import HistoricalEvidenceLedger
+        self.evidence = HistoricalEvidenceLedger(self.scope, self.memory.repository,
+            records, block_tokens=self.memory.config.block_tokens, epoch=epoch,
+            max_spans=max_spans, max_blocks=self.memory.config.repository_blocks,
+            next_revision=lambda: next(self._evidence_versions))
+        return self.evidence
+
+    def prepare_rewind(self):
+        if self.evidence is not None:
+            if not self.evidence.reset():
+                return False
+            self.evidence = None
+        return True
+
+    def _record_retired(self, record):
+        if self.evidence is not None:
+            self.evidence.retired(record)
+        if self.on_retire is not None:
+            self.on_retire(record)
 
     def defer_index(self, key, record):
         if record.index_owner is not None:
@@ -114,6 +161,7 @@ class HistoricalAuthorityGc:
             for key, record in tuple(records.items()):
                 if record.archived and not self.memory.repository.pin(record.handle):
                     self.retired_index[key] = records.pop(key)
+                    self._record_retired(record)
                     self.reclaimed_records += 1
         for event in self.scope.completions(64):
             key = event.handle.slot, event.handle.generation
@@ -133,6 +181,7 @@ class HistoricalAuthorityGc:
                 elif record is not None:
                     self.defer_index(key, record)
                     del records[key]
+                    self._record_retired(record)
                     self.reclaimed_records += 1
                 retired = self.retired_index.pop(key, None)
                 if retired is not None:
@@ -166,6 +215,9 @@ class HistoricalAuthorityGc:
         self.stopped = True
 
     def close(self):
+        if self.evidence is not None:
+            self.evidence._release()
+            self.evidence = None
         if not self.archive._history_background:
             self.archive._history_worker.advance()
         if not self.scope.close():

@@ -1,0 +1,90 @@
+{
+  "base_commit": "4dfababda8a8e80c963b1f93136b6aacc189464e",
+  "branch": "codex/statistical-gc",
+  "environment": {
+    "python": "3.12.15",
+    "torch": "2.13.0+cu130",
+    "cuda_runtime": "13.0",
+    "gpu": "RTX 4090",
+    "compute_capability": "8.9",
+    "vllm_installed": false
+  },
+  "checks": {
+    "native_ctest": {
+      "passed": 8,
+      "failed": 0,
+      "command": "ctest --test-dir build-native --output-on-failure"
+    },
+    "historical": {
+      "counts": {
+        "passed": 147,
+        "skipped": 6
+      },
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_historical_admission.py",
+        "tests/test_historical_admission_integration.py",
+        "tests/test_historical_assembly_gpu.py",
+        "tests/test_historical_authority.py",
+        "tests/test_historical_evidence.py",
+        "tests/test_historical_graph.py",
+        "tests/test_historical_graph_async.py",
+        "tests/test_historical_graph_storage.py",
+        "tests/test_historical_index.py",
+        "tests/test_historical_manager.py",
+        "tests/test_historical_options.py",
+        "tests/test_historical_payload.py",
+        "tests/test_historical_payload_gpu.py",
+        "tests/test_historical_pm.py",
+        "tests/test_historical_retirement.py",
+        "tests/test_historical_statistical_native.py",
+        "tests/test_historical_worker_pressure.py"
+      ],
+      "exit_code": 0
+    },
+    "graph_and_refresh": {
+      "counts": {
+        "passed": 386,
+        "skipped": 3,
+        "deselected": 2
+      },
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q -ra -p no:cacheprovider tests/test_historical_graph.py tests/test_historical_graph_storage.py tests/test_historical_graph_async.py tests/test_block_graph.py tests/test_graph_scoring.py tests/test_graph_scoring_v2.py tests/test_graph_max_pooling.py tests/test_native_graph_scoring.py tests/test_graph_lifecycle.py tests/test_graph_pressure_v2.py tests/test_graph_pressure_restore_v2.py tests/test_graph_archive_transaction.py tests/test_historical_authority.py tests/test_historical_options.py tests/test_prompt_checkpoints.py tests/test_async_refresh.py tests/test_async_restore.py tests/test_maintenance.py -k 'not test_async_prepare_passes_incoming_metadata_before_any_model_or_page_copy and not test_maintenance_waits_for_native_cache_allocation_during_model_load'",
+      "exit_code": 0,
+      "deselected_reasons": {
+        "test_graph_pressure_restore_v2.py::test_async_prepare_passes_incoming_metadata_before_any_model_or_page_copy": "Existing runner/assembler integration imports vllm.triton_utils; full vLLM is not installed in the component-test environment.",
+        "test_maintenance.py::test_maintenance_waits_for_native_cache_allocation_during_model_load": "Existing runner initialization imports vllm.triton_utils; full vLLM is not installed."
+      },
+      "skipped_reasons": "test_async_refresh.py and test_async_restore.py use module-level pytest.importorskip(vllm); one maintenance test imports the skipped async module."
+    },
+    "gpu_lifetimes": {
+      "counts": {
+        "passed": 2,
+        "deselected": 20
+      },
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_historical_payload_gpu.py",
+        "tests/test_historical_evidence.py",
+        "-k",
+        "in_flight"
+      ],
+      "environment": {
+        "KVMEM_RUN_GPU_TESTS": "1"
+      },
+      "exit_code": 0
+    }
+  },
+  "interpretation": [
+    "Suite selections overlap; do not add counts to produce a unique-test total.",
+    "Host historical skips comprise a missing-vLLM integration module and explicit GPU opt-in gates.",
+    "The two real GPU lifetime tests ran separately and passed.",
+    "New async protocol tests use real native authority/graph with GPU transport stubs.",
+    "Full vLLM assembly, task quality, R-KV scoring and concurrent model-judge throughput are not qualified."
+  ]
+}

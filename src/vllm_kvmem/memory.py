@@ -139,6 +139,8 @@ class RequestMemory:
                 plan = self._store.select([self._store.handle(slot) for slot in selected])
                 break
             except _native.HistoryAdmissionRetry:
+                if getattr(self, '_strict_history_selection', False):
+                    raise
                 # No window mutation or GPU work preceded this failure. Each
                 # failed admission lost at least one candidate to retirement;
                 # pick again from the remaining live generations, without
@@ -182,6 +184,8 @@ class RequestMemory:
                 plan = self._store.select([self._store.handle(slot) for slot in selected])
                 break
             except _native.HistoryAdmissionRetry:
+                if getattr(self, '_strict_history_selection', False):
+                    raise
                 # The native failure precedes mutation/assembly, just as in
                 # select(). Rebuild whole groups from currently live history.
                 continue

@@ -6,11 +6,22 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <stdexcept>
 #include <tuple>
 #include <vector>
 
 namespace vllm_kvmem {
+
+// A sole semantic producer publishes a whole, generation-qualified observation.
+// Counters count real observation opportunities; elapsed GC polls are not evidence.
+struct HistoricalEvidence {
+    uint64_t revision = 0, observations = 0, cold_observations = 0;
+    bool eligible = false;
+    double importance = 1.0;
+    // -1 means unknown. A configured model threshold never accepts unknown.
+    double model_reclaim_score = -1.0;
+};
 
 struct HistoricalBlockMeta {
     qw3::KvMemBlockHandle handle;
@@ -19,6 +30,8 @@ struct HistoricalBlockMeta {
     // Observations, not mechanism-level deletion vetoes.
     bool gpu_resident = false;
     uint64_t references = 0;
+    uint32_t selection_holds = 0;
+    HistoricalEvidence evidence;
 };
 
 struct HistoricalSnapshot {
@@ -42,6 +55,9 @@ struct HistoricalWorkBudget {
 struct HistoricalDeleteIntent {
     qw3::KvMemBlockHandle handle;
     uint64_t incarnation = 0, round = 0;
+    // Zero preserves custom/LRU policies. Statistical decisions require the
+    // exact evidence revision to survive commit-time revalidation.
+    uint64_t evidence_revision = 0;
 };
 
 enum class HistoricalPolicyStatus { Yielded, Complete, NoCandidate, Backpressure };
@@ -229,6 +245,116 @@ private:
     bool slots_pressure_ = false, bytes_pressure_ = false;
     HistoricalPolicyStatus terminal_ = HistoricalPolicyStatus::Complete;
     std::vector<HistoricalBlockMeta> candidates_;
+};
+
+// Conservative threshold policy. Deterministic bounded scanning is deliberate:
+// no KV scan, sorting, model callback, allocation or device work in a round.
+class HistoricalStatisticalPolicy final : public HistoricalKvPolicy {
+public:
+    struct Config {
+        uint64_t min_observations = 3, min_cold_observations = 3;
+        double max_importance = 0.1, min_model_reclaim_score = -1.0;
+        bool proactive = true;
+    };
+    explicit HistoricalStatisticalPolicy(size_t capacity)
+        : HistoricalStatisticalPolicy(capacity, Config{}) {}
+    HistoricalStatisticalPolicy(size_t capacity, Config config)
+        : capacity_(capacity), config_(config) {
+        if (!capacity || !config.min_observations || !config.min_cold_observations ||
+                !std::isfinite(config.max_importance) || config.max_importance < 0 || config.max_importance > 1 ||
+                !std::isfinite(config.min_model_reclaim_score) ||
+                (config.min_model_reclaim_score != -1 &&
+                 (config.min_model_reclaim_score < 0 || config.min_model_reclaim_score > 1)))
+            throw std::invalid_argument("Invalid statistical historical policy configuration");
+    }
+    void reset() override {
+        initialized_ = done_ = slots_pressure_ = bytes_pressure_ = false;
+        cursor_ = 0;
+    }
+    bool wants_snapshot(const HistoricalPressure &pressure) override {
+        update_pressure(pressure);
+        return config_.proactive || targets(pressure) != std::make_pair(uint64_t{0}, uint64_t{0});
+    }
+    bool permits(const HistoricalBlockMeta &block) const override {
+        const auto &e = block.evidence;
+        return block.live && block.sealed && !block.mandatory && !block.selection_holds &&
+               block.handle.generation && e.revision && e.eligible &&
+               e.observations >= config_.min_observations &&
+               e.cold_observations >= config_.min_cold_observations &&
+               e.cold_observations <= e.observations &&
+               std::isfinite(e.importance) && e.importance >= 0 && e.importance <= config_.max_importance &&
+               (config_.min_model_reclaim_score < 0 ||
+                (std::isfinite(e.model_reclaim_score) && e.model_reclaim_score >= config_.min_model_reclaim_score &&
+                 e.model_reclaim_score <= 1));
+    }
+    HistoricalPolicyResult step(const HistoricalSnapshot &snapshot, const HistoricalPressure &pressure,
+                                HistoricalWorkBudget budget, HistoricalDecisionBatch &out) override {
+        if (snapshot.blocks.size() > capacity_)
+            throw std::length_error("Historical snapshot exceeds capacity");
+        if (!budget.scan_blocks || !budget.delete_blocks)
+            throw std::invalid_argument("Historical work budgets must be positive");
+        if (pressure.requested_ready_slots > capacity_ ||
+                ((pressure.low_slots || pressure.high_slots) &&
+                 (!pressure.low_slots || pressure.low_slots >= pressure.high_slots || pressure.high_slots > capacity_)) ||
+                ((pressure.low_cpu_bytes || pressure.high_cpu_bytes) &&
+                 (!pressure.low_cpu_bytes || pressure.low_cpu_bytes >= pressure.high_cpu_bytes)))
+            throw std::invalid_argument("Invalid historical pressure watermarks");
+        if (!out.empty()) return {HistoricalPolicyStatus::Backpressure, 0, 0};
+        if (!initialized_ || incarnation_ != snapshot.incarnation || round_ != snapshot.round) {
+            if (initialized_ && !done_)
+                throw std::logic_error("Historical snapshot changed before policy round completion");
+            initialized_ = true;
+            incarnation_ = snapshot.incarnation;
+            round_ = snapshot.round;
+            cursor_ = 0;
+            done_ = false;
+        }
+        if (done_) return {HistoricalPolicyStatus::Complete, 0, 0};
+        update_pressure(pressure);
+        auto [slots, bytes] = targets(pressure);
+        if (!config_.proactive && !slots && !bytes) {
+            done_ = true;
+            return {HistoricalPolicyStatus::Complete, 0, 0};
+        }
+        size_t examined = 0, emitted = 0;
+        while (cursor_ < snapshot.blocks.size() && examined < budget.scan_blocks &&
+                emitted < budget.delete_blocks && out.remaining() &&
+                (config_.proactive || slots || bytes)) {
+            const auto &block = snapshot.blocks[cursor_++];
+            ++examined;
+            if (!permits(block)) continue;
+            out.push({block.handle, snapshot.incarnation, snapshot.round, block.evidence.revision});
+            ++emitted;
+            if (slots) --slots;
+            bytes = bytes > block.cpu_bytes ? bytes - block.cpu_bytes : 0;
+        }
+        done_ = cursor_ == snapshot.blocks.size() || (!config_.proactive && !slots && !bytes);
+        return {done_ ? ((!emitted || (!config_.proactive && (slots || bytes))) ?
+                            HistoricalPolicyStatus::NoCandidate : HistoricalPolicyStatus::Complete)
+                      : HistoricalPolicyStatus::Yielded,
+                examined, emitted};
+    }
+private:
+    static uint64_t deficit(uint64_t target, uint64_t available, uint64_t pending) {
+        const auto missing = target > available ? target - available : 0;
+        return missing > pending ? missing - pending : 0;
+    }
+    void update_pressure(const HistoricalPressure &p) {
+        if (!p.high_slots || p.ready_slots >= p.high_slots) slots_pressure_ = false;
+        else if (p.ready_slots < p.low_slots) slots_pressure_ = true;
+        if (!p.high_cpu_bytes || p.free_cpu_bytes >= p.high_cpu_bytes) bytes_pressure_ = false;
+        else if (p.free_cpu_bytes < p.low_cpu_bytes) bytes_pressure_ = true;
+    }
+    std::pair<uint64_t, uint64_t> targets(const HistoricalPressure &p) const {
+        return {std::max(slots_pressure_ ? deficit(p.high_slots, p.ready_slots, p.pending_slots) : 0,
+                         deficit(p.requested_ready_slots, p.ready_slots, p.pending_slots)),
+                std::max(bytes_pressure_ ? deficit(p.high_cpu_bytes, p.free_cpu_bytes, p.pending_cpu_bytes) : 0,
+                         deficit(p.scope_cpu_bytes, p.scope_cpu_limit, p.scope_pending_cpu_bytes))};
+    }
+    size_t capacity_, cursor_ = 0;
+    Config config_;
+    uint64_t incarnation_ = 0, round_ = 0;
+    bool initialized_ = false, done_ = false, slots_pressure_ = false, bytes_pressure_ = false;
 };
 
 } // namespace vllm_kvmem

@@ -435,6 +435,15 @@ class PromptCheckpointPool:
             raise ValueError('No unsubmitted checkpoint import')
         if not self.model_ready(checkpoint):
             raise RuntimeError('Claimed model checkpoint payload is not ready')
+        if pressure:
+            # Exact-prefix imports skip the rewind loop below. Their bounded
+            # selection retries must still consume the original claim deadline,
+            # including a cancelled import waiting for its final copy/ack.
+            deadline = checkpoint.restore_deadline
+            if deadline is None:
+                raise ValueError('Checkpoint claim has no restore deadline')
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Pressure checkpoint selection exceeded restore deadline')
         if metadata_binding is not None and getattr(checkpoint.authority, 'block_graph', None) is not None:
             from .prompt_spans import graph_metadata
             from .block_graph import _merge_spans
@@ -522,8 +531,19 @@ class PromptCheckpointPool:
             if len(mandatory) != len(required):
                 raise ValueError('Pressure restore lost a mandatory historical page')
             from .prefill_attention import select_pressure
-            plan = select_pressure(checkpoint.authority, mandatory, max_tokens=pressure_budget,
-                candidate_records=checkpoint.window.records)
+            from .historical_graph import synchronous_selection
+            from . import _native
+            def choose():
+                return select_pressure(checkpoint.authority, mandatory, max_tokens=pressure_budget,
+                    candidate_records=checkpoint.window.records)
+            if wait:
+                plan = synchronous_selection(checkpoint.authority, choose,
+                    deadline=checkpoint.restore_deadline)
+            else:
+                try:
+                    plan = choose()
+                except _native.HistoryAdmissionRetry:
+                    return None  # No plan or model copy exists; retry on a later engine tick.
         else:
             with timing.stage('window_restore') if timing is not None else nullcontext():
                 kwargs = {'native_restore_frame': True} if self.native_restore_frame else {}

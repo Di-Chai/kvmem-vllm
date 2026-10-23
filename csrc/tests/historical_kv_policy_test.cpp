@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 
@@ -258,8 +259,127 @@ static void factory_validates_parameters_and_preserves_policy_behavior() {
     }
 }
 
+
+static HistoricalEvidence evidence(uint64_t revision = 1) {
+    return {revision, 5, 4, true, 0.05, -1.0};
+}
+
+static void statistical_requires_semantics_and_real_observations() {
+    HistoricalSnapshot snapshot{1, 1, {}};
+    for (uint32_t i = 0; i < 9; ++i) {
+        auto b = block(i, i, i);
+        b.evidence = evidence();
+        snapshot.blocks.push_back(b);
+    }
+    snapshot.blocks[0].evidence = {}; // Unobserved is not cold.
+    snapshot.blocks[1].evidence.eligible = false;
+    snapshot.blocks[2].evidence.observations = 2;
+    snapshot.blocks[2].evidence.cold_observations = 2;
+    snapshot.blocks[3].evidence.cold_observations = 0; // A new important hit resets the run.
+    snapshot.blocks[4].evidence.importance = 0.5;
+    snapshot.blocks[5].mandatory = true;
+    snapshot.blocks[6].sealed = false;
+    snapshot.blocks[7].selection_holds = 1;
+    HistoricalStatisticalPolicy policy(16);
+    HistoricalPressure pressure;
+    HistoricalDecisionBatch out(16);
+    check(policy.wants_snapshot(pressure), "proactive statistical strategy required capacity pressure");
+    const auto result = policy.step(snapshot, pressure, {16, 16}, out);
+    check(result.examined == 9 && result.emitted == 1 && out.values()[0].handle.slot == 8,
+          "statistical policy accepted absent, hot, unsealed or protected evidence");
+    check(out.values()[0].evidence_revision == 1, "statistical intent lost evidence revision");
+}
+
+static void statistical_scans_and_decisions_are_bounded() {
+    HistoricalSnapshot snapshot{1, 1, {}};
+    for (uint32_t i = 0; i < 32; ++i) {
+        auto b = block(i, i, i);
+        b.evidence = evidence(i + 1);
+        snapshot.blocks.push_back(b);
+    }
+    HistoricalStatisticalPolicy policy(32);
+    HistoricalDecisionBatch out(3);
+    HistoricalPressure pressure;
+    size_t emitted = 0, examined = 0;
+    for (unsigned round = 0; round < 32; ++round) {
+        const auto result = policy.step(snapshot, pressure, {4, 2}, out);
+        check(result.examined <= 4 && result.emitted <= 2, "statistical step exceeded a work budget");
+        for (const auto &intent : out.values()) {
+            check(intent.handle.slot == emitted && intent.evidence_revision == emitted + 1,
+                  "statistical scan lost or repeated a candidate");
+            ++emitted;
+        }
+        examined += result.examined;
+        if (!out.empty())
+            check(policy.step(snapshot, pressure, {4, 2}, out).status == HistoricalPolicyStatus::Backpressure,
+                  "unacknowledged statistical decisions were overwritten");
+        out.clear_after_ack();
+        if (result.status != HistoricalPolicyStatus::Yielded) break;
+    }
+    check(examined == 32 && emitted == 32, "bounded statistical round did not finish");
+}
+
+static void statistical_pressure_and_optional_model_gate_are_conservative() {
+    HistoricalSnapshot snapshot{1, 1, {block(0, 0, 0), block(1, 1, 1), block(2, 2, 2)}};
+    for (auto &b : snapshot.blocks) b.evidence = evidence();
+    HistoricalStatisticalPolicy::Config config;
+    config.proactive = false;
+    HistoricalStatisticalPolicy policy(8, config);
+    HistoricalDecisionBatch out(8);
+    HistoricalPressure pressure;
+    check(!policy.wants_snapshot(pressure), "pressure-only strategy ran without pressure");
+    check(policy.step(snapshot, pressure, {8, 8}, out).emitted == 0, "pressure-only strategy proactively deleted");
+    pressure = {0, 1, 2, 0};
+    ++snapshot.round;
+    check(policy.wants_snapshot(pressure), "statistical strategy ignored pressure");
+    check(policy.step(snapshot, pressure, {8, 8}, out).emitted == 2,
+          "pressure-only strategy failed to stop at capacity target");
+    out.clear_after_ack();
+    ++snapshot.round;
+    pressure.pending_slots = 2;
+    check(policy.step(snapshot, pressure, {8, 8}, out).emitted == 0,
+          "pending retirement was counted as an additional deletion deficit");
+    config.proactive = true;
+    config.min_model_reclaim_score = 0.9;
+    HistoricalStatisticalPolicy model_policy(8, config);
+    snapshot.blocks[1].evidence.model_reclaim_score = 0.5;
+    snapshot.blocks[2].evidence.model_reclaim_score = 0.95;
+    check(model_policy.step(snapshot, {}, {8, 8}, out).emitted == 1 &&
+          out.values()[0].handle.slot == 2, "unknown model score was treated as a confident reclaim signal");
+}
+
+static void statistical_factory_rejects_invalid_or_unsafe_parameters() {
+    const std::vector<HistoricalPolicyParameters> invalid = {
+        {{"keep_mandatory", false}}, {{"min_observations", true}},
+        {{"min_observations", 3.0}}, {{"min_observations", int64_t(0)}},
+        {{"min_cold_observations", int64_t(-1)}}, {{"proactive", int64_t(1)}},
+        {{"max_importance", true}}, {{"max_importance", std::numeric_limits<double>::infinity()}},
+        {{"max_importance", std::numeric_limits<double>::quiet_NaN()}},
+        {{"max_importance", -0.1}}, {{"max_importance", 1.1}},
+        {{"min_model_reclaim_score", -0.2}}, {{"min_model_reclaim_score", 1.1}},
+        {{"typo", true}}
+    };
+    for (const auto &params : invalid) {
+        bool rejected = false;
+        try { make_historical_kv_policy("statistical", params, 8); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        check(rejected, "statistical factory accepted an invalid parameter");
+    }
+    auto policy = make_historical_kv_policy("statistical", {
+        {"min_observations", int64_t(1)}, {"min_cold_observations", int64_t(1)},
+        {"max_importance", 1.0}, {"proactive", true}, {"min_model_reclaim_score", -1.0}}, 8, false);
+    auto b = block(0, 0, 0);
+    b.evidence = evidence();
+    b.mandatory = true;
+    check(!policy->permits(b), "legacy keep_mandatory=false weakened the statistical policy");
+}
+
 int main() {
     try {
+        statistical_requires_semantics_and_real_observations();
+        statistical_scans_and_decisions_are_bounded();
+        statistical_pressure_and_optional_model_gate_are_conservative();
+        statistical_factory_rejects_invalid_or_unsafe_parameters();
         irreversible_retirement();
         legacy_retirement_can_be_finalized();
         stale_intents_racing_with_slot_reuse_do_not_delete_new_generations();

@@ -356,9 +356,9 @@ class RuntimeOptions:
         object.__setattr__(self, 'historical_gc', historical)
         if historical is not None and (self.archive_backend != 'cpu' or self.repository_gc or
                 not self.request_planning or not self.async_archive_retirement or not self.async_seal or
-                not self.cpu_history_coordination or not self.session_capacity or self.graph_mode != 'off'):
+                not self.cpu_history_coordination or not self.session_capacity):
             raise ValueError('historical_gc requires CPU authority, planning, async seal/retirement, '
-                             'CPU history coordination and owned sessions; repository_gc and block graph must be disabled')
+                             'CPU history coordination and owned sessions; repository_gc must be disabled')
         if historical is not None and historical.ready_high > self.memory.repository_blocks:
             raise ValueError('historical_gc watermarks exceed repository capacity')
         supplied = {name: getattr(self, name) for name in _POLICY_FIELDS

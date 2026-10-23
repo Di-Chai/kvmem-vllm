@@ -166,6 +166,7 @@ def pressure_seed(authority, records):
 
 
 def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
+    mandatory = tuple(mandatory)
     state = getattr(authority, 'action_history', None)
     options = getattr(authority, 'graph_options', None) or getattr(state, 'options', None)
     policy = getattr(options, 'pressure_policy', None)
@@ -181,6 +182,14 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
         return pressure_score_and_select(authority, records, mandatory, max_tokens=max_tokens)
     if policy != 'attention':
         raise ValueError('Unknown pressure policy')
+    from .historical_graph import pressure_candidates, retry_selection
+    def attempt():
+        with pressure_candidates(authority, records, mandatory, max_tokens=max_tokens) as live:
+            return _select_attention_pressure(authority, live, mandatory, options, max_tokens)
+    return retry_selection(authority, attempt)
+
+
+def _select_attention_pressure(authority, records, mandatory, options, max_tokens):
     scores, source = pressure_seed(authority, records)
     if getattr(authority,'block_graph',None) is not None:
         from .authority import SCORE_DOMAIN_VERSION, record_key

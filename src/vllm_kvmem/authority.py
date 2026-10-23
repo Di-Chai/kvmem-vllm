@@ -154,6 +154,7 @@ class RequestAuthority:
                 raise ValueError('Historical KV management and legacy repository GC cannot share an authority')
             from .historical_gc import HistoricalAuthorityGc
             self.gc = HistoricalAuthorityGc(self.memory, archive)
+            self.gc.on_retire = self._graph_retired
         elif gc_config is not None:
             from .repository_gc import AuthorityGc
             self.gc = AuthorityGc(self.memory, archive, gc_config, gc_progress)
@@ -161,6 +162,10 @@ class RequestAuthority:
     @property
     def history_end(self):
         return self.memory.history_end
+
+    def _graph_retired(self, record):
+        from .historical_graph import note_retired
+        note_retired(self, record)
 
     def _drain_gc(self):
         # A rewound unpublished tail can be retired by the background worker.
@@ -445,7 +450,7 @@ class RequestAuthority:
         self.poll()
 
     @contextmanager
-    def index_snapshot(self):
+    def index_snapshot(self, *, protect_selection=False):
         """Pin every scored generation until selection has acquired its leases."""
         self._require_open()
         self.poll()
@@ -456,11 +461,17 @@ class RequestAuthority:
                 if lease:
                     leases.append(lease)
                     ordered.append(record)
+                elif protect_selection:
+                    self._graph_retired(record)
             if not ordered:
                 raise ValueError("No accepted tokens in the index")
-            yield ordered, torch.stack([r.mean_key if r.mean_key is not None else
-                (r.key_sum / r.count).to(torch.float16 if self.mean_k_backend=='qw3_cuda' else torch.float32)
-                for r in ordered], dim=1)
+            from .historical_graph import selection_guard, compact_retired
+            with selection_guard(self, [r.handle for r in ordered]) if protect_selection else nullcontext():
+                if protect_selection:
+                    compact_retired(self, ordered)
+                yield ordered, torch.stack([r.mean_key if r.mean_key is not None else
+                    (r.key_sum / r.count).to(torch.float16 if self.mean_k_backend=='qw3_cuda' else torch.float32)
+                    for r in ordered], dim=1)
         finally:
             for lease in leases:
                 lease.reset()
@@ -580,6 +591,13 @@ class RequestAuthority:
 
     def select_for_queries(self, queries, mandatory_handles=(), *, observe_only=False, max_tokens=None,
                            guided_pressure=False):
+        from .historical_graph import retry_selection
+        mandatory_handles = tuple(mandatory_handles)
+        return retry_selection(self, lambda: self._select_for_queries(queries, mandatory_handles,
+            observe_only=observe_only, max_tokens=max_tokens, guided_pressure=guided_pressure))
+
+    def _select_for_queries(self, queries, mandatory_handles=(), *, observe_only=False, max_tokens=None,
+                            guided_pressure=False):
         """Reference MeanK-to-native-selection bridge over accepted history only.
 
         The returned plan still needs fenced GPU assembly and commit_selection.
@@ -590,7 +608,7 @@ class RequestAuthority:
         if self.mean_k_backend == 'qw3_cuda':
             from .cuda_scoring import mean_key_scores
         from .graph_integration import query_snapshot, score_and_select
-        with self.index_snapshot() as (records, means), (
+        with self.index_snapshot(protect_selection=not observe_only) as (records, means), (
                 nullcontext(None) if observe_only else query_snapshot(self)) as graph_snapshot:
             # MTP records travel with target KV but never alter MeanK scoring.
             means = means[:getattr(self, 'scoring_layers', self.shape[0])]
@@ -677,6 +695,10 @@ class RequestAuthority:
                 self.graph_selection_report = report
                 emit_graph_report(self, report)
             plan = self.memory.select(by_slot, pins, prefill_scores=prefill_scores, max_tokens=max_tokens)
+            if graph_snapshot is not None:
+                binding = graph_snapshot.binding
+                self._graph_selection_binding = binding
+                self.memory._selection_validator = lambda: self.block_graph.validate_binding(binding)
             return plan
 
     def begin_rewind(self, checkpoint):
@@ -692,6 +714,8 @@ class RequestAuthority:
         if checkpoint.position % self.shape[1]:
             raise ValueError('Rewind requires a sealed-record boundary')
         if not self.flush() or self.writes:
+            return None
+        if getattr(self.gc, 'native_history', False) and not self.gc.prepare_rewind():
             return None
         spans = self.memory.begin_rewind(checkpoint)
         graph = getattr(self, 'block_graph', None)

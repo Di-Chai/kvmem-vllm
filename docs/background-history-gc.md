@@ -47,7 +47,8 @@ ownership、容量预约和共享 worker。对象中的 `mode` 支持：
 示例中的较高水位用于在短历史中实际触发 GC，生产环境应结合保留需求调整。
 
 `policy` 选择删除策略，`policy_params` 只传递该策略的参数；`mode` 独立控制是否
-执行删除。当前注册的策略为 `lru`，参数 `keep_mandatory` 默认为 `true`，保留
+执行删除。可用策略包括 `lru` 和 `statistical`。统计策略与 block graph 共存协议见
+[statistical-history-gc.md](statistical-history-gc.md)。LRU 参数 `keep_mandatory` 默认为 `true`，保留
 sink/recent 和 P/M frame 等 mandatory 块；设为 `false` 允许这些块参与 LRU 删除，
 可能使对应 checkpoint 失效。省略新增字段与原有 LRU 行为一致。未知策略、未知
 参数和错误参数类型在启动时拒绝，`off`/`shadow` 也执行配置校验。
@@ -59,8 +60,10 @@ sink/recent 和 P/M frame 等 mandatory 块；设为 `false` 允许这些块参�
 策略对象。已有 C++ 自定义策略注入入口保留，安全退休和资源释放流程由所有策略共用。
 
 当前要求 CPU archive、request planning、async seal/retirement、CPU history
-coordination 和 owned sessions。与旧 `repository_gc`、block graph 的组合会在启动时
-拒绝。支持异步 refresh/restore 和原生 MTP；首版未验收 CUDA graph serving。
+coordination 和 owned sessions。与旧 `repository_gc` 的组合仍在启动时拒绝。
+新的 historical GC 可通过选择保护、generation 校验和延迟 COW 清理与 block graph 共存；
+见[共存与统计策略验证范围](statistical-history-gc.md)。支持异步 refresh/restore 和原生 MTP；
+首版未验收 CUDA graph serving。下方旧模型性能记录不代表新组合的资格验收。
 请求须携带稳定的 `session_id` 与租户隔离的 `cache_salt`。
 
 ## 资源与并发契约

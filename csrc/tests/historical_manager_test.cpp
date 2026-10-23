@@ -1,6 +1,9 @@
 #include "historical_manager.hpp"
 
 #include <array>
+#include <atomic>
+#include <functional>
+#include <limits>
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
@@ -34,7 +37,7 @@ struct Fixture {
 
     Fixture(HistoricalGcMode mode = HistoricalGcMode::Delete, bool background = false,
             std::unique_ptr<HistoricalKvPolicy> policy = {}, uint32_t max_scopes = 1, bool preallocate = false,
-            HistoricalPolicyParameters params = {}) {
+            HistoricalPolicyParameters params = {}, std::string policy_name = "lru") {
         arena = std::make_shared<Payload>(Payload::Config{16, 16, 1, 16, 16, background});
         repo = std::make_shared<Repo>(Repo::Config{8, 4});
         HistoricalGcWorker::Config config;
@@ -47,6 +50,7 @@ struct Fixture {
         config.delete_blocks = 2;
         config.mode = mode;
         config.policy_params = std::move(params);
+        config.policy = std::move(policy_name);
         config.background = background;
         worker = std::make_unique<HistoricalGcWorker>(config, arena);
         scope = worker->register_scope(repo, std::move(policy));
@@ -429,8 +433,219 @@ static void serving_metadata_is_preallocated_and_recycled_before_scope_ack(bool 
     }
 }
 
+
+static HistoricalEvidence cold_evidence(uint64_t revision = 1) {
+    return {revision, 5, 4, true, 0.05, -1.0};
+}
+
+static void selection_holds_are_a_mechanism_veto() {
+    for (bool custom : {false, true}) {
+        Fixture fixture(HistoricalGcMode::Delete, false,
+                        custom ? std::make_unique<DeletePublished>() : nullptr,
+                        1, false, {{"keep_mandatory", false}});
+        fixture.append(HistoricalSealed | HistoricalMandatory);
+        fixture.scope->request_capacity(8);
+        auto hold = fixture.scope->protect_selection({fixture.handles[0]});
+        check(bool(hold), "selection transaction could not be admitted");
+        fixture.step(16);
+        check(fixture.scope->stats().retired == 0 && bool(fixture.repo->try_pin(fixture.handles[0])),
+              "custom policy or keep_mandatory=false bypassed a selection hold");
+        check(fixture.arena->stats().readers == 0, "selection hold acquired CPU payload ownership");
+        hold.reset();
+        fixture.step(16);
+        check(fixture.scope->stats().retired == 1, "released selection hold permanently suppressed deletion");
+    }
+}
+
+static void selection_failure_close_and_scope_reuse_are_safe() {
+    Fixture fixture(HistoricalGcMode::Off, false, {}, 1, true);
+    fixture.append();
+    auto bad = fixture.handles[0];
+    ++bad.generation;
+    check(!fixture.scope->protect_selection({fixture.handles[0], bad}),
+          "partial selection accepted a stale generation");
+    auto hold = fixture.scope->protect_selection({fixture.handles[0]});
+    check(bool(hold), "valid selection admission failed after rollback");
+    check(!fixture.scope->close(), "scope closed with an active selection");
+    fixture.step(8);
+    check(bool(fixture.repo->try_pin(fixture.handles[0])), "close retired an admitted selection");
+    check(!fixture.scope->protect_selection({fixture.handles[0]}), "closing scope admitted a new selection");
+    check(!fixture.scope->publish_evidence(fixture.handles[0], cold_evidence()),
+          "closing scope accepted new evidence");
+    hold.reset();
+    fixture.gpu.clear();
+    eventually([&] { fixture.worker->advance(); return fixture.scope->close(); }, "selection rollback leaked a close hold");
+    fixture.scope.reset();
+    check(fixture.worker->storage_stats().recycles == 1, "old selection state escaped scope recycling");
+    fixture.repo = std::make_shared<Repo>(Repo::Config{8, 4});
+    fixture.scope = fixture.worker->register_scope(fixture.repo);
+    fixture.handles.clear();
+    fixture.payload_epoch = 8;
+    fixture.append();
+    auto fresh = fixture.scope->protect_selection({fixture.handles[0]});
+    check(bool(fresh), "reused scope retained a stale selection count");
+    fresh.reset();
+}
+
+static void selection_admission_races_native_retirement() {
+    for (unsigned attempt = 0; attempt < 64; ++attempt) {
+        Fixture fixture(HistoricalGcMode::Delete, false, std::make_unique<DeletePublished>());
+        fixture.append();
+        std::atomic<bool> go{false};
+        std::thread worker([&] {
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            for (unsigned i = 0; i < 8; ++i) fixture.worker->advance();
+        });
+        go.store(true, std::memory_order_release);
+        auto hold = fixture.scope->protect_selection({fixture.handles[0]});
+        worker.join();
+        if (hold) check(bool(fixture.repo->try_pin(fixture.handles[0])),
+                        "successful selection admission raced past permanent retirement");
+        hold.reset();
+        fixture.step(12);
+        check(!fixture.scope->protect_selection({fixture.handles[0]}),
+              "retired generation accepted a selection hold");
+    }
+}
+
+static void statistical_evidence_is_required_and_revision_qualified() {
+    Fixture fixture(HistoricalGcMode::Delete, false, {}, 1, false, {}, "statistical");
+    fixture.append();
+    fixture.step(64);
+    check(fixture.scope->stats().retired == 0, "unobserved history aged into statistical eligibility");
+    auto e = cold_evidence();
+    e.observations = e.cold_observations = 0;
+    check(fixture.scope->publish_evidence(fixture.handles[0], e), "initial evidence was rejected");
+    fixture.step(64);
+    check(fixture.scope->stats().retired == 0, "GC polls manufactured observations");
+    e = cold_evidence(2);
+    e.eligible = false;
+    check(fixture.scope->publish_evidence(fixture.handles[0], e), "new protected evidence was rejected");
+    check(!fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(1)),
+          "older evidence overwrote a new protected revision");
+    check(!fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(2)),
+          "duplicate revision changed evidence");
+    fixture.step(16);
+    check(fixture.scope->stats().retired == 0, "semantic eligibility was ignored");
+    check(fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(3)), "eligible evidence was rejected");
+    fixture.step(16);
+    check(fixture.scope->stats().retired == 1, "proactive statistical evidence did not retire a block");
+    check(!fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(4)),
+          "late evidence resurrected retired history");
+}
+
+class UpdateEvidenceAfterDecision final : public HistoricalKvPolicy {
+public:
+    HistoricalStatisticalPolicy inner{8};
+    std::function<void()> update;
+    bool permits(const HistoricalBlockMeta &meta) const override { return inner.permits(meta); }
+    HistoricalPolicyResult step(const HistoricalSnapshot &snapshot, const HistoricalPressure &pressure,
+                                HistoricalWorkBudget budget, HistoricalDecisionBatch &out) override {
+        auto result = inner.step(snapshot, pressure, budget, out);
+        if (!out.empty() && update) { auto callback = std::move(update); callback(); }
+        return result;
+    }
+};
+
+static void changed_evidence_vetoes_a_delayed_statistical_intent() {
+    auto policy = std::make_unique<UpdateEvidenceAfterDecision>();
+    auto *raw = policy.get();
+    Fixture fixture(HistoricalGcMode::Delete, false, std::move(policy));
+    fixture.append();
+    check(fixture.scope->publish_evidence(fixture.handles[0], cold_evidence()), "test evidence publication failed");
+    raw->update = [&] {
+        auto protected_evidence = cold_evidence(2);
+        protected_evidence.eligible = false;
+        check(fixture.scope->publish_evidence(fixture.handles[0], protected_evidence),
+              "decision-time evidence update failed");
+    };
+    fixture.step(16);
+    check(fixture.scope->stats().decisions == 1 && fixture.scope->stats().retired == 0,
+          "old snapshot intent deleted newly protected history");
+    check(fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(3)), "replacement evidence failed");
+    fixture.step(16);
+    check(fixture.scope->stats().retired == 1, "fresh evidence did not recover after a stale decision");
+}
+
+static void evidence_revision_changes_force_a_fresh_decision() {
+    auto policy = std::make_unique<UpdateEvidenceAfterDecision>();
+    auto *raw = policy.get();
+    Fixture fixture(HistoricalGcMode::Delete, false, std::move(policy));
+    fixture.append();
+    check(fixture.scope->publish_evidence(fixture.handles[0], cold_evidence()), "initial evidence failed");
+    raw->update = [&] {
+        check(fixture.scope->publish_evidence(fixture.handles[0], cold_evidence(2)),
+              "equally eligible newer evidence failed");
+    };
+    fixture.step(1);
+    check(fixture.scope->stats().decisions == 1 && fixture.scope->stats().retired == 0,
+          "revision-qualified intent bypassed a concurrent evidence update");
+    fixture.step(16);
+    check(fixture.scope->stats().retired == 1, "fresh round failed after revision invalidation");
+}
+
+static void statistical_evidence_does_not_cross_generation_reuse() {
+    Fixture fixture(HistoricalGcMode::Delete, false, {}, 1, false, {}, "statistical");
+    fixture.append();
+    const auto old = fixture.handles[0];
+    check(fixture.scope->publish_evidence(old, cold_evidence(9)), "old generation evidence failed");
+    fixture.gpu.clear();
+    fixture.step(16);
+    // Fill all available slots to force reuse of the old slot.
+    std::vector<Repo::Lease> replacements;
+    Repo::Lease replacement;
+    for (unsigned i = 0; i < 8; ++i) {
+        auto value = fixture.repo->try_reserve(4 + i * 4, 4).commit();
+        check(bool(value), "replacement reservation failed");
+        if (value.handle().slot == old.slot) replacement = std::move(value);
+        else replacements.push_back(std::move(value));
+    }
+    check(bool(replacement) && replacement.handle().generation != old.generation, "test did not recycle old metadata");
+    std::array<uint8_t, 16> bytes{};
+    fixture.arena->publish({0, 20}, bytes.data(), bytes.size());
+    auto cpu = fixture.arena->acquire({0, 20});
+    check(fixture.scope->publish(replacement, cpu, HistoricalSealed), "replacement CPU publication failed");
+    cpu.reset();
+    check(!fixture.scope->publish_evidence(old, cold_evidence(10)), "old generation evidence targeted a new slot");
+    fixture.step(16);
+    check(bool(fixture.repo->try_pin(replacement.handle())), "reused slot inherited old statistical eligibility");
+    auto new_evidence = cold_evidence(1);
+    new_evidence.eligible = false;
+    check(fixture.scope->publish_evidence(replacement.handle(), new_evidence),
+          "new generation could not restart its evidence revision");
+    fixture.step(8);
+    check(bool(fixture.repo->try_pin(replacement.handle())), "new protected generation was retired");
+    replacement.reset();
+    replacements.clear();
+}
+
+static void malformed_evidence_is_rejected() {
+    Fixture fixture(HistoricalGcMode::Off);
+    fixture.append();
+    std::vector<HistoricalEvidence> invalid;
+    auto e = cold_evidence(0); invalid.push_back(e);
+    e = cold_evidence(); e.cold_observations = e.observations + 1; invalid.push_back(e);
+    e = cold_evidence(); e.importance = std::numeric_limits<double>::quiet_NaN(); invalid.push_back(e);
+    e = cold_evidence(); e.importance = 1.1; invalid.push_back(e);
+    e = cold_evidence(); e.model_reclaim_score = -0.1; invalid.push_back(e);
+    for (const auto &bad : invalid) {
+        bool rejected = false;
+        try { fixture.scope->publish_evidence(fixture.handles[0], bad); }
+        catch (const std::invalid_argument &) { rejected = true; }
+        check(rejected, "native evidence API accepted invalid evidence");
+    }
+}
+
 int main() {
     try {
+        selection_holds_are_a_mechanism_veto();
+        selection_failure_close_and_scope_reuse_are_safe();
+        selection_admission_races_native_retirement();
+        statistical_evidence_is_required_and_revision_qualified();
+        changed_evidence_vetoes_a_delayed_statistical_intent();
+        evidence_revision_changes_force_a_fresh_decision();
+        statistical_evidence_does_not_cross_generation_reuse();
+        malformed_evidence_is_rejected();
         lru_retirement_and_cpu_reclamation_do_not_wait_for_gpu();
         completions_are_reliable_until_acknowledged_and_across_reuse();
         off_and_shadow_do_not_change_real_history();

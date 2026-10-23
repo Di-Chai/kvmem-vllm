@@ -993,8 +993,23 @@ PYBIND11_MODULE(_native, m) {
         .def_readonly("cpu", &HistoryCompletion::cpu)
         .def_readonly("slot", &HistoryCompletion::slot);
     py::class_<vllm_kvmem::HistoricalFrameHold, std::shared_ptr<vllm_kvmem::HistoricalFrameHold>>(m, "HistoricalFrameHold");
+    py::class_<vllm_kvmem::HistoricalSelectionHold, std::shared_ptr<vllm_kvmem::HistoricalSelectionHold>>(m, "HistoricalSelectionHold");
     py::class_<HistoryScope, std::shared_ptr<HistoryScope>>(m, "HistoricalGcScope")
         .def("protect", &HistoryScope::protect)
+        .def("protect_selection", &HistoryScope::protect_selection)
+        .def("publish_evidence", [](HistoryScope &scope, KvMemBlockHandle handle, uint64_t revision,
+                bool eligible, uint64_t observations, uint64_t cold_observations, double importance,
+                py::object model_reclaim_score) {
+            vllm_kvmem::HistoricalEvidence evidence;
+            evidence.revision = revision;
+            evidence.eligible = eligible;
+            evidence.observations = observations;
+            evidence.cold_observations = cold_observations;
+            evidence.importance = importance;
+            evidence.model_reclaim_score = model_reclaim_score.is_none() ? -1.0 : model_reclaim_score.cast<double>();
+            return scope.publish_evidence(handle, evidence);
+        }, py::arg("handle"), py::arg("revision"), py::arg("eligible"), py::arg("observations"),
+           py::arg("cold_observations"), py::arg("importance"), py::arg("model_reclaim_score") = py::none())
         .def("admit_read", [](HistoryScope &scope, KvMemBlockHandle handle) -> py::object {
             auto admission = scope.admit(handle);
             if (!admission.lease) return py::none();

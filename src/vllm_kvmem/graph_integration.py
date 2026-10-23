@@ -181,6 +181,15 @@ def emit_graph_report(authority, report):
 
 
 def pressure_score_and_select(authority, candidates, mandatory=(), *, max_tokens=None):
+    from .historical_graph import pressure_candidates, retry_selection
+    candidates, mandatory = tuple(candidates), tuple(mandatory)
+    def attempt():
+        with pressure_candidates(authority, candidates, mandatory, max_tokens=max_tokens) as live:
+            return _pressure_score_and_select(authority, live, mandatory, max_tokens=max_tokens)
+    return retry_selection(authority, attempt)
+
+
+def _pressure_score_and_select(authority, candidates, mandatory=(), *, max_tokens=None):
     """Propagate read-only accepted attention over the original working window."""
     from .authority import record_key, SCORE_DOMAIN_VERSION
     from .prefill_attention import pressure_seed

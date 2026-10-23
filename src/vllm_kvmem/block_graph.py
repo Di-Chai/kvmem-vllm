@@ -5,7 +5,7 @@ charged at their in-memory size, conservatively charging shared payload again
 for every live/staging/checkpoint/scoring owner.  Charges are consequently an
 upper bound on retained graph memory, rather than serialized-size estimates.
 """
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 import math
 import operator
 import sys
@@ -461,6 +461,22 @@ class BlockGraph:
             if self.binding != binding:
                 raise RuntimeError('Stale block graph selection epoch or accepted revision')
 
+    def rebind_after_gc(self, binding):
+        """Allow only a contiguous sequence of COW retirement revisions."""
+        with self._lock:
+            self._open()
+            current = self.binding
+            if current == binding:
+                return current
+            transitions = getattr(self, '_gc_binding_range', None)
+            if transitions is not None:
+                before, after = transitions
+                if (after == current and binding[:3] == before[:3] == after[:3] and
+                        binding[4] == before[4] == after[4] and
+                        before[3] <= binding[3] <= after[3]):
+                    return current
+            raise RuntimeError('Stale block graph selection epoch or accepted revision')
+
     def invalidate(self):
         with self._lock:
             self._open()
@@ -661,6 +677,77 @@ class BlockGraph:
                 charge.close()
             self._lock.release()
             raise
+
+    def retire_blocks(self, starts):
+        """COW-remove confirmed retired nodes without renumbering history.
+
+        Old checkpoints/scorers keep their original immutable snapshot. This
+        maintenance operation must run outside a pending accepted-token update
+        and outside an admitted window assembly (enforced by the integration).
+        Remaining raw edge weights and sample counts are not renormalized.
+        """
+        retired = frozenset(starts)
+        if any(type(start) is not int or start < 0 or start % self.block_tokens
+               for start in retired):
+            raise ValueError('Retired graph nodes must be original block starts')
+        if not retired:
+            return False
+        with self._lock:
+            self._open()
+            if self._pending_update is not None:
+                raise BlockingIOError('Graph retirement must wait for reserved acceptance')
+            # Retain scratch/COW credit before building new Python containers.
+            charge = self.budget.reserve(self._account,
+                self.live_bytes * 2 + _size(tuple(retired)) + 4096, self.max_bytes_per_session)
+            try:
+                rows, changed = [], False
+                for row in self.rows:
+                    if row.source in retired:
+                        changed = True
+                        continue
+                    if any(target in retired for target in row.targets):
+                        entries = tuple((target, weight) for target, weight in zip(row.targets, row.weights)
+                                        if target not in retired)
+                        row = replace(row, targets=tuple(target for target, _ in entries),
+                                      weights=tuple(weight for _, weight in entries))
+                        changed = True
+                    rows.append(row)
+                partial = self.partial
+                if partial is not None:
+                    if partial.source in retired:
+                        partial = None
+                        changed = True
+                    elif any(target in retired for target in partial.targets):
+                        entries = tuple((target, weight) for target, weight in zip(partial.targets, partial.sums)
+                                        if target not in retired)
+                        partial = replace(partial, targets=tuple(target for target, _ in entries),
+                                          sums=tuple(weight for _, weight in entries))
+                        changed = True
+                if not changed:
+                    return False
+                data = replace(self._data, rows=tuple(rows), partial=partial,
+                               rows_bytes=sum(_size(row) for row in rows))
+                size = _graph_size(data)
+                if size > charge.amount:
+                    raise BufferError('Graph retirement staging estimate exceeded')
+                old = self._charge
+                previous = self.binding
+                transitions = getattr(self, '_gc_binding_range', None)
+                root = transitions[0] if transitions is not None and transitions[1] == previous else previous
+                self._data, self._charge = data, charge
+                self.revision += 1
+                self._gc_binding_range = (root, self.binding)
+                old.close()
+                charge.budget._release(charge.owner, charge.amount - size)
+                charge.amount = size
+                charge = None
+                cache = getattr(self, '_native_scoring_cache', None)
+                if cache is not None:
+                    cache.close()
+                return True
+            finally:
+                if charge is not None:
+                    charge.close()
 
     def update_message_spans(self, spans, validated_prefix=0, *, locality_provenance=None):
         with self.prepare(self.accepted_through, self.accepted_through,

@@ -44,7 +44,13 @@ struct PublishedBlock {
     // publish backing at the same time without making decode acquire its guard.
     std::atomic<uint64_t> engine_version{0}, engine_generation{0}, engine_logical_id{0}, engine_use{0};
     std::atomic<uint32_t> engine_flags{0};
-    std::atomic<uint32_t> policy_holds{0};
+    std::atomic<uint32_t> policy_holds{0}, selection_holds{0};
+    // Independent semantic producer; all fields are atomic for race-free
+    // snapshot sampling. Writers and retirement share policy_gate.
+    std::atomic<uint64_t> evidence_version{0}, evidence_generation{0}, evidence_revision{0};
+    std::atomic<uint64_t> observations{0}, cold_observations{0};
+    std::atomic<bool> eligible{false};
+    std::atomic<double> importance{1.0}, model_reclaim_score{-1.0};
     std::atomic_flag policy_gate = ATOMIC_FLAG_INIT;
     std::atomic<uint64_t> cpu_event{0}, cpu_ack{0}, slot_event{0}, slot_ack{0};
 };
@@ -84,6 +90,19 @@ bool sample(const PublishedBlock &source, uint32_t slot, BlockView &out) {
     out.meta.mandatory = flags & HistoricalMandatory;
     out.meta.gpu_resident = flags & HistoricalGpu;
     out.meta.mandatory |= source.policy_holds.load(std::memory_order_acquire) != 0;
+    out.meta.selection_holds = source.selection_holds.load(std::memory_order_acquire);
+    const auto evidence_version = source.evidence_version.load(std::memory_order_acquire);
+    if (evidence_version & 1) return false;
+    out.meta.evidence = {};
+    if (source.evidence_generation.load(std::memory_order_relaxed) == out.meta.handle.generation) {
+        auto &e = out.meta.evidence;
+        e.revision = source.evidence_revision.load(std::memory_order_relaxed);
+        e.observations = source.observations.load(std::memory_order_relaxed);
+        e.cold_observations = source.cold_observations.load(std::memory_order_relaxed);
+        e.eligible = source.eligible.load(std::memory_order_relaxed);
+        e.importance = source.importance.load(std::memory_order_relaxed);
+        e.model_reclaim_score = source.model_reclaim_score.load(std::memory_order_relaxed);
+    }
     out.payload = {source.payload_slot.load(std::memory_order_relaxed),
                    source.payload_generation.load(std::memory_order_relaxed)};
     if (out.meta.handle.generation != source.generation.load(std::memory_order_relaxed)) out.payload = {};
@@ -91,7 +110,21 @@ bool sample(const PublishedBlock &source, uint32_t slot, BlockView &out) {
     // sealing alone may precede a queued I/O publisher that still owns bytes.
     out.meta.sealed = out.meta.sealed && out.payload.generation != 0;
     return source.version.load(std::memory_order_acquire) == version &&
-           source.engine_version.load(std::memory_order_acquire) == engine_version;
+           source.engine_version.load(std::memory_order_acquire) == engine_version &&
+           source.evidence_version.load(std::memory_order_acquire) == evidence_version;
+}
+
+// Caller holds policy_gate. The version protects the independently sampled row.
+void store_evidence(PublishedBlock &entry, uint64_t generation, const HistoricalEvidence &e) {
+    const auto version = entry.evidence_version.fetch_add(1, std::memory_order_acq_rel);
+    entry.evidence_generation.store(generation, std::memory_order_relaxed);
+    entry.evidence_revision.store(e.revision, std::memory_order_relaxed);
+    entry.observations.store(e.observations, std::memory_order_relaxed);
+    entry.cold_observations.store(e.cold_observations, std::memory_order_relaxed);
+    entry.eligible.store(e.eligible, std::memory_order_relaxed);
+    entry.importance.store(e.importance, std::memory_order_relaxed);
+    entry.model_reclaim_score.store(e.model_reclaim_score, std::memory_order_relaxed);
+    entry.evidence_version.store(version + 2, std::memory_order_release);
 }
 
 bool begin_publish(PublishedBlock &block, uint64_t &version) {
@@ -407,11 +440,26 @@ struct HistoricalScopeState {
                 PublishedBlock &entry;
                 ~PolicyUnlock() { entry.policy_gate.clear(std::memory_order_release); }
             } unlock{entry};
+            // A transaction guard is a mechanism veto, even for a custom
+            // policy or LRU keep_mandatory=false. Do not retain skipped intents.
+            if (entry.selection_holds.load(std::memory_order_acquire)) {
+                ++batch_cursor;
+                continue;
+            }
             BlockView current;
             if (!sample(entry, intent.handle.slot, current)) return false;
             auto live = repository->try_pin(intent.handle);
             current.meta.live = bool(live);
-            if (current.meta.handle != intent.handle || !policy->permits(current.meta)) {
+            if (live) {
+                const auto recent = recent_begin.load(std::memory_order_acquire);
+                const auto end = history_end.load(std::memory_order_acquire);
+                if (end && live.record().token_begin < end &&
+                        live.record().token_begin + live.record().token_count > recent)
+                    current.meta.mandatory = true;
+            }
+            if (current.meta.handle != intent.handle ||
+                    (intent.evidence_revision && current.meta.evidence.revision != intent.evidence_revision) ||
+                    !policy->permits(current.meta)) {
                 ++batch_cursor;
                 continue;
             }
@@ -436,6 +484,7 @@ struct HistoricalScopeState {
             }
             if (result == Repo::RetireResult::Committed || result == Repo::RetireResult::AlreadyRetired) {
                 start(intent.handle, global_pending);
+                store_evidence(entry, 0, {});
                 if (result == Repo::RetireResult::Committed) stats.retired.fetch_add(1, std::memory_order_relaxed);
             } else stats.stale.fetch_add(1, std::memory_order_relaxed);
             ++batch_cursor;
@@ -454,12 +503,19 @@ struct HistoricalScopeState {
             for (size_t i = 0; i < count; ++i) {
                 const auto slot = static_cast<uint32_t>(close_cursor);
                 close_cursor = (close_cursor + 1) % jobs.size();
-                auto lease = repository->try_pin_slot(slot);
-                if (lease) {
-                    const auto result = repository->retire_permanently(lease.handle());
-                    if (result == Repo::RetireResult::Committed || result == Repo::RetireResult::AlreadyRetired)
-                        start(lease.handle(), global_pending);
+                auto &entry = records[slot];
+                if (entry.policy_gate.test_and_set(std::memory_order_acquire)) continue;
+                if (!entry.selection_holds.load(std::memory_order_acquire)) {
+                    auto lease = repository->try_pin_slot(slot);
+                    if (lease) {
+                        const auto result = repository->retire_permanently(lease.handle());
+                        if (result == Repo::RetireResult::Committed || result == Repo::RetireResult::AlreadyRetired) {
+                            start(lease.handle(), global_pending);
+                            store_evidence(entry, 0, {});
+                        }
+                    }
                 }
+                entry.policy_gate.clear(std::memory_order_release);
             }
             if (repository->ready_slots_for_reclaimer() == repository->capacity())
                 resources_closed.store(true, std::memory_order_release);
@@ -698,6 +754,60 @@ std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect(const std::vecto
         if (!state_->repository->try_pin(lease.handle())) return {};
     return hold;
 }
+HistoricalSelectionHold::HistoricalSelectionHold(std::shared_ptr<HistoricalScopeState> state)
+    : state_(std::move(state)) {}
+HistoricalSelectionHold::~HistoricalSelectionHold() {
+    // Leases keep each generation and the containing scope storage alive until
+    // every hold counter has been released, including partial admission failure.
+    for (const auto &lease : leases_)
+        state_->records[lease.handle().slot].selection_holds.fetch_sub(1, std::memory_order_release);
+}
+
+std::shared_ptr<HistoricalSelectionHold> HistoricalGcScope::protect_selection(const std::vector<Handle> &handles) {
+    if (!state_ || handles.empty() || state_->closing.load(std::memory_order_acquire)) return {};
+    auto hold = std::shared_ptr<HistoricalSelectionHold>(new HistoricalSelectionHold(state_));
+    hold->leases_.reserve(handles.size());
+    for (auto handle : handles) {
+        if (handle.slot >= state_->repository->capacity() || state_->closing.load(std::memory_order_acquire))
+            return {};
+        auto &entry = state_->records[handle.slot];
+        if (entry.policy_gate.test_and_set(std::memory_order_acquire)) return {};
+        auto lease = state_->repository->try_pin(handle);
+        const bool admitted = bool(lease);
+        if (lease) {
+            entry.selection_holds.fetch_add(1, std::memory_order_release);
+            hold->leases_.push_back(std::move(lease));
+        }
+        entry.policy_gate.clear(std::memory_order_release);
+        if (!admitted) return {};
+    }
+    if (state_->closing.load(std::memory_order_acquire)) return {};
+    return hold;
+}
+
+bool HistoricalGcScope::publish_evidence(Handle handle, const HistoricalEvidence &e) {
+    if (!e.revision || e.cold_observations > e.observations ||
+            !std::isfinite(e.importance) || e.importance < 0 || e.importance > 1 ||
+            !std::isfinite(e.model_reclaim_score) ||
+            (e.model_reclaim_score != -1 && (e.model_reclaim_score < 0 || e.model_reclaim_score > 1)))
+        throw std::invalid_argument("Invalid historical evidence revision, counts or score");
+    if (!state_ || state_->closing.load(std::memory_order_acquire) ||
+            handle.slot >= state_->repository->capacity() || !handle.generation) return false;
+    auto &entry = state_->records[handle.slot];
+    if (entry.policy_gate.test_and_set(std::memory_order_acquire)) return false;
+    struct Unlock {
+        PublishedBlock &entry;
+        ~Unlock() { entry.policy_gate.clear(std::memory_order_release); }
+    } unlock{entry};
+    if (state_->closing.load(std::memory_order_acquire)) return false;
+    auto lease = state_->repository->try_pin(handle);
+    if (!lease) return false;
+    if (entry.evidence_generation.load(std::memory_order_relaxed) == handle.generation &&
+            e.revision <= entry.evidence_revision.load(std::memory_order_relaxed)) return false;
+    store_evidence(entry, handle.generation, e);
+    return true;
+}
+
 bool HistoricalGcScope::publish(const Repo::Lease &lease, const Payload::Read &cpu, uint32_t flags, uint64_t use) {
     if (!state_) throw std::runtime_error("Historical scope is closed");
     return state_->publish(lease, &cpu, flags, use);

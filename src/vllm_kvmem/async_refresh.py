@@ -54,6 +54,7 @@ class RefreshJob:
     selected_tokens: int | None = None
     future: object = None
     assembly_inputs: object = None
+    selection_inputs: object = None
     result: object = None
     authority: object = None
     state: object = None
@@ -376,6 +377,12 @@ class AsyncRefresh:
                 from .query_token_experiment import select_token_queries
                 plan=select_token_queries(authority,queries,mandatory,max_tokens=cfg.select_budget)
             else:plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget)
+            if graph is not None and job.graph_binding is not None:
+                # The selector may have COW-compacted retired graph nodes.
+                # Accepted-token updates, rewind, or branch changes still fail.
+                job.graph_binding = graph.rebind_after_gc(job.graph_binding)
+                if getattr(authority.memory, '_selection_validator', None) is not None:
+                    graph.validate_binding(authority._graph_selection_binding)
             if (getattr(self.options, 'action_profiling', False) or
                     getattr(self.runner, '_kvmem_step_timing', None) is not None):
                 self.emit(job, 'selection_prepared',
@@ -390,6 +397,35 @@ class AsyncRefresh:
             assembly=assembler.assemble(authority,plan)
             self.emit(job,'assembly_submitted',host_seconds=time.perf_counter()-started)
             return assembler,assembly,plan,fit,time.perf_counter()-started
+
+    def _poll_assembly_result(self, job):
+        """Yield a busy selection without releasing the request's page/state lease."""
+        if not job.future.done():
+            return False
+        if job.result is None:
+            from . import _native
+            try:
+                job.result = job.future.result()
+            except _native.HistoryAdmissionRetry:
+                from .memory import Phase
+                if job.authority.memory.phase is not Phase.READY:
+                    raise RuntimeError('Historical retry occurred after assembly admission')
+                if job.selection_inputs is None:
+                    raise RuntimeError('Historical retry lost its query and readiness fence')
+                graph = getattr(job.authority, 'block_graph', None)
+                if graph is not None and job.graph_binding is not None:
+                    job.graph_binding = graph.rebind_after_gc(job.graph_binding)
+                job.authority._refresh_background = False
+                job.assembly_inputs, job.selection_inputs = job.selection_inputs, None
+                job.future = None
+                job.stage = 'assembly_wait'
+                policy = getattr(self, 'maintenance', None)
+                if policy is not None:
+                    policy.release(job)
+                self.emit(job, 'selection_retry')
+                return False
+            job.selection_inputs = None
+        return True
 
     def step(self,job):
         if job.done:return False
@@ -418,12 +454,12 @@ class AsyncRefresh:
                 return False
             job.authority._refresh_background=True
             job.stage='assembly'
+            job.selection_inputs=job.assembly_inputs
             job.future=self.executor.submit(self._assemble,job,*job.assembly_inputs)
             job.assembly_inputs=None
             return True
         if job.stage=='assembly':
-            if not job.future.done():return False
-            if job.result is None:job.result=job.future.result()
+            if not self._poll_assembly_result(job):return False
             assembler,assembly,plan,fit,seconds=job.result
             if not assembly.event.query():return False
             authority=job.authority;authority._refresh_background=False
@@ -575,7 +611,7 @@ class AsyncRefresh:
             if not job.state[1].release(job.history):raise RuntimeError('Recurrent restore still in flight')
             job.state=None
         job.query_rows.clear();job.guided_rows.clear()
-        job.assembly_inputs=None
+        job.assembly_inputs=job.selection_inputs=None
 
     def report(self,job,assembly,fit,seconds):
         from .prefill_attention import selection_report

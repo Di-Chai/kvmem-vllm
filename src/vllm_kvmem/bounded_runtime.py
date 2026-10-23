@@ -260,7 +260,9 @@ def install_bounded_target(runner):
                 raise ValueError('Required historical blocks are missing from the durable source')
             if job.command.selection == 'pressure':
                 from .prefill_attention import select_pressure
-                plan = select_pressure(authority,mandatory,max_tokens=selected_cfg.select_budget)
+                from .historical_graph import synchronous_selection
+                plan = synchronous_selection(authority, lambda: select_pressure(
+                    authority, mandatory, max_tokens=selected_cfg.select_budget))
             elif history <= selected_cfg.select_budget:
                 plan = authority.memory.select({})  # Exact all-history bootstrap.
             else:
@@ -298,7 +300,9 @@ def install_bounded_target(runner):
                             queries = guided.queries
                         guided_seconds = time.perf_counter() - guided_started
                 score_query = queries.shape[1]
-                plan = authority.select_for_queries(queries,mandatory,max_tokens=selected_cfg.select_budget)
+                from .historical_graph import synchronous_selection
+                plan = synchronous_selection(authority, lambda: authority.select_for_queries(
+                    queries, mandatory, max_tokens=selected_cfg.select_budget))
             selected = plan.total_window_tokens
             if not 0 < selected <= cfg.select_budget:
                 raise RuntimeError("Original selector exceeded its reserved prefix")
