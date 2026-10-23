@@ -44,3 +44,42 @@ test('scope is the owned local route and each callback owns its source identity'
   assert.equal(x.kvmem_query_provenance.query_message_id,'u1');
   assert.equal(y.kvmem_query_provenance.query_message_id,'other-id');
 });
+
+test('an explicit deployment route replaces all three default match fields',()=>{
+  const route={provider:'gc-local',model:'kvmem-gc-qwen38',baseURL:'http://127.0.0.1:18387/v1/'};
+  const customModel={id:route.model,baseUrl:'http://127.0.0.1:18387/v1'};
+  const body=wire();
+  kvmemQueryEpochPayload(route.provider,customModel,options(),route)(body);
+  assert.equal(body.kvmem_query_provenance.query_message_id,'u1');
+  assert.equal(kvmemQueryEpochPayload(route.provider,customModel,options()),undefined);
+  assert.equal(kvmemQueryEpochPayload('kvmem-main-dflash2-continuation',model,options(),route),undefined);
+  for (const [provider,target] of [
+    ['other',customModel],
+    [route.provider,{...customModel,id:'other'}],
+    [route.provider,{...customModel,baseUrl:'http://127.0.0.1:18388/v1'}],
+  ]) assert.equal(kvmemQueryEpochPayload(provider,target,options(),route),undefined);
+});
+
+test('invalid explicit routes fail closed instead of using default configuration',()=>{
+  const valid={provider:'gc-local',model:'local',baseURL:'http://127.0.0.1:18387/v1'};
+  for (const route of [
+    null, [], 'default', {}, {...valid,provider:''}, {...valid,model:' '},
+    {...valid,baseURL:'file:///tmp/provider'},
+    {...valid,baseURL:'http://user:password@127.0.0.1:18387/v1'},
+    {...valid,baseURL:valid.baseURL+'?query=value'},
+    {...valid,baseURL:valid.baseURL+'#fragment'},
+    {...valid,baseURL:'http:/127.0.0.1:18387/v1'},
+    {...valid,baseURL:'http://127.0.0.1:99999/v1'},
+  ]) assert.throws(()=>kvmemQueryEpochPayload('other',model,options(),route),TypeError);
+});
+
+test('custom-route callbacks preserve wire and session validation',()=>{
+  const route={provider:'gc-local',model:'local',baseURL:'http://127.0.0.1:18387/v1'};
+  const callback=kvmemQueryEpochPayload(route.provider,{id:route.model,baseUrl:route.baseURL},options(),route);
+  const wrongText=wire();wrongText.messages[1].content='different';
+  const wrongSession=wire();wrongSession.prompt_cache_key='different';
+  assert.throws(()=>callback(wrongText),/provenance differs/);
+  assert.throws(()=>callback(wrongSession),/session identity differs/);
+  assert.equal(wrongText.kvmem_query_provenance,undefined);
+  assert.equal(wrongSession.kvmem_query_provenance,undefined);
+});

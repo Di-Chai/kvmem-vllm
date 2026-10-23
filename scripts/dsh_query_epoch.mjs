@@ -1,14 +1,49 @@
 // Preserve real user Query identity across the DSH -> OpenAI wire conversion.
 import { createHash } from 'node:crypto';
 
+export const DEFAULT_QUERY_ROUTE = Object.freeze({
+  provider: 'kvmem-main-dflash2-continuation',
+  model: 'kvmem-dsh-dflash2',
+  baseURL: 'http://127.0.0.1:18385/v1',
+});
+
+// A deployment passes this fourth argument explicitly. Missing fields never
+// inherit the old route, so a misspelled configuration cannot silently bind it.
+export function normalizeQueryRoute(route) {
+  if (!route || typeof route !== 'object' || Array.isArray(route)) {
+    throw new TypeError('KVMem Query route must be an object');
+  }
+  for (const field of ['provider', 'model', 'baseURL']) {
+    const value = route[field];
+    if (typeof value !== 'string' || !value || value !== value.trim() ||
+        /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new TypeError('KVMem Query route requires a nonempty ' + field);
+    }
+  }
+  let endpoint;
+  try { endpoint = new URL(route.baseURL); } catch {
+    throw new TypeError('KVMem Query baseURL must be an absolute HTTP(S) URL');
+  }
+  if (!/^https?:\/\//i.test(route.baseURL) || route.baseURL.includes('\\') ||
+      !['http:', 'https:'].includes(endpoint.protocol) ||
+      endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new TypeError('KVMem Query baseURL must be HTTP(S), without credentials, query, or fragment');
+  }
+  return Object.freeze({
+    provider: route.provider,
+    model: route.model,
+    baseURL: route.baseURL.replace(/\/+$/, ''),
+  });
+}
+
 const hash = text => createHash('sha256').update(text).digest('hex');
 const textOf = content => typeof content === 'string' ? content :
   (content || []).filter(b => b.type === 'text').map(b => b.text).join('');
 
-export function kvmemQueryEpochPayload(provider, model, options) {
-  if (provider !== 'kvmem-main-dflash2-continuation' ||
-      model.id !== 'kvmem-dsh-dflash2' ||
-      model.baseUrl?.replace(/\/$/, '') !== 'http://127.0.0.1:18385/v1') return undefined;
+export function kvmemQueryEpochPayload(provider, model, options, route = DEFAULT_QUERY_ROUTE) {
+  const target = normalizeQueryRoute(route);
+  if (provider !== target.provider || model.id !== target.model ||
+      model.baseUrl?.replace(/\/+$/, '') !== target.baseURL) return undefined;
   const users = [];
   let query = null;
   for (const message of options.messages) {
