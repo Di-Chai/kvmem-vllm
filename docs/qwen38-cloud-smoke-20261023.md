@@ -126,3 +126,64 @@ for the generation call. Different response lengths make these short timings
 unsuitable as a sustained speed comparison. The [GPTQ smoke report](benchmarks/qwen38-4090-gptq-smoke-20261023.json)
 records the exact settings and evidence digests. The actual loaded tokenizer
 backend and chat template match NVFP4, while the padding token ID differs.
+
+
+## Real DSH tasks on the same cloud RTX 4090
+
+Both quantized models passed the plain C1 smoke. GPTQ leaves more space for
+history: target plus MTP1 loaded in 17.62 GiB. The later GPTQ DSH profile used
+logical 32K, K8192/G4096, 2 GiB CPU checkpoints, GPU utilization 0.88 and 55 native
+pool pages. Native capacity checks remained enabled; the experimental bounded
+capacity adapter was not used. Every model request was serial.
+
+The real task results are deliberately separate from the short synthetic-GC
+throughput qualification:
+
+| Sample | Observed result | Task completed? |
+|---|---|---|
+| Read a random marker file | Correct tool result and exact final marker | Yes |
+| Personal expense tracker | Existing HTML passed all 33 browser checks: add income/expense, monthly totals and filter, confirmed deletion, reload persistence | No: the next request failed logical-context admission |
+| Web CSGO | Earlier attempts produced incomplete files or timed out; final pinned run made 43 tool calls inspecting runtime records and produced no game files | No |
+
+The [expense tracker artifact](benchmarks/samples/expense-tracker-20261023/index.html),
+[frozen browser plan](benchmarks/samples/expense-tracker-20261023/browser-plan.json)
+and [compact observed results](benchmarks/samples/expense-tracker-20261023/browser-results.json)
+are preserved without modifying model-produced code. Chromium used software
+rendering. The observer and an independent read-only audit verified 33/33
+assertions and zero page, console, HTTP or transport errors. The dates in this
+plan match the October 2026 run; this is observed acceptance evidence, not a
+date-independent regression suite.
+
+The expense task committed 23 responses/tool calls and 14,073 output tokens.
+Its 21 recorded refreshes retained the complete 4,229-token system/tool frame.
+After a full-file read, CPU reconstruction of the next exact accepted history
+gave 28,783 prompt tokens. The bridge reserves a complete 4,096-token first
+generation segment, so 32,879 exceeds the 32,768 limit by 111. The rejected wire
+request was not saved; these exact counts are reconstructed from the durable
+session and accepted token IDs. The prompt itself still had 3,985 tokens of room.
+This input/output-budget boundary remains unresolved in the tested bridge.
+
+Two harness issues were addressed and independently tested: optional system
+frame pinning with K-budget admission, and a configurable finite semantic-stream
+idle wait. Strict tool parsing buffers a complete tool call; empty SSE events do
+not reset the official pi-ai watchdog. A fresh CSGO run explicitly used 900,000 ms
+instead of 300,000 ms. This allows a longer wait, not a fake token-progress signal.
+That run still failed: 43 bash calls stayed on runtime/session inspection,
+followed by the logical-context preflight rejection (reconstructed prompt 28,731
+plus 4,096 exceeds 32K by 59 tokens). All 35 recorded refreshes
+retained both the system frame and the actual current user Query. Retention
+alone therefore did not establish successful task execution.
+
+No real semantic eligibility producer was installed for these DSH tasks.
+Statistical GC decisions and candidate retirements stayed zero. Explicit owner
+release emptied the retained sessions, but those frees are lifecycle cleanup.
+Consequently the real tasks do not establish safety or overhead of proactive
+semantic GC. A producer based on durable successful steps and retained result
+witnesses, plus matched OFF/DELETE trajectories, remains necessary. Physical KV
+reclamation also does not by itself extend the accepted logical token limit.
+
+The [DSH report](benchmarks/qwen38-4090-dsh-20261023.json) preserves both successes
+and failures, separate profiles, source digests and release evidence. All task
+owners were released and the inference services stopped after evaluation;
+the cloud 4090 was observed at 0 MiB allocated. The local working tree was not used
+for inference or changed by this cloud development phase.

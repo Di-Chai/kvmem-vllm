@@ -969,6 +969,149 @@
         "independent_cross_check": "Token-set union and14 source digests matched.",
         "causality": "Missing system/tool context alone does not establish sole cause of malformed output."
       }
+    },
+    "gptq_32k_pinned_timeout": {
+      "status": "failed-transport",
+      "run": "dsh-live-07-gptq-pinned/csgo",
+      "model": "Qwen3.8-27B-GPTQ-Int4",
+      "thinking_enabled": false,
+      "logical_context": 32768,
+      "select_budget": 8192,
+      "gen_budget": 4096,
+      "system_pin": [
+        0,
+        4228
+      ],
+      "declared_pin_required_select_tokens": 4480,
+      "backend_pool_pages": 55,
+      "gpu_memory_utilization": 0.88,
+      "cpu_checkpoint_pool_bytes": 2147483648,
+      "user_turns": 1,
+      "completed_model_replies": 5,
+      "failure": {
+        "code": "TIMEOUT",
+        "message": "pi-ai stream idle timeout after 300000ms",
+        "scope": "Long tool call buffered until complete while native token generation continued; final tool was not executed.",
+        "completed_native_segment_output_tokens": 4096,
+        "partial_continuation_tokens": {
+          "accepted_worker_output_tokens_before_abort": 3970,
+          "scope": "Worker FINISHED_ABORTED terminal evidence; no completed bridge segment-001 report."
+        }
+      },
+      "files": 0,
+      "backend_cancelled": true,
+      "scheduler_after_cancel": {
+        "requests": 0,
+        "owned_blocks": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0
+      },
+      "refresh_pin_coverage": "No bounded_refresh events; unobserved, not a proven refresh-coverage pass.",
+      "gpu_sampled_peak_mib": 22781,
+      "semantic_gc_active": false,
+      "statistical_candidate_retirements": 0,
+      "session_release_http_status": 200,
+      "session_release_all_resources_empty": true,
+      "coverage_evidence": {
+        "report": "/root/data/kvmem-vllm-gc/logs/dsh-gptq07-system-frame-coverage.json",
+        "sha256": "2cbfce101e754b8a765b34b2106547e04524574fd6fe45445f2c2424cccff2b8",
+        "refresh_count": 0,
+        "status": "unknown"
+      },
+      "subsequent_harness_fix": {
+        "commit": "2ad38c3",
+        "configuration": "provider.streamIdleTimeoutMs=900000 in a fresh run; original remains 300000",
+        "default_unchanged": true,
+        "official_adapter_cpu_cases": 8,
+        "regression_tests": 74,
+        "subtests": 24,
+        "scope": "Finite semantic-stream idle wait, not a token-progress watchdog; buffered complete tool validation unchanged."
+      }
+    },
+    "gptq_32k_pinned_longwait": {
+      "status": "failed-task-context-admission",
+      "run": "dsh-live-08-gptq-pinned-longwait/csgo",
+      "bridge_run": "dsh-bridge-07-gptq-pinned",
+      "server_run": "qwen38-dsh-server-04-gptq-k8192",
+      "model": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+      "logical_context": 32768,
+      "select_budget": 8192,
+      "generation_window": 4096,
+      "gpu_memory_utilization": 0.88,
+      "native_pool_pages": 55,
+      "cpu_checkpoint_pool_bytes": 2147483648,
+      "bounded_capacity_adapter": false,
+      "thinking_enabled": false,
+      "stream_idle_timeout_ms": 900000,
+      "user_task": "做个网页版的csgo。",
+      "user_turns": 1,
+      "committed_model_responses": 43,
+      "tool_calls": 43,
+      "matching_tool_results": 43,
+      "tool_name_counts": {
+        "bash": 43
+      },
+      "accepted_output_tokens": 6453,
+      "exact_prefix_reuse_followups": 42,
+      "files": 0,
+      "gameplay_pass": false,
+      "behavior": "All43 calls inspected runtime/session/task/config records or attempted to install a decompression package; no game artifact produced. No missing tool results or parser rejection found.",
+      "failure": {
+        "message": "Complete history plus output exceeds the logical context limit",
+        "reconstructed_prompt_tokens": 28731,
+        "remaining_context_tokens": 4037,
+        "first_native_segment_budget": 4096,
+        "prompt_plus_required_segment": 32827,
+        "excess_over_32k": 59,
+        "pi_ai_output_cap": 8192,
+        "backend_step44_created": false,
+        "scope": "CPU reconstruction from durable accepted history, not a captured rejected wire payload."
+      },
+      "recorded_refreshes": {
+        "count": 35,
+        "system_span": [
+          0,
+          4230
+        ],
+        "query_span": [
+          4233,
+          4240
+        ],
+        "system_complete": 35,
+        "query_complete": 35,
+        "missing_ranges": [],
+        "query_source": "All43 bridge requests verified the same user-source message/ordinal0. Query lies in final pinned system block [4224,4256)."
+      },
+      "final_idle_checkpoint": {
+        "history_tokens": 28675,
+        "window_tokens": 8195,
+        "system_complete": true,
+        "query_complete": true
+      },
+      "gpu_sampled_peak_mib": 22783,
+      "gpu_sample_count": 465,
+      "sample_scope": "1-second samples covering task through exit, not model load or exact instantaneous peak.",
+      "semantic_gc_active": false,
+      "statistical_candidate_retirements": 0,
+      "gc_decisions": 0,
+      "session_release": {
+        "http_status": 200,
+        "elapsed_seconds": 0.2890002094209194,
+        "all_resources_empty": true
+      },
+      "independent_audit": {
+        "path": "/root/data/kvmem-vllm-gc/logs/dsh-gptq08-csgo-final-audit.json",
+        "sha256": "894d2fa23e8a165e8efd7323a93d2425dc7d78594ea0afa3d7bc80bf2b7c2681",
+        "static_source_digests_verified": 227,
+        "durable_zstd_frames": 176,
+        "durable_records": 490,
+        "critical_events_compared": 221
+      },
+      "limits": [
+        "No matched OFF/DELETE real-task comparison; cannot isolate model, quantization, harness or KVMem contribution to task drift.",
+        "No long buffered tool was emitted in this rerun, so it does not empirically exercise a successful900000ms waiting boundary.",
+        "System/Query retention is demonstrated for recorded refresh/checkpoint events, not all individual forward steps."
+      ]
     }
   },
   "limits": [
@@ -977,6 +1120,220 @@
     "Session release CPU frees are lifecycle cleanup, not proactive GC.",
     "The 124 ms checkpoint restore was one observed tool continuation, not an isolated GC overhead measurement.",
     "No throughput inference should be made from cold DSH TTFT, including the separately recorded one-token release control request.",
-    "The earlier paired short-throughput qualification used a different K/G and profile; see its separate report."
-  ]
+    "The earlier paired short-throughput qualification used a different K/G and profile; see its separate report.",
+    "The initial top-level model/profile/native_pool describe marker02; GPTQ cases explicitly record their different profiles.",
+    "Pinning system and current Query does not guarantee that the model will stay on task.",
+    "Physical KV reclamation and logical context capacity are separate; neither a configured GC mode nor session cleanup establishes semantic deletion."
+  ],
+  "initial_marker_configuration_fields": [
+    "model",
+    "model_source",
+    "backend_profile",
+    "native_pool"
+  ],
+  "models_tested": [
+    {
+      "repository": "nvidia/Qwen3.8-27B-NVFP4",
+      "revision": "482ca0f3832238542f8f5295dde86b5f22711d80",
+      "download_endpoint": "https://hf-mirror.com"
+    },
+    {
+      "repository": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+      "revision": "2232b67a2ef5480e97c4450838a712de1346eccc",
+      "download_endpoint": "https://hf-mirror.com"
+    }
+  ],
+  "expense_tracker": {
+    "run": "dsh-live-07-gptq-pinned/expense-tracker",
+    "model": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+    "user_task": "做一个本地运行的个人记账网页。支持新增、删除收入和支出记录，按月份筛选，显示本月收入、支出与余额；数据保存在 localStorage，刷新后保留。请实际创建文件，完成后自行检查并告诉我如何运行。",
+    "task_status": "failed-context-admission",
+    "artifact_acceptance": "33/33 specified browser checks passed",
+    "logical_context": 32768,
+    "selection_budget": 8192,
+    "generation_window": 4096,
+    "thinking_enabled": false,
+    "user_turns": 1,
+    "trajectory": {
+      "agent_turns": 1,
+      "steps_started": 24,
+      "committed_model_responses": 23,
+      "native_segments": 23,
+      "accepted_output_tokens_total": 14073,
+      "tool_calls": 23,
+      "matching_tool_results": 23,
+      "tool_name_counts": {
+        "str_replace_editor": 2,
+        "write": 1,
+        "bash": 14,
+        "edit": 3,
+        "read": 3
+      },
+      "exact_prefix_reuse_followups": 22,
+      "tools_with_error_text_flags": [
+        4,
+        13,
+        15,
+        17,
+        18,
+        19,
+        20
+      ],
+      "tool_success_interpretation": "DSH reports isError=false for all results, but several bash outputs contain exceptions; do not count all23 as successful semantic steps."
+    },
+    "system_frame": [
+      0,
+      4229
+    ],
+    "recorded_refreshes_with_full_system_coverage": 21,
+    "recorded_refreshes_total": 21,
+    "retained_checkpoints": {
+      "mid_task_observations": 3,
+      "final_history_tokens": 23638,
+      "final_window_tokens": 8182,
+      "all_observed_system_spans_complete": true,
+      "scope": "Retained checkpoint observations are distinct from current-forward and completed refresh evidence."
+    },
+    "failure": {
+      "message": "Complete history plus output exceeds the logical context limit",
+      "reconstructed_prompt_tokens": 28783,
+      "reconstruction_is_wire_capture": false,
+      "remaining_logical_context": 3985,
+      "first_segment_required_tokens": 4096,
+      "prompt_plus_required_segment": 32879,
+      "excess_over_32k": 111,
+      "backend_request_24_created": false,
+      "pi_ai_estimated_input_tokens": 22639,
+      "pi_ai_output_cap": 6033
+    },
+    "browser": {
+      "status": "observational-checks-passed",
+      "summary": {
+        "boot_pass": true,
+        "no_console_errors": true,
+        "no_blocked_dependencies": true,
+        "no_failed_requests": true,
+        "no_http_errors": true,
+        "action_errors": 0,
+        "state_checks_total": 33,
+        "state_checks_passed": 33,
+        "specified_state_checks_pass": true,
+        "default_observations_are_not_gameplay_assertions": true
+      },
+      "actions": 24,
+      "features": [
+        "add income and expense",
+        "current-month summary",
+        "month filtering",
+        "show all",
+        "explicit confirmed deletion",
+        "same-origin reload persistence"
+      ],
+      "rendering": "forced-software",
+      "artifact": "samples/expense-tracker-20261023/index.html",
+      "plan": "samples/expense-tracker-20261023/browser-plan.json",
+      "compact_results": "samples/expense-tracker-20261023/browser-results.json",
+      "full_report_cloud_path": "/root/data/kvmem-vllm-gc/runs/dsh-live-07-gptq-pinned/expense-tracker/browser-validation-01/report.json",
+      "full_report_sha256": "cf09a23416bc36af2d50cc42510535202c210bcb2e81ac4d30617f56caeb2f45",
+      "independent_read_only_review": "Recomputed all33 after/value comparisons, matched actual confirm message and accept decision, both reloads and source SHA; passed."
+    },
+    "artifact_sha256": "de40a51b729e78af31a51acf791c77c25e94b23028ebd9d967909927a002bf7a",
+    "sampled_gpu_peak_mib": 22781,
+    "sample_count": 758,
+    "gpu_sample_scope": "1-second sampling covering task through post-exit cleanup; not model load or exact instantaneous peak.",
+    "semantic_producer_present": false,
+    "statistical_candidate_retirements": 0,
+    "gc_decisions": 0,
+    "explicit_session_release": {
+      "http_status": 200,
+      "elapsed_seconds": 0.27602638863027096,
+      "all_resources_empty": true,
+      "cpu_released_delta": 738,
+      "slots_released_delta": 740,
+      "scope": "Lifecycle cleanup, not statistical GC."
+    },
+    "independent_trajectory_audit": {
+      "path": "/root/data/kvmem-vllm-gc/logs/dsh-gptq07-expense-final-audit.json",
+      "sha256": "b257d269f7518cc817bb3099a47a899e90c67923098aea48de5210559617299c",
+      "verified_source_files": 129,
+      "durability": {
+        "zstd_path": "/root/data/kvmem-vllm-gc/runs/dsh-live-07-gptq-pinned/expense-tracker/home/sessions/--root-data-kvmem-vllm-gc-runs-dsh-live-07-gptq-pinned-expense-tracker-workspace--/session-b2a079b8-d901-4aa1-8877-16dcadb11fc6/session.jsonl.zstd",
+        "zstd_frames": 162,
+        "durable_records": 374,
+        "runner_event_records": 514,
+        "all_critical_events_match_durable_session": true,
+        "driver_event_records": 521,
+        "critical_events_compared_structurally": 121
+      }
+    },
+    "limits": [
+      "The model did not finish the task; a working artifact does not change the task exit1.",
+      "All23 tool results matched calls, but some bash results contain exceptions despite isError=false.",
+      "No semantic eligibility producer was installed; this is not a proactive-GC quality test.",
+      "Browser plan dates match October2026; broader feature or cross-browser coverage is not asserted."
+    ]
+  },
+  "final_gptq_profile": {
+    "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "tokenizer": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "hf_config_path": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-GPTQ-Int4",
+    "model_format": "safetensors",
+    "draft_method": "mtp",
+    "draft_tokens": 1,
+    "execution_mode": "eager",
+    "served_model_name": "kvmem-gc-qwen38",
+    "host": "127.0.0.1",
+    "port": 8186,
+    "max_model_len": 32768,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 128,
+    "gpu_memory_utilization": 0.88,
+    "prefill_chunk_tokens": 128,
+    "query_replay_budget": 128,
+    "verify_session_restore": false,
+    "kvmem": {
+      "block_tokens": 32,
+      "select_budget": 8192,
+      "gen_budget": 4096,
+      "repository_blocks": 1028,
+      "sink_blocks": 1,
+      "recent_blocks": 1,
+      "cpu_read_cache_bytes": 2147483648,
+      "archive_backend": "cpu",
+      "archive_io_max_bytes": 67108864,
+      "async_seal": true,
+      "async_archive_retirement": true,
+      "packed_assembly": true,
+      "direct_pinned_reads": true,
+      "async_cpu_scatter": true,
+      "batched_cpu_append": true,
+      "request_planning": true,
+      "session_capacity": 1,
+      "session_checkpoint_bytes": 2147483648,
+      "session_checkpoint_policy": "pm",
+      "session_capture_terminal": true,
+      "mean_k_backend": "torch_reference",
+      "async_refresh": true,
+      "refresh_quantum_tokens": 128,
+      "cpu_history_coordination": true,
+      "maintenance_max_steps": 8,
+      "async_restore": true,
+      "step_latency_interval": 0,
+      "verify_archive_on_finish": false,
+      "historical_gc": {
+        "mode": "delete",
+        "policy": "statistical",
+        "poll_ms": 10,
+        "scan_blocks": 128,
+        "delete_blocks": 8
+      },
+      "assembly_chunk_blocks": 8
+    }
+  },
+  "after_evaluation": {
+    "all_task_owners_released": true,
+    "bridge_and_model_services_stopped": true,
+    "gpu0_observed": "NVIDIA GeForce RTX 4090, 0, 0",
+    "checked_unix": 1792765935.8606281
+  }
 }

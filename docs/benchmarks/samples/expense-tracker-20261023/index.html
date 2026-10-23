@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>个人记账本</title>
+  <style>
+    :root {
+      --green: #16a34a;
+      --red: #dc2626;
+      --bg: #f6f7fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 24px 12px;
+    }
+    .app { width: 100%; max-width: 560px; }
+    h1 { font-size: 22px; margin-bottom: 16px; text-align: center; }
+
+    /* 概览卡片 */
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .summary .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 12px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    }
+    .summary .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .summary .value { font-size: 18px; font-weight: 700; word-break: break-all; }
+    .income-color { color: var(--green); }
+    .expense-color { color: var(--red); }
+    .balance-neg { color: var(--red); }
+    .balance-pos { color: var(--green); }
+
+    /* 表单 */
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    }
+    .panel h2 { font-size: 15px; margin-bottom: 12px; }
+    form { display: grid; gap: 10px; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    input, select {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: #fff;
+      color: var(--text);
+    }
+    input:focus, select:focus { outline: 2px solid #93c5fd; border-color: #93c5fd; }
+    button {
+      padding: 10px 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-add { background: #2563eb; color: #fff; }
+    .btn-add:hover { background: #1d4ed8; }
+    .btn-filter { background: #eef2ff; color: #2563eb; }
+    .btn-filter:hover { background: #e0e7ff; }
+    .error { color: var(--red); font-size: 13px; min-height: 16px; }
+
+    /* 月份筛选 */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .filter-bar label { font-size: 14px; color: var(--muted); white-space: nowrap; }
+    .filter-bar input { width: auto; flex: 1; }
+
+    /* 记录列表 */
+    .record {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    .record .info { flex: 1; min-width: 0; }
+    .record .desc {
+      font-size: 14px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .record .meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .record .amount { font-size: 15px; font-weight: 700; white-space: nowrap; }
+    .btn-del {
+      background: #fee2e2;
+      color: var(--red);
+      padding: 6px 10px;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .btn-del:hover { background: #fecaca; }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      padding: 28px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>📒 个人记账本</h1>
+
+    <!-- 概览 -->
+    <div class="summary">
+      <div class="card">
+        <div class="label">本月收入</div>
+        <div class="value income-color" id="sum-income">¥0.00</div>
+      </div>
+      <div class="card">
+        <div class="label">本月支出</div>
+        <div class="value expense-color" id="sum-expense">¥0.00</div>
+      </div>
+      <div class="card">
+        <div class="label">本月余额</div>
+        <div class="value" id="sum-balance">¥0.00</div>
+      </div>
+    </div>
+
+    <!-- 新增记录 -->
+    <div class="panel">
+      <h2>新增记录</h2>
+      <form id="add-form">
+        <div class="row">
+          <select id="type">
+            <option value="expense">支出</option>
+            <option value="income">收入</option>
+          </select>
+          <input type="number" id="amount" placeholder="金额（元）" step="0.01" min="0.01" required>
+        </div>
+        <input type="text" id="desc" placeholder="备注，例如：午餐 / 工资" maxlength="50" required>
+        <input type="date" id="date" required>
+        <div class="error" id="form-error"></div>
+        <button type="submit" class="btn-add">＋ 添加记录</button>
+      </form>
+    </div>
+
+    <!-- 列表 + 月份筛选 -->
+    <div class="panel">
+      <h2>记录列表</h2>
+      <div class="filter-bar">
+        <label for="month-filter">按月份筛选</label>
+        <input type="month" id="month-filter">
+        <button type="button" class="btn-filter" id="btn-all">显示全部</button>
+      </div>
+      <div id="list"></div>
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+
+    const STORAGE_KEY = 'expense-tracker:records';
+
+    /** 从 localStorage 读取全部记录 */
+    function loadRecords() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        console.warn('读取 localStorage 失败，使用空列表', e);
+        return [];
+      }
+    }
+
+    /** 保存全部记录到 localStorage */
+    function saveRecords(records) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+      } catch (e) {
+        alert('保存失败：' + e.message);
+      }
+    }
+
+    /** 生成唯一 id */
+    function genId() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    /** 金额格式化（负数显示为 -¥xx.xx） */
+    function fmtMoney(n) {
+      const v = Number(n);
+      const sign = v < 0 ? '-' : '';
+      return sign + '¥' + Math.abs(v).toLocaleString('zh-CN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    /** 取 "YYYY-MM" */
+    function monthOf(dateStr) {
+      return dateStr.slice(0, 7);
+    }
+
+    /** 当前 "YYYY-MM" */
+    function currentMonth() {
+      const d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+
+    /** HTML 转义，防注入 */
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // ---------- 状态 ----------
+    let records = loadRecords();
+    let filterMonth = ''; // '' 表示显示全部
+
+    // ---------- DOM ----------
+    const form = document.getElementById('add-form');
+    const elType = document.getElementById('type');
+    const elAmount = document.getElementById('amount');
+    const elDesc = document.getElementById('desc');
+    const elDate = document.getElementById('date');
+    const elError = document.getElementById('form-error');
+    const elMonthFilter = document.getElementById('month-filter');
+    const btnAll = document.getElementById('btn-all');
+    const listEl = document.getElementById('list');
+    const sumIncome = document.getElementById('sum-income');
+    const sumExpense = document.getElementById('sum-expense');
+    const sumBalance = document.getElementById('sum-balance');
+
+    // 默认日期为今天
+    elDate.value = new Date().toISOString().slice(0, 10);
+
+    // ---------- 渲染 ----------
+    function render() {
+      // 1) 概览：始终按"本月"统计
+      const cm = currentMonth();
+      let income = 0, expense = 0;
+      for (const r of records) {
+        if (monthOf(r.date) !== cm) continue;
+        if (r.type === 'income') income += r.amount;
+        else expense += r.amount;
+      }
+      sumIncome.textContent = fmtMoney(income);
+      sumExpense.textContent = fmtMoney(expense);
+      const balance = income - expense;
+      sumBalance.textContent = fmtMoney(balance);
+      sumBalance.className = 'value ' + (balance >= 0 ? 'balance-pos' : 'balance-neg');
+
+      // 2) 列表：按筛选月份过滤
+      const filtered = filterMonth
+        ? records.filter(r => monthOf(r.date) === filterMonth)
+        : records.slice();
+      // 按日期倒序，同日按创建顺序倒序
+      filtered.sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt - a.createdAt));
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = '<div class="empty">暂无记录</div>';
+        return;
+      }
+
+      const html = filtered.map(r => {
+        const isIncome = r.type === 'income';
+        const sign = isIncome ? '+' : '-';
+        const cls = isIncome ? 'income-color' : 'expense-color';
+        const typeText = isIncome ? '收入' : '支出';
+        return `
+          <div class="record">
+            <div class="info">
+              <div class="desc">${escapeHtml(r.desc)}</div>
+              <div class="meta">${r.date} · ${typeText}</div>
+            </div>
+            <div class="amount ${cls}">${sign}${fmtMoney(r.amount)}</div>
+            <button class="btn-del" data-id="${r.id}" title="删除该记录">删除</button>
+          </div>`;
+      }).join('');
+      listEl.innerHTML = html;
+    }
+
+    // ---------- 事件 ----------
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      elError.textContent = '';
+
+      const amount = parseFloat(elAmount.value);
+      const desc = elDesc.value.trim();
+      const date = elDate.value;
+
+      if (!desc) { elError.textContent = '请填写备注'; return; }
+      if (!date) { elError.textContent = '请选择日期'; return; }
+      if (!isFinite(amount) || amount <= 0) {
+        elError.textContent = '金额必须是大于 0 的数字';
+        return;
+      }
+
+      records.push({
+        id: genId(),
+        type: elType.value,
+        amount: Math.round(amount * 100) / 100,
+        desc,
+        date,
+        createdAt: Date.now()
+      });
+      saveRecords(records);
+
+      // 重置表单（保留日期，方便连续录入）
+      elAmount.value = '';
+      elDesc.value = '';
+      elError.textContent = '';
+      elAmount.focus();
+
+      render();
+    });
+
+    listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button.btn-del');
+      if (!btn) return;
+      const id = btn.getAttribute('data-id');
+      const target = records.find(r => r.id === id);
+      if (!target) return;
+      if (!confirm(`确定删除这条记录吗？\n${target.date} ${target.desc} ${fmtMoney(target.amount)}`)) return;
+      records = records.filter(r => r.id !== id);
+      saveRecords(records);
+      render();
+    });
+
+    elMonthFilter.addEventListener('change', () => {
+      filterMonth = elMonthFilter.value;
+      render();
+    });
+
+    btnAll.addEventListener('click', () => {
+      filterMonth = '';
+      elMonthFilter.value = '';
+      render();
+    });
+
+    // ---------- 初始化 ----------
+    render();
+  </script>
+</body>
+</html>
