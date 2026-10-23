@@ -260,7 +260,7 @@ public:
         : HistoricalStatisticalPolicy(capacity, Config{}) {}
     HistoricalStatisticalPolicy(size_t capacity, Config config)
         : capacity_(capacity), config_(config) {
-        if (!capacity || !config.min_observations || !config.min_cold_observations ||
+        if (!capacity || !config.min_observations ||
                 !std::isfinite(config.max_importance) || config.max_importance < 0 || config.max_importance > 1 ||
                 !std::isfinite(config.min_model_reclaim_score) ||
                 (config.min_model_reclaim_score != -1 &&

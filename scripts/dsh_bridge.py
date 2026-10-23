@@ -278,11 +278,11 @@ def restore_trajectory(planner,owner,directories):
         if turn!=state.turns+1:raise ValueError('Accepted history has a missing turn; refusing an inexact restore')
         body=json.loads((path/'request.json').read_text());payload=to_anthropic(body)
         prepared=planner.prepare(payload,state);saved=json.loads((path/'plan.json').read_text())
-        apply_query_provenance(body, prepared, required=getattr(planner.protocol, 'pin_system', False))
+        apply_query_provenance(body, prepared, required=getattr(getattr(planner, 'protocol', None), 'pin_system', False))
         if len(prepared[0])!=saved['prompt_tokens'] or prepared[5]!=saved['exact_output_prefix_reused']:
             raise ValueError('Accepted history does not match its recorded prompt prefix')
         apply_mandatory_policy(prepared, planner.protocol)
-        if getattr(planner.protocol, 'pin_system', False) and (
+        if getattr(getattr(planner, 'protocol', None), 'pin_system', False) and (
                 saved.get('kvmem_mandatory_spans') != prepared[1]['kvmem_mandatory_spans'] or
                 saved.get('kvmem_mandatory_parts') != 'none'):
             raise ValueError('Accepted history differs from the explicit system-pin policy')
@@ -319,6 +319,10 @@ def create_app(args,tokenizer):
             select_budget=getattr(args,'select_budget',None), gen_budget=args.gen_budget)
     else:
         protocol=Protocol(args.protocol)
+    artifact_root=getattr(args,'artifact_gc_root',None)
+    if artifact_root is not None and (args.backend != 'http://127.0.0.1:8186' or not pin_system or max_inflight != 1):
+        raise ValueError('Artifact GC experiment requires the owned loopback C1 pinned-system backend')
+    artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
     client=httpx.AsyncClient(trust_env=False,timeout=3600)
     owners={};restored=set();args.output.mkdir(parents=True,exist_ok=True)
@@ -401,6 +405,13 @@ def create_app(args,tokenizer):
                          query_source=query_source,requested_output_cap=limit,
                          effective_output_cap=output_limit,logical_remaining_tokens=remaining_context)|
                     (dict(system_pin_admission=pin_admission) if pin_admission is not None else {}),indent=2))
+                if artifact_root is not None:
+                    from diagnostics.dsh_artifact_gc import verified_candidate
+                    candidate=await asyncio.to_thread(verified_candidate,artifact_root,args.output,owner,state,prepared,body,artifact_decoder.token_bytes)
+                    if candidate is not None:
+                        armed=await client.post(args.backend+'/collective_rpc',json=dict(method='dsh_artifact_gc_arm',kwargs=dict(plan=candidate)))
+                        armed.raise_for_status()
+                        (directory/'artifact-gc-plan.json').write_text(json.dumps(candidate,indent=2)+'\n')
                 data.update(stream=True,stream_options=dict(include_usage=True))
                 wire=QwenStream(planner.protocol,rendered['tools']);output_ids=[];usage=None;finish=None
                 decoder=AcceptedTextDecoder(tokenizer) if segments>1 else None
@@ -479,6 +490,10 @@ def create_app(args,tokenizer):
                     with anyio.CancelScope(shield=True):
                         await asyncio.shield(committed)
                     raise
+                if artifact_root is not None:
+                    snapshot=await client.post(args.backend+'/collective_rpc',json=dict(method='dsh_artifact_gc_snapshot'))
+                    snapshot.raise_for_status()
+                    (directory/'artifact-gc-state.json').write_text(json.dumps(snapshot.json(),indent=2)+'\n')
                 log(dict(at=time.time(),owner=owner,turn=state.turns,request_id=request_id,
                     prompt_tokens=len(tokens),output_tokens=len(output_ids),
                     query_span=plan.get('kvmem_query_span'),
@@ -557,6 +572,7 @@ if __name__=='__main__':
     p.add_argument('--owner-namespace',default='dsh')
     p.add_argument('--max-output-segments',type=int,choices=range(1,5),default=1)
     p.add_argument('--require-query-provenance',action='store_true')
+    p.add_argument('--artifact-gc-root',type=Path,help='Opt-in verified-file GC experiment workspace; owned loopback backend only')
     p.add_argument('--restore-from',type=Path,action='append',default=[]);args=p.parse_args()
     from transformers import AutoTokenizer
     import uvicorn

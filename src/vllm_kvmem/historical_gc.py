@@ -54,7 +54,7 @@ class HistoricalGcSettings:
             if type(default) is bool:
                 valid = type(value) is bool
             elif type(default) is int:
-                valid = type(value) is int and 1 <= value <= 2**31-1
+                valid = type(value) is int and (0 if key == 'min_cold_observations' else 1) <= value <= 2**31-1
             else:
                 valid = (type(value) in (int, float) and
                          (0 <= value <= 1 or key == 'min_model_reclaim_score' and value == -1) and

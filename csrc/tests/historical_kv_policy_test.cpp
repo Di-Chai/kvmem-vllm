@@ -374,7 +374,29 @@ static void statistical_factory_rejects_invalid_or_unsafe_parameters() {
     check(!policy->permits(b), "legacy keep_mandatory=false weakened the statistical policy");
 }
 
+
+static void explicit_artifact_profile_does_not_fabricate_cold_observations() {
+    auto policy = make_historical_kv_policy("statistical", {
+        {"min_observations", int64_t(1)}, {"min_cold_observations", int64_t(0)},
+        {"max_importance", 1.0}}, 8);
+    auto b = block(0, 0, 0);
+    b.evidence = {1, 1, 0, true, 1.0, -1.0};
+    check(policy->permits(b), "explicit artifact profile still required a fake cold sample");
+    b.evidence.observations = 0;
+    check(!policy->permits(b), "artifact profile accepted an unobserved block");
+    b.evidence.observations = 1;
+    b.evidence.eligible = false;
+    check(!policy->permits(b), "artifact profile bypassed semantic eligibility");
+    b.evidence.eligible = true;
+    b.selection_holds = 1;
+    check(!policy->permits(b), "artifact profile bypassed protected result/selection");
+    b.selection_holds = 0;
+    HistoricalStatisticalPolicy defaults(8);
+    check(!defaults.permits(b), "artifact experiment weakened default cold thresholds");
+}
+
 int main() {
+    explicit_artifact_profile_does_not_fabricate_cold_observations();
     try {
         statistical_requires_semantics_and_real_observations();
         statistical_scans_and_decisions_are_bounded();

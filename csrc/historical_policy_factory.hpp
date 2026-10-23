@@ -30,8 +30,8 @@ inline HistoricalStatisticalPolicy::Config statistical_config(const HistoricalPo
     for (const auto &[key, value] : params) {
         if (key == "min_observations" || key == "min_cold_observations") {
             const auto *count = std::get_if<int64_t>(&value);
-            if (!count || *count <= 0)
-                throw std::invalid_argument("historical_gc.policy_params." + key + " must be a positive integer");
+            if (!count || *count < 0 || (key == "min_observations" && *count == 0))
+                throw std::invalid_argument("historical_gc.policy_params." + key + " must be an integer (observations > 0, cold observations >= 0)");
             if (key == "min_observations") config.min_observations = static_cast<uint64_t>(*count);
             else config.min_cold_observations = static_cast<uint64_t>(*count);
         } else if (key == "proactive") {

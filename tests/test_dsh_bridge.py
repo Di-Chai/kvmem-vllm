@@ -200,6 +200,7 @@ def test_transport_forwards_before_completion_and_never_commits_partial_stream(p
 def test_restore_uses_actual_ids_preserves_tools_and_excludes_incomplete_attempts(tmp_path,corrupt):
     owner='owned';source=tmp_path/'old';destination=tmp_path/'new'
     class Recorder:
+        protocol=SimpleNamespace(pin_system=False)
         def prepare(self,payload,state):
             assert payload['messages'][0]['content'][0]['text']=='read'
             return ([101,*state.output],{}, {},[],None,bool(state.output),{})
