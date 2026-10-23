@@ -83,11 +83,14 @@ leases. These operations do not request a second native full-attention pool.
 ## GPU and CPU admission remain separate
 
 These tests qualify capacity accounting, not a successful 256K GPU workload.
-The native pool is only part of peak GPU use. In this geometry, full-history
-`torch_reference` MeanK scoring transfers a 512 MiB FP32 index to the GPU;
-query/logit/softmax temporaries can raise scoring workspace to roughly
-1.06–1.25 GiB. Two assembly arenas with chunk size eight can retain about
-34 MiB of device staging. Private query rollback also clones the allocated
+The native pool is only part of peak GPU use. The original all-layer
+`torch_reference` MeanK path uploaded a 512 MiB FP32 index at full history;
+einsum packing and logit/softmax temporaries could raise scoring workspace
+above 1 GiB. The bounded reference path now streams packed layers: its main
+explicit arrays total 56 MiB for this model at 8192 blocks and query_chunk16.
+See [MeanK reference workspace](mean-k-reference-workspace.md) for the exact
+shape, numerical qualification and exclusions. Two assembly arenas with chunk
+size eight can retain about 34 MiB of device staging. Private query rollback also clones the allocated
 GDN state rows outside the native pool: about 296 MiB with MTP1, estimated
 from the saved 154,927,104-byte single-row checkpoint and two native rows;
 the actual state bundle must confirm this estimate. That clone can overlap

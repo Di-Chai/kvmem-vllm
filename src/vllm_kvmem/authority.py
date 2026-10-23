@@ -639,7 +639,10 @@ class RequestAuthority:
                     self.query_key_fps_stats = stats
                     scores = values.cpu().tolist()
                 else:
-                    scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+                    # The reference backend streams CPU index layers; the
+                    # original CUDA backend retains its device-index contract.
+                    index = means.to(queries.device) if self.mean_k_backend == 'qw3_cuda' else means
+                    scores = mean_key_scores(queries, index, eligible).cpu().tolist()
             # index_snapshot retains the same generation-qualified records
             # through the remaining synchronous picker/assembly preparation.
             self.query_score_domain = dict(version=SCORE_DOMAIN_VERSION,
