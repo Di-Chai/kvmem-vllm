@@ -2,7 +2,7 @@
   "schema_version": 1,
   "date": "2026-10-23",
   "status": "passed",
-  "scope": "Native statistical policy and reclamation overhead with shared synthetic producer/instrumentation in C1 stable-window decode; no semantic quality or attention-estimator claim",
+  "scope": "Net single-segment C1 decode throughput under shared synthetic producer/instrumentation, including different terminal checkpoint paths; no semantic estimator, next-turn restore or zero-total-cost claim",
   "semantic_measurement": false,
   "model": {
     "repo": "nvidia/Qwen3.8-27B-NVFP4",
@@ -605,7 +605,8 @@
     "Request-lifecycle CPU release counts include cleanup. Only candidate_counts_during_decode and release_witnesses prove in-decode GC.",
     "Five-pair bootstrap is descriptive and workload-specific; passing a 1% margin is not a proof of zero overhead.",
     "Nonfatal allocator OOM retries occur during NVFP4 loading; engines subsequently start and complete. Shutdown emits EngineDeadError after intentional SIGTERM and a semaphore cleanup warning.",
-    "Terminal M may be deferred after deleted history still exists in the GPU window; this run does not qualify successful M restoration after GC."
+    "Terminal M may be deferred after deleted history still exists in the GPU window; this run does not qualify successful M restoration after GC.",
+    "OFF captures terminal M (3.29-3.49 ms host time); DELETE defers M and rewinds to P224. Net throughput includes this terminal-path difference and excludes next-turn replay cost."
   ],
   "reproduction_profile": {
     "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
@@ -929,5 +930,28 @@
       "source_text_sha256": "1d0d30516ab319f223e20789faedcd3cb3fc780d4644329ecf6fde5f62bef697",
       "model_revision": "482ca0f3832238542f8f5295dde86b5f22711d80"
     }
+  },
+  "independent_audit": {
+    "frozen_files_verified": 155,
+    "frozen_python_files": 147,
+    "all_input_sse_output_digests_verified": true,
+    "all_servers_drained_and_exit_zero": true,
+    "measurement_errors": 0,
+    "checkpoint_paths": {
+      "off": "terminal_checkpoint: M767",
+      "delete": "checkpoint_rewind: P224; one terminal checkpoint deferral per measured request"
+    },
+    "off_terminal_checkpoint_host_ms_range": [
+      3.29,
+      3.49
+    ],
+    "startup_allocator_oom_retries_per_server": 6,
+    "warmup_jit_warnings_per_server": 4,
+    "shutdown_engine_dead_error_runs": [
+      "01-delete",
+      "03-delete",
+      "05-off"
+    ],
+    "shutdown_semaphore_warning_per_server": 1
   }
 }

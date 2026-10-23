@@ -84,7 +84,8 @@ The [complete report](benchmarks/qwen38-4090-gc-throughput-20261023.json) contai
 the exact profile, frozen input, revisions/digests, rates, lifecycle counts and
 bounded release witnesses. To reproduce, extract reproduction_profile and
 frozen_input to separate JSON files, use the matching CUDA environment above,
-enable VLLM_KVMEM_MTP_SHARED_LOAD=1, and run:
+unset VLLM_PLUGINS (the plain smoke disabled plugins), enable
+VLLM_KVMEM_MTP_SHARED_LOAD=1, and run:
 
     python scripts/qualify_historical_gc.py --config PROFILE.json --input INPUT.json --output NEW_RUN_DIRECTORY --kind performance --baseline off --statistical-fixture --decode-tokens 512 --pairs 5
 
@@ -98,7 +99,10 @@ pass is obtained.
 OFF and DELETE share a synthetic evidence producer and counter sampling.
 Three injected observations with importance 0.01 authorize a controlled
 four-block candidate range; these are not three measured semantic epochs.
-This measures incremental native policy and archive reclamation cost. It does
+This compares net decode throughput with native policy and archive reclamation.
+OFF saves terminal M (3.29–3.49 ms host time); DELETE defers M and uses P224.
+The timing includes that terminal-path difference and excludes next-turn replay
+cost, so it does not independently isolate every GC cost. It does
 not measure a real semantic estimator, model judge, R-KV redundancy scoring,
 block-graph execution or p95/p99 latency.
 

@@ -174,12 +174,21 @@ python -m pytest -q tests/test_historical_evidence.py tests/test_historical_stat
 KVMEM_RUN_GPU_TESTS=1 python -m pytest -q tests/test_historical_payload_gpu.py tests/test_historical_evidence.py
 ```
 
-This machine has not qualified full vLLM assembly, real-model answer quality or
-decode throughput for this extension. It has no vLLM installation or model
-weights for that evaluation. The repository's older Blackwell LRU performance
-numbers do not establish performance of statistical GC or graph coexistence.
-The current native attention-statistics backend requires SM12; its production
-performance must be measured on supported hardware.
+The [cloud Qwen3.8 report](qwen38-cloud-smoke-20261023.md) now records a
+single-RTX-4090 NVFP4 model smoke test and five paired, serial statistical-GC
+throughput measurements. All measured DELETE requests retired and released
+four candidate archive blocks during decode. The paired median throughput loss
+was -0.115%, with a descriptive bootstrap 95% interval of [-0.796%, 0.690%],
+passing the predeclared 1% upper-bound criterion for this workload.
+
+That result measures net single-segment throughput, including different terminal
+checkpoint paths: OFF saved P+M, while DELETE deferred M and retained P. It does
+not qualify next-turn replay cost. Eligibility used a synthetic diagnostic
+fixture, and the GPU working window did not refresh during the measured output.
+It therefore does not establish real semantic-GC quality, block-graph throughput,
+or general zero overhead. The repository's older Blackwell LRU numbers do not
+establish those properties either. The native attention-statistics backend still
+requires SM12; its production performance needs supported hardware.
 
 CPU-only background work avoids an extra decode-side model forward, but it can
 still contend for CPU/cache/memory bandwidth. Graph protection, evidence
