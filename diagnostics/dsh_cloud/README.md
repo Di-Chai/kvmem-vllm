@@ -89,6 +89,51 @@ Do not launch another `csgo` process to continue a task: the built-in one-shot
 headless runner creates a new Session on every invocation. Keep the existing
 driver alive and use `submit.py` for all repairs.
 
+## Additional independent tasks
+
+A fresh preparation can add one named task alongside the unchanged marker and
+CSGO cases. Supply a UTF-8 task file chosen by the operator; preparation does not
+generate the application or contact a model.
+
+```sh
+python3 /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud/prepare.py \
+  --run-root /root/data/kvmem-vllm-gc/runs/dsh-expense-01 \
+  --context-window 32768 --case-name expense-tracker \
+  --task-file /absolute/path/expense-tracker.txt
+
+# Inspect the plan; add --execute only when this case is authorized to run.
+python3 /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud/launch.py \
+  --run-root /root/data/kvmem-vllm-gc/runs/dsh-expense-01 --case expense-tracker
+```
+
+The context value must match the validated backend and bridge. The provider's
+8192 default output cap remains subject to the installed pi-ai client's context
+estimate and 4096-token reserve; an explicit output cap does not bypass that
+clamp. `prepare.py --max-output-tokens N` changes the new provider snapshot and
+manifest only. It does not change the backend's decode budget or the bridge's
+segment count. Before execution, the operator must ensure the bridge supports
+at least `N` output tokens across its configured segments and that the logical
+context has room for both input and output. Existing prepared runs are unchanged.
+
+Each added case gets its own workspace, home and Session. Its copied task and
+initial queue entry are fingerprinted in `manifest.json`, as are the default
+cases in newly prepared runs. Changing the source task file later cannot alter
+the snapshot. Launch rejects changed task/configuration snapshots and unknown
+case names; older two-case manifests remain supported without modification.
+The custom case uses the same queue runner as CSGO: continue with
+`submit.py CASE_DIR --task-file FOLLOWUP` and finish with
+`submit.py CASE_DIR --close`. Do not launch it twice or launch multiple cases
+concurrently. A new case also requires releasing the previous native owner when
+backend session capacity is one.
+
+CPU-only CLI checks mock every process launch:
+
+```sh
+python3 -m unittest discover \
+  -s /root/data/kvmem-vllm-gc/repo/diagnostics/dsh_cloud \
+  -p test_prepare_launch.py
+```
+
 ## Identical main-agent composition
 
 `single_trajectory.patch.yml` is the exact overlay used for the successful
