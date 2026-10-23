@@ -9,6 +9,9 @@ def register_plugin() -> None:
     global _registered
     if _registered:
         return
+    if os.getenv("VLLM_KVMEM_MTP_SHARED_LOAD") == "1":
+        from .mtp_shared_load import enable_mtp_shared_load
+        enable_mtp_shared_load()
     if os.getenv("KVMEM_DRAFT_LOAD_COMPAT") == "1":
         from .compat import enable_draft_load_config_fix
         enable_draft_load_config_fix()
