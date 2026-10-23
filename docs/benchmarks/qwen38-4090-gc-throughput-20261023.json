@@ -1,0 +1,933 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-23",
+  "status": "passed",
+  "scope": "Native statistical policy and reclamation overhead with shared synthetic producer/instrumentation in C1 stable-window decode; no semantic quality or attention-estimator claim",
+  "semantic_measurement": false,
+  "model": {
+    "repo": "nvidia/Qwen3.8-27B-NVFP4",
+    "revision": "482ca0f3832238542f8f5295dde86b5f22711d80",
+    "source": "hf-mirror.com",
+    "runtime_quantization": "modelopt_mixed; NVFP4 Marlin W4A16 on SM89",
+    "cpu_weight_offload_gb": 0
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "max_concurrent_requests": 1
+  },
+  "software": {
+    "vllm": "0.30.0",
+    "torch": "2.13.0+cu130",
+    "mtp_shared_load": true,
+    "qualified_git_commit": "ae81674d0695a65cbe543dcd2c20e3733b73d5ec"
+  },
+  "protocol": {
+    "pairs": 5,
+    "measured_requests": 10,
+    "warmup_requests": 10,
+    "input_tokens": 256,
+    "output_tokens_per_request": 512,
+    "warmup_output_tokens_per_request": 512,
+    "pair_order": [
+      "off/delete",
+      "delete/off",
+      "off/delete",
+      "delete/off",
+      "off/delete"
+    ],
+    "pilot_excluded": true,
+    "mode": "eager",
+    "mtp_tokens": 1,
+    "block_graph": false,
+    "block_tokens": 32,
+    "K": 256,
+    "G": 1024,
+    "max_model_len": 2048,
+    "gpu_memory_utilization": 0.93,
+    "checkpoint_pool_bytes": 536870912,
+    "gc_poll_ms": 10,
+    "gc_scan_blocks": 128,
+    "gc_delete_blocks": 8,
+    "publication_at_accepted_history": 512,
+    "candidate_source_token_range": [
+      288,
+      416
+    ],
+    "preserved_result_token_range": [
+      416,
+      448
+    ],
+    "synthetic_observations": {
+      "count": 3,
+      "importance": 0.01,
+      "cold": true,
+      "independent_semantic_epochs": false
+    },
+    "shared_producer_and_instrumentation": true,
+    "read_counter_every_accepted_tokens": 16,
+    "native_attention": false,
+    "tail_latency_measured": false,
+    "active_downloads_or_other_tests_during_measurement": false
+  },
+  "median_decode_tokens_per_second": {
+    "off": 26.23209428864393,
+    "delete": 26.264510396405292
+  },
+  "qualification": {
+    "status": "passed",
+    "exit_code": 0,
+    "conclusion_reasons": [
+      "throughput_loss_upper_bound_within_1pct"
+    ],
+    "paired_medians": {
+      "throughput_loss": -0.0011498087820578373,
+      "p95_regression": null,
+      "p99_regression": null
+    },
+    "throughput_uncertainty": {
+      "statistic": "paired median throughput loss",
+      "losses": [
+        0.0037057057863084664,
+        0.006901395382750142,
+        -0.0011498087820578373,
+        -0.007955406375381724,
+        -0.0064794392562403935
+      ],
+      "minimum": -0.007955406375381724,
+      "maximum": 0.006901395382750142,
+      "median": -0.0011498087820578373,
+      "confidence": 0.95,
+      "bootstrap_draws": 10000,
+      "bootstrap_seed": 19,
+      "percentile_interval": [
+        -0.007955406375381724,
+        0.006901395382750142
+      ],
+      "noninferiority_margin": 0.01,
+      "assessment": "upper_bound_within_1pct",
+      "additional_evidence_needed": false,
+      "automatic_retesting": false,
+      "limitation": "Few pairs give a coarse, sample-dependent bootstrap interval. Passing supports this paired workload; it does not prove zero total GC overhead. Do not append pairs until passing; any follow-up needs a predeclared independent protocol."
+    },
+    "tail_latency_measured": false,
+    "source_digest": "2d91d97b21e99f87a86d2b25b3ae9008062f844928c3c738846f4de1168a5cc2",
+    "comparisons": [
+      {
+        "pair": 1,
+        "throughput_loss": 0.0037057057863084664,
+        "p95_regression": null,
+        "p99_regression": null,
+        "identical_output": true
+      },
+      {
+        "pair": 2,
+        "throughput_loss": 0.006901395382750142,
+        "p95_regression": null,
+        "p99_regression": null,
+        "identical_output": true
+      },
+      {
+        "pair": 3,
+        "throughput_loss": -0.0011498087820578373,
+        "p95_regression": null,
+        "p99_regression": null,
+        "identical_output": true
+      },
+      {
+        "pair": 4,
+        "throughput_loss": -0.007955406375381724,
+        "p95_regression": null,
+        "p99_regression": null,
+        "identical_output": true
+      },
+      {
+        "pair": 5,
+        "throughput_loss": -0.0064794392562403935,
+        "p95_regression": null,
+        "p99_regression": null,
+        "identical_output": true
+      }
+    ],
+    "baseline": "historical_gc off",
+    "driver_sha256": "dd6ea087b3ebabaa13057172a3b7d87a5d69fdb1371db30372850e4956dee827",
+    "fixture_sha256": "5f9aaa074d8ccb97aa225a9cd6214e6098212ff1ddc341ece5e1c1cfd09c8463",
+    "input_sha256": "8d56ca77f17aaa2c058809ed929df5b52d6ece1e235d58872445a28c6be659a7",
+    "scope": "Native statistical policy and reclamation overhead with shared synthetic producer/instrumentation in C1 stable-window decode; no semantic quality or attention-estimator claim"
+  },
+  "runs": [
+    {
+      "pair": 1,
+      "mode": "off",
+      "decode_tokens_per_second": 26.29970935048382,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "request_lifecycle_counts": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "first_token_at": 13655014.165385231,
+      "last_token_at": 13655033.595257752,
+      "publication": {
+        "kind": "published",
+        "at": 13655024.017591432,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [],
+        "cpu_released": []
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 1,
+      "mode": "delete",
+      "decode_tokens_per_second": 26.2022503653655,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 4,
+        "cpu_released": 4
+      },
+      "request_lifecycle_counts": {
+        "retired": 4,
+        "cpu_released": 16
+      },
+      "first_token_at": 13655129.823455725,
+      "last_token_at": 13655149.325597445,
+      "publication": {
+        "kind": "published",
+        "at": 13655139.724325413,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655139.720240006,
+            "interval_end": 13655140.332617428,
+            "accepted_history": 528,
+            "following_decode_at": 13655140.935770487,
+            "following_accepted_history": 544
+          }
+        ],
+        "cpu_released": [
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655139.720240006,
+            "interval_end": 13655140.332617428,
+            "accepted_history": 528,
+            "following_decode_at": 13655140.935770487,
+            "following_accepted_history": 544
+          }
+        ]
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 2,
+      "mode": "delete",
+      "decode_tokens_per_second": 26.264510396405292,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 4,
+        "cpu_released": 4
+      },
+      "request_lifecycle_counts": {
+        "retired": 4,
+        "cpu_released": 16
+      },
+      "first_token_at": 13655241.126019148,
+      "last_token_at": 13655260.581931034,
+      "publication": {
+        "kind": "published",
+        "at": 13655251.089892589,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655251.085725697,
+            "interval_end": 13655251.696741996,
+            "accepted_history": 528,
+            "following_decode_at": 13655252.296057256,
+            "following_accepted_history": 544
+          }
+        ],
+        "cpu_released": [
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655251.085725697,
+            "interval_end": 13655251.696741996,
+            "accepted_history": 528,
+            "following_decode_at": 13655252.296057256,
+            "following_accepted_history": 544
+          }
+        ]
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 2,
+      "mode": "off",
+      "decode_tokens_per_second": 26.44703181969317,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "request_lifecycle_counts": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "first_token_at": 13655351.433436012,
+      "last_token_at": 13655370.755074957,
+      "publication": {
+        "kind": "published",
+        "at": 13655361.243300527,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [],
+        "cpu_released": []
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 3,
+      "mode": "off",
+      "decode_tokens_per_second": 26.109099070128337,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "request_lifecycle_counts": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "first_token_at": 13655465.892117986,
+      "last_token_at": 13655485.463838888,
+      "publication": {
+        "kind": "published",
+        "at": 13655475.847458072,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [],
+        "cpu_released": []
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 3,
+      "mode": "delete",
+      "decode_tokens_per_second": 26.13911954153079,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 4,
+        "cpu_released": 4
+      },
+      "request_lifecycle_counts": {
+        "retired": 4,
+        "cpu_released": 16
+      },
+      "first_token_at": 13655666.480172388,
+      "last_token_at": 13655686.029415399,
+      "publication": {
+        "kind": "published",
+        "at": 13655676.387842925,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655676.383139765,
+            "interval_end": 13655676.994291587,
+            "accepted_history": 528,
+            "following_decode_at": 13655677.595294336,
+            "following_accepted_history": 544
+          }
+        ],
+        "cpu_released": [
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655676.383139765,
+            "interval_end": 13655676.994291587,
+            "accepted_history": 528,
+            "following_decode_at": 13655677.595294336,
+            "following_accepted_history": 544
+          }
+        ]
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 4,
+      "mode": "delete",
+      "decode_tokens_per_second": 26.44078125878742,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 4,
+        "cpu_released": 4
+      },
+      "request_lifecycle_counts": {
+        "retired": 4,
+        "cpu_released": 16
+      },
+      "first_token_at": 13655778.006238328,
+      "last_token_at": 13655797.33244488,
+      "publication": {
+        "kind": "published",
+        "at": 13655787.821189629,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655787.817086218,
+            "interval_end": 13655788.4247294,
+            "accepted_history": 528,
+            "following_decode_at": 13655789.031555582,
+            "following_accepted_history": 544
+          }
+        ],
+        "cpu_released": [
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13655787.817086218,
+            "interval_end": 13655788.4247294,
+            "accepted_history": 528,
+            "following_decode_at": 13655789.031555582,
+            "following_accepted_history": 544
+          }
+        ]
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 4,
+      "mode": "off",
+      "decode_tokens_per_second": 26.23209428864393,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "request_lifecycle_counts": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "first_token_at": 13655888.4400325,
+      "last_token_at": 13655907.91998688,
+      "publication": {
+        "kind": "published",
+        "at": 13655898.344990999,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [],
+        "cpu_released": []
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 5,
+      "mode": "off",
+      "decode_tokens_per_second": 26.224075452684083,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "request_lifecycle_counts": {
+        "retired": 0,
+        "cpu_released": 0
+      },
+      "first_token_at": 13656000.114281973,
+      "last_token_at": 13656019.60019296,
+      "publication": {
+        "kind": "published",
+        "at": 13656010.017770857,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [],
+        "cpu_released": []
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    },
+    {
+      "pair": 5,
+      "mode": "delete",
+      "decode_tokens_per_second": 26.393992756630812,
+      "output_sha256": "844d86eca008c2aeda77b3b2140e04fc10373f8023717bbe6936c525a6828025",
+      "candidate_counts_during_decode": {
+        "retired": 4,
+        "cpu_released": 4
+      },
+      "request_lifecycle_counts": {
+        "retired": 4,
+        "cpu_released": 16
+      },
+      "first_token_at": 13656114.083991367,
+      "last_token_at": 13656133.444457391,
+      "publication": {
+        "kind": "published",
+        "at": 13656123.910638375,
+        "accepted_history": 512,
+        "observations": 3,
+        "importance": 0.01,
+        "cold": true,
+        "source": "synthetic_gc_throughput_fixture"
+      },
+      "release_witnesses": {
+        "retired": [
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13656123.906588968,
+            "interval_end": 13656124.511031415,
+            "accepted_history": 528,
+            "following_decode_at": 13656125.10849506,
+            "following_accepted_history": 544
+          }
+        ],
+        "cpu_released": [
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 4,
+            "interval_begin": 13656123.906588968,
+            "interval_end": 13656124.511031415,
+            "accepted_history": 528,
+            "following_decode_at": 13656125.10849506,
+            "following_accepted_history": 544
+          }
+        ]
+      },
+      "overlapping_refreshes": 0,
+      "server_state": "stopped",
+      "server_exit_code": 0
+    }
+  ],
+  "artifact_directory": "/root/data/kvmem-vllm-gc/runs/qwen38-statistical-c1-qualification-01",
+  "artifact_sha256": {
+    "runs.json": "d3bd1599cbebd375259bac1ae8884c12f36f8d50d1f6223e05dd90544be3da10",
+    "results.json": "bc78b830292c8b24c3f824f17b67a3c2a768686483c9b764d64bdb48df1cafd9",
+    "qualification_driver.py": "dd6ea087b3ebabaa13057172a3b7d87a5d69fdb1371db30372850e4956dee827",
+    "source_manifest.json": "bea284fdc89a7a6268e79399b3c3623b5ddca4f32bc0e247af570cd83a1285f4",
+    "worker_manifest.json": "794a32ef513b7a4e51a910cc8eaa550b940f2b3ef9d27f2d9b4534b9035cbd50",
+    "fixture_manifest.json": "833a226d492aff393955dec495a28c5140a43bd29cbaec47f0ced3a848fa50fe",
+    "frozen-input.json": "8d56ca77f17aaa2c058809ed929df5b52d6ece1e235d58872445a28c6be659a7"
+  },
+  "limitations": [
+    "Measures incremental native policy and reclamation cost under a common synthetic producer; not total semantic-estimator cost.",
+    "No automatic semantic deletion, model judge, R-KV redundancy estimator, DSH quality, block-graph workload or tail-latency qualification.",
+    "One synthetic publication of four candidate blocks per measured DELETE request; not a saturation or long-session benchmark.",
+    "All paired outputs agree while the active GPU window remains stable; this does not prove quality after later retrieval omits deleted content.",
+    "Request-lifecycle CPU release counts include cleanup. Only candidate_counts_during_decode and release_witnesses prove in-decode GC.",
+    "Five-pair bootstrap is descriptive and workload-specific; passing a 1% margin is not a proof of zero overhead.",
+    "Nonfatal allocator OOM retries occur during NVFP4 loading; engines subsequently start and complete. Shutdown emits EngineDeadError after intentional SIGTERM and a semaphore cleanup warning.",
+    "Terminal M may be deferred after deleted history still exists in the GPU window; this run does not qualify successful M restoration after GC."
+  ],
+  "reproduction_profile": {
+    "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "tokenizer": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "hf_config_path": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "model_format": "safetensors",
+    "draft_method": "mtp",
+    "draft_tokens": 1,
+    "execution_mode": "eager",
+    "served_model_name": "qwen38-gc-smoke",
+    "host": "127.0.0.1",
+    "port": 41909,
+    "max_model_len": 2048,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 128,
+    "gpu_memory_utilization": 0.93,
+    "prefill_chunk_tokens": 128,
+    "query_replay_budget": 128,
+    "verify_session_restore": false,
+    "kvmem": {
+      "block_tokens": 32,
+      "select_budget": 256,
+      "gen_budget": 1024,
+      "repository_blocks": 128,
+      "sink_blocks": 1,
+      "recent_blocks": 1,
+      "cpu_read_cache_bytes": 536870912,
+      "archive_backend": "cpu",
+      "archive_io_max_bytes": 67108864,
+      "async_seal": true,
+      "async_archive_retirement": true,
+      "packed_assembly": true,
+      "direct_pinned_reads": true,
+      "async_cpu_scatter": true,
+      "batched_cpu_append": true,
+      "request_planning": true,
+      "session_capacity": 1,
+      "session_checkpoint_bytes": 536870912,
+      "session_checkpoint_policy": "pm",
+      "session_capture_terminal": true,
+      "mean_k_backend": "torch_reference",
+      "async_refresh": true,
+      "refresh_quantum_tokens": 128,
+      "cpu_history_coordination": true,
+      "maintenance_max_steps": 8,
+      "async_restore": true,
+      "step_latency_interval": 0,
+      "verify_archive_on_finish": false,
+      "historical_gc": {
+        "mode": "off",
+        "policy": "statistical",
+        "poll_ms": 10,
+        "scan_blocks": 128,
+        "delete_blocks": 8
+      }
+    }
+  },
+  "frozen_input": {
+    "input_ids": [
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261,
+      2923,
+      13,
+      13262,
+      3133,
+      2980,
+      35564,
+      13,
+      198,
+      22791,
+      411,
+      33633,
+      9856,
+      13,
+      1690,
+      1754,
+      7308,
+      11,
+      3165,
+      1141,
+      9057,
+      321,
+      10033,
+      799,
+      21261
+    ],
+    "append_ids": [],
+    "provenance": {
+      "kind": "synthetic_fixed_arithmetic_prompt_v1",
+      "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+      "source_text_sha256": "1d0d30516ab319f223e20789faedcd3cb3fc780d4644329ecf6fde5f62bef697",
+      "model_revision": "482ca0f3832238542f8f5295dde86b5f22711d80"
+    }
+  }
+}

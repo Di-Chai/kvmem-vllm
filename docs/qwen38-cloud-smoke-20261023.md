@@ -37,23 +37,82 @@ logs/cuda130-library-overlay-20261023.json.
 Run one process and one request at a time, with a new output directory per
 attempt. GPU peak memory collection is external to this small runner.
 
-## KVMem/GC status
+## KVMem/MTP and GC throughput
 
-The first KVMem MTP1 integration pilot ran out of GPU memory while constructing
-the MTP output layer, before any request or throughput measurement. This does
-not qualify KVMem or GC throughput. A smaller GPTQ quantization and MTP
-shared-weight allocation are being investigated.
+The initial MTP integration attempt ran out of GPU memory before serving any
+request. The opt-in VLLM_KVMEM_MTP_SHARED_LOAD=1 adapter now avoids constructing
+temporary duplicate embedding and output modules. Parameter-free placeholders
+are skipped by the original weight loader; the official post-load sharing
+attaches the target modules only after draft loading and quantization finish.
+The adapter checks pinned vLLM source hashes, matching local target/draft
+checkpoints, one rank, shared identities and unchanged target tensor metadata.
+Twenty CPU tests cover the real loader/postprocessing/sharing seams.
 
-The paired qualification tool supports --statistical-fixture for C1
-stable-window decode. OFF and DELETE share the synthetic evidence producer and
-counter sampling. A positive result isolates incremental native policy and CPU
-archive reclamation cost; it does not measure a real semantic estimator.
-Reclamation must be witnessed inside generation and followed by more accepted
-tokens. Paired outputs must match, and refresh is rejected during measurement.
-A paired bootstrap confidence interval is reported separately from the median
-threshold.
+With this adapter, NVFP4 plus MTP1 loaded in 19.91 GiB and completed the C1
+integration pilot and formal five-pair sweep. Startup still emitted nonfatal
+allocator OOM retries during weight repacking; those recovered before requests.
 
-Qwen3.8-27B float32 GDN state needs about 147.75 MiB per checkpoint.
-Use a 512 MiB session checkpoint budget for P and M together; 128 MiB is too small.
-This fixture does not validate successful terminal M capture after deletion of
-handles still present in the GPU window.
+The formal sweep passed its predeclared 1% throughput-loss margin:
+
+| Pair | GC off token/s | GC delete token/s | Paired throughput loss |
+|---|---:|---:|---:|
+| 1 | 26.2997 | 26.2023 | +0.371% |
+| 2 | 26.4470 | 26.2645 | +0.690% |
+| 3 | 26.1091 | 26.1391 | −0.115% |
+| 4 | 26.2321 | 26.4408 | −0.796% |
+| 5 | 26.2241 | 26.3940 | −0.648% |
+
+Positive loss means slower with GC. Median paired loss was −0.115%; the
+descriptive paired-bootstrap 95% interval was [−0.796%, +0.690%]. Its upper
+bound was below 1%. This supports the tested workload, not a universal
+zero-overhead claim.
+
+All ten measured outputs were identical. Every DELETE request retired and
+CPU-released four candidate blocks during generation, with further accepted
+tokens after the observed release interval. OFF retired none. The top-level
+lifecycle CPU-release count includes cleanup (16 for DELETE); the within-decode
+candidate count is four and is the relevant evidence.
+
+Each fresh server ran a 512-token warmup, then one measured 512-token request
+from the same fixed 256-token input. The five pair orders alternated. The
+integration pilot was excluded, and no pairs were added after observing the
+formal result. Downloads and other tests were stopped during measurement.
+The engine used C1, eager execution, MTP1, K256/G1024 and no refresh during the
+measured segment. All ten servers exited with code zero.
+
+The [complete report](benchmarks/qwen38-4090-gc-throughput-20261023.json) contains
+the exact profile, frozen input, revisions/digests, rates, lifecycle counts and
+bounded release witnesses. To reproduce, extract reproduction_profile and
+frozen_input to separate JSON files, use the matching CUDA environment above,
+enable VLLM_KVMEM_MTP_SHARED_LOAD=1, and run:
+
+    python scripts/qualify_historical_gc.py --config PROFILE.json --input INPUT.json --output NEW_RUN_DIRECTORY --kind performance --baseline off --statistical-fixture --decode-tokens 512 --pairs 5
+
+The qualifier requires an idle GPU and owns each server. A pass requires at
+least five pairs and a confidence-interval upper bound at most 1%; an interval
+crossing the threshold is inconclusive. It does not append samples until a
+pass is obtained.
+
+## Scope and remaining validation
+
+OFF and DELETE share a synthetic evidence producer and counter sampling.
+Three injected observations with importance 0.01 authorize a controlled
+four-block candidate range; these are not three measured semantic epochs.
+This measures incremental native policy and archive reclamation cost. It does
+not measure a real semantic estimator, model judge, R-KV redundancy scoring,
+block-graph execution or p95/p99 latency.
+
+The GPU window stays unchanged during the measurement. Identical outputs do
+not establish quality after a later retrieval omits deleted content. Real DSH
+task quality and a genuine evidence producer require separate validation.
+
+Qwen3.8-27B float32 GDN state needs about 147.75 MiB per checkpoint. The 512 MiB
+pool successfully held P and M in OFF. After DELETE, terminal M can be deferred
+because the GPU window still contains retired historical handles; this sweep
+does not qualify successful M restoration after GC.
+
+The smaller sokada4/Qwen3.8-27B-GPTQ-Int4 fallback at revision
+2232b67a2ef5480e97c4450838a712de1346eccc was also downloaded through hf-mirror
+and all 16 files verified. Its five weight files total 19,559,451,008 bytes.
+It has not been used for inference in this report. The actual loaded tokenizer
+backend and chat template match NVFP4, while the padding token ID differs.
