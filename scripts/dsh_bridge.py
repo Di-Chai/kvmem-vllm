@@ -105,7 +105,8 @@ class AcceptedTextDecoder:
 class QwenStream:
     """Emit only irrevocable prefixes of the frozen full-response parser.
 
-    The renderer already opened <think>. Hold split control tags and the one
+    The renderer opens thinking, or closes an empty frame in off mode. Hold
+    split control tags and the one
     trailing reasoning newline that the parser removes at </think>. Tool
     arguments stay buffered for the authoritative schema-aware parser, but a
     canonical function header can report real model activity before its body.
@@ -116,6 +117,8 @@ class QwenStream:
     def __init__(self,protocol,tools):
         self.protocol=protocol;self.tools=tools;self.raw=''
         self.sent={'reasoning_content':'','content':''};self.tool=None
+        if getattr(protocol,'kwargs',{}).get('enable_thinking') is False:
+            self.markers=('<think>',*self.markers)
 
     def _delta(self,message):
         delta={}
@@ -232,11 +235,17 @@ def create_app(args,tokenizer):
     max_inflight=getattr(args,'max_inflight',0)
     if type(max_inflight) is not int or max_inflight<0:
         raise ValueError('max_inflight must be a nonnegative integer')
+    disable_thinking=getattr(args,'disable_thinking',False)
+    if type(disable_thinking) is not bool:
+        raise ValueError('disable_thinking must be boolean')
+    if disable_thinking and not getattr(args,'tokenizer_protocol',False):
+        raise ValueError('--disable-thinking requires --tokenizer-protocol')
     admission=asyncio.BoundedSemaphore(max_inflight) if max_inflight else None
     if getattr(args,'tokenizer_protocol',False):
         from scripts.dsh_model_protocol import TokenizerProtocol
         protocol=TokenizerProtocol(tokenizer,args.tokenizer,
-            reasoning_effort=getattr(args,'reasoning_effort','low'))
+            reasoning_effort=getattr(args,'reasoning_effort','low'),
+            enable_thinking=not disable_thinking)
     else:
         protocol=Protocol(args.protocol)
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
@@ -308,6 +317,8 @@ def create_app(args,tokenizer):
                 output_limit=min(limit,args.max_model_len-len(tokens))
                 data=backend_request(model=args.model,tokens=tokens,session=owner,
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
+                if disable_thinking:
+                    data.pop('thinking_token_budget',None)
                 for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed'):
                     if k in body:data[k]=body[k]
                 directory=args.output/owner/f'{state.turns+1:05d}'
@@ -455,6 +466,8 @@ if __name__=='__main__':
     protocol.add_argument('--tokenizer-protocol',action='store_true',help='Use the audited current Qwen3.8 tokenizer chat template')
     p.add_argument('--tokenizer',required=True)
     p.add_argument('--reasoning-effort',choices=('low','medium','xhigh'),default='low')
+    p.add_argument('--disable-thinking',action='store_true',
+        help='Close the official tokenizer think frame before generation; incompatible with thinking-enabled history')
     p.add_argument('--backend',default='http://127.0.0.1:18846');p.add_argument('--model',default='kvmem-dsh-dflash2')
     p.add_argument('--output',type=Path,required=True);p.add_argument('--port',type=int,default=18381)
     p.add_argument('--gen-budget',type=int,default=16384);p.add_argument('--max-model-len',type=int,default=262144)

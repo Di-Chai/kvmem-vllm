@@ -215,3 +215,94 @@ def test_restore_rejects_unknown_or_different_tokenizer_history(protocol, tmp_pa
         (tmp_path/'protocol.json').write_text(json.dumps(saved))
     with pytest.raises(ValueError, match='protocol differs'):
         restore_trajectory(Planner(protocol, protocol.tokenizer, 4096), 'owner', [tmp_path])
+
+
+@pytest.fixture(scope='module')
+def disabled_protocol(protocol):
+    return TokenizerProtocol(protocol.tokenizer,
+        os.environ['KVMEM_QWEN38_TOKENIZER'], enable_thinking=False)
+
+
+@pytest.mark.parametrize('with_system,with_tools', [(True, True), (True, False), (False, False)])
+def test_disabled_thinking_uses_complete_official_empty_frame(disabled_protocol, with_system, with_tools):
+    body = wire_body()
+    if not with_system:
+        body['messages'] = body['messages'][1:]
+    if not with_tools:
+        body['tools'] = []
+    result = disabled_protocol(request=to_anthropic(body))
+    expected = disabled_protocol.tokenizer.apply_chat_template(
+        result['messages'], tools=result['tools'] or None, tokenize=False,
+        add_generation_prompt=True, enable_thinking=False,
+        preserve_thinking=True, reasoning_effort='low')
+    assert result['prompt'] == expected
+    assert expected.endswith('<|im_start|>assistant\n<think>\n\n</think>\n\n')
+    assert 'Reasoning effort is set to' not in expected
+    data = expected.encode()
+    query = result['spans'][result['query_index']]
+    assert data[query['content_begin']:query['content_end']].decode() == body['messages'][-1]['content']
+    if not with_system and not with_tools:
+        assert result['control_end'] == 0 and result['query_index'] == 0
+
+
+@pytest.mark.parametrize('prefix', ['', '\n</think>\n\n', '<think>\n\n</think>\n\n'])
+@pytest.mark.parametrize('kind', ['answer', 'tool'])
+def test_disabled_stream_plain_text_empty_think_and_tools(disabled_protocol, prefix, kind):
+    planner = Planner(disabled_protocol, disabled_protocol.tokenizer, 4096)
+    tools = disabled_protocol(request=to_anthropic(wire_body()))['tools']
+    content = ('完成 café 和 🙂。' if kind == 'answer' else
+               '写入文件。\n\n' + tool_output().split('</think>\n', 1)[1].removesuffix('<|im_end|>'))
+    raw = prefix + content + '<|im_end|>'
+    stream = QwenStream(disabled_protocol, tools)
+    deltas = [stream.feed(character) for character in raw]
+    response = planner.response(raw, tools, 'local',
+        dict(prompt_tokens=10, completion_tokens=50), 'stop')
+    output, tail = stream.finish(response)
+    message = output['choices'][0]['message']
+    assert not message.get('reasoning_content')
+    assert not any(d.get('reasoning_content') for d in deltas)
+    if kind == 'answer':
+        assert message['content'] == content
+        assert ''.join(d.get('content', '') for d in deltas) + tail.get('content', '') == content
+    else:
+        assert message['content'] == '写入文件。\n\n'
+        args = json.loads(message['tool_calls'][0]['function']['arguments'])
+        assert args['path'] == '中文.txt' and args['content'] == 'café 和 🙂\n第二行'
+        assert '<tool_call>' not in ''.join(d.get('content', '') for d in deltas)
+
+
+@pytest.mark.parametrize('thinking', [True, False])
+def test_mode_roundtrip_restore_preserves_actual_ids_and_rejects_other_mode(
+        protocol, disabled_protocol, tmp_path, thinking):
+    from scripts.dsh_bridge import restore_trajectory, to_openai
+    current, other = ((protocol, disabled_protocol) if thinking else (disabled_protocol, protocol))
+    assert current.provenance != other.provenance and current.template != other.template
+    assert current.provenance['chat_template_kwargs']['enable_thinking'] is thinking
+    body = wire_body()
+    payload = to_anthropic(body)
+    planner = Planner(current, current.tokenizer, 4096)
+    first = planner.prepare(payload, Trajectory())
+    raw = tool_output() if thinking else tool_output().split('</think>\n', 1)[1]
+    accepted = current.tokenizer.encode(raw, add_special_tokens=False)
+    response = planner.response(raw, first[2]['tools'], 'local',
+        dict(prompt_tokens=len(first[0]), completion_tokens=len(accepted)), 'stop')
+    (tmp_path/'protocol.json').write_text(json.dumps(current.provenance))
+    directory = tmp_path/'owner'/'00001'
+    directory.mkdir(parents=True)
+    for name, value in [('request', body),
+                        ('plan', dict(prompt_tokens=len(first[0]), exact_output_prefix_reused=False)),
+                        ('response', to_openai(response)), ('accepted', dict(token_ids=accepted))]:
+        (directory/(name+'.json')).write_text(json.dumps(value, ensure_ascii=False))
+    restored = restore_trajectory(planner, 'owner', [tmp_path])
+    tool = response['content'][-1]
+    resumed = dict(payload, messages=[*payload['messages'],
+        dict(role='assistant', content=response['content']),
+        dict(role='user', content=[dict(type='tool_result', tool_use_id=tool['id'],
+                                      content='写入成功，UTF-8 验证通过。')])])
+    second = planner.prepare(resumed, restored)
+    assert second[5] is True
+    assert second[0][:len(first[0])+len(accepted)] == first[0]+accepted
+    assert second[1]['kvmem_query_span'] == first[1]['kvmem_query_span']
+    assert second[1]['kvmem_locality_provenance']['history'] == 'actual_accepted_ids'
+    with pytest.raises(ValueError, match='protocol differs'):
+        restore_trajectory(Planner(other, other.tokenizer, 4096), 'owner', [tmp_path])

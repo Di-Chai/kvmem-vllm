@@ -89,8 +89,10 @@ def _convert(payload):
 class TokenizerProtocol:
     implicit_tool_reasoning_end = True
 
-    def __init__(self, tokenizer, directory, *, reasoning_effort='low'):
+    def __init__(self, tokenizer, directory, *, reasoning_effort='low', enable_thinking=True):
         directory = Path(directory)
+        if type(enable_thinking) is not bool:
+            raise ValueError('enable_thinking must be boolean')
         if reasoning_effort not in ('low', 'medium', 'xhigh'):
             raise ValueError('Unsupported Qwen3.8 reasoning effort')
         files = {name: (directory/name).read_bytes() for name in (
@@ -108,7 +110,7 @@ class TokenizerProtocol:
         if tokenizer.get_vocab() != source_vocab:
             raise ValueError('Loaded tokenizer vocabulary differs from the fingerprinted model files')
         self.tokenizer = tokenizer
-        self.kwargs = dict(enable_thinking=True, preserve_thinking=True,
+        self.kwargs = dict(enable_thinking=enable_thinking, preserve_thinking=True,
                            reasoning_effort=reasoning_effort)
         self.provenance = dict(schema_version=1, source='tokenizer.apply_chat_template',
                                files=fingerprints, chat_template_kwargs=self.kwargs,
@@ -124,7 +126,8 @@ class TokenizerProtocol:
             messages, tools=tools or None, tokenize=False,
             add_generation_prompt=True, **self.kwargs)
         data = prompt.encode()
-        header = b'<|im_start|>assistant\n<think>\n'
+        header = (b'<|im_start|>assistant\n<think>\n' if self.kwargs['enable_thinking']
+                  else b'<|im_start|>assistant\n<think>\n\n</think>\n\n')
         if not data.endswith(header):
             raise ValueError('Qwen generation header differs from the audited template')
         stop = len(data)-len(header)
@@ -139,9 +142,10 @@ class TokenizerProtocol:
             raise ValueError('Rendered system/control framing is incomplete')
         control_end = frames[0].end() if frames[0].group(1) == b'system' else 0
         if not control_end:
-            # The audited template omits an empty system message for medium
-            # effort without tools. Do not invent a frame or shift wire indices.
-            if tools or messages[0]['content'].strip() or self.kwargs['reasoning_effort'] != 'medium':
+            # An empty system is omitted without tools when no effort instruction
+            # is active (medium or thinking disabled). Preserve source indices.
+            if (tools or messages[0]['content'].strip() or
+                    self.kwargs['enable_thinking'] and self.kwargs['reasoning_effort'] != 'medium'):
                 raise ValueError('Rendered system/control framing is incomplete')
             messages = messages[1:]
         spans, index = [], 0
@@ -193,16 +197,27 @@ class TokenizerProtocol:
 
     def parse(self, text, tools):
         """Use exact reasoning boundaries and the official typed tool parser."""
-        close, first_tool = text.find('</think>'), text.find('<tool_call>')
-        if first_tool >= 0 and (close < 0 or first_tool < close):
-            # Match the official Qwen grammar: a tool frame can end reasoning
-            # implicitly, even when the model omits the explicit closing tag.
-            reasoning, content = text[:first_tool], text[first_tool:]
-        elif close >= 0:
-            reasoning, content = text[:close], text[close+len('</think>'):]
+        thinking = self.kwargs['enable_thinking']
+        if not thinking:
+            # The official off-mode prompt already closed its empty think frame.
+            # Ordinary completion text is content. Also tolerate an explicit
+            # repeated opening/empty closing frame without exposing control tags.
+            text = text.lstrip('\r\n')
+            if text.startswith('<think>'):
+                text = text[len('<think>'):].removeprefix('\n')
+                thinking = True
+        if thinking:
+            close, first_tool = text.find('</think>'), text.find('<tool_call>')
+            if first_tool >= 0 and (close < 0 or first_tool < close):
+                # Official Qwen grammar permits an implicit tool boundary.
+                reasoning, content = text[:first_tool], text[first_tool:]
+            elif close >= 0:
+                reasoning, content = text[:close], text[close+len('</think>'):]
+            else:
+                return dict(reasoning=text, content='', tool_calls=[])
+            reasoning = reasoning.removesuffix('\n')
         else:
-            return dict(reasoning=text, content='', tool_calls=[])
-        reasoning = reasoning.removesuffix('\n')
+            reasoning, content = '', text.removeprefix('</think>')
         content = content.lstrip('\r\n')
         if '<tool_call>' not in content:
             return dict(reasoning=reasoning, content=content, tool_calls=[])

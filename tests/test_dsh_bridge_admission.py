@@ -41,6 +41,7 @@ class Planner:
 class Upstream:
     def __init__(self):
         self.calls = []
+        self.payloads = []
         self.starts = asyncio.Queue()
         self.gates = {}
         self.active = 0
@@ -49,6 +50,7 @@ class Upstream:
 
     async def handle(self, request):
         data = json.loads(request.content)
+        self.payloads.append(data)
         owner = data['session_id']
         segment = len(data['prompt']) - 2
         key = (owner, segment)
@@ -78,14 +80,15 @@ class Upstream:
         return httpx.Response(200, stream=Stream())
 
 
-def setup(monkeypatch, tmp_path, upstream, max_inflight=1):
+def setup(monkeypatch, tmp_path, upstream, max_inflight=1, disable_thinking=False):
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handle))
     monkeypatch.setattr(bridge, 'Planner', Planner)
     monkeypatch.setattr(bridge, 'Protocol', lambda _: None)
     monkeypatch.setattr(bridge.httpx, 'AsyncClient', lambda **_: client)
     args = SimpleNamespace(protocol=None, gen_budget=1, max_output_segments=2,
                            output=tmp_path, backend='http://test', model='local',
-                           max_model_len=4096, max_sessions=8)
+                           max_model_len=4096, max_sessions=8, disable_thinking=disable_thinking,
+                           tokenizer_protocol=disable_thinking, tokenizer='unused')
     if max_inflight is not None:
         args.max_inflight = max_inflight
     app = bridge.create_app(args, ByteTokenizer())
@@ -304,3 +307,38 @@ def test_cancel_during_commit_keeps_owner_and_c1_until_recovery_marker(monkeypat
         await client.aclose()
 
     asyncio.run(asyncio.wait_for(check(), 5))
+
+
+@pytest.mark.parametrize('disable_thinking', [False, True])
+def test_disabled_thinking_removes_budget_from_every_native_segment(
+        monkeypatch, tmp_path, disable_thinking):
+    import scripts.dsh_model_protocol as model_protocol
+    seen_modes = []
+    def make_protocol(*args, **kwargs):
+        seen_modes.append(kwargs['enable_thinking'])
+        return None
+    monkeypatch.setattr(model_protocol, 'TokenizerProtocol', make_protocol)
+    async def check():
+        upstream = Upstream()
+        call, client = setup(monkeypatch, tmp_path, upstream, disable_thinking=disable_thinking)
+        reply = asyncio.create_task(call('agent'))
+        first = await upstream.starts.get()
+        upstream.gates[first].set()
+        second = await upstream.starts.get()
+        upstream.gates[second].set()
+        await reply
+        await client.aclose()
+        assert len(upstream.payloads) == 2
+        if disable_thinking:
+            assert seen_modes == [False]
+            assert all('thinking_token_budget' not in value for value in upstream.payloads)
+        else:
+            assert upstream.payloads[0]['thinking_token_budget'] == 4096
+            assert 'thinking_token_budget' not in upstream.payloads[1]
+    asyncio.run(check())
+
+
+def test_disable_thinking_rejects_frozen_protocol_before_loading():
+    args = SimpleNamespace(disable_thinking=True, tokenizer_protocol=False)
+    with pytest.raises(ValueError, match='requires --tokenizer-protocol'):
+        bridge.create_app(args, ByteTokenizer())
