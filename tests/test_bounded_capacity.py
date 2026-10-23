@@ -27,7 +27,7 @@ def enabled(monkeypatch):
         monkeypatch.setenv(key, '1')
 
 
-def config(logical=32768):
+def config(logical=32768, select_budget=4096, gen_budget=4096):
     from vllm.config import CacheConfig
     cache = CacheConfig(block_size=16, cache_dtype='fp8_e4m3', enable_prefix_caching=False,
                         mamba_cache_mode='none')
@@ -39,15 +39,16 @@ def config(logical=32768):
         scheduler_config=NS(scheduler_cls='vllm_kvmem.scheduler.KVMemScheduler',
                             max_num_seqs=1, async_scheduling=False,
                             disable_hybrid_kv_cache_manager=False),
-        model_config=NS(max_model_len=logical, original_max_model_len=logical),
+        model_config=NS(max_model_len=logical, original_max_model_len=logical,
+                        hf_text_config=NS(model_type='qwen3_5_text', max_position_embeddings=262144)),
         attention_config=NS(hisparse_config=None),
         speculative_config=NS(method='mtp', num_speculative_tokens=1, kv_cache_dtype=None,
-                              draft_model_config=NS(hf_text_config=NS(model_type='qwen3_5_text', mtp_num_hidden_layers=1)),
+                              draft_model_config=NS(hf_text_config=NS(model_type='qwen3_5_text', mtp_num_hidden_layers=1, max_position_embeddings=262144)),
                               use_multi_module_mtp=lambda: False, use_eagle_block_drop=lambda: False, use_eagle=lambda: True),
         max_concurrent_batches=1, num_lookahead_tokens=1, max_in_flight_tokens=130,
         kv_transfer_config=NS(kv_connector='KVMemConnector', kv_connector_module_path='vllm_kvmem.connector',
-            kv_connector_extra_config={'kvmem': dict(select_budget=4096, gen_budget=4096,
-                block_tokens=32, repository_blocks=1028, sink_blocks=1, recent_blocks=1, request_planning=True)}),
+            kv_connector_extra_config={'kvmem': dict(select_budget=select_budget, gen_budget=gen_budget,
+                block_tokens=32, repository_blocks=(logical + 31)//32 + 4, sink_blocks=1, recent_blocks=1, request_planning=True)}),
     )
 
 
@@ -192,7 +193,11 @@ assert not torch.cuda.is_initialized()
     assert result.returncode == 0, result.stderr.decode()
 
 
-def test_real_hybrid_allocator_mtp_boundary_refresh_and_regrowth(enabled):
+@pytest.mark.parametrize('logical,keep,generation,pages', [
+    (32768, 4096, 4096, 13),
+    (262144, 36864, 16384, 41),
+])
+def test_real_hybrid_allocator_mtp_boundary_refresh_and_regrowth(enabled, logical, keep, generation, pages):
     from vllm import SamplingParams
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.request import Request
@@ -201,55 +206,82 @@ def test_real_hybrid_allocator_mtp_boundary_refresh_and_regrowth(enabled):
     from vllm_kvmem.options import RuntimeOptions
     from vllm_kvmem.window_manager import WorkingSetManager, RefreshRequired
 
-    cfg = config()
-    converted = bounded_specs(specs(), cfg)
-    worker = get_kv_cache_configs(cfg, [converted], [13 * PAGE])
+    cfg = config(logical, keep, generation)
+    converted = bounded_specs(specs(logical), cfg)
+    worker = get_kv_cache_configs(cfg, [converted], [pages * PAGE])
     scheduler = generate_scheduler_kv_cache_config(worker)
     import math
     granularity = math.lcm(*(g.kv_cache_spec.block_size for g in scheduler.kv_cache_groups))
-    native = KVCacheManager(scheduler, 32768, granularity, 16,
+    native = KVCacheManager(scheduler, logical, granularity, 16,
                            max_in_flight_tokens=130, enable_caching=False)
     managers = list(native.coordinator.single_type_managers)
     full_index = next(i for i, m in enumerate(managers) if type(m) is FullAttentionManager)
-    managers[full_index] = WorkingSetManager(managers[full_index], 4096, 4096)
+    managers[full_index] = WorkingSetManager(managers[full_index], keep, generation)
     native.coordinator.single_type_managers = tuple(managers)
     contract = DraftContract.from_vllm(cfg, RuntimeOptions.from_vllm(cfg).memory)
     gate = ReservedKVCacheManager(native, cfg, draft_contract=contract, max_authorities=1)
     validate_manager_coverage(gate, cfg)
-    assert gate._demand(32768) == 12
-    assert native.block_pool.get_num_free_blocks() == 12  # null already owns one
-    req = Request('long', [1] * 16000, SamplingParams(max_tokens=16000), None)
+    assert gate._demand(logical) == pages - 1
+    assert native.block_pool.get_num_free_blocks() == pages - 1  # null already owns one
+    req = Request('long', [1] * (logical - 2), SamplingParams(max_tokens=2), None)
     window = managers[full_index]
-    window.capacity = 4096
+    window.capacity = keep
     with pytest.raises(ValueError, match='WorkingSetManager'):
         validate_manager_coverage(gate, cfg)
-    window.capacity = 8192
+    window.capacity = keep + generation
     native.coordinator.single_type_managers = tuple(m.native if m is window else m for m in managers)
     with pytest.raises(ValueError, match='coverage changed'):
         validate_manager_coverage(gate, cfg)
     native.coordinator.single_type_managers = tuple(managers)
-    for history_end in (8190, 12284):
+    for history_end in range(keep + generation - 2, logical - 2, generation - 2):
         while req.num_computed_tokens < history_end:
             count = min(128, history_end - req.num_computed_tokens)
             assert gate.allocate_slots(req, count, num_lookahead_tokens=2) is not None
             req.num_computed_tokens += count
-            assert gate._owned(req.request_id) <= 12
+            assert gate._owned(req.request_id) <= pages - 1
         assert native.block_pool.get_num_free_blocks() == 0
-        assert len(window.req_to_blocks[req.request_id]) == 6
+        assert len(window.req_to_blocks[req.request_id]) == (keep + generation + 1583) // 1584
         assert all(len(m.req_to_blocks[req.request_id]) == 2
                    for i, m in enumerate(managers) if i != full_index)
         before = [tuple(m.req_to_blocks[req.request_id]) for m in managers]
         with pytest.raises(RefreshRequired):
             gate.allocate_slots(req, 1, num_lookahead_tokens=2)
         assert [tuple(m.req_to_blocks[req.request_id]) for m in managers] == before
-        ticket = window.prepare_refresh(req.request_id, history_end, 4096)
+        ticket = window.prepare_refresh(req.request_id, history_end, keep)
         assert window.commit_refresh(ticket, NS(query=lambda: True))
-        assert native.block_pool.get_num_free_blocks() == 3
+        assert native.block_pool.get_num_free_blocks() == (keep + generation + 1583) // 1584 - (keep + 1583) // 1584
     # C1 lifetime admission survives refresh even though free physical pages exist.
-    other = Request('other', [1] * 16000, SamplingParams(max_tokens=16000), None)
+    other = Request('other', [1] * (logical - 2), SamplingParams(max_tokens=2), None)
     assert gate.allocate_slots(other, 128, num_lookahead_tokens=2) is None
     gate.free(req)
-    assert native.block_pool.get_num_free_blocks() == 12 and not gate.reservations
+    assert native.block_pool.get_num_free_blocks() == pages - 1 and not gate.reservations
+    # Cold checkpoint import near the logical limit owns one destination frame.
+    # Its logical prefix must not allocate a second native full-attention window.
+    restored = Request('restored', [1] * (logical - 2), SamplingParams(max_tokens=2), None)
+    history = logical - generation - 128
+    window.prepare_import(restored.request_id, history, keep + generation - 130)
+    assert gate.allocate_slots(restored, 128, num_lookahead_tokens=2,
+                               num_external_computed_tokens=history,
+                               full_sequence_must_fit=True) is not None
+    assert gate._owned(restored.request_id) == pages - 1
+    assert native.block_pool.get_num_free_blocks() == 0
+    assert window.commit_import(restored.request_id, history, NS(query=lambda: True))
+    restored.num_computed_tokens = history + 128
+    # This private pressure control fills the last two tokens but executes no
+    # public MTP forward. Its replay is retained inside the same existing pages.
+    gate.prefill_refresh_control = lambda request, count: request is restored and count == 2
+    assert gate.allocate_slots(restored, 2, num_lookahead_tokens=2) is not None
+    assert gate.refresh_control_allocations[restored.request_id] == (restored, history + 128, 2)
+    ticket = window.prepare_refresh(restored.request_id, history + 128, keep, replay_tokens=2)
+    command = NS(asynchronous=True, selection='pressure', query_span=None,
+                 speculative_padding=0, input_tokens=(1, 1), groups=((full_index, ticket),))
+    gate.validate_refresh_controls({}, {restored.request_id: (command, 0)})
+    assert window.commit_refresh(ticket, NS(query=lambda: True))
+    restored.num_computed_tokens += 2
+    assert gate.allocate_slots(restored, 128, num_lookahead_tokens=2) is not None
+    assert gate._owned(restored.request_id) <= pages - 1
+    gate.free(restored)
+    assert native.block_pool.get_num_free_blocks() == pages - 1 and not gate.reservations
     assert not torch.cuda.is_initialized()
 
 
@@ -277,3 +309,75 @@ def test_uniform_collection_preserves_native_geometry_and_per_layer_accounting(e
     assert grouped.max_num_blocks_per_req(cfg, 32768) == 21
     assert UniformTypeKVCacheSpecs.from_specs({'a': full, 'b': replace(full, block_size=792)}) is None
     assert UniformTypeKVCacheSpecs.from_specs({'a': full, 'b': replace(full, capacity_tokens=4096)}) is None
+
+
+@pytest.mark.parametrize('attention_first', [False, True])
+def test_native_256k_logical_52k_physical_byte_and_worker_boundaries(enabled, attention_first):
+    logical = 262144
+    cfg = config(logical, 36864, 16384)
+    original = specs(logical)
+    if attention_first:
+        original = dict(reversed(list(original.items())))
+    converted = bounded_specs(original, cfg)
+    configs = get_kv_cache_configs(cfg, [converted], [55 * PAGE])
+    scheduler = generate_scheduler_kv_cache_config(configs)
+    full = next(g.kv_cache_spec for g in scheduler.kv_cache_groups
+                if isinstance(g.kv_cache_spec, FullAttentionSpec))
+    assert full.capacity_tokens == 53248
+    assert full.max_num_blocks_per_req(cfg, logical) == 166
+    assert sum(g.kv_cache_spec.max_memory_usage_bytes(cfg) // g.kv_cache_spec.page_size_bytes
+               for g in scheduler.kv_cache_groups) == 40
+    assert configs[0].num_blocks == 55
+    assert {t.size for t in configs[0].kv_cache_tensors} == {55 * PAGE}
+    assert get_kv_cache_configs(cfg, [converted], [41 * PAGE])[0].num_blocks == 41
+    with pytest.raises(ValueError, match='larger than the available'):
+        get_kv_cache_configs(cfg, [converted], [41 * PAGE - 1])
+    # Native per-worker checks and the minimum physical page count are intact.
+    workers = get_kv_cache_configs(cfg, [converted, converted], [55 * PAGE, 41 * PAGE])
+    assert [worker.num_blocks for worker in workers] == [41, 41]
+    with pytest.raises(ValueError, match='larger than the available'):
+        get_kv_cache_configs(cfg, [converted, converted], [55 * PAGE, 41 * PAGE - 1])
+    with pytest.raises(ValueError, match='larger than the available'):
+        get_kv_cache_configs(cfg, [original], [55 * PAGE])
+    assert cfg.model_config.max_model_len == logical
+    assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize('which,limit', [('target', None), ('target', 0), ('target', 131072),
+                                        ('draft', None), ('draft', 131072)])
+def test_native_target_and_draft_position_limits_are_required(enabled, which, limit):
+    cfg = config(262144, 36864, 16384)
+    text = (cfg.model_config.hf_text_config if which == 'target'
+            else cfg.speculative_config.draft_model_config.hf_text_config)
+    text.max_position_embeddings = limit
+    with pytest.raises(ValueError, match='position limit'):
+        bounded_specs(specs(262144), cfg)
+
+
+@pytest.mark.parametrize('logical', [262145, 524288])
+def test_logical_extension_beyond_qualified_model_range_rejected(enabled, logical):
+    cfg = config(logical, 36864, 16384)
+    cfg.model_config.hf_text_config.max_position_embeddings = logical
+    cfg.speculative_config.draft_model_config.hf_text_config.max_position_embeddings = logical
+    with pytest.raises(ValueError, match='qualified native position limit'):
+        bounded_specs(specs(logical), cfg)
+
+
+@pytest.mark.parametrize('original', [None, -1, 0, True])
+def test_auto_or_unset_logical_length_rejected(enabled, original):
+    cfg = config()
+    cfg.model_config.original_max_model_len = original
+    with pytest.raises(ValueError, match='explicit logical context'):
+        bounded_specs(specs(), cfg)
+
+
+def test_physical_capacity_rejects_unqualified_target_or_mtp_depth(enabled):
+    cfg = config(262144, 36864, 16384)
+    cfg.model_config.hf_text_config.model_type = 'other'
+    with pytest.raises(ValueError, match='Qwen MTP1'):
+        bounded_specs(specs(262144), cfg)
+    cfg.model_config.hf_text_config.model_type = 'qwen3_5_text'
+    cfg.speculative_config.num_speculative_tokens = 2
+    cfg.num_lookahead_tokens = 2
+    with pytest.raises(ValueError, match='Qwen MTP1'):
+        bounded_specs(specs(262144), cfg)

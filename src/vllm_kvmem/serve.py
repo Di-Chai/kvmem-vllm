@@ -177,8 +177,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if type(cfg['bounded_kv_capacity']) is not bool:
         raise ValueError('bounded_kv_capacity must be boolean')
     if cfg['bounded_kv_capacity'] and (cfg['draft_method'] != 'mtp' or
-            cfg['max_num_seqs'] != 1 or cfg['max_model_len'] > 32768):
-        raise ValueError('Bounded KV capacity initially qualifies native MTP C1 through 32768 logical tokens')
+            cfg['draft_tokens'] != 1 or cfg['max_num_seqs'] != 1 or cfg['max_model_len'] > 262144):
+        raise ValueError('Bounded KV capacity qualifies native MTP1 C1 through 262144 logical tokens')
     if type(cfg['q8_tensorcore']) is not bool:
         raise ValueError('q8_tensorcore must be boolean')
     if cfg['q8_tensorcore'] and not is_gguf:

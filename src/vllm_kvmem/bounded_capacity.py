@@ -70,10 +70,21 @@ def qualified_capacity(config):
     options = RuntimeOptions.from_vllm(config)
     contract = DraftContract.from_vllm(config, options.memory)
     capacity = options.memory.select_budget + options.memory.gen_budget
-    if (contract.method != 'mtp' or not options.request_planning or
-            not 0 < config.model_config.max_model_len <= 32768 or
-            config.model_config.original_max_model_len == -1):
-        raise ValueError('Physical KV capacity requires planned MTP and explicit logical context <=32768')
+    model = config.model_config
+    logical = model.max_model_len
+    target = getattr(model, 'hf_text_config', None)
+    draft = getattr(config.speculative_config.draft_model_config, 'hf_text_config', None)
+    position_limits = [getattr(text, 'max_position_embeddings', None) for text in (target, draft)]
+    if (contract.method != 'mtp' or config.speculative_config.num_speculative_tokens != 1 or
+            not options.request_planning or type(logical) is not int or
+            type(model.original_max_model_len) is not int or model.original_max_model_len <= 0 or
+            getattr(target, 'model_type', None) != 'qwen3_5_text' or
+            any(type(limit) is not int or limit <= 0 for limit in position_limits)):
+        raise ValueError('Physical KV capacity requires planned Qwen MTP1, explicit logical context and native position limits')
+    # Preserve actual positions and logical-width block tables. This adapter
+    # bounds physical allocation only; it never authorizes RoPE extrapolation.
+    if not 0 < logical <= min(262144, *position_limits):
+        raise ValueError('Physical KV capacity logical context exceeds the qualified native position limit')
     return capacity
 
 

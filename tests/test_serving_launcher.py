@@ -625,24 +625,27 @@ def test_elastic_prefill_attention_requires_and_forwards_bounded_chunk(tmp_path)
         build_elastic_launch(cfg,tmp_path,tmp_path/'invalid')
 
 
-def test_bounded_physical_kv_capacity_is_explicit_and_survives_saved_launch(tmp_path):
+@pytest.mark.parametrize('logical,keep,generation,repository', [
+    (32768, 4096, 4096, 1028), (262144, 36864, 16384, 8196),
+])
+def test_bounded_physical_kv_capacity_is_explicit_and_survives_saved_launch(tmp_path, logical, keep, generation, repository):
     cfg = nvfp4_profile(tmp_path)
-    cfg.update(draft_method='mtp', draft_tokens=1, max_num_seqs=1, max_model_len=32768,
+    cfg.update(draft_method='mtp', draft_tokens=1, max_num_seqs=1, max_model_len=logical,
                query_replay_budget=128)
-    cfg['kvmem'].update(block_tokens=32, select_budget=4096, gen_budget=4096,
-        repository_blocks=1028, sink_blocks=1, recent_blocks=1, request_planning=True,
-        session_checkpoint_policy='pm', session_capture_terminal=True)
+    cfg['kvmem'].update(block_tokens=32, select_budget=keep, gen_budget=generation,
+        repository_blocks=repository, sink_blocks=1, recent_blocks=1, request_planning=True,
+        cpu_read_cache_bytes=12*1024**3, session_checkpoint_policy='pm', session_capture_terminal=True)
     default = build_launch(cfg, tmp_path, tmp_path/'default')
     assert default['profile']['bounded_kv_capacity'] is False
     assert 'KVMEM_BOUNDED_KV_CAPACITY' not in default['environment']
     cfg['bounded_kv_capacity'] = True
     plan = build_launch(cfg, tmp_path, tmp_path/'bounded')
     assert plan['environment']['KVMEM_BOUNDED_KV_CAPACITY'] == '1'
-    assert plan['vllm_argv'][plan['vllm_argv'].index('--max-model-len')+1] == '32768'
+    assert plan['vllm_argv'][plan['vllm_argv'].index('--max-model-len')+1] == str(logical)
     replay = build_launch(plan['profile'], tmp_path, tmp_path/'replay')
     assert replay['environment']['KVMEM_BOUNDED_KV_CAPACITY'] == '1'
     for key, value in [('draft_method', 'dflash'), ('max_num_seqs', 2),
-                       ('max_model_len', 65536), ('bounded_kv_capacity', 'true')]:
+                       ('draft_tokens', 2), ('max_model_len', 262145), ('bounded_kv_capacity', 'true')]:
         with pytest.raises(ValueError, match='[Bb]ounded'):
             build_launch({**cfg, key:value}, tmp_path, tmp_path/'invalid')
 
