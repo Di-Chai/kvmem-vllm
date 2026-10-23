@@ -1,0 +1,41 @@
+{
+  "official_repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "node_version": "v24.19.0",
+  "node_archive_sha256": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
+  "pnpm_version": "11.1.2",
+  "dsh_version": "0.1.0-rc.7",
+  "checks": [
+    {
+      "name": "dsh-version",
+      "args": [
+        "--version"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.082,
+      "stdout_bytes": 11,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "headless-help",
+      "args": [
+        "--profile",
+        "headless",
+        "--help"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.152,
+      "stdout_bytes": 311,
+      "stderr_bytes": 0
+    }
+  ],
+  "deepseek_packages": 196,
+  "pinned_dependency_count": 197,
+  "version_mismatches": {},
+  "peer_check_exit": 0,
+  "lock_sha256": "aa2d0cdf1f31c37acf1275e8ba15d60880f3fe0e6693a09879497b9ef7e2d565",
+  "adapter_resolved_path": "/root/data/kvmem-vllm-gc/dsh-harness/node_modules/.pnpm/@deepseek-ai+dsh-llm-pi-ai@0.1.0-rc.8_f3c046b26800fa738fbfabdcf971f723/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js",
+  "adapter_original_sha256": "af5bec01ae8ac4c1ea1c9e27010148463bcb2b49ba0caf351adbb546453051f9",
+  "query_hook_installed": false,
+  "model_requests_sent": 0,
+  "services_started": 0
+}

@@ -1,0 +1,42 @@
+{
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.1.2",
+  "cli_version": "0.1.0-rc.7",
+  "files": {
+    "pnpm-lock.yaml": "aa2d0cdf1f31c37acf1275e8ba15d60880f3fe0e6693a09879497b9ef7e2d565",
+    "package.json": "8853f584104293e310fc45e14f7a897aee1b4cff129a3324806a9d7c96f31e7f",
+    "deepseek-package-versions.json": "728798c1703f6b937db39ac10a578521cda4d981c2cf6c85288ba886c30c9ff0",
+    "pnpm-workspace.yaml": "8d0aa731834c8b1ed084a131015a3b925285d095b9ce080dcde4a37dfb7f0f3a",
+    "original-install-verification.json": "026588987690d141be8d1828a293671aaccb30896cde0e2aeeedc48b48be2d24"
+  },
+  "archives": {
+    "node-v24.19.0-linux-x64.tar.xz": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
+    "pnpm-11.1.2.tgz": "bfe4d2b2c7a3210565bba62929f9efe493eb5f24627201a102ea4514eae8cf80"
+  },
+  "query_hook_state_sha256": "b8962696df3cd06459b904a79816e8992535a23be2707dfc7cc80f9f15fbab1b",
+  "query_hook_repository_scripts": {
+    "install_dsh_query_hook.py": "78cfd0d7dd81a5e1665c89b8bbb8777fb2b538a3b81fa88df0613af3fa4dbe2e",
+    "dsh_query_epoch.mjs": "c8efc7536d70f0ae6eb57863c3521132c330795438eaa9dd99ec83520bd9a93f"
+  },
+  "provider_route": {
+    "provider": "gc-local",
+    "model": "kvmem-gc-qwen38",
+    "base_url": "http://127.0.0.1:18387/v1"
+  },
+  "note": "original-install-verification predates the Query hook; archives and node_modules are not vendored",
+  "query_hook_installed_state": {
+    "adapter_path": "node_modules/.pnpm/@deepseek-ai+dsh-llm-pi-ai@0.1.0-rc.8_f3c046b26800fa738fbfabdcf971f723/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js",
+    "adapter_sha256": "a3f73ec89cf76180db79aca947b6ac6647d7fa23ad95a849528ddcaeacfbfbbb",
+    "adapter_version": "0.1.0-rc.8",
+    "cli_version": "0.1.0-rc.7",
+    "hook_sha256": "c8efc7536d70f0ae6eb57863c3521132c330795438eaa9dd99ec83520bd9a93f",
+    "original_sha256": "af5bec01ae8ac4c1ea1c9e27010148463bcb2b49ba0caf351adbb546453051f9",
+    "route": {
+      "baseURL": "http://127.0.0.1:18387/v1",
+      "model": "kvmem-gc-qwen38",
+      "provider": "gc-local"
+    },
+    "schema_version": 1,
+    "wrapper_sha256": "5da38ad09c8d89c589b81f4cb88bda3a3c3251b2c6605226ed83c5a65a4732c1"
+  }
+}

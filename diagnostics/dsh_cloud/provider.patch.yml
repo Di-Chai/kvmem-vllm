@@ -1,0 +1,29 @@
+# Formal local single-trajectory provider; the bridge owns the global C1 gate.
+- id: llm-pi-ai
+  config:
+    providers:
+      gc-local:
+        displayName: Local GC validation
+        api: openai-completions
+        baseURL: http://127.0.0.1:18387/v1
+        headers:
+          Authorization: Bearer local-unused
+        cacheRetention: long
+        defaultInput: [text]
+        compat:
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+          thinkingFormat: deepseek
+          supportsLongCacheRetention: true
+        models:
+          - id: kvmem-gc-qwen38
+            name: Local Qwen GC
+            contextWindow: 24576
+            maxTokens: 8192
+- id: agent-default-model
+  config:
+    provider: gc-local
+    model: kvmem-gc-qwen38
+# Keep the built-in remote provider dormant even if a credential exists.
+- id: llm-deepseek
+  disabled: true

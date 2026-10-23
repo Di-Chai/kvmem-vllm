@@ -1,0 +1,6 @@
+# Keep headless's prompt/tools and replace only its one-shot lifecycle.
+- id: headless-runner
+  disabled: true
+- insert:
+    - id: gc-single-session-runner
+      name: !!js process.env.DSH_GC_RUNNER
