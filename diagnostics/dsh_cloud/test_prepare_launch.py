@@ -47,6 +47,7 @@ class PreparedCaseTests(unittest.TestCase):
         with patch("subprocess.Popen") as spawn:
             manifest = self.prepare()
             self.assertEqual(set(manifest["cases"]), {"marker", "csgo"})
+            self.assertEqual(manifest["stream_idle_timeout_ms"], 300000)
             self.assertEqual(manifest["max_tokens"], 8192)
             self.assertEqual(manifest["context_window"], 32768)
             for case, queued in (("marker", False), ("csgo", True)):
@@ -181,6 +182,28 @@ class PreparedCaseTests(unittest.TestCase):
             with self.subTest(budget=budget):
                 code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
                                         "--context-window", "16384", "--select-budget", budget)
+                self.assertEqual(code, 2)
+                self.assertFalse(self.root.exists())
+
+    def test_idle_timeout_is_snapshotted_without_changing_model_limits(self):
+        manifest = self.prepare("--stream-idle-timeout-ms", "900000")
+        self.assertEqual(manifest["stream_idle_timeout_ms"], 900000)
+        self.assertEqual(manifest["max_tokens"], 8192)
+        self.assertEqual(manifest["native_g"], 4096)
+        provider = self.root / "configuration/provider.patch.yml"
+        self.assertIn("streamIdleTimeoutMs: 900000", provider.read_text())
+        code, _, err = self.plan("csgo")
+        self.assertEqual(code, 0, err)
+        provider.write_text(provider.read_text().replace("900000", "300000"))
+        code, _, err = self.plan("csgo")
+        self.assertEqual(code, 2)
+        self.assertIn("Prepared configuration changed", err)
+
+    def test_invalid_idle_timeout_rejected_before_preparation(self):
+        for delay in ("0", "-1", "2147483648", "1.5", "inf"):
+            with self.subTest(delay=delay):
+                code, _, _ = self.invoke(prepare, "--run-root", self.root, "--harness", self.harness,
+                                        "--stream-idle-timeout-ms", delay)
                 self.assertEqual(code, 2)
                 self.assertFalse(self.root.exists())
 

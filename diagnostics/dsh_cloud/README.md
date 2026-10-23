@@ -267,3 +267,59 @@ void return. `test_validate_marker.py` covers concatenated frames, truncated
 trailing data, pending runs and failed exit status. A saved negative check at
 `dsh-live-02/marker/validator-negative-check.json` altered one accepted ID in a
 temporary copy; validation rejected it against the untouched native evidence.
+
+## Strictly buffered tools and the provider idle timeout
+
+The installed official DSH pi-ai adapter measures idle time between **semantic
+harness events**, not TCP bytes. Its pi-ai OpenAI parser drops SSE comments,
+empty deltas and empty content. A long tool body can therefore be generating
+normally while the bridge correctly withholds its arguments until full parsing.
+At 27 tokens/s, an 8192-token reply alone takes about 303 seconds, already longer
+than the adapter's default 300-second idle allowance. This estimate is not a
+latency guarantee; prefill, refresh and lower decode rates add time.
+
+For a fresh long-tool experiment, opt into the existing public provider setting:
+
+```sh
+python diagnostics/dsh_cloud/prepare.py \
+  --run-root /root/data/kvmem-vllm-gc/runs/NEW-RUN \
+  --context-window 32768 --select-budget 8192 --max-output-tokens 8192 \
+  --stream-idle-timeout-ms 900000
+```
+
+Preparation snapshots `streamIdleTimeoutMs: 900000`, records
+`stream_idle_timeout_ms` in the manifest, and fingerprints the provider file.
+The default remains 300000 ms. Values must be integer milliseconds from 1 to
+2147483647. Existing prepared runs remain immutable; prepare a new run instead
+of changing a live profile. This setting needs no backend/bridge restart.
+
+This is a finite **semantic-idle allowance**, not a progress-aware transport
+watchdog, a total request deadline, or proof the model is still progressing.
+A completely stalled request can now wait up to the larger allowance; caller
+cancellation still propagates immediately. No fabricated semantic event,
+partial tool argument, bridge parser change or installed SDK patch is added.
+A future progress-aware watchdog needs an explicit transport-progress hook
+through pi-ai and the DSH adapter; keep it distinct from accepted semantic
+history and do not renew it from periodic comments alone.
+
+The CPU integration check imports the installed official adapter, calls its
+public `apply()` profile resolver, and uses the actual pi-ai SDK against an
+ephemeral **loopback fake HTTP provider**. It creates no agent, runs no tools,
+and contacts no real bridge/model. Use the active adapter path from the locked
+harness (the query-hook-patched adapter is also compatible):
+
+```sh
+/path/to/pinned/node diagnostics/dsh_cloud/test_pi_ai_idle_timeout.mjs \
+  --adapter /absolute/path/to/@deepseek-ai/dsh-llm-pi-ai/lib/index.js \
+  --output /tmp/FRESH-pi-ai-idle-result.json
+```
+
+The eight cases cover fast completion; comments, empty deltas and empty content
+failing to reset a short watchdog; successful finite extension with byte-for-byte
+equal semantic chunks/replay metadata and model request body; genuine text
+progress rearming; silent-stall timeout; and caller-abort upstream closure.
+Timer tests use short real intervals after a warm-up, with an independent
+3-second abort bound per case. The fake output includes a complete `write`
+call only at completion; no file is written. The report records the adapter
+source hash. The Python configuration and bridge regressions also cover frozen
+configuration, exact accepted IDs, prefix reuse, system pins and cancellation.

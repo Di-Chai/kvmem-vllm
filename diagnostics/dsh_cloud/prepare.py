@@ -26,6 +26,8 @@ def main():
                         help="Record the backend K budget; positive multiple of 32, with K + fixed G=4096 <= context")
     parser.add_argument("--max-output-tokens", type=int, default=8192,
                         help="Provider output cap; must fit context and the separately configured bridge segment limit")
+    parser.add_argument("--stream-idle-timeout-ms", type=int, default=300000,
+                        help="Finite pi-ai semantic-stream idle timeout; raise explicitly for strictly buffered large tools")
     parser.add_argument("--case-name", help="Additional independent queued-session case, e.g. expense-tracker")
     parser.add_argument("--task-file", type=Path, help="UTF-8 initial task for --case-name; copied into the fresh run")
     args = parser.parse_args()
@@ -57,6 +59,8 @@ def main():
         parser.error("select-budget plus fixed native G=4096 must not exceed context-window")
     if not 1 <= args.max_output_tokens <= args.context_window:
         parser.error("max-output-tokens must be positive and no larger than context-window")
+    if not 1 <= args.stream_idle_timeout_ms <= 2147483647:
+        parser.error("stream-idle-timeout-ms must be in [1, 2147483647]")
     root = args.run_root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     snapshots = root / "configuration"
@@ -66,7 +70,8 @@ def main():
         shutil.copy2(source / name, snapshots / name)
     provider = snapshots / "provider.patch.yml"
     provider.write_text(provider.read_text().replace("contextWindow: 24576", f"contextWindow: {args.context_window}")
-                        .replace("maxTokens: 8192", f"maxTokens: {args.max_output_tokens}"))
+                        .replace("maxTokens: 8192", f"maxTokens: {args.max_output_tokens}")
+                        .replace("streamIdleTimeoutMs: 300000", f"streamIdleTimeoutMs: {args.stream_idle_timeout_ms}"))
     runner_patch = snapshots / "session_runner.patch.yml"
     runner_patch.write_text(runner_patch.read_text().replace(
         "__DSH_GC_RUNNER__", json.dumps(str(snapshots / "session_runner.mjs"))))
@@ -74,6 +79,7 @@ def main():
         "harness": str(harness), "node": str(node), "cli": str(cli),
         "provider": "gc-local", "model": "kvmem-gc-qwen38",
         "base_url": "http://127.0.0.1:18387/v1", "context_window": args.context_window, "max_tokens": args.max_output_tokens,
+        "stream_idle_timeout_ms": args.stream_idle_timeout_ms,
         "native_k": args.select_budget, "native_g": 4096, "query_replay_budget": 128, "max_inflight": 1,
         "configuration_sha256": {name: hashlib.sha256((snapshots / name).read_bytes()).hexdigest() for name in names},
         "prepared_only": True,

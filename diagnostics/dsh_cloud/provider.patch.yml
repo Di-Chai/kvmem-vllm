@@ -8,6 +8,7 @@
         baseURL: http://127.0.0.1:18387/v1
         headers:
           Authorization: Bearer local-unused
+        streamIdleTimeoutMs: 300000
         cacheRetention: long
         defaultInput: [text]
         compat:
