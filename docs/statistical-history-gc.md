@@ -125,6 +125,34 @@ sharing, prompts, calibration, teacher/student training and a per-request
 inference budget remain future work. There is no extra model forward or GPU work
 in the statistical policy.
 
+## Application evidence producers
+
+The current implementation exposes evidence ingestion and native reclamation;
+it does not yet infer reclaimable thinking or completed DSH steps automatically.
+The real DSH marker test therefore had zero statistical decisions and candidate
+retirements. Its later session release is lifecycle cleanup, not proactive GC.
+
+A conservative DSH producer should associate a successful durable tool result
+with its call ID, exact accepted-token source span and retained result witness.
+The bridge must publish coordinates from committed accepted IDs, and the worker
+must validate the session/branch before registering fully archived blocks.
+Mixed boundary blocks and unfinished tails remain protected. A successful tool
+result admits a candidate; it does not by itself establish that deletion is safe.
+
+Cold observations must come from actual, generation-qualified scoring. Ledger
+branch epoch, human Query identity and measurement identity are distinct. A
+selection retry or background poll must not count as another observation. With
+the current Query-based path, several tool turns under one human Query normally
+reuse the existing probe; newly completed steps can consequently have zero
+post-completion cold observations. The first integration should accumulate
+evidence from later real Query measurements. Same-Query decode attention
+sampling needs a separate measured implementation and overhead qualification.
+
+Long-lived use also needs bounded span/witness retirement or transfer: the
+current ledger keeps completed entries and result guards until reset/close and
+has a default 64-span budget. Do not advertise unlimited autonomous task
+reclamation from the existing ingestion API or synthetic throughput fixture.
+
 ## Coexistence protocol
 
 1. Graph selection pins the live, generation-qualified candidate set with

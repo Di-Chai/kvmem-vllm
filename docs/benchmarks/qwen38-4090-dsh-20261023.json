@@ -1,0 +1,850 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-23",
+  "scope": "Real DSH serial tool and task integration on one cloud RTX 4090; semantic-GC quality is not qualified.",
+  "hardware": "NVIDIA GeForce RTX 4090, single GPU; all model inference on the authorized cloud host",
+  "model": "Qwen3.8-27B NVFP4",
+  "model_source": "hf-mirror.com/nvidia/Qwen3.8-27B-NVFP4",
+  "concurrency": 1,
+  "backend_profile": {
+    "model": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "tokenizer": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "hf_config_path": "/root/data/kvmem-vllm-gc/models/Qwen3.8-27B-NVFP4",
+    "model_format": "safetensors",
+    "draft_method": "mtp",
+    "draft_tokens": 1,
+    "execution_mode": "eager",
+    "served_model_name": "kvmem-gc-qwen38",
+    "host": "127.0.0.1",
+    "port": 8186,
+    "max_model_len": 16384,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 128,
+    "gpu_memory_utilization": 0.91,
+    "prefill_chunk_tokens": 128,
+    "query_replay_budget": 128,
+    "verify_session_restore": false,
+    "kvmem": {
+      "block_tokens": 32,
+      "select_budget": 4096,
+      "gen_budget": 4096,
+      "repository_blocks": 1028,
+      "sink_blocks": 1,
+      "recent_blocks": 1,
+      "cpu_read_cache_bytes": 2147483648,
+      "archive_backend": "cpu",
+      "archive_io_max_bytes": 67108864,
+      "async_seal": true,
+      "async_archive_retirement": true,
+      "packed_assembly": true,
+      "direct_pinned_reads": true,
+      "async_cpu_scatter": true,
+      "batched_cpu_append": true,
+      "request_planning": true,
+      "session_capacity": 1,
+      "session_checkpoint_bytes": 536870912,
+      "session_checkpoint_policy": "pm",
+      "session_capture_terminal": true,
+      "mean_k_backend": "torch_reference",
+      "async_refresh": true,
+      "refresh_quantum_tokens": 128,
+      "cpu_history_coordination": true,
+      "maintenance_max_steps": 8,
+      "async_restore": true,
+      "step_latency_interval": 0,
+      "verify_archive_on_finish": false,
+      "historical_gc": {
+        "mode": "delete",
+        "policy": "statistical",
+        "poll_ms": 10,
+        "scan_blocks": 128,
+        "delete_blocks": 8
+      },
+      "assembly_chunk_blocks": 8
+    }
+  },
+  "native_pool": {
+    "blocks": 19,
+    "page_bytes": 55148544,
+    "capacity_bytes": 1047822336
+  },
+  "marker": {
+    "status": "passed",
+    "validation": {
+      "schema_version": 1,
+      "read_only": true,
+      "checked_unix": 1792760583.43895,
+      "case_dir": "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker",
+      "bridge_output": "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02",
+      "status": "passed",
+      "passed": true,
+      "session_id": "session-b4bdfd3a-9b26-4c0c-b28b-a726eb4308fd",
+      "owner": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+      "native_namespace": [
+        "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+        "dsh-880928a21fa947142b156c523fb281d78ae220e2"
+      ],
+      "complete_zstd_frames": 28,
+      "durable_rows": 57,
+      "actual_read": {
+        "call_id": "toolu_850f24183ba240cc80ec3b2626dda847",
+        "path": "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/workspace/marker.txt",
+        "result_seq": 41
+      },
+      "final_marker": "GC_MARKER_4dbe86df1228e76ea3abe4b6b848cf38",
+      "exit_code": 0,
+      "query_message_id": "ab9c6ccf-3d17-4684-b8fd-d02f79a8d061",
+      "query_user_ordinal": 0,
+      "query_spans": [
+        [
+          4251,
+          4281
+        ],
+        [
+          4251,
+          4281
+        ]
+      ],
+      "accepted_output_tokens": [
+        85,
+        78
+      ],
+      "prompt_tokens": [
+        4396,
+        4583
+      ],
+      "accepted_prefix_verification": {
+        "passed": true,
+        "local_assets_only": true,
+        "turns": [
+          {
+            "turn": 1,
+            "prompt_tokens": 4396,
+            "prompt_ids_sha256": "8a9d196b37400d7086e7c7bded6cf6b88a3b13c06a49704975dd5faca412e048",
+            "previous_prompt_and_accepted_prefix_tokens": 0,
+            "exact_output_prefix_reused": false
+          },
+          {
+            "turn": 2,
+            "prompt_tokens": 4583,
+            "prompt_ids_sha256": "6f8c457ae1408aa1d8b121b6a1ffaa1e0876c6dddb7c903c7a8de858c70a97ed",
+            "previous_prompt_and_accepted_prefix_tokens": 4481,
+            "exact_output_prefix_reused": true
+          }
+        ]
+      },
+      "gc_observation_before_release": {
+        "config": {
+          "mode": "delete",
+          "policy": "statistical",
+          "poll_ms": 10,
+          "scan_blocks": 128,
+          "delete_blocks": 8
+        },
+        "current_counters": {
+          "mode": "delete",
+          "policy": "statistical",
+          "policy_params": {
+            "max_importance": 0.1,
+            "min_cold_observations": 3,
+            "min_model_reclaim_score": -1.0,
+            "min_observations": 3,
+            "proactive": true
+          },
+          "active_scopes": 1,
+          "published": 145,
+          "ticks": 33291,
+          "examined": 410903,
+          "decisions": 0,
+          "retired": 0,
+          "cpu_released": 0,
+          "slots_released": 0,
+          "pending_slots": 0,
+          "pending_cpu_bytes": 0,
+          "retries": 0,
+          "stale": 0,
+          "policy_failures": 0,
+          "shadow_decisions": 0,
+          "admission_attempts": 509,
+          "admission_retries": 0,
+          "metadata": {
+            "allocations": 2,
+            "recycles": 0,
+            "pooled_scopes": 2,
+            "scope_capacity": 1028
+          }
+        },
+        "semantic_producer_present": false,
+        "statistical_candidate_retirement_proven": false,
+        "decode_overlap_proven": false,
+        "reason": "This stage publishes no semantic eligibility/observation evidence. Aggregate archive counters cannot establish candidate identity or decode overlap."
+      },
+      "proactive_gc_proven": false,
+      "limits": "Proves actual read/tool roundtrip, Query identity and accepted-ID reconstruction. Does not prove proactive GC, GPU page identity or a throughput effect.",
+      "evidence_sha256": {
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/exit.json": "37081566d4ee803711f0ed49427b000f43413ed14988ad9ccd260c165a01d657",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/expected.json": "87eabeb8c3d3e85f2dea69aac277002da4105d0b273b7da9bee367dd19c7482d",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/workspace/marker.txt": "7bc79a6b449940ceb3738bae24df8929cd887022576325293ef34e7ee17969a0",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/stdout.log": "7bc79a6b449940ceb3738bae24df8929cd887022576325293ef34e7ee17969a0",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/task.txt": "0201af373bc23a8032654e55a14bd94c3f7a012b2ebc81fd5e4902bb4160c9d2",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/home/sessions/--root-data-kvmem-vllm-gc-runs-dsh-live-02-marker-workspace--/session-b4bdfd3a-9b26-4c0c-b28b-a726eb4308fd/session.jsonl.zstd": "338746a9bb87633fff8706fa4e57569cb0785ad992d1578eb6722f5ff5a76fe8",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/request.json": "60da126c9b2e7b862143f6d51d54270ef7ba40197870e17e023cdcad378d2806",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/plan.json": "247dde85f6e8922ab28b2b68cc3b38f0aa3debf25e61c23ff4312b075b65a5ed",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/accepted.json": "67ac9289e64a458d2f9c296b30a9e7798cd7a463a152926acdbf0efa0761a9a9",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/response.json": "6ad602da9d51a04e0f9ca47963a2f16845d28e7e7d18e6071cfddb75a1b0eb77",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/native.json": "5d3ae526636f3708d75ca83d5feb590811e1dce2b3f663ea99235929706f2697",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00001/segment-000.json": "c6645a9e9d2cb3890b05396c052597d3d0a8d327acd27d9ac2b645fe63bf8787",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/request.json": "f1245dcbd888414da2698fb37dac097de705f6df1eaf0cf2f819dc47591ce4f6",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/plan.json": "f6d70bffadd2347d007dcb9a8546a1111a7d2de28739267554017e5ff6831516",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/accepted.json": "7464d2c1f51dbeebfdedbcadea22d00e327824b19601355eebf1c01228ae15cb",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/response.json": "226ec7961987a964c1e2e2d454d6aeeb49184c3a5bc8d2ffcab4104c24f37626",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/native.json": "c1722e6166f263e7a439518c7fdbf638f46c3a948d1ed4deee2c93592955232a",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/dsh-880928a21fa947142b156c523fb281d78ae220e2/00002/segment-000.json": "772bb6c2a9d2f5b180e774d16d9e6302cdba0312355562fd17a9744805ac9ca3",
+        "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02/protocol.json": "51dcac580ea32475d72c577825fb11692f99b9f739dbad23f382776db376204c",
+        "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/lifecycle-before-release.json": "2cf666c8a8abc247e0364746ccf45a55c35ac17e1d3e6325a42d8f3fb762e41d"
+      }
+    },
+    "lifecycle_after_release": {
+      "schema_version": 1,
+      "read_only": true,
+      "endpoint": "http://127.0.0.1:8186/v1/completions",
+      "bridge_output": "/root/data/kvmem-vllm-gc/runs/dsh-bridge-02",
+      "server_run": "/root/data/kvmem-vllm-gc/runs/qwen38-dsh-server-02",
+      "profile": "/root/data/kvmem-vllm-gc/profiles/qwen38-nvfp4-dsh-c1-headroom.json",
+      "snapshot_age_seconds": 162.94210982322693,
+      "scheduler_quiescent_in_saved_snapshot": true,
+      "scheduler_resources": {
+        "at": 13658050.116898317,
+        "requests": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "reservations": [],
+        "reservation_rejections": 0,
+        "authority_limit": 1,
+        "authority_rejections": 0,
+        "owned_blocks": 0,
+        "archive_capacity_deferrals": 0,
+        "free_blocks": 18,
+        "total_blocks": 19,
+        "restore_admission": {
+          "capacity": {
+            "resident": 1,
+            "assembly": 1
+          },
+          "occupied": {
+            "resident": 0,
+            "assembly": 0
+          },
+          "requests": {},
+          "waiting": 0,
+          "deferred": {
+            "resident": 0,
+            "assembly": 0
+          },
+          "admitted": {
+            "resident": 0,
+            "assembly": 1
+          },
+          "rolled_back": 0,
+          "peak_occupied": {
+            "resident": 0,
+            "assembly": 1
+          }
+        },
+        "publication_blocked": [],
+        "cpu_history_admission": {
+          "capacity_records": 1762,
+          "reserved_records": 0,
+          "available_records": 1762,
+          "incoming_reserved_records": 0,
+          "retained_reserved_records": 0,
+          "active": 0,
+          "retiring": 0,
+          "idle_protected_records": 0,
+          "idle_reclaimable_records": 0,
+          "admissions": 3,
+          "deferrals": 0,
+          "settlements": 3,
+          "capacity_bytes": 2147102720,
+          "reserved_bytes": 0,
+          "available_bytes": 2147102720,
+          "last_observed_archive_bytes": 0,
+          "waiting": 0
+        },
+        "sessions": {
+          "entries": 0,
+          "hits": 1,
+          "misses": 1,
+          "waits": 66
+        },
+        "session_views": [],
+        "session_owners": []
+      },
+      "owners": [
+        {
+          "owner": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+          "namespace": [
+            "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+            "dsh-880928a21fa947142b156c523fb281d78ae220e2"
+          ],
+          "status": "already_absent",
+          "session_leases": [],
+          "completed_turns": 2,
+          "incomplete_turns": [],
+          "turns": [
+            {
+              "turn": 1,
+              "committed": true,
+              "prompt_tokens": 4396,
+              "query_span": [
+                4251,
+                4281
+              ],
+              "query_source": {
+                "status": "verified-user-source",
+                "message_id": "ab9c6ccf-3d17-4684-b8fd-d02f79a8d061",
+                "user_ordinal": 0,
+                "query_span": [
+                  4251,
+                  4281
+                ]
+              },
+              "exact_output_prefix_reused": false,
+              "accepted_output_tokens": 85,
+              "first_native_token_seconds": 10.183319568634033,
+              "elapsed_seconds": 17.230628490447998,
+              "segments": [
+                {
+                  "index": 0,
+                  "request_id": "cmpl-bacab9410bec62be",
+                  "prompt_tokens": 4396,
+                  "output_tokens": 85,
+                  "finish_reason": "stop",
+                  "restore_events": [],
+                  "restore_elapsed_ms": [],
+                  "refresh_replay_tokens": 69,
+                  "query_replay_tokens": 57,
+                  "pressure_replay_tokens": 12,
+                  "private_query_forward_tokens": 57,
+                  "refresh_events": [
+                    {
+                      "request_id": "cmpl-bacab9410bec62be-0-9f87423e",
+                      "command_id": 1,
+                      "history_begin": 4224,
+                      "selected_tokens": 4096,
+                      "replay_tokens": 57,
+                      "groups": [
+                        {
+                          "group_id": 3,
+                          "blocks": 3,
+                          "block_tokens": 1584,
+                          "offset": 128
+                        }
+                      ]
+                    },
+                    {
+                      "request_id": "cmpl-bacab9410bec62be-0-9f87423e",
+                      "command_id": 2,
+                      "history_begin": 4384,
+                      "selected_tokens": 4032,
+                      "replay_tokens": 12,
+                      "groups": [
+                        {
+                          "group_id": 3,
+                          "blocks": 3,
+                          "block_tokens": 1584,
+                          "offset": 352
+                        }
+                      ]
+                    }
+                  ],
+                  "completed_refreshes": [
+                    {
+                      "command_id": 1,
+                      "selection": "query",
+                      "query_tokens": 57,
+                      "query_span": [
+                        4251,
+                        4281
+                      ],
+                      "private_forward_steps": 1,
+                      "query_execution_counts": {
+                        "eager": 1
+                      },
+                      "assembly_seconds": 3.2087524868547916,
+                      "assembly_host_prepare_seconds": 0.05922154523432255,
+                      "assembly_uploaded_bytes": 76873728,
+                      "refresh_started_at": 13657920.396923082,
+                      "refresh_finished_at": 13657924.051469788
+                    },
+                    {
+                      "command_id": 2,
+                      "selection": "pressure",
+                      "query_tokens": 12,
+                      "query_span": null,
+                      "private_forward_steps": 0,
+                      "query_execution_counts": {},
+                      "assembly_seconds": 0.0980214960873127,
+                      "assembly_host_prepare_seconds": 0.04723587445914745,
+                      "assembly_uploaded_bytes": 139264000,
+                      "refresh_started_at": 13657924.995311506,
+                      "refresh_finished_at": 13657925.106923068
+                    }
+                  ],
+                  "verified_restore_events": [],
+                  "metrics": {
+                    "time_to_first_token_ms": 10041.436908766627,
+                    "generation_time_ms": 3543.647000566125,
+                    "queue_time_ms": 0.12252479791641235,
+                    "mean_itl_ms": 42.186273816263395,
+                    "tokens_per_second": 6.25686234750499,
+                    "speculative_decoding": {
+                      "mean_acceptance_length": 1.9090909090909092,
+                      "draft_acceptance_rate": 0.9090909090909091,
+                      "acceptance_histogram": [
+                        4,
+                        40
+                      ],
+                      "num_spec_steps": 44,
+                      "num_accepted_draft_tokens": 40,
+                      "num_draft_tokens": 44,
+                      "num_spec_tokens": 1
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "turn": 2,
+              "committed": true,
+              "prompt_tokens": 4583,
+              "query_span": [
+                4251,
+                4281
+              ],
+              "query_source": {
+                "status": "verified-user-source",
+                "message_id": "ab9c6ccf-3d17-4684-b8fd-d02f79a8d061",
+                "user_ordinal": 0,
+                "query_span": [
+                  4251,
+                  4281
+                ]
+              },
+              "exact_output_prefix_reused": true,
+              "accepted_output_tokens": 78,
+              "first_native_token_seconds": 1.2250845432281494,
+              "elapsed_seconds": 4.253744125366211,
+              "segments": [
+                {
+                  "index": 0,
+                  "request_id": "cmpl-89332695d0177b56",
+                  "prompt_tokens": 4583,
+                  "output_tokens": 78,
+                  "finish_reason": "stop",
+                  "restore_events": [
+                    {
+                      "request_id": "cmpl-89332695d0177b56-0-947f2667",
+                      "history_tokens": 4480,
+                      "active_tokens": 4128,
+                      "started": 13657932.530768888,
+                      "finished": 13657932.654769853,
+                      "uploaded_bytes": 143720448,
+                      "model_bytes": 154927104,
+                      "host_prepare_seconds": 0.06277977302670479,
+                      "resident_active_tokens": 0,
+                      "split_tokens": 0,
+                      "partial_tokens": 0,
+                      "raw_cache_hit_tokens": 0,
+                      "resident_v_reused_tokens": 0,
+                      "public_peer_count": 0,
+                      "cancelled": false,
+                      "lane": "assembly"
+                    }
+                  ],
+                  "restore_elapsed_ms": [
+                    124.00096468627453
+                  ],
+                  "refresh_replay_tokens": 7,
+                  "query_replay_tokens": 0,
+                  "pressure_replay_tokens": 7,
+                  "private_query_forward_tokens": 0,
+                  "refresh_events": [
+                    {
+                      "request_id": "cmpl-89332695d0177b56-0-947f2667",
+                      "command_id": 3,
+                      "history_begin": 4576,
+                      "selected_tokens": 4032,
+                      "replay_tokens": 7,
+                      "groups": [
+                        {
+                          "group_id": 3,
+                          "blocks": 3,
+                          "block_tokens": 1584,
+                          "offset": 544
+                        }
+                      ]
+                    }
+                  ],
+                  "completed_refreshes": [
+                    {
+                      "command_id": 3,
+                      "selection": "pressure",
+                      "query_tokens": 7,
+                      "query_span": null,
+                      "private_forward_steps": 0,
+                      "query_execution_counts": {},
+                      "assembly_seconds": 0.07814696058630943,
+                      "assembly_host_prepare_seconds": 0.04049910977482796,
+                      "assembly_uploaded_bytes": 139264000,
+                      "refresh_started_at": 13657933.359331612,
+                      "refresh_finished_at": 13657933.446455646
+                    }
+                  ],
+                  "verified_restore_events": [],
+                  "metrics": {
+                    "time_to_first_token_ms": 1194.4931503385305,
+                    "generation_time_ms": 3027.915408834815,
+                    "queue_time_ms": 0.07719174027442932,
+                    "mean_itl_ms": 39.323576738114475,
+                    "tokens_per_second": 18.472868957823135,
+                    "speculative_decoding": {
+                      "mean_acceptance_length": 1.95,
+                      "draft_acceptance_rate": 0.95,
+                      "acceptance_histogram": [
+                        2,
+                        38
+                      ],
+                      "num_spec_steps": 40,
+                      "num_accepted_draft_tokens": 38,
+                      "num_draft_tokens": 40,
+                      "num_spec_tokens": 1
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "release_payload": {
+            "model": "kvmem-gc-qwen38",
+            "prompt": [
+              1
+            ],
+            "session_id": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+            "cache_salt": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+            "max_tokens": 1,
+            "temperature": 0,
+            "kvmem_reselect": "off",
+            "kvmem_mandatory_parts": "none",
+            "kvmem_mandatory_spans": [],
+            "kv_transfer_params": {
+              "kvmem_release_session": true
+            }
+          },
+          "release_command": "curl --noproxy '*' --fail-with-body --max-time 180 -H 'Content-Type: application/json' --data-binary '{\"model\":\"kvmem-gc-qwen38\",\"prompt\":[1],\"session_id\":\"dsh-880928a21fa947142b156c523fb281d78ae220e2\",\"cache_salt\":\"dsh-880928a21fa947142b156c523fb281d78ae220e2\",\"max_tokens\":1,\"temperature\":0,\"kvmem_reselect\":\"off\",\"kvmem_mandatory_parts\":\"none\",\"kvmem_mandatory_spans\":[],\"kv_transfer_params\":{\"kvmem_release_session\":true}}' http://127.0.0.1:8186/v1/completions",
+          "release_confirmed_absent": true
+        }
+      ],
+      "release_protocol": {
+        "prerequisite": "DSH task exited; inspect a fresh idle scheduler snapshot before executing the printed command",
+        "control": "One input token and one output token after generation-qualified fenced eviction; this is not a zero-model administrative API",
+        "completion": "HTTP success, followed by namespace absent and requests/owned_blocks/refresh_pending/connector_pending/reservations all empty",
+        "evidence": "Session release/eviction counters are not proactive statistical GC evidence"
+      },
+      "gc_evidence": {
+        "config": {
+          "mode": "delete",
+          "policy": "statistical",
+          "poll_ms": 10,
+          "scan_blocks": 128,
+          "delete_blocks": 8
+        },
+        "current_counters": {
+          "mode": "delete",
+          "policy": "statistical",
+          "policy_params": {
+            "max_importance": 0.1,
+            "min_cold_observations": 3,
+            "min_model_reclaim_score": -1.0,
+            "min_observations": 3,
+            "proactive": true
+          },
+          "active_scopes": 0,
+          "published": 145,
+          "ticks": 140309,
+          "examined": 1973085,
+          "decisions": 0,
+          "retired": 0,
+          "cpu_released": 145,
+          "slots_released": 147,
+          "pending_slots": 0,
+          "pending_cpu_bytes": 0,
+          "retries": 0,
+          "stale": 0,
+          "policy_failures": 0,
+          "shadow_decisions": 0,
+          "admission_attempts": 509,
+          "admission_retries": 0,
+          "metadata": {
+            "allocations": 2,
+            "recycles": 2,
+            "pooled_scopes": 2,
+            "scope_capacity": 1028
+          }
+        },
+        "semantic_producer_present": false,
+        "statistical_candidate_retirement_proven": false,
+        "decode_overlap_proven": false,
+        "reason": "This stage publishes no semantic eligibility/observation evidence. Aggregate archive counters cannot establish candidate identity or decode overlap."
+      },
+      "replay_evidence": {
+        "join": "Bridge segment response ID -> exact worker ID or response-ID + -0- prefix",
+        "measured": "async_restore history/active tokens, uploaded/model bytes, host preparation and wall duration; scheduler_refresh replay_tokens classified by bounded_refresh.selection, async_refresh Query forward tokens; bridge TTFT",
+        "limits": "An absent event means unobserved, not free. Bridge elapsed/TTFT includes queueing and transport. GC-induced replay cost requires a matched baseline with the same accepted trajectory."
+      }
+    },
+    "release_request": {
+      "payload": {
+        "model": "kvmem-gc-qwen38",
+        "prompt": [
+          1
+        ],
+        "session_id": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+        "cache_salt": "dsh-880928a21fa947142b156c523fb281d78ae220e2",
+        "max_tokens": 1,
+        "temperature": 0,
+        "kvmem_reselect": "off",
+        "kvmem_mandatory_parts": "none",
+        "kvmem_mandatory_spans": [],
+        "kv_transfer_params": {
+          "kvmem_release_session": true
+        }
+      },
+      "status": 200,
+      "response": {
+        "id": "cmpl-af4c2a829fac1df4",
+        "object": "text_completion",
+        "created": 1792760285,
+        "model": "kvmem-gc-qwen38",
+        "choices": [
+          {
+            "index": 0,
+            "text": "Please",
+            "logprobs": null,
+            "finish_reason": "length",
+            "stop_reason": null,
+            "token_ids": null,
+            "prompt_logprobs": null,
+            "prompt_token_ids": null,
+            "routed_experts": null
+          }
+        ],
+        "service_tier": null,
+        "system_fingerprint": "vllm-0.30.0-da8f7536",
+        "usage": {
+          "prompt_tokens": 1,
+          "total_tokens": 2,
+          "completion_tokens": 1,
+          "prompt_tokens_details": null,
+          "completion_tokens_details": null
+        },
+        "kv_transfer_params": null,
+        "ec_transfer_params": null,
+        "metrics": {
+          "time_to_first_token_ms": 45284.52102094889,
+          "generation_time_ms": 0.0,
+          "queue_time_ms": 158.19220058619976,
+          "mean_itl_ms": null,
+          "tokens_per_second": 0.022082600797243588,
+          "speculative_decoding": {
+            "mean_acceptance_length": 1.0,
+            "draft_acceptance_rate": 0.0,
+            "acceptance_histogram": [
+              0,
+              0
+            ],
+            "num_spec_steps": 0,
+            "num_accepted_draft_tokens": 0,
+            "num_draft_tokens": 0,
+            "num_spec_tokens": 1,
+            "per_step_accepted": null,
+            "per_step_drafted": null
+          }
+        }
+      },
+      "started_at": 1792760285.9523551,
+      "finished_at": 1792760331.4074821
+    },
+    "gpu_sample_scope": "1-second samples beginning after inference startup, not full model-load or exact instantaneous peak",
+    "sampled_peak_mib": 23755,
+    "independent_review": {
+      "schema_version": 1,
+      "checked_unix": 1792760856.426071,
+      "status": "passed",
+      "read_only": true,
+      "gpu_used": false,
+      "network_requests": 0,
+      "source": "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/home/sessions/--root-data-kvmem-vllm-gc-runs-dsh-live-02-marker-workspace--/session-b4bdfd3a-9b26-4c0c-b28b-a726eb4308fd/session.jsonl.zstd",
+      "source_sha256": "338746a9bb87633fff8706fa4e57569cb0785ad992d1578eb6722f5ff5a76fe8",
+      "complete_zstd_frames": 28,
+      "compressed_bytes_consumed": 12364,
+      "durable_rows": 57,
+      "tool": {
+        "name": "read",
+        "call_id": "toolu_850f24183ba240cc80ec3b2626dda847",
+        "call_seq": 40,
+        "result_seq": 41,
+        "path": "/root/data/kvmem-vllm-gc/runs/dsh-live-02/marker/workspace/marker.txt",
+        "is_error": false,
+        "exact_single_line_result": true
+      },
+      "final": {
+        "seq": 89,
+        "matches_expected": true,
+        "matches_stdout_and_file": true,
+        "completion_seq": 91,
+        "exit_code": 0,
+        "marker_absent_from_initial_task_and_request": true
+      },
+      "bridge_turns": [
+        {
+          "turn": 1,
+          "accepted_tokens": 85,
+          "exact_output_prefix_reused": false,
+          "query_source": {
+            "status": "verified-user-source",
+            "message_id": "ab9c6ccf-3d17-4684-b8fd-d02f79a8d061",
+            "user_ordinal": 0,
+            "query_span": [
+              4251,
+              4281
+            ]
+          }
+        },
+        {
+          "turn": 2,
+          "accepted_tokens": 78,
+          "exact_output_prefix_reused": true,
+          "query_source": {
+            "status": "verified-user-source",
+            "message_id": "ab9c6ccf-3d17-4684-b8fd-d02f79a8d061",
+            "user_ordinal": 0,
+            "query_span": [
+              4251,
+              4281
+            ]
+          }
+        }
+      ],
+      "existing_report_hashes_verified": 20,
+      "prefix_reconstruction": "Existing validator reports exact 4481-token accepted prefix reconstruction; this independent pass verified source hashes and saved token-ID equality, without rerunning tokenizer reconstruction.",
+      "browser_review": {
+        "default_network": "Only the observer loopback origin; external HTTP and WebSockets blocked; service workers disabled.",
+        "cpu_only": "CUDA visibility empty; Chromium disable-gpu plus SwiftShader ANGLE flags; actual WebGL renderer must match software if WebGL exists.",
+        "cdn_handling": "Explicit allowed_asset_hosts permits GET script/stylesheet/image/font/media. Blocked dependencies are environment limitations, not proof of an implementation defect; README states this.",
+        "blocking_findings": [],
+        "evidence_limits": [
+          "Default no-check run may return observational-checks-passed with specified_state_checks_pass=null; it cannot establish movement/shooting/gameplay completion.",
+          "HTTP status codes are recorded in requests, but summary.no_failed_requests only examines requestfailed events, not status>=400. Check HTTP statuses explicitly when judging dependencies.",
+          "State changed/decreased checks require source review and an idle/control comparison to attribute a change to input; the harness does not infer causality from animation."
+        ]
+      },
+      "gc_proactive_proven": false
+    }
+  },
+  "preserved_attempts": [
+    {
+      "run": "qwen38-dsh-server-01 / dsh-live-01/marker",
+      "status": "failed",
+      "reason": "GPU OOM in bounded history assembly while allocating a 34 MiB slot. The 24K/.93 configuration passed native startup capacity checks but did not complete the first real DSH request."
+    },
+    {
+      "run": "qwen38-dsh-server-02-preflight",
+      "status": "failed-before-model-load",
+      "reason": "Launcher pre-created a directory that serve requires to create itself; empty directory removed and attempted launch preserved."
+    },
+    {
+      "run": "dsh-live-02/csgo",
+      "status": "failed-before-model-request",
+      "reason": "Custom queue runner name was an unevaluated YAML expression object."
+    },
+    {
+      "run": "dsh-live-03/csgo",
+      "status": "failed-before-model-request",
+      "reason": "Model-selection service setup did not implement official commit contract."
+    }
+  ],
+  "csgo": {
+    "thinking_on": {
+      "status": "failed-task",
+      "reason": "Both completed user turns returned only future plans; no tool calls or files. Native output had zero tool_call tags, so this was not a parser loss.",
+      "user_turns": 2,
+      "model_replies": 2,
+      "output_tokens": [
+        4158,
+        4134
+      ],
+      "tool_calls": 0,
+      "files": 0,
+      "thinking_enabled": true,
+      "thinking_budget_per_native_request": 4096,
+      "configured_logical_context": 16384,
+      "gpu_sampled_peak_mib": 23763,
+      "semantic_gc_active": false
+    },
+    "thinking_off": {
+      "status": "failed-task",
+      "run": "dsh-live-05/csgo",
+      "bridge_run": "dsh-bridge-05",
+      "thinking_enabled": false,
+      "configured_logical_context": 16384,
+      "user_turns": 1,
+      "completed_model_replies": 2,
+      "failed_model_replies": 1,
+      "completed_output_tokens": [
+        59,
+        3464
+      ],
+      "failed_reply": {
+        "prompt_tokens": 8030,
+        "output_tokens": 5775,
+        "segments": [
+          4096,
+          1679
+        ],
+        "finish_reason": "length",
+        "head": "<tool_call>\n<|im_start|>function=write>\n<content>\n// ============",
+        "tail": "if (e.code === 'Digit2') switch",
+        "reason": "Malformed initial tool syntax and incomplete output; no partial tool call executed."
+      },
+      "tool_calls_executed": 2,
+      "files": [
+        {
+          "path": "index.html",
+          "bytes": 8473,
+          "sha256": "4a7fc6248aff92c5c095ed90da5a629a149e1d5aab733aadb9469e27bacb8743"
+        }
+      ],
+      "browser_validation": {
+        "status": "issues-observed",
+        "missing_script": "game.js",
+        "http_status": 404,
+        "gameplay_pass": false
+      },
+      "semantic_gc_active": false,
+      "statistical_candidate_retirements": 0,
+      "session_release_http_status": 200,
+      "session_release_elapsed_seconds": 0.22092747688293457,
+      "session_release_all_resources_empty": true,
+      "gpu_sampled_peak_mib": 23763
+    }
+  },
+  "limits": [
+    "The configured 16384 logical token limit is not a successful 16384-token workload result; marker inputs were 4396/4583 tokens.",
+    "No real semantic eligibility producer was installed; marker statistical decisions and candidate retirements were zero.",
+    "Session release CPU frees are lifecycle cleanup, not proactive GC.",
+    "The 124 ms checkpoint restore was one observed tool continuation, not an isolated GC overhead measurement.",
+    "No throughput inference should be made from cold DSH TTFT, including the separately recorded one-token release control request.",
+    "The earlier paired short-throughput qualification used a different K/G and profile; see its separate report."
+  ]
+}
