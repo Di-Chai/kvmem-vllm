@@ -12,7 +12,8 @@ def archive_bytes_per_token(kv_cache_config):
         specs = (list(spec.kv_cache_specs.values()) if isinstance(spec, UniformTypeKVCacheSpecs)
                  else [spec] * len(group.layer_names))
         for item in specs:
-            if type(item) is FullAttentionSpec:
+            from .cache_groups import _bounded_full_spec
+            if type(item) is FullAttentionSpec or _bounded_full_spec(item):
                 if item.sliding_window is not None or item.head_size_v != item.head_size:
                     raise ValueError('Unqualified CPU archive geometry')
                 rows.append((item.num_kv_heads, item.head_size))

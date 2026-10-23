@@ -121,6 +121,9 @@ class KVMemScheduler(Scheduler):
                 draft_contract=self.draft_contract,
                 max_authorities=self.scheduler_config.max_num_seqs if options.async_archive_retirement else None)
         self.connector.scheduler_completion = self._complete_refresh
+        if os.getenv("KVMEM_BOUNDED_KV_CAPACITY") == "1":
+            from .bounded_capacity import validate_manager_coverage
+            validate_manager_coverage(self.kv_cache_manager, self.vllm_config)
         if self._bounded_target:
             self.kv_cache_manager.guided_reserve = options.guided_reserve
             self.kv_cache_manager.guided_block_tokens = config.block_tokens

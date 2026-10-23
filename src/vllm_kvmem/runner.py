@@ -16,6 +16,13 @@ from .capture import capture_to, install_qwen_capture
 
 def make_probe_runner(base):
     class KVMemProbeRunner(base):
+        def get_kv_cache_spec(self):
+            specs = super().get_kv_cache_spec()
+            if os.getenv("KVMEM_BOUNDED_KV_CAPACITY") == "1":
+                from .bounded_capacity import bounded_specs
+                return bounded_specs(specs, self.vllm_config)
+            return specs
+
         def load_model(self, *args, **kwargs):
             from .options import RuntimeOptions
             options = RuntimeOptions.from_vllm(self.vllm_config)

@@ -33,6 +33,7 @@ DEFAULTS = {
     'query_replay_budget': None,
     'reasoning_end_str': None,
     'cuda_allocator_conf': None,
+    'bounded_kv_capacity': False,
 }
 PATHS = ('model', 'tokenizer', 'hf_config_path', 'draft_model', 'mm_proj')
 # Explicit experiment controls for NVFP4 and FP8 checkpoints.
@@ -173,6 +174,11 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     utilization = cfg['gpu_memory_utilization']
     if type(utilization) not in (int, float) or not math.isfinite(utilization) or not 0 < utilization < 1:
         raise ValueError('gpu_memory_utilization must be strictly between zero and one')
+    if type(cfg['bounded_kv_capacity']) is not bool:
+        raise ValueError('bounded_kv_capacity must be boolean')
+    if cfg['bounded_kv_capacity'] and (cfg['draft_method'] != 'mtp' or
+            cfg['max_num_seqs'] != 1 or cfg['max_model_len'] > 32768):
+        raise ValueError('Bounded KV capacity initially qualifies native MTP C1 through 32768 logical tokens')
     if type(cfg['q8_tensorcore']) is not bool:
         raise ValueError('q8_tensorcore must be boolean')
     if cfg['q8_tensorcore'] and not is_gguf:
@@ -205,6 +211,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if options.graph_mode != 'off' and 'multi_user' in profile:
         raise ValueError('Block graph does not support the legacy direct multi_user middleware; '
                          'use elastic-serve or owned sessions on direct serve')
+    if cfg['bounded_kv_capacity'] and not options.request_planning:
+        raise ValueError('Bounded KV capacity requires explicit request planning')
     if not options.memory.speculation:
         raise ValueError('The mainline serving profile requires the DFlash2 transaction contract')
     if options.prefill_batch_tokens and options.prefill_batch_tokens < options.memory.block_tokens * cfg['max_num_seqs']:
@@ -314,6 +322,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    if cfg['bounded_kv_capacity']:
+        env['KVMEM_BOUNDED_KV_CAPACITY'] = '1'
     if cfg['cuda_allocator_conf'] is not None:
         settings = 'backend:native,' + ','.join(
             f'{name}:{value}' for name, value in cfg['cuda_allocator_conf'].items())

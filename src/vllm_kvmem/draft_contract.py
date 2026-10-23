@@ -96,7 +96,8 @@ class DraftContract:
                 group = runner.kv_cache_config.kv_cache_groups[i]
                 spec = group.kv_cache_spec
                 specs = tuple(spec.kv_cache_specs.values()) if isinstance(spec, UniformTypeKVCacheSpecs) else (spec,)
-                if any(type(s) is not FullAttentionSpec or s.dtype not in (torch.float8_e4m3fn, torch.uint8) or
+                from .cache_groups import _bounded_full_spec
+                if any(not (type(s) is FullAttentionSpec or _bounded_full_spec(s)) or s.dtype not in (torch.float8_e4m3fn, torch.uint8) or
                        s.sliding_window is not None for s in specs):
                     raise ValueError('MTP requires lockstep full FP8 attention groups')
                 covered.update(names.intersection(group.layer_names))
