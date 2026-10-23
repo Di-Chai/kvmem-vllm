@@ -12,16 +12,16 @@ qualification = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualification)
 
 
-def sample(mode='delete'):
+def sample(mode='delete', prompt=256):
     events = [dict(kind='published', at=12.)]
     for name in ('retired', 'cpu_released'):
         if mode == 'delete':
             events.append(dict(kind=name, before=0, after=4,
-                interval_begin=13., interval_end=14., accepted_history=520,
-                following_decode_at=15., following_accepted_history=522))
+                interval_begin=13., interval_end=14., accepted_history=prompt+264,
+                following_decode_at=15., following_accepted_history=prompt+266))
     fixture = dict(source='synthetic_gc_throughput_fixture', semantic_measurement=False,
         error=None, flushed=True, observations_published=3, events=events,
-        plan=dict(prompt_tokens=256, decode_tokens=512),
+        plan=dict(prompt_tokens=prompt, decode_tokens=512),
         candidate_handles=[[i, 1] for i in range(4)],
         baseline=dict(counters=dict(retired=0, cpu_released=0)),
         last_sample=dict(counters=dict(retired=4 if mode=='delete' else 0,
@@ -31,8 +31,9 @@ def sample(mode='delete'):
 
 
 @pytest.mark.parametrize('mode', ['off', 'delete'])
-def test_audit_accepts_only_the_declared_synthetic_scope(mode):
-    fixture, result = sample(mode)
+@pytest.mark.parametrize('prompt', [256, 36864])
+def test_audit_accepts_only_the_declared_synthetic_scope(mode, prompt):
+    fixture, result = sample(mode, prompt)
     proof = qualification.audit_statistical_fixture(fixture, result, mode,
         [dict(refresh_started_at=1., refresh_finished_at=9.)])
     assert proof['semantic_measurement'] is False
@@ -162,3 +163,50 @@ def test_clear_regression_does_not_recommend_retesting_until_pass():
     assert uncertainty['assessment'] == 'lower_bound_exceeds_1pct'
     assert not uncertainty['additional_evidence_needed']
     assert not uncertainty['automatic_retesting']
+
+
+def large_fixture_config():
+    return dict(max_num_seqs=1, execution_mode='eager', draft_method='mtp', draft_tokens=1,
+        max_model_len=262144, bounded_kv_capacity=True,
+        kvmem=dict(historical_gc=dict(policy='statistical'), block_tokens=32,
+                   select_budget=36864, gen_budget=16384, repository_blocks=8196,
+                   cpu_read_cache_bytes=12*1024**3))
+
+
+@pytest.mark.parametrize('prompt', [256, 36864, 52672])
+def test_fixture_accepts_aligned_long_prompt_through_exact_stable_boundary(prompt):
+    import copy
+    config = large_fixture_config()
+    before = copy.deepcopy(config)
+    qualification.validate_statistical_fixture_config(config, prompt, 512)
+    assert config == before  # Validation cannot shrink logical/K/G/CPU budgets.
+
+
+@pytest.mark.parametrize('prompt,decode', [(0,512), (224,512), (255,512),
+                                         (257,512), (36865,512), (36864,511)])
+def test_fixture_rejects_invalid_prompt_or_decode_shape(prompt, decode):
+    with pytest.raises(ValueError, match='aligned prompt'):
+        qualification.validate_statistical_fixture_config(large_fixture_config(), prompt, decode)
+
+
+def test_fixture_rejects_window_overflow_and_inconsistent_logical_limit():
+    config = large_fixture_config()
+    with pytest.raises(ValueError, match='stable window'):
+        qualification.validate_statistical_fixture_config(config, 52704, 512)
+    for logical in (53247, 36864, None, True):
+        config['max_model_len'] = logical
+        with pytest.raises(ValueError, match='logical context'):
+            qualification.validate_statistical_fixture_config(config, 36864, 512)
+
+
+@pytest.mark.parametrize('area,key,value', [
+    ('top','max_num_seqs',2), ('top','execution_mode','graph'),
+    ('top','draft_method','dflash'), ('top','draft_tokens',2),
+    ('kv','block_tokens',16), ('kv','graph_mode','sparse'),
+    ('kv','action_native_scores','on'), ('kv','historical_gc',dict(policy='lru')),
+])
+def test_long_fixture_retains_qualified_execution_guards(area, key, value):
+    config = large_fixture_config()
+    (config if area == 'top' else config['kvmem'])[key] = value
+    with pytest.raises(ValueError, match='eager C1/MTP1'):
+        qualification.validate_statistical_fixture_config(config, 36864, 512)

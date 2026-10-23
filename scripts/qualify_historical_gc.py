@@ -530,6 +530,26 @@ def owned_server(root, config, output, source, digest, fixture_source=None):
             save(output/'server-state.json',state)
 
 
+def validate_statistical_fixture_config(config, prompt_tokens, decode_tokens):
+    """Reject non-stable workloads before starting any qualification worker."""
+    if (type(prompt_tokens) is not int or prompt_tokens < 256 or prompt_tokens % 32 or
+            type(decode_tokens) is not int or decode_tokens < 512):
+        raise ValueError('Synthetic C1 pairs require >=256 aligned prompt tokens and >=512 output')
+    kv = config['kvmem']
+    if (config.get('max_num_seqs') != 1 or config.get('execution_mode') != 'eager' or
+            config.get('draft_method') != 'mtp' or config.get('draft_tokens') != 1 or
+            kv.get('historical_gc', {}).get('policy') != 'statistical' or
+            kv.get('block_tokens') != 32 or kv.get('graph_mode', 'off') != 'off' or
+            kv.get('action_native_scores', 'off') != 'off' or
+            kv.get('select_budget', 0)+kv.get('gen_budget', 0) < prompt_tokens+decode_tokens+64):
+        raise ValueError('Fixture requires eager C1/MTP1, statistical GC, graph/native-attention off and a stable window')
+    logical = config.get('max_model_len')
+    if (type(logical) is not int or
+            kv['select_budget']+kv['gen_budget'] > logical or
+            prompt_tokens+decode_tokens+64 > logical):
+        raise ValueError('Fixture physical window and complete input/output/headroom must fit logical context')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path)
@@ -552,8 +572,8 @@ def main():
     if args.statistical_fixture and args.attach_server_run:
         raise ValueError('Synthetic evidence requires a fresh owned worker extension')
     if args.statistical_fixture and (args.kind != 'performance' or args.baseline != 'off' or
-            len(fixture['input_ids']) != 256 or args.decode_tokens < 512):
-        raise ValueError('Synthetic C1 pairs require performance/off, a 256-token prompt and >=512 output')
+            len(fixture['input_ids']) < 256 or len(fixture['input_ids']) % 32 or args.decode_tokens < 512):
+        raise ValueError('Synthetic C1 pairs require performance/off, a >=256 aligned prompt and >=512 output')
     if args.attach_server_run:
         client=QualificationClient(args.attach_server_run.resolve(),args.output)
         try:
@@ -578,14 +598,7 @@ def main():
     fixture_source = None
     fixture_digest = None
     if args.statistical_fixture:
-        kv = config['kvmem']
-        if (config.get('max_num_seqs') != 1 or config.get('execution_mode') != 'eager' or
-                config.get('draft_method') != 'mtp' or config.get('draft_tokens') != 1 or
-                kv.get('historical_gc', {}).get('policy') != 'statistical' or
-                kv.get('block_tokens') != 32 or kv.get('graph_mode', 'off') != 'off' or
-                kv.get('action_native_scores', 'off') != 'off' or
-                kv.get('select_budget', 0)+kv.get('gen_budget', 0) < len(fixture['input_ids'])+args.decode_tokens+64):
-            raise ValueError('Fixture requires eager C1/MTP1, statistical GC, graph/native-attention off and a stable window')
+        validate_statistical_fixture_config(config, len(fixture['input_ids']), args.decode_tokens)
         fixture_source = args.output/'frozen_diagnostics'
         fixture_source.mkdir()
         diagnostic = root/'diagnostics/historical_gc_throughput_fixture.py'

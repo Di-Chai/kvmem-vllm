@@ -224,3 +224,41 @@ publication and COW add work at refresh boundaries. A throughput claim needs
 paired off/shadow/delete runs with GC demonstrably active, equal task quality,
 and decode throughput plus p95/p99 inter-token latency reported separately from
 refresh latency.
+
+## Longer stable-window throughput fixtures
+
+The owned `--kind performance --baseline off --statistical-fixture` qualifier
+also accepts prompts of at least 256 tokens aligned to 32, with at least 512
+output tokens. The original 256-token fixture is unchanged. Both K+G and the
+logical context must contain the complete prompt, output and 64-token
+headroom; the configured physical window must itself fit the logical context.
+C1, eager MTP1, statistical policy, graph/native-attention off, and cold-request
+requirements remain enforced.
+
+For the 36K experiment, freeze the existing 256-token IDs repeated exactly 144
+times: prompt 36864, decode 512, K36864/G16384, logical 262144. The qualifier
+changes only GC mode and owned loopback routing; it preserves the profile's
+bounded-capacity flag, 8196 repository blocks and 12 GiB CPU history budget.
+Use five predeclared alternating OFF/DELETE pairs after independently
+qualifying the serving profile.
+
+The diagnostic still marks four generated blocks at prompt+32 through
+prompt+160, holds the one result block through prompt+192, and publishes three
+synthetic observations after 256 accepted decode tokens. Its existing record
+lookup therefore scans a larger record set once; shared instrumentation is
+present in both modes. No model signal or semantic quality measurement is
+introduced. The native GC snapshot scan also traverses repository capacity:
+8196 slots at 128 per tick require 65 scan slices before policy evaluation.
+The interval audit must still prove all four retirements and CPU releases
+occurred during measured decode with later accepted-token progress, and
+reject any overlapping refresh.
+
+This experiment measures incremental policy/reclamation overhead with a
+36K active prompt. It does not measure 256K-history retrieval, refresh
+throughput, or total evidence-producer cost. The paired output IDs must match;
+zero step-latency sampling leaves p95/p99 unmeasured.
+
+CPU validation for the longer fixture: 65 tests passed, including native
+OFF/DELETE at the real 36K/8196-block configuration, exact four-block release,
+unchanged input/result ownership and working window, long-coordinate overlap
+audits, and stable/logical boundary rejection.

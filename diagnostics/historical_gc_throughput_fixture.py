@@ -42,8 +42,9 @@ class Plan:
 
     @classmethod
     def standard(cls, prompt_tokens, decode_tokens):
-        if prompt_tokens != 256 or decode_tokens < 512:
-            raise ValueError('Synthetic C1 qualification requires 256 prompt tokens and >=512 decode tokens')
+        if (type(prompt_tokens) is not int or prompt_tokens < 256 or prompt_tokens % 32 or
+                type(decode_tokens) is not int or decode_tokens < 512):
+            raise ValueError('Synthetic C1 qualification requires >=256 aligned prompt tokens and >=512 decode tokens')
         return cls(prompt_tokens, decode_tokens, 32, prompt_tokens+32,
                    prompt_tokens+160, prompt_tokens+160, prompt_tokens+192, 256)
 

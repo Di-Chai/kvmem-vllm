@@ -152,11 +152,13 @@ def test_unpublished_source_waits_for_ordinary_archival(tmp_path):
         close(a, archive)
 
 
-def test_standard_plan_is_generated_only_and_has_a_sealed_result_before_trigger():
-    plan = fixture.Plan.standard(256, 512)
-    assert (plan.source_begin, plan.source_end, plan.result_begin, plan.result_end) == (288, 416, 416, 448)
+@pytest.mark.parametrize('prompt', [256, 36864])
+def test_standard_plan_is_generated_only_and_has_a_sealed_result_before_trigger(prompt):
+    plan = fixture.Plan.standard(prompt, 512)
+    assert (plan.source_begin, plan.source_end, plan.result_begin, plan.result_end) == (
+        prompt+32, prompt+160, prompt+160, prompt+192)
     assert plan.result_end + plan.block_tokens <= plan.prompt_tokens + plan.trigger_decode_tokens
-    for prompt, decode in ((255, 512), (256, 511)):
+    for prompt, decode in ((224, 512), (255, 512), (257, 512), (36865, 512), (256, 511), (True, 512)):
         with pytest.raises(ValueError):
             fixture.Plan.standard(prompt, decode)
     with pytest.raises(ValueError):
@@ -263,3 +265,56 @@ def test_arm_installs_in_worker_even_if_module_was_cached_before_enable(monkeypa
     monkeypatch.setenv(fixture.ENABLED, '1')
     value = extension.historical_gc_fixture_arm(['salt', 'session'], 256, 512)
     assert calls == ['installed'] and value['prompt'] == 256
+
+
+@pytest.mark.parametrize('mode,expected', [(n.HistoricalGcMode.OFF, 0),
+                                         (n.HistoricalGcMode.DELETE, 4)])
+def test_36k_prompt_reclaims_only_generated_source_with_real_native_gc(tmp_path, mode, expected):
+    prompt = 36864
+    config = KVMemConfig(block_tokens=32, select_budget=36864, gen_budget=16384,
+        repository_blocks=8196, sink_blocks=1, recent_blocks=1)
+    archive = MemoryArchive(str(tmp_path), 384, 8196, native_payloads=True)
+    from vllm_kvmem.historical_gc import HistoricalGcSettings
+    # Expand the same native scope capacity, watermarks and proactive policy as
+    # the real profile, while advancing its worker deterministically on CPU.
+    gc = HistoricalGcSettings(mode='off' if mode == n.HistoricalGcMode.OFF else 'delete',
+        policy='statistical', scan_blocks=128, delete_blocks=8).native(config, 1)
+    gc.background = False
+    worker = archive.enable_history_gc(gc)
+    a = RequestAuthority('long', config, archive, 2, 1, 2, resident_records=1664)
+    runner = Runner()
+    runner._kvmem_capture_runtime = SimpleNamespace(archive=archive)
+    runner._kvmem_sessions = SimpleNamespace(bindings={'long':
+        SimpleNamespace(namespace=('salt', 'long'), history=0, tokens=[1]*prompt)})
+    controller = fixture.Controller(Clock())
+    controller.arm(runner, ('salt', 'long'), fixture.Plan.standard(prompt, 512))
+    try:
+        append(a, prompt+256)
+        a.poll()
+        prompt_handles = [r.handle for r in a.records.values() if r.history_begin < prompt]
+        assert len(prompt_handles) == prompt//32
+        controller.poll(a)
+        # Snapshot and completion scans traverse repository capacity, not just
+        # published records. Allow bounded full rounds at the real scan budget.
+        advance(a, worker, controller, count=3*((config.repository_blocks+127)//128)+16)
+        state = controller.snapshot()
+        assert state['error'] is None and state['flushed']
+        assert state['observations_published'] == 3 and state['complete']
+        assert len(state['candidate_handles']) == 4 and len(state['result_handles']) == 1
+        assert state['last_sample']['counters'] == dict(retired=expected, cpu_released=expected)
+        assert all(a.memory.repository.pin(handle) for handle in prompt_handles)
+        assert archive.io_usage()['cpu_authority_bytes'] == ((prompt+256)//32-expected)*384
+        # The live GPU-window abstraction retains its pages until a later refresh.
+        assert len(a.memory._store.working_records()) == (prompt+256)//32
+        result = n.Handle(*state['result_handles'][0])
+        assert a.memory.repository.pin(result)
+        assert a.append(*payload(32), history_begin=prompt+256, local_rope_begin=prompt+256)
+        for job, _ in a.writes:
+            job.result(5)
+        a.poll(); controller.poll(a)
+        events = [e for e in controller.snapshot()['events'] if e['kind'] in fixture.COUNTERS]
+        assert len(events) == (2 if expected else 0)
+        assert all(e['following_accepted_history'] == prompt+288 and
+                   e['interval_end'] < e['following_decode_at'] for e in events)
+    finally:
+        close(a, archive)
