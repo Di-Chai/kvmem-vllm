@@ -106,10 +106,59 @@ def test_uncertainty_is_reproducible_and_does_not_hide_bad_pair_range():
     assert first['minimum'] == -.01 and first['maximum'] == .03
     assert first['median'] == .005  # Old point gate passes, but CI is unresolved.
     assert first['percentile_interval'][1] > .01
-    assert first['assessment'] == 'unresolved' and first['more_pairs_recommended']
+    assert first['assessment'] == 'unresolved' and first['additional_evidence_needed']
 
 
 def test_uncertainty_keeps_single_pair_unresolved():
     value = qualification.throughput_uncertainty([dict(throughput_loss=0.)])
     assert value['percentile_interval'] is None
     assert value['assessment'] == 'unresolved'
+
+
+def paired(losses, *, output=True, p95=None, p99=None):
+    return [dict(throughput_loss=v, p95_regression=p95, p99_regression=p99,
+                 identical_output=output) for v in losses]
+
+
+def test_passing_median_with_crossing_interval_is_inconclusive():
+    result = qualification.paired_conclusion(paired([-.01, 0., .005, .02, .03]))
+    assert result['paired_medians']['throughput_loss'] < .01
+    assert result['throughput_uncertainty']['percentile_interval'][1] > .01
+    assert result['status'] == 'inconclusive' and result['exit_code'] == 2
+
+
+@pytest.mark.parametrize('losses,status,code', [
+    ([.002, .003, .004, .005, .006], 'passed', 0),
+    ([.01]*5, 'passed', 0),
+    ([.02, .021, .022, .023, .024], 'failed', 1),
+    ([-.01, .005, .015, .02, .03], 'inconclusive', 2),
+    ([0.], 'inconclusive', 2),
+    ([0.]*4, 'inconclusive', 2),
+])
+def test_final_status_follows_noninferiority_bound_and_minimum_pairs(losses, status, code):
+    result = qualification.paired_conclusion(paired(losses))
+    assert (result['status'], result['exit_code']) == (status, code)
+    assert result['conclusion_reasons']
+    assert result['throughput_uncertainty']['automatic_retesting'] is False
+    if status == 'passed':
+        assert result['throughput_uncertainty']['percentile_interval'][1] <= .01
+
+
+def test_output_mismatch_is_a_failure_even_when_throughput_is_fast():
+    result = qualification.paired_conclusion(paired([-.01]*5, output=False))
+    assert result['status'] == 'failed'
+    assert result['conclusion_reasons'] == ['paired_output_mismatch']
+
+
+def test_measured_tail_gate_remains_independent_of_throughput():
+    result = qualification.paired_conclusion(paired([0.]*5, p95=.03, p99=0.))
+    assert result['status'] == 'failed' and result['tail_latency_measured']
+    assert result['conclusion_reasons'] == ['measured_tail_latency_gate_exceeded']
+
+
+def test_clear_regression_does_not_recommend_retesting_until_pass():
+    result = qualification.paired_conclusion(paired([.02]*5))
+    uncertainty = result['throughput_uncertainty']
+    assert uncertainty['assessment'] == 'lower_bound_exceeds_1pct'
+    assert not uncertainty['additional_evidence_needed']
+    assert not uncertainty['automatic_retesting']

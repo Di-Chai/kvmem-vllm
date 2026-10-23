@@ -331,14 +331,52 @@ def throughput_uncertainty(comparisons, *, draws=10000, seed=19):
         rng = random.Random(seed)
         medians = [percentile([rng.choice(losses) for _ in losses], .5) for _ in range(draws)]
         interval = [percentile(medians, .025), percentile(medians, .975)]
-    unresolved = len(losses) < 5 or interval is None or interval[1] > .01
+    assessment = 'unresolved'
+    if len(losses) >= 5 and interval is not None:
+        if interval[1] <= .01:
+            assessment = 'upper_bound_within_1pct'
+        elif interval[0] > .01:
+            assessment = 'lower_bound_exceeds_1pct'
     return dict(statistic='paired median throughput loss', losses=losses,
         minimum=min(losses), maximum=max(losses), median=percentile(losses, .5),
         confidence=.95, bootstrap_draws=draws, bootstrap_seed=seed,
         percentile_interval=interval, noninferiority_margin=.01,
-        assessment='unresolved' if unresolved else 'upper_bound_within_1pct',
-        more_pairs_recommended=unresolved,
-        limitation='Descriptive paired bootstrap under this workload; no proof of zero overhead')
+        assessment=assessment, additional_evidence_needed=assessment=='unresolved',
+        automatic_retesting=False,
+        limitation=('Few pairs give a coarse, sample-dependent bootstrap interval. '
+                    'Passing supports this paired workload; it does not prove zero total GC overhead. '
+                    'Do not append pairs until passing; any follow-up needs a predeclared independent protocol.'))
+
+
+def paired_conclusion(comparisons):
+    """0: qualified; 1: observed failure; 2: insufficient/inconclusive evidence."""
+    uncertainty = throughput_uncertainty(comparisons)
+    medians = {name:(percentile([r[name] for r in comparisons], .5)
+                    if all(r[name] is not None for r in comparisons) else None)
+               for name in ('throughput_loss', 'p95_regression', 'p99_regression')}
+    tails = medians['p95_regression'] is not None
+    reasons = []
+    if not all(r['identical_output'] for r in comparisons):
+        reasons.append('paired_output_mismatch')
+    if tails and (medians['p95_regression'] > .02 or medians['p99_regression'] > .05):
+        reasons.append('measured_tail_latency_gate_exceeded')
+    if reasons:
+        status = 'failed'
+    elif len(comparisons) < 5:
+        status = 'inconclusive'
+        reasons.append('fewer_than_five_pairs')
+    elif uncertainty['assessment'] == 'lower_bound_exceeds_1pct':
+        status = 'failed'
+        reasons.append('throughput_loss_interval_above_1pct')
+    elif uncertainty['assessment'] == 'upper_bound_within_1pct' and medians['throughput_loss'] <= .01:
+        status = 'passed'
+        reasons.append('throughput_loss_upper_bound_within_1pct')
+    else:
+        status = 'inconclusive'
+        reasons.append('throughput_loss_interval_crosses_1pct')
+    return dict(status=status, exit_code={'passed':0, 'failed':1, 'inconclusive':2}[status],
+        conclusion_reasons=reasons, paired_medians=medians,
+        throughput_uncertainty=uncertainty, tail_latency_measured=tails)
 
 
 def performance(client, prompt, count):
@@ -592,26 +630,19 @@ def main():
                 p95_regression=relative_regression(delete['p95_ms'],off['p95_ms']),
                 p99_regression=relative_regression(delete['p99_ms'],off['p99_ms']),
                 identical_output=off['output_sha256']==delete['output_sha256']))
-        medians={k:(percentile([r[k] for r in comparisons],.5)
-                    if all(r[k] is not None for r in comparisons) else None)
-                 for k in ('throughput_loss','p95_regression','p99_regression')}
-        tails = medians['p95_regression'] is not None
-        passed=(args.pairs>=5 and medians['throughput_loss']<=.01 and
-                (not tails or medians['p95_regression']<=.02 and medians['p99_regression']<=.05) and
-                all(r['identical_output'] for r in comparisons))
-        result=dict(status='passed' if passed else 'failed',source_digest=digest,
-                    comparisons=comparisons,paired_medians=medians,
-                    throughput_uncertainty=throughput_uncertainty(comparisons),
+        conclusion = paired_conclusion(comparisons)
+        result=dict(**conclusion, source_digest=digest,
+                    comparisons=comparisons,
                     baseline='historical_gc off' if args.baseline=='off' else 'historical_gc omitted',
                     driver_sha256=hashlib.sha256(driver).hexdigest(),
-                    fixture_sha256=fixture_digest, input_sha256=input_digest, tail_latency_measured=tails,
+                    fixture_sha256=fixture_digest, input_sha256=input_digest,
                     scope=('Native statistical policy and reclamation overhead with shared synthetic producer/instrumentation in C1 stable-window decode; '
                            'no semantic quality or attention-estimator claim' if args.statistical_fixture else
                            'Historical GC paired decode qualification'))
         save(args.output/'results.json',result)
         print(json.dumps(result),flush=True)
-        if not passed:
-            raise SystemExit(1)
+        if result['exit_code']:
+            raise SystemExit(result['exit_code'])
 
 
 if __name__=='__main__':
