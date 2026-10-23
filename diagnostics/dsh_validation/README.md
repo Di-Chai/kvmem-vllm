@@ -96,3 +96,70 @@ not evidence that the model's code itself is broken.
 Artifacts must be assessed separately from DSH task continuity and GC quality.
 The current GC task has no real semantic signal producer: a browser pass cannot
 qualify semantic GC safety, decode overhead, or long-horizon completion.
+
+Form observers may also use these explicit actions:
+
+- `fill`: `{"type":"fill","selector":"#description","value":"Lunch"}`.
+  The string replaces an input/textarea/contenteditable value; an empty string
+  clears it. Playwright delivers the input behavior, rather than typing every
+  key. It does not submit a form. Use a separate click or key-press to submit.
+- `select-option`: `{"type":"select-option","selector":"#category","value":"food"}`.
+  Selects a native HTML select option by its exact value, not its visible label.
+  The selected values are recorded. Custom dropdowns still use their actual
+  click/key interactions; the observer does not invent application APIs.
+- `reload`: `{"type":"reload"}`. Reloads the current URL, waits for load, then
+  observes the page after settle_ms. It keeps the same origin and browser
+  context, so localStorage survives. The response status is recorded and all
+  HTTP/console/page/network error gates remain active across reloads.
+
+Fill and select-option require one matching element and a string value.
+Missing, ambiguous, disabled, or otherwise invalid targets cause an action error
+and a failed report. Input/change events are recorded without reading field
+values into the event log; probes explicitly choose which values to observe.
+
+To check persistence, first fill/select, submit using the application's UI, and
+assert the expected visible result. Then reload and assert the result again
+with read-only DOM or storage probes. An action completing without errors does
+not establish successful saving. A reload check proves persistence only within
+this browser context and origin; each observer run uses a fresh context and
+ephemeral server port. It does not prove persistence across browser restarts.
+Per-page input event history resets on reload; each action retains its before
+and after snapshots.
+
+A CPU browser infrastructure regression uses a minimal form fixture outside
+model artifacts. It checks replacement/clearing, native selection, submission,
+DOM restoration from localStorage after reload, a deliberately broken restore
+negative, and an invalid selector negative:
+
+    python3 diagnostics/dsh_validation/test_form_actions.py \
+      --runtime-root /tmp/kvmem-gc-browser-runtime-1248 \
+      --output /root/data/kvmem-vllm-gc/runs/browser-validator-forms-01
+
+The fixture is test infrastructure, not a generated task application. Continue
+running test_http_errors.py when changing action/navigation behavior, because
+HTTP errors must fail the report even when an interaction or reload succeeds.
+
+A confirmation dialog is handled only when its click explicitly declares it:
+
+    {"type":"click","selector":"#delete",
+     "expect_dialog":{"type":"confirm","accept":true},
+     "checks":[{"path":"rows","op":"decreased"}]}
+
+The optional `expect_dialog` accepts only `type:"confirm"` and a boolean
+`accept`. It is supported only on `click`. The observer waits up to three
+seconds from the click's start for the expected dialog, records its type,
+message, decision and whether handling succeeded, and removes the listener
+after that action, including failures. A missing dialog, wrong type, duplicate
+dialog or handling failure fails the action. Unexpected types and additional
+dialogs are dismissed, never accepted. Use `accept:false` to test cancellation.
+Clicks without `expect_dialog` keep Playwright's normal auto-dismiss behavior;
+there is no global auto-accept. Successful acceptance alone does not prove a
+deletion: assert the visible row/count state after the click.
+
+CPU fixture coverage includes explicit acceptance/cancellation, unchanged
+default dismissal before and after scoped handlers, missing/wrong/duplicate
+dialog failures and invalid decisions:
+
+    python3 diagnostics/dsh_validation/test_dialog_actions.py \
+      --runtime-root /tmp/kvmem-gc-browser-runtime-1248 \
+      --output /root/data/kvmem-vllm-gc/runs/browser-validator-dialogs-01

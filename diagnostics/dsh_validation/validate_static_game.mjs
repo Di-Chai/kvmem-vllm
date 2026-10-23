@@ -140,7 +140,7 @@ try {
   });
   await page.addInitScript(() => {
     window.__dshValidationEvents = [];
-    for (const kind of ['keydown','keyup','mousedown','mouseup','click','mousemove','pointerlockchange']) {
+    for (const kind of ['keydown','keyup','mousedown','mouseup','click','mousemove','pointerlockchange','input','change']) {
       document.addEventListener(kind, event => {
         if (window.__dshValidationEvents.length < 500) window.__dshValidationEvents.push({
           kind, key:event.key, code:event.code, button:event.button, trusted:event.isTrusted,
@@ -232,7 +232,38 @@ try {
     const before = await probe();
     const beforeImage = await page.screenshot({path:path.join(output, prefix+'-before.png')});
     const result = {action, before, started_at:new Date().toISOString()};
+    let dialogHandler, dialogTimer, dialogDone, dialogDeadline;
+    const pendingDialogs = [];
     try {
+      if (action.expect_dialog !== undefined) {
+        const expected = action.expect_dialog;
+        if (action.type !== 'click' || !expected || Array.isArray(expected)
+            || expected.type !== 'confirm' || typeof expected.accept !== 'boolean'
+            || Object.keys(expected).some(key => !['type','accept'].includes(key))) {
+          throw new Error('expect_dialog requires a click and {type:"confirm",accept:boolean}');
+        }
+        result.dialogs = [];
+        dialogDeadline = Date.now() + 3000;
+        let finishDialog;
+        dialogDone = new Promise(resolve => { finishDialog = resolve; });
+        dialogHandler = dialog => {
+          const matches = dialog.type() === expected.type;
+          const record = {type:dialog.type(), message:dialog.message(),
+            decision:matches && result.dialogs.length === 0 && expected.accept ? 'accept' : 'dismiss',
+            matches_expected_type:matches, handled:false};
+          result.dialogs.push(record);
+          const pending = (async () => {
+            try {
+              if (record.decision === 'accept') await dialog.accept();
+              else await dialog.dismiss();
+              record.handled = true;
+            } catch (error) { record.error = String(error); }
+            finally { finishDialog(); }
+          })();
+          pendingDialogs.push(pending);
+        };
+        page.on('dialog', dialogHandler);
+      }
       if (action.type === 'wait') await sleep(Math.min(action.ms || 700,10000));
       else if (action.type === 'start-if-present') {
         const button = page.getByRole('button', {name:/start|play|开始|进入|战斗/i}).first();
@@ -243,7 +274,19 @@ try {
         if (await canvas.count() && await canvas.isVisible()) await canvas.click({position:{x:80,y:80},timeout:3000});
         else await page.locator('body').click({position:{x:80,y:80},timeout:3000});
       } else if (action.type === 'click') await page.locator(action.selector).first().click({timeout:3000});
-      else if (action.type === 'key-hold') {
+      else if (action.type === 'fill' || action.type === 'select-option') {
+        if (typeof action.selector !== 'string' || !action.selector.trim()
+            || typeof action.value !== 'string') {
+          throw new Error(action.type + ' requires a selector and a string value');
+        }
+        // Use strict locators: an ambiguous form selector must fail visibly.
+        const field = page.locator(action.selector);
+        if (action.type === 'fill') await field.fill(action.value, {timeout:3000});
+        else result.selected_values = await field.selectOption({value:action.value}, {timeout:3000});
+      } else if (action.type === 'reload') {
+        const reloaded = await page.reload({waitUntil:'load', timeout:30000});
+        result.reload_status = reloaded?.status();
+      } else if (action.type === 'key-hold') {
         await page.keyboard.down(action.key);
         try { await sleep(Math.min(action.ms || holdMs,10000)); }
         finally { await page.keyboard.up(action.key); }
@@ -251,8 +294,26 @@ try {
       else if (action.type === 'mouse-click') await page.mouse.click(action.x || width/2, action.y || height/2,{button:action.button || 'left'});
       else if (action.type === 'mouse-move') await page.mouse.move(action.x,action.y,{steps:action.steps || 10});
       else throw new Error('Unknown action type: '+action.type);
+      if (dialogDone) {
+        await Promise.race([dialogDone, new Promise((_, reject) => {
+          dialogTimer = setTimeout(() => reject(new Error('Expected confirm dialog was not observed within 3000 ms')),
+            Math.max(0, dialogDeadline - Date.now()));
+        })]);
+      }
       await sleep(Math.min(action.settle_ms ?? 150,10000));
+      if (dialogHandler) {
+        await Promise.all(pendingDialogs);
+        if (result.dialogs.length !== 1) throw new Error('Expected exactly one confirm dialog; observed ' + result.dialogs.length);
+        const observed = result.dialogs[0];
+        if (!observed.matches_expected_type) throw new Error('Expected confirm dialog; observed ' + observed.type);
+        if (!observed.handled) throw new Error('Failed to handle expected confirm dialog: ' + observed.error);
+      }
     } catch (error) { result.error = String(error); }
+    finally {
+      clearTimeout(dialogTimer);
+      if (dialogHandler) page.off('dialog', dialogHandler);
+      await Promise.all(pendingDialogs);
+    }
     result.after = await probe();
     const afterImage = await page.screenshot({path:path.join(output, prefix+'-after.png')});
     result.screenshot_delta = pixelDelta(beforeImage, afterImage);
