@@ -6,6 +6,7 @@ caching remains disabled. The key only identifies an owned KVMem session.
 """
 import argparse
 import asyncio
+from contextlib import AsyncExitStack
 import codecs
 from functools import lru_cache
 import hashlib
@@ -15,6 +16,7 @@ import re
 import time
 import uuid
 
+import anyio
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -133,7 +135,12 @@ class QwenStream:
                   if safe.endswith(marker[:n])),default=0)
         if held:safe=safe[:-held]
         close=safe.find('</think>')
-        tool_start=safe.find('<tool_call>',close+len('</think>')) if close>=0 else -1
+        implicit=getattr(self.protocol,'implicit_tool_reasoning_end',False)
+        first_tool=safe.find('<tool_call>') if implicit else -1
+        if first_tool>=0 and (close<0 or first_tool<close):
+            close=-1;tool_start=first_tool
+        else:
+            tool_start=safe.find('<tool_call>',close+len('</think>')) if close>=0 else -1
         parse_text=safe[:tool_start] if tool_start>=0 else safe
         for ending in ('<|endoftext|>','<|im_end|>'):
             parse_text=parse_text.removesuffix(ending)
@@ -196,6 +203,10 @@ def restore_trajectory(planner,owner,directories):
     """
     turns={}
     for directory in directories:
+        if (directory/owner).exists() and hasattr(getattr(planner,'protocol',None),'provenance'):
+            manifest=directory/'protocol.json'
+            if not manifest.is_file() or json.loads(manifest.read_text())!=planner.protocol.provenance:
+                raise ValueError('Accepted history protocol differs from the current tokenizer/template')
         for path in (directory/owner).glob('[0-9][0-9][0-9][0-9][0-9]'):
             if (path/'accepted.json').exists() and (path/'response.json').exists():
                 turns[int(path.name)]=path
@@ -218,9 +229,28 @@ def restore_trajectory(planner,owner,directories):
 
 
 def create_app(args,tokenizer):
-    app=FastAPI();planner=Planner(Protocol(args.protocol),tokenizer,args.gen_budget)
+    max_inflight=getattr(args,'max_inflight',0)
+    if type(max_inflight) is not int or max_inflight<0:
+        raise ValueError('max_inflight must be a nonnegative integer')
+    admission=asyncio.BoundedSemaphore(max_inflight) if max_inflight else None
+    if getattr(args,'tokenizer_protocol',False):
+        from scripts.dsh_model_protocol import TokenizerProtocol
+        protocol=TokenizerProtocol(tokenizer,args.tokenizer,
+            reasoning_effort=getattr(args,'reasoning_effort','low'))
+    else:
+        protocol=Protocol(args.protocol)
+    app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
     client=httpx.AsyncClient(trust_env=False,timeout=3600)
     owners={};restored=set();args.output.mkdir(parents=True,exist_ok=True)
+    if hasattr(protocol,'provenance'):
+        manifest=args.output/'protocol.json'
+        if manifest.exists():
+            if json.loads(manifest.read_text())!=protocol.provenance:
+                raise ValueError('Output directory belongs to another tokenizer/template protocol')
+        elif next(args.output.glob('*/[0-9][0-9][0-9][0-9][0-9]/accepted.json'),None) is not None:
+            raise ValueError('Existing accepted history has no tokenizer/template protocol manifest')
+        else:
+            manifest.write_text(json.dumps(protocol.provenance,indent=2)+'\n')
     def log(value):
         with (args.output/'requests.jsonl').open('a') as f:f.write(json.dumps(value,ensure_ascii=False)+'\n')
     @app.get('/health')
@@ -251,7 +281,12 @@ def create_app(args,tokenizer):
             return JSONResponse(dict(error=dict(message=str(error),type='invalid_request_error')),status_code=400)
         async def generate(emit=None):
             lock,state=owners[owner]
-            async with lock:
+            async with lock, AsyncExitStack() as permit:
+                # Owners also include title/auxiliary frames. A deployment-wide
+                # permit spans the entire reply, including every continuation
+                # segment and upstream stream cleanup on cancellation.
+                if admission is not None:
+                    await permit.enter_async_context(admission)
                 if owner not in restored:
                     sources=[*getattr(args,'restore_from',[]),args.output]
                     state=await asyncio.to_thread(restore_trajectory,planner,owner,sources)
@@ -342,10 +377,21 @@ def create_app(args,tokenizer):
                 response=planner.response(wire.raw,rendered['tools'],body['model'],usage,finish)
                 if emit is not None:output,tail=wire.finish(response)
                 else:output=to_openai(response)
-                await asyncio.to_thread(planner.commit,state,prepared,payload,response,output_ids)
-                (directory/'response.json').write_text(json.dumps(output,ensure_ascii=False))
-                # Keep exact IDs for restart/recovery and independent streaming audits.
-                (directory/'accepted.json').write_text(json.dumps(dict(token_ids=output_ids,metrics=metrics)))
+                async def commit():
+                    await asyncio.to_thread(planner.commit,state,prepared,payload,response,output_ids)
+                    (directory/'response.json').write_text(json.dumps(output,ensure_ascii=False))
+                    # The completed accepted-ID file is the recovery commit marker.
+                    (directory/'accepted.json').write_text(json.dumps(dict(token_ids=output_ids,metrics=metrics)))
+                committed=asyncio.create_task(commit())
+                try:
+                    await asyncio.shield(committed)
+                except asyncio.CancelledError:
+                    # Cancelling to_thread cannot stop its state mutation. Keep
+                    # both owner and global admission until the completed reply
+                    # and its recovery marker are committed together.
+                    with anyio.CancelScope(shield=True):
+                        await asyncio.shield(committed)
+                    raise
                 log(dict(at=time.time(),owner=owner,turn=state.turns,request_id=request_id,
                     prompt_tokens=len(tokens),output_tokens=len(output_ids),
                     query_span=plan.get('kvmem_query_span'),mandatory_spans=[],mandatory_parts='none',
@@ -388,20 +434,32 @@ def create_app(args,tokenizer):
                 log(dict(at=time.time(),owner=owner,error=str(error)))
                 yield 'data: '+json.dumps(dict(error=dict(message=str(error),type='api_error')))+'\n\n'
             finally:
-                if pending is not None:pending.cancel();await asyncio.gather(pending,return_exceptions=True)
+                # ASGI 2.3 disconnects cancel the surrounding AnyIO scope.
+                # Cancel both children before the first checkpoint; otherwise a
+                # cancelled pending.get cleanup can strand the generation job
+                # and its global admission permit. Finish upstream close under
+                # a shield before another owner can acquire the permit.
+                if pending is not None:pending.cancel()
                 if not job.done():job.cancel()
-                await asyncio.gather(job,return_exceptions=True)
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(job,*(() if pending is None else (pending,)),
+                                         return_exceptions=True)
         return StreamingResponse(stream(),media_type='text/event-stream')
     return app
 
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--protocol',type=Path,required=True);p.add_argument('--tokenizer',required=True)
+    protocol=p.add_mutually_exclusive_group(required=True)
+    protocol.add_argument('--protocol',type=Path,help='Existing frozen qw3 protocol library')
+    protocol.add_argument('--tokenizer-protocol',action='store_true',help='Use the audited current Qwen3.8 tokenizer chat template')
+    p.add_argument('--tokenizer',required=True)
+    p.add_argument('--reasoning-effort',choices=('low','medium','xhigh'),default='low')
     p.add_argument('--backend',default='http://127.0.0.1:18846');p.add_argument('--model',default='kvmem-dsh-dflash2')
     p.add_argument('--output',type=Path,required=True);p.add_argument('--port',type=int,default=18381)
     p.add_argument('--gen-budget',type=int,default=16384);p.add_argument('--max-model-len',type=int,default=262144)
     p.add_argument('--max-sessions',type=int,default=32)
+    p.add_argument('--max-inflight',type=int,default=0,help='Maximum concurrent logical replies across owners; 0 preserves unlimited admission')
     p.add_argument('--owner-namespace',default='dsh')
     p.add_argument('--max-output-segments',type=int,choices=range(1,5),default=1)
     p.add_argument('--require-query-provenance',action='store_true')
