@@ -1,0 +1,68 @@
+{
+  "task": "validate-and-solve-sudoku",
+  "gc_mode": "delete",
+  "job": "sudoku-gc-delete-v3-01",
+  "reward": 0.0,
+  "verifier_summary": "13 failed, 1 passed in 0.32s",
+  "exception": null,
+  "dsh_status": "closed",
+  "dsh_reason_kind": "completed",
+  "operator_stopped": false,
+  "dsh_turn_seconds": 696.587,
+  "agent_execution_seconds": 704.575671,
+  "measured_task_seconds": 702.2840975662693,
+  "generated_model_replies": 50,
+  "committed_model_replies": 50,
+  "input_token_usage": 840791,
+  "output_tokens": 12213,
+  "model_api_reply_seconds": 691.5309345722198,
+  "committed_output_tokens_per_api_second": 17.660815141342805,
+  "model_issued_tool_calls": {
+    "bash": 47,
+    "write": 1,
+    "read": 1
+  },
+  "maintenance_handoffs": 1,
+  "maintenance_replay_tokens": 32,
+  "maximum_logical_prompt_tokens": 27124,
+  "candidate_source_spans": [
+    {
+      "relative_path": "sudoku.py",
+      "artifact_sha256": "5d2473374eff1148c9c5e1d836159706ce3a76c0399f7ffe0d194b3d6d4eab2f",
+      "source_begin": 7511,
+      "source_end": 9135,
+      "candidate_blocks": 50,
+      "live_source_releases": 50,
+      "remaining_source_records": 0,
+      "working_window_source_records": 0,
+      "error": null
+    }
+  ],
+  "live_source_cpu_completions": 50,
+  "retired_source_tokens": 1600,
+  "committed_snapshot_evidence": {
+    "semantic_producer_present": true,
+    "source_spans": [
+      {
+        "owner": "tbpro-571a6cb6d3c64dbabba2c912cada0c56-delete-508fe200249cf12b4d82005fc099de048973caff",
+        "span_id": "file-body-6-8916dcb80202",
+        "relative_path": "sudoku.py",
+        "error": null,
+        "candidate_blocks": 50,
+        "live_source_completions": 50,
+        "remaining_source_records": 0,
+        "working_window_source_records": 0
+      }
+    ],
+    "live_source_cpu_completions": 50,
+    "real_semantic_candidate_retirement_proven": true,
+    "later_committed_model_replies": 42,
+    "task_continuation_after_release_proven": true
+  },
+  "effective_gc_task_continuation": true,
+  "owner_cleanup": [
+    {
+      "status": 200
+    }
+  ]
+}

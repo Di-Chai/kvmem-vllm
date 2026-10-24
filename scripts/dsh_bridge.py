@@ -102,6 +102,21 @@ class AcceptedTextDecoder:
     def finish(self):return self.decoder.decode(b'',final=True)
 
 
+def remote_tool_parser(local_parse,parser_url):
+    """Keep plain prefix parsing local; send complete tool frames to vLLM."""
+    def parse(text,tools):
+        # The audited local TokenizerProtocol has no vLLM dependency for plain
+        # text/reasoning. Its identical cloud implementation adds no authority
+        # for such prefixes, and a WAN round trip per delta stalls streaming.
+        if '<tool_call>' not in text:
+            return local_parse(text,tools)
+        with httpx.Client(trust_env=False,timeout=180) as parser_client:
+            parsed=parser_client.post(parser_url+'/parse',json=dict(text=text,tools=tools))
+            parsed.raise_for_status()
+            return parsed.json()
+    return parse
+
+
 class QwenStream:
     """Emit only irrevocable prefixes of the frozen full-response parser.
 
@@ -117,6 +132,7 @@ class QwenStream:
     def __init__(self,protocol,tools):
         self.protocol=protocol;self.tools=tools;self.raw=''
         self.sent={'reasoning_content':'','content':''};self.tool=None
+        self._parsed_text=None;self._parsed_prefix=None
         if getattr(protocol,'kwargs',{}).get('enable_thinking') is False:
             self.markers=('<think>',*self.markers)
 
@@ -147,7 +163,14 @@ class QwenStream:
         parse_text=safe[:tool_start] if tool_start>=0 else safe
         for ending in ('<|endoftext|>','<|im_end|>'):
             parse_text=parse_text.removesuffix(ending)
-        parsed=self.protocol(op='parse',text=parse_text,tools=self.tools)
+        # Tool arguments stay buffered, so their streamed chunks do not change
+        # this prefix. Reuse its exact parse rather than issuing a remote parser
+        # round trip for every argument chunk. Full-response parsing in finish
+        # remains authoritative and still rejects malformed/truncated calls.
+        if parse_text != self._parsed_text:
+            self._parsed_prefix=self.protocol(op='parse',text=parse_text,tools=self.tools)
+            self._parsed_text=parse_text
+        parsed=self._parsed_prefix
         reasoning=parsed['reasoning']
         if close<0:reasoning=reasoning.removesuffix('\n')
         delta=self._delta(dict(reasoning_content=reasoning,content=parsed['content']))
@@ -360,12 +383,7 @@ def create_app(args,tokenizer):
                     manifest.get('provenance',{}).get('chat_template_kwargs')!=protocol.kwargs or
                     manifest.get('provenance',{}).get('tool_parser')!=protocol.provenance['tool_parser']):
                 raise ValueError('Remote parser differs from the audited local tokenizer assets')
-        def parse_remote(text,tools):
-            with httpx.Client(trust_env=False,timeout=180) as parser_client:
-                parsed=parser_client.post(parser_url+'/parse',json=dict(text=text,tools=tools))
-                parsed.raise_for_status()
-                return parsed.json()
-        protocol.parse=parse_remote
+        protocol.parse=remote_tool_parser(protocol.parse,parser_url)
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     artifact_armed={}
     artifact_pending={}

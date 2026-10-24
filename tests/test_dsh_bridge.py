@@ -76,6 +76,63 @@ def assemble(deltas):
     return message
 
 
+def test_stream_reuses_unchanged_prefix_parse_without_releasing_tool_arguments():
+    class PrefixProtocol:
+        kwargs={'enable_thinking':False}
+        implicit_tool_reasoning_end=True
+        def __init__(self):self.inputs=[]
+        def __call__(self,*,op,text,tools):
+            assert op=='parse'
+            self.inputs.append(text)
+            return dict(reasoning='',content=text,tool_calls=[])
+    protocol=PrefixProtocol()
+    tools=[dict(type='function',function=dict(name='write',parameters=dict(type='object')))]
+    content='中文 "quoted"\n'*512
+    raw='<tool_call><function=write><parameter=content>'+content+'</parameter></function></tool_call>'
+    stream=QwenStream(protocol,tools)
+    deltas=[stream.feed(c) for c in raw]
+    assert protocol.inputs==['']
+    assert all(not c['function'].get('arguments') for d in deltas for c in d.get('tool_calls',[]))
+    response=dict(model='local',content=[dict(type='tool_use',id='full-parse',name='write',input=dict(content=content))],
+        stop_reason='tool_use',usage=dict(input_tokens=2,output_tokens=3))
+    output,tail=stream.finish(response)
+    assert assemble([*deltas,tail])['tool_calls']==output['choices'][0]['message']['tool_calls']
+    assert json.loads(output['choices'][0]['message']['tool_calls'][0]['function']['arguments'])['content']==content
+    # A growing text prefix still gets parsed; the cache belongs to one stream.
+    second=QwenStream(protocol,tools)
+    assert second.feed('a')['content']=='a'
+    assert second.feed('b')['content']=='b'
+    assert protocol.inputs==['','a','ab']
+    incomplete=QwenStream(protocol,tools)
+    incomplete.feed('<tool_call><function=write><parameter=content>unfinished')
+    with pytest.raises(ValueError,match='no tool was executed'):
+        incomplete.finish(dict(content=[],stop_reason='max_tokens',usage=dict(output_tokens=8)))
+
+
+def test_remote_parser_keeps_plain_qwen_prefixes_local_and_validates_complete_tools(monkeypatch):
+    from scripts.dsh_bridge import remote_tool_parser
+    from scripts.dsh_model_protocol import TokenizerProtocol
+    context=SimpleNamespace(kwargs=dict(enable_thinking=False))
+    local=lambda text,tools:TokenizerProtocol.parse(context,text,tools)
+    requests=[]
+    class Client:
+        def __init__(self,**kwargs):assert kwargs['trust_env'] is False
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def post(self,url,*,json):
+            requests.append(json)
+            return httpx.Response(422 if 'unfinished' in json['text'] else 200,
+                json=dict(reasoning='',content='',tool_calls=[dict(name='write')]),request=httpx.Request('POST',url))
+    monkeypatch.setattr(httpx,'Client',Client)
+    proxy=remote_tool_parser(local,'http://127.0.0.1:18389')
+    for text in ['', '中文 prefix', '<think>reason\n', '<think>reason\n</think>\ntext', '<tool_cal']:
+        assert proxy(text,[])==local(text,[])
+    assert not requests
+    assert proxy('<tool_call>complete schema-aware frame',[])['tool_calls']==[dict(name='write')]
+    with pytest.raises(httpx.HTTPStatusError):proxy('<tool_call>unfinished',[])
+    assert len(requests)==2
+
+
 @pytest.mark.parametrize('width',[1,2,5,17,1000])
 @pytest.mark.parametrize('raw',[
     '先分析一下\n换行\n</think>\n\r\n正文中文\n<|im_end|>',

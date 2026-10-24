@@ -1,0 +1,67 @@
+{
+  "task": "validate-and-solve-sudoku",
+  "gc_mode": "off",
+  "job": "sudoku-gc-off-v3-01",
+  "reward": 0.0,
+  "verifier_summary": "13 failed, 1 passed in 0.33s",
+  "exception": null,
+  "dsh_status": "closed",
+  "dsh_reason_kind": "completed",
+  "operator_stopped": false,
+  "dsh_turn_seconds": 313.29,
+  "agent_execution_seconds": 321.273565,
+  "measured_task_seconds": 318.87606992200017,
+  "generated_model_replies": 12,
+  "committed_model_replies": 12,
+  "input_token_usage": 112479,
+  "output_tokens": 3776,
+  "model_api_reply_seconds": 311.8954236507416,
+  "committed_output_tokens_per_api_second": 12.106622007472414,
+  "model_issued_tool_calls": {
+    "bash": 10,
+    "write": 1
+  },
+  "maintenance_handoffs": 0,
+  "maintenance_replay_tokens": 0,
+  "maximum_logical_prompt_tokens": 13670,
+  "candidate_source_spans": [
+    {
+      "relative_path": "solve_sudoku.py",
+      "artifact_sha256": "783405364dfd942d27fa4c900cdbc74580607787618dcc98a3181023669ad4a8",
+      "source_begin": 10123,
+      "source_end": 11717,
+      "candidate_blocks": 49,
+      "live_source_releases": 0,
+      "remaining_source_records": 49,
+      "working_window_source_records": 49,
+      "error": null
+    }
+  ],
+  "live_source_cpu_completions": 0,
+  "retired_source_tokens": 0,
+  "committed_snapshot_evidence": {
+    "semantic_producer_present": true,
+    "source_spans": [
+      {
+        "owner": "tbpro-9e1cca48b17c42209c268e95b7ce086c-off-fad5c40c23614c6cadb42da6cee36ff522217149",
+        "span_id": "file-body-7-a7b178d070a1",
+        "relative_path": "solve_sudoku.py",
+        "error": null,
+        "candidate_blocks": 49,
+        "live_source_completions": 0,
+        "remaining_source_records": 49,
+        "working_window_source_records": 49
+      }
+    ],
+    "live_source_cpu_completions": 0,
+    "real_semantic_candidate_retirement_proven": false,
+    "later_committed_model_replies": 0,
+    "task_continuation_after_release_proven": false
+  },
+  "effective_gc_task_continuation": false,
+  "owner_cleanup": [
+    {
+      "status": 200
+    }
+  ]
+}
