@@ -1,0 +1,755 @@
+{
+  "probe_expression": "(() => { const money=s=>Number(document.querySelector(s).textContent.replace(/[^0-9.-]/g,'')); return {stored:JSON.parse(localStorage.getItem('expense-tracker:records')||'[]').length,visible:document.querySelectorAll('#record-list .record-item').length,visible_names:[...document.querySelectorAll('#record-list .record-note')].map(e=>e.textContent).join('|'),income:money('#total-income'),expense:money('#total-expense'),balance:money('#balance'),keyword:document.querySelector('#keyword-search').value,month:document.querySelector('#month-filter').value}; })()",
+  "initial_wait_ms": 100,
+  "actions": [
+    {
+      "name": "initial-empty",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "income-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "income"
+    },
+    {
+      "name": "income-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "1000"
+    },
+    {
+      "name": "income-note",
+      "type": "fill",
+      "selector": "#note",
+      "value": "工资"
+    },
+    {
+      "name": "income-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-10-15"
+    },
+    {
+      "name": "income-submit",
+      "type": "click",
+      "selector": "#record-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "name": "expense-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "expense"
+    },
+    {
+      "name": "expense-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "123.45"
+    },
+    {
+      "name": "expense-note",
+      "type": "fill",
+      "selector": "#note",
+      "value": "午餐"
+    },
+    {
+      "name": "expense-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-10-16"
+    },
+    {
+      "name": "expense-submit",
+      "type": "click",
+      "selector": "#record-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "month-2026-09",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-09"
+    },
+    {
+      "name": "month-2026-09-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "prior-income-type",
+      "type": "select-option",
+      "selector": "#type",
+      "value": "income"
+    },
+    {
+      "name": "prior-income-amount",
+      "type": "fill",
+      "selector": "#amount",
+      "value": "200"
+    },
+    {
+      "name": "prior-income-note",
+      "type": "fill",
+      "selector": "#note",
+      "value": "旧收入"
+    },
+    {
+      "name": "prior-income-date",
+      "type": "fill",
+      "selector": "#date",
+      "value": "2026-09-20"
+    },
+    {
+      "name": "prior-income-submit",
+      "type": "click",
+      "selector": "#record-form button[type=submit]",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入"
+        }
+      ]
+    },
+    {
+      "name": "month-2026-10",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-10"
+    },
+    {
+      "name": "month-2026-10-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "search-工资",
+      "type": "fill",
+      "selector": "#keyword-search",
+      "value": "工资"
+    },
+    {
+      "name": "search-工资-settle",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "工资"
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "search-午餐",
+      "type": "fill",
+      "selector": "#keyword-search",
+      "value": "午餐"
+    },
+    {
+      "name": "search-午餐-settle",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "午餐"
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "search-不存在",
+      "type": "fill",
+      "selector": "#keyword-search",
+      "value": "不存在"
+    },
+    {
+      "name": "search-不存在-settle",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "clear-search",
+      "type": "click",
+      "selector": "#search-clear",
+      "checks": [
+        {
+          "path": "keyword",
+          "op": "equals",
+          "value": ""
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "increased"
+        }
+      ]
+    },
+    {
+      "name": "month-2026-10",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-10"
+    },
+    {
+      "name": "month-2026-10-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "keyword",
+          "op": "equals",
+          "value": ""
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "reload-persistence",
+      "type": "reload",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 123.45
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "month-2026-10",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-10"
+    },
+    {
+      "name": "month-2026-10-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "cancel-delete",
+      "type": "click",
+      "selector": "#record-list .record-item:has-text(\"午餐\") .btn-delete",
+      "expect_dialog": {
+        "type": "confirm",
+        "accept": false
+      },
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 3
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 876.55
+        }
+      ]
+    },
+    {
+      "name": "confirm-delete",
+      "type": "click",
+      "selector": "#record-list .record-item:has-text(\"午餐\") .btn-delete",
+      "expect_dialog": {
+        "type": "confirm",
+        "accept": true
+      },
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "工资"
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "name": "reload-deletion",
+      "type": "reload",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 1000
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 1000
+        }
+      ]
+    },
+    {
+      "name": "month-2026-09",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-09"
+    },
+    {
+      "name": "month-2026-09-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 2
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入"
+        }
+      ]
+    },
+    {
+      "name": "month-2026-10",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-10"
+    },
+    {
+      "name": "month-2026-10-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "工资"
+        }
+      ]
+    },
+    {
+      "name": "delete-income",
+      "type": "click",
+      "selector": "#record-list .record-item:has-text(\"工资\") .btn-delete",
+      "expect_dialog": {
+        "type": "confirm",
+        "accept": true
+      },
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "reload-preserves-other-month",
+      "type": "reload",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "income",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "expense",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "balance",
+          "op": "equals",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "month-2026-09",
+      "type": "fill",
+      "selector": "#month-filter",
+      "value": "2026-09"
+    },
+    {
+      "name": "month-2026-09-commit",
+      "type": "key-press",
+      "key": "Tab",
+      "checks": [
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入"
+        }
+      ]
+    },
+    {
+      "name": "search-旧",
+      "type": "fill",
+      "selector": "#keyword-search",
+      "value": "旧"
+    },
+    {
+      "name": "search-旧-settle",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible_names",
+          "op": "equals",
+          "value": "旧收入"
+        }
+      ]
+    },
+    {
+      "name": "search-工资",
+      "type": "fill",
+      "selector": "#keyword-search",
+      "value": "工资"
+    },
+    {
+      "name": "search-工资-settle",
+      "type": "wait",
+      "ms": 150,
+      "checks": [
+        {
+          "path": "visible",
+          "op": "equals",
+          "value": 0
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "final-clear-search",
+      "type": "click",
+      "selector": "#search-clear",
+      "checks": [
+        {
+          "path": "keyword",
+          "op": "equals",
+          "value": ""
+        },
+        {
+          "path": "stored",
+          "op": "equals",
+          "value": 1
+        },
+        {
+          "path": "visible",
+          "op": "increased"
+        }
+      ]
+    }
+  ]
+}

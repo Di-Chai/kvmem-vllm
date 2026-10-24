@@ -1,0 +1,1960 @@
+{
+  "results": [
+    [
+      {
+        "plan": {
+          "span_id": "file-body-2-8f097908c41c",
+          "namespace": [
+            "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+            "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c"
+          ],
+          "prompt_tokens": 7399,
+          "prefix_sha256": "b47a24eae1b47eeed89f76418d8edada9f458e039c8b71ce1a8547eb18765436",
+          "source_begin": 5363,
+          "source_end": 7317,
+          "result_begin": 7328,
+          "result_end": 7360,
+          "relative_path": "style.css",
+          "artifact_sha256": "465198e2009583f6dd91eba5b71fb86244438550738a49ec4bd53eb99f558058",
+          "artifact_bytes": 4530,
+          "source": "verified_dsh_write_artifact",
+          "importance": 1.0,
+          "cold": false,
+          "observations": 1
+        },
+        "phase": "observing",
+        "error": null,
+        "events": [
+          {
+            "kind": "registered",
+            "at": 13699997.223825805,
+            "accepted_history": 7399,
+            "candidate_blocks": 60
+          },
+          {
+            "kind": "published",
+            "at": 13699997.296795713,
+            "accepted_history": 7399
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-899f7fbbe5f77f84-0-974d6381",
+            "accepted_history": 7415,
+            "source_records": 60
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a81016ea53d51da6-0-845b3dbb",
+            "accepted_history": 9152,
+            "source_records": 60
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ab36e0e751740471-0-977f2979",
+            "accepted_history": 9774,
+            "source_records": 60
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-89160e78bffc3597-0-95570690",
+            "accepted_history": 9856,
+            "source_records": 60
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-b7c0088c010021c9-0-859ba170",
+            "accepted_history": 10112,
+            "source_records": 60
+          },
+          {
+            "kind": "query_handoff_prepared",
+            "at": 13700129.018022072,
+            "accepted_history": 10496,
+            "excluded_blocks": 111,
+            "selected_budget": 6944,
+            "configured_budget": 36864,
+            "reserved_limit": 10496
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              168,
+              169
+            ],
+            "history_begin": 5376,
+            "at": 13700129.907477994,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              169,
+              170
+            ],
+            "history_begin": 5408,
+            "at": 13700129.907559885,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              170,
+              171
+            ],
+            "history_begin": 5440,
+            "at": 13700129.907587904,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              171,
+              172
+            ],
+            "history_begin": 5472,
+            "at": 13700129.907613864,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              172,
+              173
+            ],
+            "history_begin": 5504,
+            "at": 13700129.907639096,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              173,
+              174
+            ],
+            "history_begin": 5536,
+            "at": 13700129.907666456,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              174,
+              175
+            ],
+            "history_begin": 5568,
+            "at": 13700129.907696676,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              175,
+              176
+            ],
+            "history_begin": 5600,
+            "at": 13700129.907750577,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              176,
+              177
+            ],
+            "history_begin": 5632,
+            "at": 13700129.907804646,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              177,
+              178
+            ],
+            "history_begin": 5664,
+            "at": 13700129.907835448,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              178,
+              179
+            ],
+            "history_begin": 5696,
+            "at": 13700129.907882309,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              179,
+              180
+            ],
+            "history_begin": 5728,
+            "at": 13700129.907916749,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              180,
+              181
+            ],
+            "history_begin": 5760,
+            "at": 13700129.907957299,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              181,
+              182
+            ],
+            "history_begin": 5792,
+            "at": 13700129.907986129,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              182,
+              183
+            ],
+            "history_begin": 5824,
+            "at": 13700129.908036537,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              183,
+              184
+            ],
+            "history_begin": 5856,
+            "at": 13700129.908064058,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              184,
+              185
+            ],
+            "history_begin": 5888,
+            "at": 13700129.908092167,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              185,
+              186
+            ],
+            "history_begin": 5920,
+            "at": 13700129.9081373,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              186,
+              187
+            ],
+            "history_begin": 5952,
+            "at": 13700129.90817496,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              187,
+              188
+            ],
+            "history_begin": 5984,
+            "at": 13700129.90823008,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              188,
+              189
+            ],
+            "history_begin": 6016,
+            "at": 13700129.90826681,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              189,
+              190
+            ],
+            "history_begin": 6048,
+            "at": 13700129.9083768,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              190,
+              191
+            ],
+            "history_begin": 6080,
+            "at": 13700129.908411631,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              191,
+              192
+            ],
+            "history_begin": 6112,
+            "at": 13700129.90843592,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              192,
+              193
+            ],
+            "history_begin": 6144,
+            "at": 13700129.90847056,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              193,
+              194
+            ],
+            "history_begin": 6176,
+            "at": 13700129.908498552,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              194,
+              195
+            ],
+            "history_begin": 6208,
+            "at": 13700129.908532731,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              195,
+              196
+            ],
+            "history_begin": 6240,
+            "at": 13700129.908560412,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              196,
+              197
+            ],
+            "history_begin": 6272,
+            "at": 13700129.908592312,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              197,
+              198
+            ],
+            "history_begin": 6304,
+            "at": 13700129.908617184,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              198,
+              199
+            ],
+            "history_begin": 6336,
+            "at": 13700129.908650445,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              199,
+              200
+            ],
+            "history_begin": 6368,
+            "at": 13700129.908674944,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              200,
+              201
+            ],
+            "history_begin": 6400,
+            "at": 13700129.908701304,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              201,
+              202
+            ],
+            "history_begin": 6432,
+            "at": 13700129.908729363,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              202,
+              203
+            ],
+            "history_begin": 6464,
+            "at": 13700129.908765744,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              203,
+              204
+            ],
+            "history_begin": 6496,
+            "at": 13700129.908792524,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              204,
+              205
+            ],
+            "history_begin": 6528,
+            "at": 13700129.908819024,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              205,
+              206
+            ],
+            "history_begin": 6560,
+            "at": 13700129.908855975,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              206,
+              207
+            ],
+            "history_begin": 6592,
+            "at": 13700129.908886883,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              207,
+              208
+            ],
+            "history_begin": 6624,
+            "at": 13700129.908912804,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              208,
+              209
+            ],
+            "history_begin": 6656,
+            "at": 13700129.908964744,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              209,
+              210
+            ],
+            "history_begin": 6688,
+            "at": 13700129.908994343,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              210,
+              211
+            ],
+            "history_begin": 6720,
+            "at": 13700129.909056606,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              211,
+              212
+            ],
+            "history_begin": 6752,
+            "at": 13700129.909112776,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              212,
+              213
+            ],
+            "history_begin": 6784,
+            "at": 13700129.909311928,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              213,
+              214
+            ],
+            "history_begin": 6816,
+            "at": 13700129.909354258,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              214,
+              215
+            ],
+            "history_begin": 6848,
+            "at": 13700129.909381539,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              215,
+              216
+            ],
+            "history_begin": 6880,
+            "at": 13700129.909417788,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              216,
+              217
+            ],
+            "history_begin": 6912,
+            "at": 13700129.909457467,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              217,
+              218
+            ],
+            "history_begin": 6944,
+            "at": 13700129.909509148,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              218,
+              219
+            ],
+            "history_begin": 6976,
+            "at": 13700129.9095339,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              219,
+              220
+            ],
+            "history_begin": 7008,
+            "at": 13700129.90966712,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              220,
+              221
+            ],
+            "history_begin": 7040,
+            "at": 13700129.909703692,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              221,
+              222
+            ],
+            "history_begin": 7072,
+            "at": 13700129.909739573,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              222,
+              223
+            ],
+            "history_begin": 7104,
+            "at": 13700129.909768492,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              223,
+              224
+            ],
+            "history_begin": 7136,
+            "at": 13700129.909796203,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              224,
+              225
+            ],
+            "history_begin": 7168,
+            "at": 13700129.909836512,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              225,
+              226
+            ],
+            "history_begin": 7200,
+            "at": 13700129.909865223,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              226,
+              227
+            ],
+            "history_begin": 7232,
+            "at": 13700129.909893602,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              227,
+              228
+            ],
+            "history_begin": 7264,
+            "at": 13700129.909934351,
+            "during_live_scope": true
+          },
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 111,
+            "at": 13700129.920786455,
+            "accepted_history": 10555,
+            "following_accepted_history": 10572,
+            "following_at": 13700130.417824425
+          },
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 111,
+            "at": 13700129.920786455,
+            "accepted_history": 10555,
+            "following_accepted_history": 10572,
+            "following_at": 13700130.417824425
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bedf66a94cb0aadf-0-a7dbe094",
+            "accepted_history": 10555,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bbd4f45634d7e414-0-a124eec2",
+            "accepted_history": 10784,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a6d60fd28c2ea571-0-bc49bb88",
+            "accepted_history": 15040,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bd16501a32b15f29-0-acfc5e21",
+            "accepted_history": 15285,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9abe9cf8fd6b54f4-0-bfca6a88",
+            "accepted_history": 15872,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ac15a74230188e72-0-8ca071c7",
+            "accepted_history": 16192,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a00c3ab9c803c406-0-af5c1026",
+            "accepted_history": 16480,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9e95340690c20c29-0-a4e484e5",
+            "accepted_history": 16605,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-80ae196f41ea8fa8-0-bb5d3255",
+            "accepted_history": 16832,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a894fb107dbd4f06-0-91bd59b8",
+            "accepted_history": 17056,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-821b2012e51dc380-0-82d190c0",
+            "accepted_history": 17696,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-be006bac03b28c64-0-9c1521b1",
+            "accepted_history": 18272,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ba6244463c1ec254-0-88e2f659",
+            "accepted_history": 18816,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9df25c06352094a1-0-bbad9420",
+            "accepted_history": 19086,
+            "source_records": 0
+          }
+        ],
+        "registered": true,
+        "observed": true,
+        "complete": true,
+        "flushed": true,
+        "prefix_checked": true,
+        "candidate_handles": [
+          [
+            168,
+            169
+          ],
+          [
+            169,
+            170
+          ],
+          [
+            170,
+            171
+          ],
+          [
+            171,
+            172
+          ],
+          [
+            172,
+            173
+          ],
+          [
+            173,
+            174
+          ],
+          [
+            174,
+            175
+          ],
+          [
+            175,
+            176
+          ],
+          [
+            176,
+            177
+          ],
+          [
+            177,
+            178
+          ],
+          [
+            178,
+            179
+          ],
+          [
+            179,
+            180
+          ],
+          [
+            180,
+            181
+          ],
+          [
+            181,
+            182
+          ],
+          [
+            182,
+            183
+          ],
+          [
+            183,
+            184
+          ],
+          [
+            184,
+            185
+          ],
+          [
+            185,
+            186
+          ],
+          [
+            186,
+            187
+          ],
+          [
+            187,
+            188
+          ],
+          [
+            188,
+            189
+          ],
+          [
+            189,
+            190
+          ],
+          [
+            190,
+            191
+          ],
+          [
+            191,
+            192
+          ],
+          [
+            192,
+            193
+          ],
+          [
+            193,
+            194
+          ],
+          [
+            194,
+            195
+          ],
+          [
+            195,
+            196
+          ],
+          [
+            196,
+            197
+          ],
+          [
+            197,
+            198
+          ],
+          [
+            198,
+            199
+          ],
+          [
+            199,
+            200
+          ],
+          [
+            200,
+            201
+          ],
+          [
+            201,
+            202
+          ],
+          [
+            202,
+            203
+          ],
+          [
+            203,
+            204
+          ],
+          [
+            204,
+            205
+          ],
+          [
+            205,
+            206
+          ],
+          [
+            206,
+            207
+          ],
+          [
+            207,
+            208
+          ],
+          [
+            208,
+            209
+          ],
+          [
+            209,
+            210
+          ],
+          [
+            210,
+            211
+          ],
+          [
+            211,
+            212
+          ],
+          [
+            212,
+            213
+          ],
+          [
+            213,
+            214
+          ],
+          [
+            214,
+            215
+          ],
+          [
+            215,
+            216
+          ],
+          [
+            216,
+            217
+          ],
+          [
+            217,
+            218
+          ],
+          [
+            218,
+            219
+          ],
+          [
+            219,
+            220
+          ],
+          [
+            220,
+            221
+          ],
+          [
+            221,
+            222
+          ],
+          [
+            222,
+            223
+          ],
+          [
+            223,
+            224
+          ],
+          [
+            224,
+            225
+          ],
+          [
+            225,
+            226
+          ],
+          [
+            226,
+            227
+          ],
+          [
+            227,
+            228
+          ]
+        ],
+        "result_handles": [
+          [
+            229,
+            230
+          ]
+        ],
+        "last_sample": {
+          "at": 13700249.716250641,
+          "accepted_history": 19346,
+          "retired": 111,
+          "cpu_released": 111
+        },
+        "generation": 2,
+        "checked_request": "cmpl-9df25c06352094a1-0-bbad9420",
+        "archive_request_id": "cmpl-816e0d2fbcc796bf-0-ad6e7042",
+        "remaining_source_records": 0,
+        "window_source_records": 0,
+        "last_window_request": "cmpl-9df25c06352094a1-0-bbad9420"
+      },
+      {
+        "plan": {
+          "span_id": "file-body-3-500db7b336c3",
+          "namespace": [
+            "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+            "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c"
+          ],
+          "prompt_tokens": 9198,
+          "prefix_sha256": "689dfc0b33f14d3a6f4a4928a688e31395eb4b52e031427f5ae404079306c881",
+          "source_begin": 7454,
+          "source_end": 9116,
+          "result_begin": 9120,
+          "result_end": 9152,
+          "relative_path": "app.js",
+          "artifact_sha256": "77d1278a87f1196fc85ab638a8e593e229ceaa604c1b0f72e5861b61cb36a3d8",
+          "artifact_bytes": 6063,
+          "source": "verified_dsh_write_artifact",
+          "importance": 1.0,
+          "cold": false,
+          "observations": 1
+        },
+        "phase": "observing",
+        "error": null,
+        "events": [
+          {
+            "kind": "registered",
+            "at": 13700062.3981042,
+            "accepted_history": 9198,
+            "candidate_blocks": 51
+          },
+          {
+            "kind": "published",
+            "at": 13700062.471556889,
+            "accepted_history": 9198
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a81016ea53d51da6-0-845b3dbb",
+            "accepted_history": 9214,
+            "source_records": 51
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ab36e0e751740471-0-977f2979",
+            "accepted_history": 9774,
+            "source_records": 51
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-89160e78bffc3597-0-95570690",
+            "accepted_history": 9856,
+            "source_records": 51
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-b7c0088c010021c9-0-859ba170",
+            "accepted_history": 10112,
+            "source_records": 51
+          },
+          {
+            "kind": "query_handoff_prepared",
+            "at": 13700129.01803,
+            "accepted_history": 10496,
+            "excluded_blocks": 111,
+            "selected_budget": 6944,
+            "configured_budget": 36864,
+            "reserved_limit": 10496
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              233,
+              234
+            ],
+            "history_begin": 7456,
+            "at": 13700129.909999363,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              234,
+              235
+            ],
+            "history_begin": 7488,
+            "at": 13700129.910051124,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              235,
+              236
+            ],
+            "history_begin": 7520,
+            "at": 13700129.910089605,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              236,
+              237
+            ],
+            "history_begin": 7552,
+            "at": 13700129.910115134,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              237,
+              238
+            ],
+            "history_begin": 7584,
+            "at": 13700129.910357647,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              238,
+              239
+            ],
+            "history_begin": 7616,
+            "at": 13700129.910386257,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              239,
+              240
+            ],
+            "history_begin": 7648,
+            "at": 13700129.910409275,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              240,
+              241
+            ],
+            "history_begin": 7680,
+            "at": 13700129.910445988,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              241,
+              242
+            ],
+            "history_begin": 7712,
+            "at": 13700129.910480589,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              242,
+              243
+            ],
+            "history_begin": 7744,
+            "at": 13700129.910514807,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              243,
+              244
+            ],
+            "history_begin": 7776,
+            "at": 13700129.910558129,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              244,
+              245
+            ],
+            "history_begin": 7808,
+            "at": 13700129.910588369,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              245,
+              246
+            ],
+            "history_begin": 7840,
+            "at": 13700129.910618467,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              246,
+              247
+            ],
+            "history_begin": 7872,
+            "at": 13700129.910646718,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              247,
+              248
+            ],
+            "history_begin": 7904,
+            "at": 13700129.910696529,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              248,
+              249
+            ],
+            "history_begin": 7936,
+            "at": 13700129.910727767,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              249,
+              250
+            ],
+            "history_begin": 7968,
+            "at": 13700129.91075604,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              250,
+              251
+            ],
+            "history_begin": 8000,
+            "at": 13700129.910797749,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              251,
+              252
+            ],
+            "history_begin": 8032,
+            "at": 13700129.910828987,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              252,
+              253
+            ],
+            "history_begin": 8064,
+            "at": 13700129.91085884,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              253,
+              254
+            ],
+            "history_begin": 8096,
+            "at": 13700129.91090557,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              254,
+              255
+            ],
+            "history_begin": 8128,
+            "at": 13700129.91093681,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              255,
+              256
+            ],
+            "history_begin": 8160,
+            "at": 13700129.910978992,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              256,
+              257
+            ],
+            "history_begin": 8192,
+            "at": 13700129.91101104,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              257,
+              258
+            ],
+            "history_begin": 8224,
+            "at": 13700129.911043173,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              258,
+              259
+            ],
+            "history_begin": 8256,
+            "at": 13700129.911117312,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              259,
+              260
+            ],
+            "history_begin": 8288,
+            "at": 13700129.911149843,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              260,
+              261
+            ],
+            "history_begin": 8320,
+            "at": 13700129.911181573,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              261,
+              262
+            ],
+            "history_begin": 8352,
+            "at": 13700129.911217721,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              262,
+              263
+            ],
+            "history_begin": 8384,
+            "at": 13700129.911250632,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              263,
+              264
+            ],
+            "history_begin": 8416,
+            "at": 13700129.911295824,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              264,
+              265
+            ],
+            "history_begin": 8448,
+            "at": 13700129.911329253,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              265,
+              266
+            ],
+            "history_begin": 8480,
+            "at": 13700129.911360553,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              266,
+              267
+            ],
+            "history_begin": 8512,
+            "at": 13700129.911404373,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              267,
+              268
+            ],
+            "history_begin": 8544,
+            "at": 13700129.911442824,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              268,
+              269
+            ],
+            "history_begin": 8576,
+            "at": 13700129.911482474,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              269,
+              270
+            ],
+            "history_begin": 8608,
+            "at": 13700129.911520416,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              270,
+              271
+            ],
+            "history_begin": 8640,
+            "at": 13700129.911558736,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              271,
+              272
+            ],
+            "history_begin": 8672,
+            "at": 13700129.911596904,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              272,
+              273
+            ],
+            "history_begin": 8704,
+            "at": 13700129.911630766,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              273,
+              274
+            ],
+            "history_begin": 8736,
+            "at": 13700129.911668057,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              274,
+              275
+            ],
+            "history_begin": 8768,
+            "at": 13700129.911707986,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              275,
+              276
+            ],
+            "history_begin": 8800,
+            "at": 13700129.911749035,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              276,
+              277
+            ],
+            "history_begin": 8832,
+            "at": 13700129.911778089,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              277,
+              278
+            ],
+            "history_begin": 8864,
+            "at": 13700129.911808876,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              278,
+              279
+            ],
+            "history_begin": 8896,
+            "at": 13700129.911844796,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              279,
+              280
+            ],
+            "history_begin": 8928,
+            "at": 13700129.911876276,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              280,
+              281
+            ],
+            "history_begin": 8960,
+            "at": 13700129.911909468,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              281,
+              282
+            ],
+            "history_begin": 8992,
+            "at": 13700129.911940478,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              282,
+              283
+            ],
+            "history_begin": 9024,
+            "at": 13700129.911973817,
+            "during_live_scope": true
+          },
+          {
+            "kind": "source_record_released",
+            "handle": [
+              283,
+              284
+            ],
+            "history_begin": 9056,
+            "at": 13700129.912004769,
+            "during_live_scope": true
+          },
+          {
+            "kind": "retired",
+            "before": 0,
+            "after": 111,
+            "at": 13700129.920963036,
+            "accepted_history": 10555,
+            "following_accepted_history": 10572,
+            "following_at": 13700130.417999497
+          },
+          {
+            "kind": "cpu_released",
+            "before": 0,
+            "after": 111,
+            "at": 13700129.920963036,
+            "accepted_history": 10555,
+            "following_accepted_history": 10572,
+            "following_at": 13700130.417999497
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bedf66a94cb0aadf-0-a7dbe094",
+            "accepted_history": 10555,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bbd4f45634d7e414-0-a124eec2",
+            "accepted_history": 10784,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a6d60fd28c2ea571-0-bc49bb88",
+            "accepted_history": 15040,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-bd16501a32b15f29-0-acfc5e21",
+            "accepted_history": 15285,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9abe9cf8fd6b54f4-0-bfca6a88",
+            "accepted_history": 15872,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ac15a74230188e72-0-8ca071c7",
+            "accepted_history": 16192,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a00c3ab9c803c406-0-af5c1026",
+            "accepted_history": 16480,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9e95340690c20c29-0-a4e484e5",
+            "accepted_history": 16605,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-80ae196f41ea8fa8-0-bb5d3255",
+            "accepted_history": 16832,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-a894fb107dbd4f06-0-91bd59b8",
+            "accepted_history": 17056,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-821b2012e51dc380-0-82d190c0",
+            "accepted_history": 17696,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-be006bac03b28c64-0-9c1521b1",
+            "accepted_history": 18272,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-ba6244463c1ec254-0-88e2f659",
+            "accepted_history": 18816,
+            "source_records": 0
+          },
+          {
+            "kind": "request_window",
+            "request_id": "cmpl-9df25c06352094a1-0-bbad9420",
+            "accepted_history": 19086,
+            "source_records": 0
+          }
+        ],
+        "registered": true,
+        "observed": true,
+        "complete": true,
+        "flushed": true,
+        "prefix_checked": true,
+        "candidate_handles": [
+          [
+            233,
+            234
+          ],
+          [
+            234,
+            235
+          ],
+          [
+            235,
+            236
+          ],
+          [
+            236,
+            237
+          ],
+          [
+            237,
+            238
+          ],
+          [
+            238,
+            239
+          ],
+          [
+            239,
+            240
+          ],
+          [
+            240,
+            241
+          ],
+          [
+            241,
+            242
+          ],
+          [
+            242,
+            243
+          ],
+          [
+            243,
+            244
+          ],
+          [
+            244,
+            245
+          ],
+          [
+            245,
+            246
+          ],
+          [
+            246,
+            247
+          ],
+          [
+            247,
+            248
+          ],
+          [
+            248,
+            249
+          ],
+          [
+            249,
+            250
+          ],
+          [
+            250,
+            251
+          ],
+          [
+            251,
+            252
+          ],
+          [
+            252,
+            253
+          ],
+          [
+            253,
+            254
+          ],
+          [
+            254,
+            255
+          ],
+          [
+            255,
+            256
+          ],
+          [
+            256,
+            257
+          ],
+          [
+            257,
+            258
+          ],
+          [
+            258,
+            259
+          ],
+          [
+            259,
+            260
+          ],
+          [
+            260,
+            261
+          ],
+          [
+            261,
+            262
+          ],
+          [
+            262,
+            263
+          ],
+          [
+            263,
+            264
+          ],
+          [
+            264,
+            265
+          ],
+          [
+            265,
+            266
+          ],
+          [
+            266,
+            267
+          ],
+          [
+            267,
+            268
+          ],
+          [
+            268,
+            269
+          ],
+          [
+            269,
+            270
+          ],
+          [
+            270,
+            271
+          ],
+          [
+            271,
+            272
+          ],
+          [
+            272,
+            273
+          ],
+          [
+            273,
+            274
+          ],
+          [
+            274,
+            275
+          ],
+          [
+            275,
+            276
+          ],
+          [
+            276,
+            277
+          ],
+          [
+            277,
+            278
+          ],
+          [
+            278,
+            279
+          ],
+          [
+            279,
+            280
+          ],
+          [
+            280,
+            281
+          ],
+          [
+            281,
+            282
+          ],
+          [
+            282,
+            283
+          ],
+          [
+            283,
+            284
+          ]
+        ],
+        "result_handles": [
+          [
+            285,
+            286
+          ]
+        ],
+        "last_sample": {
+          "at": 13700249.716490433,
+          "accepted_history": 19346,
+          "retired": 111,
+          "cpu_released": 111
+        },
+        "generation": 2,
+        "checked_request": "cmpl-9df25c06352094a1-0-bbad9420",
+        "archive_request_id": "cmpl-816e0d2fbcc796bf-0-ad6e7042",
+        "remaining_source_records": 0,
+        "window_source_records": 0,
+        "last_window_request": "cmpl-9df25c06352094a1-0-bbad9420"
+      }
+    ]
+  ]
+}

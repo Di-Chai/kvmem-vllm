@@ -1,0 +1,318 @@
+/* ===== 基础 ===== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: linear-gradient(160deg, #eef2ff 0%, #f8fafc 40%, #ecfdf5 100%);
+  color: #1f2937;
+  min-height: 100vh;
+  padding: 24px 16px 48px;
+}
+
+.container {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* ===== 头部 ===== */
+.header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.subtitle {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+/* ===== 统计卡片 ===== */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  border-top: 4px solid #d1d5db;
+}
+
+.stat-card.income {
+  border-top-color: #10b981;
+}
+
+.stat-card.expense {
+  border-top-color: #ef4444;
+}
+
+.stat-card.balance {
+  border-top-color: #3b82f6;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.stat-card.income .stat-value {
+  color: #059669;
+}
+
+.stat-card.expense .stat-value {
+  color: #dc2626;
+}
+
+.stat-card.balance .stat-value {
+  color: #2563eb;
+}
+
+.stat-card.balance .stat-value.negative {
+  color: #dc2626;
+}
+
+/* ===== 表单 ===== */
+.form-section,
+.filter-section,
+.list-section {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  margin-bottom: 16px;
+}
+
+.form-section h2,
+.filter-section h2 {
+  font-size: 16px;
+  margin-bottom: 12px;
+  color: #374151;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.form-row label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #4b5563;
+  gap: 4px;
+}
+
+.form-row label.grow {
+  flex: 1;
+  min-width: 140px;
+}
+
+input,
+select {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #f9fafb;
+  color: #1f2937;
+  outline: none;
+}
+
+input:focus,
+select:focus {
+  border-color: #3b82f6;
+  background: #ffffff;
+}
+
+/* ===== 按钮 ===== */
+.btn {
+  padding: 9px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn:hover {
+  background: #f3f4f6;
+}
+
+.btn-primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #2563eb;
+}
+
+/* ===== 筛选栏 ===== */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.filter-bar label.grow {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+}
+
+.filter-bar label.grow input {
+  width: 100%;
+}
+
+.filter-info {
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+/* ===== 记录列表 ===== */
+.record-list {
+  list-style: none;
+}
+
+.record-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  background: #fafafa;
+  transition: background 0.15s ease;
+}
+
+.record-item:hover {
+  background: #f3f4f6;
+}
+
+.record-type {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 0;
+  border-radius: 6px;
+}
+
+.record-type.income {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.record-type.expense {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.record-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.record-note {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-date {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+.record-amount {
+  font-size: 15px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.record-amount.income {
+  color: #059669;
+}
+
+.record-amount.expense {
+  color: #dc2626;
+}
+
+.btn-delete {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #dc2626;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-delete:hover {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.empty-tip {
+  text-align: center;
+  padding: 24px 0;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 560px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .record-item {
+    flex-wrap: wrap;
+  }
+}

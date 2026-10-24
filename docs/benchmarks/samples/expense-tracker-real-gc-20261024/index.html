@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>本地记账本</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>💰 本地记账本</h1>
+      <p class="subtitle">数据保存在浏览器 localStorage，刷新不丢失</p>
+    </header>
+
+    <!-- 统计卡片 -->
+    <section class="stats">
+      <div class="stat-card income">
+        <div class="stat-label">本月收入</div>
+        <div class="stat-value" id="total-income">¥0.00</div>
+      </div>
+      <div class="stat-card expense">
+        <div class="stat-label">本月支出</div>
+        <div class="stat-value" id="total-expense">¥0.00</div>
+      </div>
+      <div class="stat-card balance">
+        <div class="stat-label">本月结余</div>
+        <div class="stat-value" id="balance">¥0.00</div>
+      </div>
+    </section>
+
+    <!-- 新增记录表单 -->
+    <section class="form-section">
+      <h2>新增记录</h2>
+      <form id="record-form" autocomplete="off">
+        <div class="form-row">
+          <label>
+            类型
+            <select id="type">
+              <option value="income">收入</option>
+              <option value="expense">支出</option>
+            </select>
+          </label>
+          <label>
+            金额（元）
+            <input type="number" id="amount" min="0.01" step="0.01" placeholder="0.00" required>
+          </label>
+          <label>
+            日期
+            <input type="date" id="date" required>
+          </label>
+          <label class="grow">
+            备注
+            <input type="text" id="note" placeholder="例如：午餐、工资" maxlength="50">
+          </label>
+          <button type="submit" class="btn btn-primary">添加</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 月份筛选 -->
+    <section class="filter-section">
+      <h2>记录列表</h2>
+      <div class="filter-bar">
+        <label>
+          月份
+          <input type="month" id="month-filter">
+        </label>
+        <label class="grow">
+          备注关键词
+          <input type="text" id="keyword-search" placeholder="输入备注关键词，如：午餐" maxlength="30">
+        </label>
+        <button id="search-clear" class="btn">清空搜索</button>
+        <button id="filter-all" class="btn">显示全部</button>
+        <span id="filter-info" class="filter-info"></span>
+      </div>
+    </section>
+
+    <!-- 记录列表 -->
+    <section class="list-section">
+      <ul id="record-list" class="record-list"></ul>
+      <div id="empty-tip" class="empty-tip" hidden>暂无记录，先添加一条吧～</div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

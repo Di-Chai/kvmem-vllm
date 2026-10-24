@@ -65,6 +65,49 @@ def release_payload(model, owner):
                 kv_transfer_params=dict(kvmem_release_session=True))
 
 
+def artifact_gc_evidence(bridge, *, owner_filter=None):
+    """Join saved, committed worker snapshots; cleanup frees are excluded."""
+    sources, released, first = {}, set(), {}
+    committed = {}
+    for directory in sorted(bridge.iterdir()):
+        if not directory.is_dir() or owner_filter and directory.name != owner_filter:
+            continue
+        turns = [t for t in sorted(directory.glob('[0-9][0-9][0-9][0-9][0-9]'))
+                 if (t/'accepted.json').is_file()]
+        committed[directory.name] = [int(t.name) for t in turns]
+        for turn in turns:
+            snapshot = read(turn/'artifact-gc-state.json', {})
+            for worker in snapshot.get('results', []):
+                for state in worker:
+                    plan = state.get('plan', {})
+                    if (plan.get('source') != 'verified_dsh_write_artifact' or
+                            plan.get('namespace') != [directory.name, directory.name]):
+                        continue
+                    identity = directory.name, plan['span_id']
+                    handles = {tuple(h) for h in state.get('candidate_handles', [])}
+                    valid = []
+                    if state.get('flushed') and state.get('complete') and state.get('observed') and state.get('error') is None:
+                        valid = [e for e in state.get('events', [])
+                            if e.get('kind') == 'source_record_released' and e.get('during_live_scope') is True
+                            and tuple(e.get('handle', [])) in handles
+                            and plan['source_begin'] <= e.get('history_begin', -1)
+                            and e.get('history_begin', -1)+32 <= plan['source_end']]
+                    for event in valid:
+                        released.add((directory.name, state.get('archive_request_id'), *event['handle']))
+                    if valid:
+                        first.setdefault(directory.name, int(turn.name))
+                    sources[identity] = dict(owner=directory.name, span_id=plan['span_id'],
+                        relative_path=plan.get('relative_path'), error=state.get('error'),
+                        candidate_blocks=len(handles), live_source_completions=len(valid),
+                        remaining_source_records=state.get('remaining_source_records'),
+                        working_window_source_records=state.get('window_source_records'))
+    later = sum(sum(t > first[owner] for t in turns)
+                for owner, turns in committed.items() if owner in first)
+    return dict(semantic_producer_present=bool(sources), source_spans=list(sources.values()),
+        live_source_cpu_completions=len(released), real_semantic_candidate_retirement_proven=bool(released),
+        later_committed_model_replies=later, task_continuation_after_release_proven=later > 0)
+
+
 def report(bridge, server_run, profile, *, owner_filter=None):
     config = read(profile)
     if not isinstance(config, dict):
@@ -170,6 +213,7 @@ def report(bridge, server_run, profile, *, owner_filter=None):
             release_confirmed_absent=snapshot is not None and not leases and quiescent))
     if owner_filter and not owners:
         raise ValueError('Requested owner has no saved bridge namespace evidence')
+    semantic = artifact_gc_evidence(bridge, owner_filter=owner_filter)
     return dict(schema_version=1, read_only=True, endpoint=endpoint,
         bridge_output=str(bridge), server_run=str(server_run), profile=str(profile),
         snapshot_age_seconds=None if snapshot is None else time.time()-snapshot_path.stat().st_mtime,
@@ -180,9 +224,11 @@ def report(bridge, server_run, profile, *, owner_filter=None):
             completion='HTTP success, followed by namespace absent and requests/owned_blocks/refresh_pending/connector_pending/reservations all empty',
             evidence='Session release/eviction counters are not proactive statistical GC evidence'),
         gc_evidence=dict(config=config.get('kvmem', {}).get('historical_gc'),
-            current_counters=archive.get('historical_gc'), semantic_producer_present=False,
-            statistical_candidate_retirement_proven=False, decode_overlap_proven=False,
-            reason='This stage publishes no semantic eligibility/observation evidence. Aggregate archive counters cannot establish candidate identity or decode overlap.'),
+            current_counters=archive.get('historical_gc'), **semantic,
+            statistical_candidate_retirement_proven=(semantic['real_semantic_candidate_retirement_proven'] and config.get('kvmem', {}).get('historical_gc', {}).get('policy') == 'statistical'),
+            calibrated_statistical_policy_quality_proven=False, attention_importance_measurements_present=False,
+            decode_overlap_proven=False,
+            reason=('Verified-file evidence and candidate-specific live-scope CPU completions are joined from committed worker snapshots. This does not calibrate attention statistics or prove paired decode throughput.' if semantic['semantic_producer_present'] else 'This stage publishes no semantic eligibility/observation evidence. Aggregate archive counters cannot establish candidate identity or decode overlap.')),
         replay_evidence=dict(join='Bridge segment response ID -> exact worker ID or response-ID + -0- prefix',
             measured='async_restore history/active tokens, uploaded/model bytes, host preparation and wall duration; scheduler_refresh replay_tokens classified by bounded_refresh.selection, async_refresh Query forward tokens; bridge TTFT',
             limits='An absent event means unobserved, not free. Bridge elapsed/TTFT includes queueing and transport. GC-induced replay cost requires a matched baseline with the same accepted trajectory.'))

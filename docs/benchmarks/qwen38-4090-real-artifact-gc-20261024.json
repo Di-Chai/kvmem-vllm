@@ -1,0 +1,736 @@
+{
+  "schema": "qwen38-real-artifact-gc-functional-qualification-v1",
+  "status": "passed_one_real_two_stage_task",
+  "scope": "One real DSH expense-tracker workflow: create the app, then implement search in the same session after actual historical KV deletion. This is not an attention/R-KV quality or paired-throughput qualification.",
+  "code_commit": "f26e947636f049b02cad636b71f379e8dfab3999",
+  "model": {
+    "repository": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+    "revision": "2232b67a2ef5480e97c4450838a712de1346eccc",
+    "source": "hf-mirror.com",
+    "all_digests_verified": true
+  },
+  "serving": {
+    "gpu": "RTX4090 cloud only",
+    "concurrency": 1,
+    "max_model_len": 262144,
+    "select_budget": 36864,
+    "gen_budget": 16384,
+    "cpu_history_configured_bytes": 12884901888,
+    "historical_gc": {
+      "mode": "delete",
+      "policy": "statistical",
+      "poll_ms": 10,
+      "scan_blocks": 128,
+      "delete_blocks": 8,
+      "policy_params": {
+        "min_observations": 1,
+        "min_cold_observations": 0,
+        "max_importance": 1.0,
+        "proactive": true,
+        "min_model_reclaim_score": -1.0
+      }
+    },
+    "kv_cache_dtype": "fp8_e4m3",
+    "profile_sha256": "dd8fa8f23d077e407cd41b8b40608cc7b66ffd4e773d0b0cc21c218e2a5743b8",
+    "compute_dtype": "bfloat16",
+    "max_num_batched_tokens": 130,
+    "gpu_memory_utilization": 0.86,
+    "native_prefix_caching": false,
+    "async_scheduling": false,
+    "execution": "eager",
+    "draft_method": "mtp",
+    "draft_tokens": 1,
+    "query_replay_budget": 128,
+    "geometry": {
+      "native_blocks": 45,
+      "cpu_archive_bytes_per_token": 34816,
+      "graph_mode": "NONE"
+    }
+  },
+  "tasks": {
+    "create": "创建本地记账网页 index.html、app.js、style.css。支持新增/删除收支、月份筛选、本月收支和余额，localStorage 刷新保留，不依赖外网。分次写入，每次不超过200行。只做JS语法自检，浏览器由外部验收；无需任务清单。",
+    "followup": "增加按备注关键词搜索和清空搜索按钮；与月份筛选联动，顶部三项汇总仍统计整个月。先读取已有文件再修改，保留新增、删除、刷新持久化。只做JS语法自检，浏览器由外部验收，不用列任务清单。"
+  },
+  "dsh": {
+    "run": "/root/data/kvmem-vllm-gc/runs/dsh-live-15-real-artifact-gc",
+    "bridge": "/root/data/kvmem-vllm-gc/runs/dsh-bridge-14-real-artifact-gc",
+    "server": "/root/data/kvmem-vllm-gc/runs/qwen38-gptq-artifact-gc-server-04",
+    "turns": [
+      {
+        "index": 1,
+        "started_at": "2026-10-24T00:36:03.770Z",
+        "finished_at": "2026-10-24T00:39:48.492Z",
+        "reason": {
+          "kind": "completed"
+        },
+        "seconds": 224.722
+      },
+      {
+        "index": 2,
+        "started_at": "2026-10-24T00:40:10.003Z",
+        "finished_at": "2026-10-24T00:42:11.386Z",
+        "reason": {
+          "kind": "completed"
+        },
+        "seconds": 121.383
+      }
+    ],
+    "exit": {
+      "exit_code": 0,
+      "finished_unix": 1792802659.0306938
+    },
+    "committed_model_replies": 21,
+    "tool_calls": 20,
+    "tool_counts": {
+      "str_replace_editor": 1,
+      "write": 2,
+      "edit": 8,
+      "bash": 4,
+      "read": 5
+    },
+    "total_output_tokens": 8424,
+    "max_api_total_tokens": 19354,
+    "exact_prefix_reused": 20,
+    "replies": [
+      {
+        "index": 1,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 4418,
+          "completion_tokens": 836,
+          "total_tokens": 5254
+        },
+        "tools": [
+          "str_replace_editor"
+        ],
+        "exact_prefix_reused": false,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 2,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 5308,
+          "completion_tokens": 2020,
+          "total_tokens": 7328
+        },
+        "tools": [
+          "write"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 3,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 7399,
+          "completion_tokens": 1728,
+          "total_tokens": 9127
+        },
+        "tools": [
+          "write"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 4,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 9198,
+          "completion_tokens": 521,
+          "total_tokens": 9719
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 5,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 9774,
+          "completion_tokens": 64,
+          "total_tokens": 9838
+        },
+        "tools": [
+          "bash"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 6,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 9905,
+          "completion_tokens": 192,
+          "total_tokens": 10097
+        },
+        "tools": [
+          "bash"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 7,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 10153,
+          "completion_tokens": 344,
+          "total_tokens": 10497
+        },
+        "tools": [],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          4232,
+          4294
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 0
+      },
+      {
+        "index": 8,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 10564,
+          "completion_tokens": 108,
+          "total_tokens": 10672
+        },
+        "tools": [
+          "read",
+          "read"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "force",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 9,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 14828,
+          "completion_tokens": 208,
+          "total_tokens": 15036
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 10,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 15091,
+          "completion_tokens": 139,
+          "total_tokens": 15230
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 11,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 15285,
+          "completion_tokens": 575,
+          "total_tokens": 15860
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 12,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 15915,
+          "completion_tokens": 259,
+          "total_tokens": 16174
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 13,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 16229,
+          "completion_tokens": 233,
+          "total_tokens": 16462
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 14,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 16517,
+          "completion_tokens": 51,
+          "total_tokens": 16568
+        },
+        "tools": [
+          "bash"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 15,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 16605,
+          "completion_tokens": 214,
+          "total_tokens": 16819
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 16,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 16876,
+          "completion_tokens": 81,
+          "total_tokens": 16957
+        },
+        "tools": [
+          "read"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 17,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 17505,
+          "completion_tokens": 81,
+          "total_tokens": 17586
+        },
+        "tools": [
+          "read"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 18,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 18092,
+          "completion_tokens": 81,
+          "total_tokens": 18173
+        },
+        "tools": [
+          "read"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 19,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 18563,
+          "completion_tokens": 233,
+          "total_tokens": 18796
+        },
+        "tools": [
+          "edit"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 20,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 18851,
+          "completion_tokens": 188,
+          "total_tokens": 19039
+        },
+        "tools": [
+          "bash"
+        ],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      },
+      {
+        "index": 21,
+        "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c",
+        "usage": {
+          "prompt_tokens": 19086,
+          "completion_tokens": 268,
+          "total_tokens": 19354
+        },
+        "tools": [],
+        "exact_prefix_reused": true,
+        "query_source": "verified-user-source",
+        "query_span": [
+          10501,
+          10555
+        ],
+        "reselect": "auto",
+        "snapshot_source_releases": 111
+      }
+    ]
+  },
+  "gc": {
+    "candidate_source_blocks": 111,
+    "candidate_source_tokens": 3552,
+    "live_candidate_cpu_release_completions": 111,
+    "old_source_window_records_final": 0,
+    "later_committed_replies_after_observed_release": 13,
+    "source_spans": [
+      {
+        "relative_path": "style.css",
+        "span_id": "file-body-2-8f097908c41c",
+        "source_begin": 5363,
+        "source_end": 7317,
+        "artifact_sha256_at_verification": "465198e2009583f6dd91eba5b71fb86244438550738a49ec4bd53eb99f558058",
+        "candidate_blocks": 60,
+        "released_blocks": 60,
+        "query_handoffs": [
+          {
+            "kind": "query_handoff_prepared",
+            "at": 13700129.018022072,
+            "accepted_history": 10496,
+            "excluded_blocks": 111,
+            "selected_budget": 6944,
+            "configured_budget": 36864,
+            "reserved_limit": 10496
+          }
+        ],
+        "remaining_source_records": 0,
+        "working_window_source_records": 0
+      },
+      {
+        "relative_path": "app.js",
+        "span_id": "file-body-3-500db7b336c3",
+        "source_begin": 7454,
+        "source_end": 9116,
+        "artifact_sha256_at_verification": "77d1278a87f1196fc85ab638a8e593e229ceaa604c1b0f72e5861b61cb36a3d8",
+        "candidate_blocks": 51,
+        "released_blocks": 51,
+        "query_handoffs": [
+          {
+            "kind": "query_handoff_prepared",
+            "at": 13700129.01803,
+            "accepted_history": 10496,
+            "excluded_blocks": 111,
+            "selected_budget": 6944,
+            "configured_budget": 36864,
+            "reserved_limit": 10496
+          }
+        ],
+        "remaining_source_records": 0,
+        "working_window_source_records": 0
+      }
+    ],
+    "native_counters_after_cleanup": {
+      "mode": "delete",
+      "policy": "statistical",
+      "policy_params": {
+        "max_importance": 1.0,
+        "min_cold_observations": 0,
+        "min_model_reclaim_score": -1.0,
+        "min_observations": 1,
+        "proactive": true
+      },
+      "active_scopes": 0,
+      "published": 636,
+      "ticks": 1106980,
+      "examined": 6311289,
+      "decisions": 111,
+      "retired": 111,
+      "cpu_released": 636,
+      "slots_released": 640,
+      "pending_slots": 0,
+      "pending_cpu_bytes": 0,
+      "retries": 0,
+      "stale": 0,
+      "policy_failures": 0,
+      "shadow_decisions": 0,
+      "admission_attempts": 7413,
+      "admission_retries": 0,
+      "metadata": {
+        "allocations": 2,
+        "recycles": 4,
+        "pooled_scopes": 2,
+        "scope_capacity": 8196
+      }
+    },
+    "cleanup_frees_are_excluded": true,
+    "attention_importance_measurements_present": false,
+    "calibrated_statistical_quality_qualified": false,
+    "paired_throughput_qualified": false,
+    "estimated_raw_kv_bytes_reclaimed": 123666432
+  },
+  "browser": {
+    "status": "observational-checks-passed",
+    "summary": {
+      "boot_pass": true,
+      "no_console_errors": true,
+      "no_blocked_dependencies": true,
+      "no_failed_requests": true,
+      "no_http_errors": true,
+      "action_errors": 0,
+      "state_checks_total": 86,
+      "state_checks_passed": 86,
+      "specified_state_checks_pass": true,
+      "default_observations_are_not_gameplay_assertions": true
+    },
+    "actions": 48,
+    "raw_report_sha256": "3d9e497b77f7e7ef4bbb46eb8f08c7fc5978ad1e21b915df32fb078a41ac7fbd",
+    "contract": "Monthly cards summarize the current calendar month and are unaffected by keyword search. List month/keyword filters, clear search, cancel/confirm deletion, and stored data across reloads are checked. Clear search also resets the month filter in this implementation.",
+    "font_environment": {
+      "fonts": {
+        "NotoColorEmoji.ttf": "30280839d0d3d095df28537ad72b72e93d16b915b41e7387fd5186842707ab0f",
+        "NotoSansCJK-Regular.ttc": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+      },
+      "fontconfig_sha256": "6d350f4a160ac439219e493918aac2bbdc20105b5a69faf9b109768504d8f7c8"
+    },
+    "initial_report_before_font_fix_sha256": "d3516be485ee75329fdb6065782bda317c76357b0616ec0e9dc7b281e4f7f6a1",
+    "cjk_visual_review": "passed; Chinese and emoji rendered correctly after installing fonts into the isolated CPU browser runtime; no app source changed"
+  },
+  "release": {
+    "http": {
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 1,
+        "total_tokens": 2,
+        "completion_tokens": 1,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "owner": "dsh-artifact-gc-15-d8aa2036e40d15d95206a1c6f497aed96639a87c"
+    },
+    "owner_absent": true,
+    "requests": 0,
+    "owned_blocks": 0,
+    "refresh_pending": 0,
+    "connector_pending": 0,
+    "reservations": [],
+    "native_free_blocks": 44,
+    "native_total_blocks": 45,
+    "cpu_history_admission": {
+      "capacity_records": 10573,
+      "reserved_records": 0,
+      "available_records": 10573,
+      "incoming_reserved_records": 0,
+      "retained_reserved_records": 0,
+      "active": 0,
+      "retiring": 0,
+      "idle_protected_records": 0,
+      "idle_reclaimable_records": 0,
+      "admissions": 24,
+      "deferrals": 0,
+      "settlements": 24,
+      "capacity_bytes": 12883834880,
+      "reserved_bytes": 0,
+      "available_bytes": 12883834880,
+      "last_observed_archive_bytes": 0,
+      "waiting": 0
+    },
+    "gpu_used_after_stop": "0 MiB"
+  },
+  "tests": {
+    "main_regression": "199 passed, 34 skipped",
+    "evidence_report": "4 passed",
+    "native_cpp_policy": "passed",
+    "short_forced_query": {
+      "kind": "synthetic forced-query admission diagnostic; no GC eligibility or task quality claim",
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 1024,
+        "total_tokens": 1056,
+        "completion_tokens": 32,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_id": "cmpl-be8fc16d499cd774",
+      "seconds": 3.5363504886627197,
+      "release_http_status": 200
+    }
+  },
+  "files": {
+    "index.html": {
+      "sha256": "809ce269b152de4b1ccfa10008cecd1d8cb95800169de70bf2e262e0cabd90cf",
+      "bytes": 2837
+    },
+    "app.js": {
+      "sha256": "2705da243121252c1e96cb6b7527bad4e37a53944c765961cf21d444f1f42634",
+      "bytes": 9153
+    },
+    "style.css": {
+      "sha256": "1902199ad8e52c8d66b5df62b2f4df62253bc5f9eab80841befb2e98bf7da8c7",
+      "bytes": 4658
+    },
+    "browser-plan.json": {
+      "sha256": "f36d69a506e3ef9a6087f86c016e59c8dacfd7b2111be070e82c7f8dd76d6d1f",
+      "bytes": 15405
+    },
+    "browser-results.json": {
+      "sha256": "716147cd179119a868f58a2e046fe425062a72bd1097a6890f9a8e62c27e949b",
+      "bytes": 69695
+    },
+    "gc-worker-state-before-cleanup.json": {
+      "sha256": "96e0e5e194a6995468dd7ce8adcd214cb9f8b1e6effe2d35617392756da04f89",
+      "bytes": 47978
+    },
+    "search-verified.png": {
+      "sha256": "7855ea506ad801648542c456f44598fc1b36695326558a14c610f50ea53737fb",
+      "bytes": 205921
+    }
+  },
+  "preliminary_integration_runs": [
+    {
+      "run": "dsh-live-12-real-artifact-gc",
+      "result": "No GC proof; original-archive-ID binding and narrow write-result support were corrected."
+    },
+    {
+      "run": "dsh-live-13-real-artifact-gc",
+      "result": "Two tasks completed, zero deletions; scheduler intentionally skipped all-fit auto Query selection, leaving P/M holds."
+    },
+    {
+      "run": "dsh-live-14-real-artifact-gc",
+      "result": "Create task completed; proactive followup failed before deletion because K exceeded the actual physical prefix reservation. Fixed and covered by short GPU admission check."
+    }
+  ]
+}

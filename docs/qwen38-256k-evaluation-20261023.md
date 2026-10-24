@@ -1,3 +1,5 @@
+后续真实语义回收验证已完成：见 [2026-10-24 真实 GC 功能报告](gc-real-task-20261024.md)。下文保留原轮次的结果；原真实任务中删除数为 0 的记录没有改写。
+
 # Qwen3.8-27B 256K evaluation on the cloud RTX 4090
 
 Evaluation started on 2026-10-23 and finished on 2026-10-24.
