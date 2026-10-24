@@ -303,6 +303,16 @@ def restore_trajectory(planner,owner,directories):
     return state
 
 
+def apply_sampling_overrides(data,args,turn):
+    """Apply an explicit shared experiment preset; preserve ordinary callers."""
+    if getattr(args,'seed_per_turn',False) and getattr(args,'seed',None) is None:
+        raise ValueError('Per-turn seed scheduling requires an explicit base seed')
+    for key in ('temperature','seed','top_p','top_k','min_p','presence_penalty','repetition_penalty'):
+        value=getattr(args,key,None)
+        if value is not None:
+            data[key]=value+turn if key=='seed' and getattr(args,'seed_per_turn',False) else value
+
+
 def create_app(args,tokenizer):
     max_inflight=getattr(args,'max_inflight',0)
     if type(max_inflight) is not int or max_inflight<0:
@@ -457,9 +467,7 @@ def create_app(args,tokenizer):
                 pin_admission=validate_system_pin_budget(data, planner.protocol)
                 for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed'):
                     if k in body:data[k]=body[k]
-                for k in ('temperature','seed'):
-                    value=getattr(args,k,None)
-                    if value is not None:data[k]=value
+                apply_sampling_overrides(data,args,state.turns)
                 directory=args.output/owner/f'{state.turns+1:05d}'
                 if directory.exists() and (directory/'request.json').exists():
                     directory.rename(directory.with_name(directory.name+'-attempt-'+uuid.uuid4().hex[:8]))
@@ -649,6 +657,12 @@ if __name__=='__main__':
     p.add_argument('--single-query-task',action='store_true',help='Verified one-instruction benchmark: stream the full initial task in normal prefill chunks, without historical Query scoring')
     p.add_argument('--temperature',type=float,help='Explicit sampling override for controlled paired experiments')
     p.add_argument('--seed',type=int,help='Explicit sampling seed for controlled paired experiments')
+    p.add_argument('--seed-per-turn',action='store_true',help='Use base seed plus committed reply index in both groups')
+    p.add_argument('--top-p',type=float)
+    p.add_argument('--top-k',type=int)
+    p.add_argument('--min-p',type=float)
+    p.add_argument('--presence-penalty',type=float)
+    p.add_argument('--repetition-penalty',type=float)
     p.add_argument('--tool-parser-url',help='Owned remote CPU service using the exact official vLLM parser')
     p.add_argument('--restore-from',type=Path,action='append',default=[]);args=p.parse_args()
     from transformers import AutoTokenizer

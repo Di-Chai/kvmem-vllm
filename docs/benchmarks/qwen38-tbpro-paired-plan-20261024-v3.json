@@ -1,0 +1,144 @@
+{
+  "dataset": "alibaba/terminal-bench-pro",
+  "revision": "874af409da6aafebccbf3bc5bb41a2fa4d78784d",
+  "harness": "Harbor 0.24.0 + DSH 0.1.0-rc.7",
+  "model": "sokada4/Qwen3.8-27B-GPTQ-Int4",
+  "model_revision": "2232b67a2ef5480e97c4450838a712de1346eccc",
+  "K": 36864,
+  "G": 16384,
+  "logical_context": 262144,
+  "cpu_history_bytes": 12884901888,
+  "max_model_requests": 1,
+  "max_output_tokens": 16384,
+  "thinking": false,
+  "groups": [
+    "off",
+    "delete"
+  ],
+  "tasks": [
+    {
+      "name": "validate-and-solve-sudoku",
+      "difficulty": "easy",
+      "category": "games",
+      "order": [
+        "delete",
+        "off"
+      ],
+      "input_sha256": {
+        "instruction.md": "dc6a2039d2bdde10e2ffc8fdc670d783b1b7bc650744afd31ef80e38bc1c3b7b",
+        "task.toml": "721ddccea8b58026d70199501997a9abf3c162bc47fa7ab16ebda36f4a9da67b",
+        "environment/Dockerfile": "a1964c172d57ea30fd062ee336ddde17b4a0fc54920a5bc74f18fa8c8587cb23",
+        "environment/input.txt": "bf7780bdd1de7511d9584f1cf145994f6b90f3d8ecd19a1a18bb023c3eba8092",
+        "environment/input_bad_char.txt": "8019ead0ad4d686d0ac47a4aae2f7d7f3c675907a5b87898809ece9fdcdc69b6",
+        "environment/input_bad_len.txt": "4b3f76f0b9d6c184b27af7f63684dcfffd9b0dcc74e492ecfb7a26f058374f10",
+        "environment/input_bad_rule.txt": "28875f5ba01f014b0c27347492da8b87dd177c43f0f1dfcec7dffaa4ee2cf6ef",
+        "environment/input_empty.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "environment/input_unsolvable.txt": "7639b4a5b6cede6417cf462db2739844ec6b91c0b0f148b1c252b8bdf63c8b7b",
+        "environment/input_valid.txt": "4a4c84fde6996f7eed51044258334ec43e2514b524413134b6d0e27fd9bc8e30",
+        "tests/test.sh": "758876de67a7fe84d4eab52537fe8ae34a23e4444004850b5f0a854671c2f310",
+        "tests/test_outputs.py": "753ee1fec64056fa2f01e3b72ea17b5e0e4541c984e1af1c3c7a5825b3c5845c"
+      }
+    },
+    {
+      "name": "advanced-json-to-rfc4180-csv-converter",
+      "difficulty": "hard",
+      "category": "data-processing",
+      "order": [
+        "off",
+        "delete"
+      ],
+      "input_sha256": {
+        "instruction.md": "fd5e71365bb489c1e8f27fb66f045b88afbd54962cbefa095bbf1d2f80d2c733",
+        "task.toml": "d28681bb5e6a824fda1b473e8943c3bf605cf305fa069ef2b75c2b24446b9d02",
+        "environment/Dockerfile": "586fe9431bb85a91d59d6ab0a00f0aeae1ff241225d897837d4147c4a493bf91",
+        "environment/converter.py": "0dff271a6795cd19e762ef91897cb07ded467ac10f9460e5ae7d1b42f9e62ff3",
+        "environment/sales.json": "3dddadc287695c7285e869b70384a0fe5554d8ffcb640b2a7d27a03fd5fdd877",
+        "tests/test.sh": "ca5150984c5cc41fcea16b505669ca0b3c0e4833a8fd94b1c43c06bf0b2b3abf",
+        "tests/test_outputs.py": "ceac2b65ad34b9fa09602fbcdc4ea959bef584593914c09086793ea975cc1647"
+      }
+    },
+    {
+      "name": "summarize-api-log-status-metrics",
+      "difficulty": "medium",
+      "category": "data-processing",
+      "order": [
+        "delete",
+        "off"
+      ],
+      "input_sha256": {
+        "instruction.md": "8f06043d6f285281d8688904ad9cbf255070c29dfe02f9132cb564ca490865c7",
+        "task.toml": "3534543964a9e0dfcba18263eb86237943b8d673331b146fcf017db4512b4d09",
+        "environment/.dockerignore": "59830ebc3a4184110566bf1a290d08473dfdcbd492ce498b14cd1a5e2fa2e441",
+        "environment/Dockerfile": "0841b3f92020418023b0dbe3f556b35efd56c517febeb93a5d3f88e3c87eab9a",
+        "environment/generate_logs.py": "d0610d9bb5300d5c01bde4195cebf138c18d69ea144002612b133af78e19ee56",
+        "tests/test.sh": "55d09b319191d7c1705731397eac86ecee81fc6f019f87b28d055c6a056f66ea",
+        "tests/test_outputs.py": "b595deb5720ffd34f4f99d571ec2031e9eed4215fc4137b0ae83a786a3dda760"
+      }
+    }
+  ],
+  "qualification": "initial three-task paired subset; not a 200-task public-set score",
+  "controls": [
+    "original task instruction",
+    "original Dockerfile",
+    "original verifier",
+    "same DSH version/tools",
+    "same model and budgets",
+    "native GC mode",
+    "off retains complete candidate KV"
+  ],
+  "treatment": "delete also performs bounded real prompt-tail maintenance to remove verified completed write bodies from the active attention view; its overhead is included",
+  "metrics": [
+    "official reward",
+    "natural agent completion",
+    "task wall seconds",
+    "native output tokens",
+    "model request seconds",
+    "decode tokens/s",
+    "verified candidate CPU releases before cleanup",
+    "later model replies after release"
+  ],
+  "oracle_before_model": true,
+  "warmup": {
+    "prompt_tokens": 512,
+    "output_tokens": 128,
+    "per_model_start": true,
+    "included_in_task_metrics": false
+  },
+  "frozen_before_model_tasks_unix": 1792807437.0848548,
+  "protocol_revision": 3,
+  "qualified_plan_frozen_unix": 1792809970.4535391,
+  "tool_parser": "cloud CPU vLLM 0.30.0 Qwen3Parser, same verified tokenizer; no additional model inference",
+  "bootstrap_exclusions": [
+    {
+      "job": "json-gc-off-01",
+      "reason": "admission incorrectly counted DSH framework user frames; no native task model request"
+    },
+    {
+      "job": "json-gc-off-02",
+      "reason": "local vLLM parser dependency missing after first 60 native output tokens; no tools executed; transport setup failure"
+    }
+  ],
+  "sampling": {
+    "thinking": false,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1,
+    "base_seed": 20261024,
+    "seed_rule": "base_seed + committed_reply_index",
+    "source": "https://huggingface.co/Qwen/Qwen3.8-27B#best-practices"
+  },
+  "pilot_runs": [
+    {
+      "job": "json-gc-off-03",
+      "mode": "off",
+      "sampling": "temperature 0, no thinking",
+      "termination": "operator stopped repeated identical debug commands",
+      "official_reward": 0,
+      "comparison_status": "greedy-preset diagnostic, no paired GC result; preserve independently",
+      "kv_prefix_reuse_verified": true
+    }
+  ]
+}

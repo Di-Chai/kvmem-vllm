@@ -1,0 +1,69 @@
+{
+  "task": "advanced-json-to-rfc4180-csv-converter",
+  "gc_mode": "off",
+  "job": "json-gc-off-03",
+  "reward": 0.0,
+  "verifier_summary": "3 failed, 87 passed in 0.21s",
+  "exception": null,
+  "dsh_status": "failed",
+  "dsh_reason_kind": "aborted",
+  "operator_stopped": true,
+  "dsh_turn_seconds": 1522.649,
+  "agent_execution_seconds": 1530.634214,
+  "measured_task_seconds": 1528.848945301026,
+  "generated_model_replies": 102,
+  "committed_model_replies": 102,
+  "input_token_usage": 4114233,
+  "output_tokens": 32025,
+  "model_api_reply_seconds": 1512.3072957992554,
+  "committed_output_tokens_per_api_second": 21.176251737299705,
+  "model_issued_tool_calls": {
+    "bash": 96,
+    "write": 1,
+    "edit": 3,
+    "read": 2
+  },
+  "maintenance_handoffs": 0,
+  "maintenance_replay_tokens": 0,
+  "maximum_logical_prompt_tokens": 58408,
+  "candidate_source_spans": [
+    {
+      "relative_path": "json_to_csv.py",
+      "artifact_sha256": "8be498e8dbd0be09616e6f330251bc1ca24cd3997430ab01ff30af5ab6a04e93",
+      "source_begin": 12719,
+      "source_end": 16812,
+      "candidate_blocks": 127,
+      "live_source_releases": 0,
+      "remaining_source_records": 127,
+      "working_window_source_records": 0,
+      "error": null
+    }
+  ],
+  "live_source_cpu_completions": 0,
+  "retired_source_tokens": 0,
+  "committed_snapshot_evidence": {
+    "semantic_producer_present": true,
+    "source_spans": [
+      {
+        "owner": "tbpro-8792d92b5caa401199642de038ac21f3-off-7849ad84fbd01aa61c3d9d6f942ee9b0cde76400",
+        "span_id": "file-body-3-da02c8cb4232",
+        "relative_path": "json_to_csv.py",
+        "error": null,
+        "candidate_blocks": 127,
+        "live_source_completions": 0,
+        "remaining_source_records": 127,
+        "working_window_source_records": 0
+      }
+    ],
+    "live_source_cpu_completions": 0,
+    "real_semantic_candidate_retirement_proven": false,
+    "later_committed_model_replies": 0,
+    "task_continuation_after_release_proven": false
+  },
+  "effective_gc_task_continuation": false,
+  "owner_cleanup": [
+    {
+      "status": 200
+    }
+  ]
+}

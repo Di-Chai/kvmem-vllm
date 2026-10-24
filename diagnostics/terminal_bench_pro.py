@@ -86,7 +86,9 @@ class DshGcAgent(BaseAgent):
             '--gen-budget','16384','--max-model-len','262144','--max-sessions','1',
             '--max-inflight','1','--max-output-segments','1','--require-query-provenance',
             '--single-query-task',
-            '--temperature','0','--seed','20261024',
+            '--temperature','0.7','--top-p','0.8','--top-k','20','--min-p','0',
+            '--presence-penalty','1.5','--repetition-penalty','1',
+            '--seed','20261024','--seed-per-turn',
             '--tool-parser-url','http://127.0.0.1:18389',
             '--artifact-gc-root',self.workspace,'--artifact-gc-container',self.container,
             '--artifact-gc-mode',self.options.gc_mode]
@@ -122,6 +124,8 @@ class DshGcAgent(BaseAgent):
                 task_seconds=time.monotonic()-started,workspace=self.workspace,
                 native_k=36864,native_g=16384,logical_context=262144,
                 max_model_requests=1,local_gpu_devices=False,
+                sampling=dict(temperature=.7,top_p=.8,top_k=20,min_p=0,
+                    presence_penalty=1.5,repetition_penalty=1,base_seed=20261024,seed_per_turn=True),
                 task_instruction_unchanged=True)
             usages=[]
             for path in bridge_dir.glob('*/*/native.json'):

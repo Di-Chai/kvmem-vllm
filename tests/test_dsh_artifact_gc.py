@@ -165,6 +165,21 @@ def test_off_and_shadow_never_remove_artifacts_from_attention_window():
         assert Controller().select_window(authority,[],256) is None
 
 
+def test_explicit_sampling_preset_is_shared_and_ordinary_callers_keep_their_values():
+    from scripts.dsh_bridge import apply_sampling_overrides
+    data=dict(temperature=.4,seed=3,top_p=.9)
+    apply_sampling_overrides(data,SimpleNamespace(),10)
+    assert data==dict(temperature=.4,seed=3,top_p=.9)
+    args=SimpleNamespace(temperature=.7,top_p=.8,top_k=20,min_p=0,presence_penalty=1.5,
+        repetition_penalty=1,seed=20261024,seed_per_turn=True)
+    off,delete={},{}
+    apply_sampling_overrides(off,args,7);apply_sampling_overrides(delete,args,7)
+    assert off==delete and off['seed']==20261031 and off['temperature']==.7
+    assert off['presence_penalty']==1.5 and off['top_k']==20
+    with pytest.raises(ValueError,match='explicit base seed'):
+        apply_sampling_overrides({},SimpleNamespace(seed_per_turn=True),0)
+
+
 def test_single_task_streaming_requires_explicit_profile_and_keeps_system_pin():
     from scripts.dsh_bridge import validate_system_pin_budget
     protocol=SimpleNamespace(pin_system=True,system_pin_policy=dict(block_tokens=32,gen_budget=16384,
