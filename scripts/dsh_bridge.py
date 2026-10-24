@@ -235,7 +235,8 @@ def validate_system_pin_budget(data, protocol):
     if (data.get('max_tokens', 0) <= 0 or data['max_tokens'] > cfg['gen_budget'] or
             plan.probe_tokens or plan.pressure_probe_tokens):
         raise ValueError('System-pin admission requires the declared generation and replay profile')
-    if plan.query_mode != 'agent' or plan.reselect != 'auto' or plan.query is None or not plan.query_id:
+    allowed_reselect=('auto','force') if getattr(protocol,'artifact_gc_force_allowed',False) else ('auto',)
+    if plan.query_mode != 'agent' or plan.reselect not in allowed_reselect or plan.query is None or not plan.query_id:
         raise ValueError('System-pin admission requires a verified agent Query epoch')
     replay = plan.replay_end - plan.replay_begin if plan.query is not None else 0
     if replay > cfg['query_replay_budget']:
@@ -322,6 +323,7 @@ def create_app(args,tokenizer):
     artifact_root=getattr(args,'artifact_gc_root',None)
     if artifact_root is not None and (args.backend != 'http://127.0.0.1:8186' or not pin_system or max_inflight != 1):
         raise ValueError('Artifact GC experiment requires the owned loopback C1 pinned-system backend')
+    protocol.artifact_gc_force_allowed=artifact_root is not None
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     artifact_armed={}
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
@@ -391,6 +393,10 @@ def create_app(args,tokenizer):
                 output_limit=min(limit,remaining_context)
                 data=backend_request(model=args.model,tokens=tokens,session=owner,
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
+                if (artifact_root is not None and artifact_armed.get(owner) and
+                        plan.get('kvmem_query_id') != state.plan.get('kvmem_query_id') and
+                        plan.get('kvmem_query_span') is not None):
+                    data['kvmem_reselect']='force'
                 if disable_thinking:
                     data.pop('thinking_token_budget',None)
                 pin_admission=validate_system_pin_budget(data, planner.protocol)
@@ -425,6 +431,7 @@ def create_app(args,tokenizer):
                     begin=len(output_ids);segment_usage=None;segment_metrics=None;finish=None
                     segment_data=dict(data,prompt=tokens+output_ids,max_tokens=min(args.gen_budget,output_limit-begin))
                     if segment:
+                        segment_data['kvmem_reselect']='auto'
                         segment_data.pop('thinking_token_budget',None)
                         # The unchanged auto Query is suppressed only after the
                         # native ledger proves this exact accepted prefix.

@@ -107,3 +107,52 @@ def test_restored_authority_matches_current_binding_instead_of_archive_id():
     assert controller.states[0]['error'] is None
     assert controller.states[0]['checked_request']=='current-request'
     assert controller.states[0]['generation']==4
+
+
+@pytest.mark.parametrize('count,protect_source',[(256,False),(233,False),(256,True)])
+def test_handoff_uses_native_picker_and_preserves_every_other_record(count,protect_source):
+    from diagnostics.dsh_artifact_gc import Controller
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.memory import RequestMemory
+    from test_core import append,Event
+    memory=RequestMemory('handoff',KVMemConfig(block_tokens=32,select_budget=256,gen_budget=256,repository_blocks=16,sink_blocks=1,recent_blocks=1))
+    spans=append(memory,count)
+    records={(s.handle.slot,s.handle.generation):SimpleNamespace(handle=s.handle,history_begin=i*32,count=min(32,count-i*32)) for i,s in enumerate(spans)}
+    handles=[s.handle for s in spans]
+    candidates={(h.slot,h.generation) for h in handles[2:4]}
+    authority=SimpleNamespace(memory=memory,records=records,history_end=count,_verified_artifact_namespace=('owner','owner'))
+    controller=Controller();controller.states=[dict(flushed=True,error=None,plan=dict(namespace=['owner','owner']),candidate_handles=[list(k) for k in candidates],events=[])]
+    mandatory=[handles[3]] if protect_source else []
+    expected=set(records)-candidates
+    if protect_source:expected.add((handles[3].slot,handles[3].generation))
+    try:
+        plan=controller.select_window(authority,mandatory,256)
+        memory.attach_completion(Event(True));assert memory.commit_selection()
+        assert {(r[0],r[1]) for r in memory._store.working_records()}==expected
+        assert memory.config.select_budget==256 and memory._store.runtime_select_budget==0
+        assert controller.states[0]['events'][0]['excluded_blocks']==(1 if protect_source else 2)
+    finally:
+        assert memory.close()
+
+
+def test_force_query_is_scheduled_below_k_but_auto_and_other_boundaries_are_unchanged():
+    from dataclasses import replace
+    from vllm_kvmem.request_plan import RequestPlan
+    plan=RequestPlan(query=(64,80),block_tokens=32,gen_budget=16384,reselect='auto')
+    assert not plan.refresh_required(64,96,0,53248)
+    forced=replace(plan,reselect='force')
+    assert forced.refresh_required(64,96,0,53248)
+    assert not forced.refresh_required(32,96,0,53248)
+    assert not forced.refresh_required(96,96,0,53248)
+
+
+def test_pinned_bridge_accepts_force_only_for_explicit_artifact_experiment():
+    from scripts.dsh_bridge import validate_system_pin_budget
+    protocol=SimpleNamespace(pin_system=True,system_pin_policy=dict(block_tokens=32,gen_budget=16384,query_replay_budget=128,
+        select_budget=36864,sink_blocks=1,recent_blocks=1,rounding_reserve_blocks=2))
+    data=dict(prompt=[1]*256,max_tokens=32,kvmem_reselect='force',kvmem_query_mode='agent',kvmem_query_id='real-query',
+        kvmem_query_span=[224,240],kvmem_mandatory_parts='none',kvmem_mandatory_spans=[dict(begin=0,end=64,kind='system')])
+    with pytest.raises(ValueError,match='verified agent Query'):
+        validate_system_pin_budget(data,protocol)
+    protocol.artifact_gc_force_allowed=True
+    assert validate_system_pin_budget(data,protocol)['declared_select_budget']==36864

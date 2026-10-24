@@ -861,7 +861,7 @@ class KVMemScheduler(Scheduler):
                     raise RuntimeError('keep_selected append headroom was exhausted')
                 if ((plan is None and (imported_query or self.query_policy.refresh(
                         request.num_computed_tokens, request.num_prompt_tokens, offset))) or
-                        (action is not None and request.num_computed_tokens >= selected_budget)):
+                        (plan is not None and plan.refresh_required(request.num_computed_tokens, request.num_prompt_tokens, offset, self.query_policy.capacity, action=action))):
                     asynchronous = getattr(self, 'async_refresh', False)
                     tokens = ()
                     if guided is not None and request.num_computed_tokens < request.num_prompt_tokens:
@@ -1095,8 +1095,7 @@ class KVMemScheduler(Scheduler):
         if plan is None:
             return self.query_policy.refresh(history, request.num_prompt_tokens, offset)
         action = plan.action(history, request.num_prompt_tokens, offset, self.query_policy.capacity)
-        return (action not in (None, 'exhausted') and
-                history >= plan.selection_budget(history, request.num_prompt_tokens, self.query_policy.capacity))
+        return plan.refresh_required(history, request.num_prompt_tokens, offset, self.query_policy.capacity, action=action)
 
     def _prepare_phase(self):
         policy = getattr(self, 'phase_policy', None)

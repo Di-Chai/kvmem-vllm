@@ -131,6 +131,13 @@ class RequestPlan:
             raise RequestCapacityError('Complete Query and output reserve exceed active capacity')
         return budget
 
+    def refresh_required(self, history, prompt_tokens, offset, capacity, *, action=None):
+        """Honor explicit Query force even while the complete prefix fits K."""
+        action = self.action(history, prompt_tokens, offset, capacity) if action is None else action
+        return (action not in (None, 'exhausted') and
+                (history >= self.selection_budget(history, prompt_tokens, capacity) or
+                 action == 'query' and self.reselect == 'force'))
+
     def validate_capacity(self, prompt_tokens, select_budget, *, output_tokens=None,
                           sink_blocks=0, recent_blocks=0, rolling=None,
                           resume_history=0, resume_window=0, pressure_policy='recency'):
