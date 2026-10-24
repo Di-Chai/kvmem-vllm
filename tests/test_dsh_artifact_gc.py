@@ -22,7 +22,8 @@ def fixture(tmp_path):
     directory = out/'owner'/'00001'
     directory.mkdir(parents=True)
     (directory/'response.json').write_text(json.dumps(response))
-    (directory/'native.json').write_text(json.dumps(dict(token_ids=ids,text=raw)))
+    (directory/'native.json').write_text(json.dumps(dict(token_ids=ids,text=raw,usage=dict(prompt_tokens=len(prefix)))))
+    (directory/'accepted.json').write_text(json.dumps(dict(token_ids=ids)))
     state = SimpleNamespace(turns=1,tokens=prefix,output=ids)
     rb = len(prefix)+len(ids)+1
     tokens = prefix+ids+[2]*192
@@ -76,3 +77,33 @@ def test_experiment_profile_is_explicit_and_defaults_remain_conservative():
     assert profile.policy_params['min_cold_observations'] == 0
     for params in [dict(min_observations=0),dict(min_cold_observations=-1),dict(min_cold_observations=False)]:
         with pytest.raises(ValueError):HistoricalGcSettings(policy='statistical',policy_params=params)
+
+
+def test_committed_multi_call_and_updated_artifact_are_supported(tmp_path):
+    from diagnostics.dsh_artifact_gc import verified_candidates
+    root,out,state,prepared,body,path=fixture(tmp_path)
+    p=out/'owner/00001/response.json'
+    response=json.loads(p.read_text())
+    response['choices'][0]['message']['tool_calls'].append(dict(id='other',function=dict(name='bash',arguments='{}')))
+    p.write_text(json.dumps(response))
+    body['messages'][0]['content']=body['messages'][0]['content'].replace('Created file','Updated file')
+    values=verified_candidates(root,out,'owner',state,prepared,body,lambda i:bytes([i]),set())
+    assert len(values)==1
+    assert verified_candidates(root,out,'owner',state,prepared,body,lambda i:bytes([i]),{values[0]['span_id']})==[]
+
+
+def test_restored_authority_matches_current_binding_instead_of_archive_id():
+    from diagnostics.dsh_artifact_gc import Controller
+    class Object:pass
+    runner=Object();authority=Object()
+    authority.memory=SimpleNamespace(request_id='original-archive-id')
+    authority.history_end=0
+    tokens=(1,)*160
+    runner._kvmem_capture_runtime=SimpleNamespace(authorities={'current-request':authority})
+    runner._kvmem_sessions=SimpleNamespace(bindings={'current-request':SimpleNamespace(request_id='current-request',namespace=('owner','owner'),generation=4,tokens=tokens)})
+    plan=dict(span_id='real-file',namespace=['owner','owner'],source_begin=32,source_end=64,result_begin=96,result_end=128,prompt_tokens=160,
+        prefix_sha256=token_digest(tokens),source='verified_dsh_write_artifact',importance=1.0,cold=False,observations=1)
+    controller=Controller();controller.arm(runner,plan);controller.poll(authority)
+    assert controller.states[0]['error'] is None
+    assert controller.states[0]['checked_request']=='current-request'
+    assert controller.states[0]['generation']==4

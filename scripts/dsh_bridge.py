@@ -323,6 +323,7 @@ def create_app(args,tokenizer):
     if artifact_root is not None and (args.backend != 'http://127.0.0.1:8186' or not pin_system or max_inflight != 1):
         raise ValueError('Artifact GC experiment requires the owned loopback C1 pinned-system backend')
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
+    artifact_armed={}
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
     client=httpx.AsyncClient(trust_env=False,timeout=3600)
     owners={};restored=set();args.output.mkdir(parents=True,exist_ok=True)
@@ -406,12 +407,15 @@ def create_app(args,tokenizer):
                          effective_output_cap=output_limit,logical_remaining_tokens=remaining_context)|
                     (dict(system_pin_admission=pin_admission) if pin_admission is not None else {}),indent=2))
                 if artifact_root is not None:
-                    from diagnostics.dsh_artifact_gc import verified_candidate
-                    candidate=await asyncio.to_thread(verified_candidate,artifact_root,args.output,owner,state,prepared,body,artifact_decoder.token_bytes)
-                    if candidate is not None:
+                    from diagnostics.dsh_artifact_gc import verified_candidates
+                    armed_ids=artifact_armed.setdefault(owner,set())
+                    candidates=await asyncio.to_thread(verified_candidates,artifact_root,args.output,owner,state,prepared,body,artifact_decoder.token_bytes,armed_ids)
+                    for candidate in candidates:
                         armed=await client.post(args.backend+'/collective_rpc',json=dict(method='dsh_artifact_gc_arm',kwargs=dict(plan=candidate)))
                         armed.raise_for_status()
-                        (directory/'artifact-gc-plan.json').write_text(json.dumps(candidate,indent=2)+'\n')
+                        armed_ids.add(candidate['span_id'])
+                    if candidates:
+                        (directory/'artifact-gc-plans.json').write_text(json.dumps(candidates,indent=2)+'\n')
                 data.update(stream=True,stream_options=dict(include_usage=True))
                 wire=QwenStream(planner.protocol,rendered['tools']);output_ids=[];usage=None;finish=None
                 decoder=AcceptedTextDecoder(tokenizer) if segments>1 else None

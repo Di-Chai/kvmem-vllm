@@ -363,7 +363,12 @@ class AsyncRefresh:
             mandatory=[r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory}!=required:
                 raise ValueError('Missing required historical evidence')
-            if job.command.selection=='pressure':
+            artifact_select=getattr(authority,'_verified_artifact_selection',None)
+            artifact_plan=(artifact_select(mandatory,cfg.select_budget)
+                if artifact_select is not None and job.command.selection!='pressure' and job.history<=cfg.select_budget else None)
+            if artifact_plan is not None:
+                plan=artifact_plan
+            elif job.command.selection=='pressure':
                 if job.guided_pressure and queries is not None:
                     plan=authority.select_for_queries(queries,mandatory,max_tokens=cfg.select_budget,
                                                      guided_pressure=True)

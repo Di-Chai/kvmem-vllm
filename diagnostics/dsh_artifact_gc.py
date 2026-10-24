@@ -14,6 +14,7 @@ from pathlib import Path
 import struct
 import sys
 import time
+from types import SimpleNamespace
 import weakref
 
 ENABLED = 'KVMEM_DSH_ARTIFACT_GC'
@@ -48,21 +49,25 @@ def file_body_tokens(ids, raw, content, token_bytes):
     return covered[0], covered[-1]+1
 
 
-def verified_candidate(root, output, owner, state, prepared, body, token_bytes):
+def verified_candidate(root, output, owner, state, prepared, body, token_bytes, call_id=None):
     """Consume the real previous write/result pair; fail closed on ambiguity."""
     if not state.turns or not prepared[5]:
         return None
     directory = output/owner/f'{state.turns:05d}'
     previous = json.loads((directory/'response.json').read_text())
     calls = previous['choices'][0]['message'].get('tool_calls', [])
+    if call_id is not None:
+        calls = [c for c in calls if c['id'] == call_id]
     if len(calls) != 1 or calls[0]['function']['name'] != 'write':
         return None
     call = calls[0]
     args = json.loads(call['function']['arguments'])
     if set(args) != {'file_path', 'content'}:
         return None
-    path = Path(args['file_path'])
     root = root.resolve(strict=True)
+    path = Path(args['file_path'])
+    if not path.is_absolute():
+        path = root/path
     # Keep a strict workspace boundary, including all symlink ancestors.
     if not path.is_absolute() or path.is_symlink():
         return None
@@ -72,9 +77,9 @@ def verified_candidate(root, output, owner, state, prepared, body, token_bytes):
     content = args['content']
     if not isinstance(content, str) or resolved.read_bytes() != content.encode():
         return None
-    expected = f'<path>{path}</path>\n<type>file</type>\n<content>\nCreated file\n</content>'
+    expected = [f'<path>{path}</path>\n<type>file</type>\n<content>\n{verb} file\n</content>' for verb in ('Created','Updated')]
     results = [m for m in body['messages'] if m.get('role') == 'tool' and m.get('tool_call_id') == call['id']]
-    if len(results) != 1 or results[0].get('content') != expected:
+    if len(results) != 1 or results[0].get('content') not in expected:
         return None
     tokens, _, rendered, _, _, _, locations = prepared
     if tokens[:len(state.tokens)+len(state.output)] != state.tokens + state.output:
@@ -92,14 +97,53 @@ def verified_candidate(root, output, owner, state, prepared, body, token_bytes):
     re = locations[(s['index'], s['content_end']-s['begin'])]
     begin += len(state.tokens)
     end += len(state.tokens)
-    if (end//32 - (begin+31)//32) < 1 or (re//32 - (rb+31)//32) < 1:
+    # Protect a whole block intersecting the real result, including mixed
+    # framing if necessary. Protecting extra bytes is conservative; no source
+    # block can overlap this witness. The generated file body stays exact.
+    wb=max((end+31)//32*32,rb//32*32)
+    we=wb+32
+    if (end//32 - (begin+31)//32) < 1 or we>len(tokens) or not (wb<re and we>rb):
         return None
-    return dict(span_id=f'file-body-{state.turns}', namespace=[owner, owner],
+    rb,re=wb,we
+    return dict(span_id=f'file-body-{state.turns}-'+hashlib.sha256(call['id'].encode()).hexdigest()[:12], namespace=[owner, owner],
         prompt_tokens=len(tokens), prefix_sha256=token_digest(tokens),
         source_begin=begin, source_end=end, result_begin=rb, result_end=re,
         relative_path=str(resolved.relative_to(root)), artifact_sha256=hashlib.sha256(content.encode()).hexdigest(),
         artifact_bytes=len(content.encode()), source='verified_dsh_write_artifact',
         importance=1.0, cold=False, observations=1)
+
+
+def verified_candidates(root, output, owner, state, prepared, body, token_bytes, already):
+    """Find current verified artifacts from committed real tool history."""
+    values=[]
+    if not prepared[5]:
+        return values
+    tokens=prepared[0]
+    for directory in sorted((output/owner).glob('[0-9][0-9][0-9][0-9][0-9]')):
+        if not (directory/'accepted.json').exists():
+            continue
+        response=json.loads((directory/'response.json').read_text())
+        calls=response['choices'][0]['message'].get('tool_calls',[])
+        if not any(c['function']['name']=='write' for c in calls):
+            continue
+        native=json.loads((directory/'native.json').read_text())
+        ids=json.loads((directory/'accepted.json').read_text())['token_ids']
+        if native['token_ids']!=ids:
+            raise ValueError('Artifact committed/native token mismatch')
+        count=native['usage']['prompt_tokens']
+        if tokens[count:count+len(ids)]!=ids:
+            raise ValueError('Historical file body is absent from the current exact prefix')
+        older=SimpleNamespace(turns=int(directory.name),tokens=tokens[:count],output=ids)
+        for call in calls:
+            if call['function']['name']!='write':
+                continue
+            identity=f"file-body-{older.turns}-"+hashlib.sha256(call['id'].encode()).hexdigest()[:12]
+            if identity in already:
+                continue
+            value=verified_candidate(root,output,owner,older,prepared,body,token_bytes,call['id'])
+            if value is not None:
+                values.append(value)
+    return values
 
 
 class Controller:
@@ -131,10 +175,44 @@ class Controller:
     def snapshot(self):
         return copy.deepcopy(self.states)
 
+    def select_window(self, authority, mandatory, limit):
+        """Public Query handoff for all-fit histories; never release P/M early."""
+        namespace=getattr(authority,'_verified_artifact_namespace',None)
+        states=[s for s in self.states if s['flushed'] and s['error'] is None and tuple(s['plan']['namespace'])==namespace]
+        candidates={tuple(h) for s in states for h in s['candidate_handles']}
+        records=list(authority.records.values())
+        candidates.intersection_update((r.handle.slot,r.handle.generation) for r in records)
+        hard={(h.slot,h.generation) for h in mandatory}
+        # Native picker also owns sink/recent bands. Keep those source pages;
+        # an explicit protected candidate never causes the handoff to bypass it.
+        block=authority.memory.config.block_tokens
+        recent=(authority.history_end-1)//block
+        candidates={k for k in candidates if k not in hard and
+            authority.records[k].history_begin//block not in (0,recent)}
+        if not candidates:
+            return None
+        kept=[r for r in records if (r.handle.slot,r.handle.generation) not in candidates]
+        budget=((sum(r.count for r in kept)+block-1)//block)*block
+        if not 0<budget<=limit:
+            return None
+        scores={r.handle.slot:0.0 if (r.handle.slot,r.handle.generation) in candidates else 1.0 for r in records}
+        slots={r.handle.slot for r in kept}
+        selected=set(authority.memory.preview_selection(scores,tuple(h.slot for h in mandatory),action=False,max_tokens=budget))
+        if selected!=slots:
+            raise RuntimeError('Artifact handoff picker did not keep exactly the non-source records')
+        plan=authority.memory.select(scores,tuple(h.slot for h in mandatory),action=False,max_tokens=budget)
+        for state in states:
+            state['events'].append(dict(kind='query_handoff_prepared',at=time.perf_counter(),
+                accepted_history=authority.history_end, excluded_blocks=len(candidates), selected_budget=budget,
+                configured_budget=limit))
+        return plan
+
     def poll(self, authority):
         runner = self.runner() if self.runner is not None else None
         sessions = getattr(runner, '_kvmem_sessions', None)
-        binding = getattr(sessions, 'bindings', {}).get(authority.memory.request_id)
+        runtime=getattr(runner,'_kvmem_capture_runtime',None)
+        active=[rid for rid,a in getattr(runtime,'authorities',{}).items() if a is authority]
+        binding=next((sessions.bindings[rid] for rid in active if rid in sessions.bindings),None) if sessions is not None else None
         if binding is None:
             return
         for state in self.states:
@@ -142,15 +220,19 @@ class Controller:
             if state['error'] is not None or list(binding.namespace) != p['namespace']:
                 continue
             try:
-                if not state['prefix_checked']:
-                    if len(binding.tokens) != p['prompt_tokens']:
+                if state.get('checked_request') != binding.request_id:
+                    if len(binding.tokens) < p['prompt_tokens']:
                         continue
-                    if token_digest(binding.tokens) != p['prefix_sha256']:
+                    if token_digest(binding.tokens[:p['prompt_tokens']]) != p['prefix_sha256']:
                         raise ValueError('Artifact plan does not match the actual worker prefix')
                     state['prefix_checked'] = True
-                    state['generation'] = binding.generation
+                    state['generation'] = state.get('generation',binding.generation)
+                    state['checked_request'] = binding.request_id
                 if binding.generation != state['generation']:
                     raise ValueError('Artifact evidence crossed a session generation')
+                authority._verified_artifact_namespace=tuple(binding.namespace)
+                ref=weakref.ref(authority)
+                authority._verified_artifact_selection=lambda mandatory,limit:self.select_window(ref(),mandatory,limit)
                 if authority.history_end < p['result_end'] + 32:
                     continue
                 previous = state['last_sample']
@@ -169,6 +251,12 @@ class Controller:
                             if sample[key] > previous[key]:
                                 state['events'].append(dict(kind=key, before=previous[key], after=sample[key], at=sample['at'], accepted_history=sample['accepted_history']))
                     state['last_sample'] = sample
+                current_ledger=authority.gc.evidence
+                if state['flushed'] and (current_ledger is None or current_ledger.closed or p['span_id'] not in current_ledger.spans):
+                    recreated=[r for r in authority.records.values() if p['source_begin']<=r.history_begin and r.history_begin+r.count<=p['source_end']]
+                    if recreated:
+                        state['flushed']=state['registered']=state['observed']=state['complete']=False
+                        state['events'].append(dict(kind='branch_evidence_rebind',at=time.perf_counter(),accepted_history=authority.history_end))
                 if state['flushed']:
                     state['remaining_source_records'] = sum((s, g) in authority.records for s, g in state['candidate_handles'])
                     if previous is None or authority.history_end - previous['accepted_history'] >= 16:
