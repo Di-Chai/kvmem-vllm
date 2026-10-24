@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-24",
+  "timezone": "Asia/Shanghai",
+  "execution_commit": "6510009dee3f12efeae6b6359505a117b2f1290e",
+  "human_requested_shutdown": true,
+  "coordinator_stopped": true,
+  "model_service_stopped": true,
+  "parser_service_stopped": true,
+  "gpu_compute_processes": 0,
+  "gpu_memory_used_mib": 0,
+  "profile_difference_only": "kvmem.historical_gc.mode",
+  "cases": [
+    {
+      "case": "json-gc-delete-v4-01",
+      "resource_counts": {
+        "requests": 0,
+        "owned_blocks": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "reservations": 0,
+        "session_owners": 0
+      },
+      "cpu_reserved_bytes": 0
+    },
+    {
+      "case": "json-gc-off-v4-01",
+      "resource_counts": {
+        "requests": 0,
+        "owned_blocks": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "reservations": 0,
+        "session_owners": 0
+      },
+      "cpu_reserved_bytes": 0
+    },
+    {
+      "case": "sudoku-gc-delete-v4-01",
+      "resource_counts": {
+        "requests": 0,
+        "owned_blocks": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "reservations": 0,
+        "session_owners": 0
+      },
+      "cpu_reserved_bytes": 0
+    },
+    {
+      "case": "sudoku-gc-off-v4-01",
+      "resource_counts": {
+        "requests": 0,
+        "owned_blocks": 0,
+        "refresh_pending": 0,
+        "connector_pending": 0,
+        "reservations": 0,
+        "session_owners": 0
+      },
+      "cpu_reserved_bytes": 0
+    }
+  ],
+  "private_backup_sha256": "59f70668f6fb517ce6b5f94bc474d90912f23757a31a18f373e863b9daa1e19a",
+  "private_backup_bytes": 1030113,
+  "model_requests_for_shutdown_cleanup_only": "One owned-session release control request; excluded from task and GC metrics"
+}

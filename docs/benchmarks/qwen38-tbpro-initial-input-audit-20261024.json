@@ -1,0 +1,11 @@
+{
+  "protocol_revision": 4,
+  "task": "validate-and-solve-sudoku",
+  "first_input_prompt_tokens": 4669,
+  "initial_token_input_identical": true,
+  "initial_token_sha256": "d55376b54a032afae13a5b787079f12ddf42609a2deadd5f252dd19d7f875655",
+  "first_output_token_ids_identical": true,
+  "first_tool_result_identical": false,
+  "second_output_token_ids_identical": false,
+  "comparison_scope": "Read-only input and early trajectory audit; does not make divergent task timing a causal GC overhead estimate"
+}

@@ -1,0 +1,380 @@
+{
+  "kind": "initial fixed three-task paired subset; not the public-200 score",
+  "execution_commit": "6510009dee3f12efeae6b6359505a117b2f1290e",
+  "plan": "qwen38-tbpro-paired-plan-20261024-v4.json",
+  "completed_trials": 3,
+  "planned_trials": 6,
+  "complete": false,
+  "timing_scope": {
+    "server_decode": "sum(completion_tokens-1)/sum(generation_time_ms/1000), committed single-segment task requests only; first-to-last output-token interval excludes queue and prefill",
+    "model_api": "all committed output tokens / sum bridge API response seconds; includes transport, prefill, parsing and instrumentation",
+    "task": "DSH human turn including model calls and tools; excludes model startup, warmup, official verifier and owner release",
+    "comparison": "Observed divergent trajectories only; does not establish a causal GC overhead or a 1% non-inferiority bound"
+  },
+  "cases": [
+    {
+      "task": "validate-and-solve-sudoku",
+      "gc_mode": "off",
+      "job": "sudoku-gc-off-v4-01",
+      "reward": 0.0,
+      "verifier_summary": "13 failed, 1 passed in 0.32s",
+      "exception": null,
+      "dsh_status": "failed",
+      "dsh_reason_kind": "error",
+      "operator_stopped": false,
+      "dsh_turn_seconds": 3552.033,
+      "agent_execution_seconds": 3559.189862,
+      "measured_task_seconds": 3557.3781440565363,
+      "generated_model_replies": 159,
+      "committed_model_replies": 158,
+      "input_token_usage": 7579920,
+      "output_tokens": 85262,
+      "model_api_reply_seconds": 2924.0452210903168,
+      "committed_output_tokens_per_api_second": 23.5557232505169,
+      "model_issued_tool_calls": {
+        "bash": 157,
+        "write": 1
+      },
+      "maintenance_handoffs": 0,
+      "maintenance_replay_tokens": 0,
+      "maximum_logical_prompt_tokens": 96159,
+      "candidate_source_spans": [
+        {
+          "relative_path": "sudoku_solver.py",
+          "artifact_sha256": "2aed5b2010b550266e58b13ba1f4f817918a8f6339bf1e2e0436359887be8e26",
+          "source_begin": 4888,
+          "source_end": 6201,
+          "candidate_blocks": 40,
+          "live_source_releases": 0,
+          "remaining_source_records": 40,
+          "working_window_source_records": 0,
+          "error": null
+        }
+      ],
+      "live_source_cpu_completions": 0,
+      "retired_source_tokens": 0,
+      "committed_snapshot_evidence": {
+        "semantic_producer_present": true,
+        "source_spans": [
+          {
+            "owner": "tbpro-dafaa9c63d764febb3197110851ab518-off-ce3ad639ce251f47dc275b6c3b6cfe7600d3c90e",
+            "span_id": "file-body-2-2f8010033407",
+            "relative_path": "sudoku_solver.py",
+            "error": null,
+            "candidate_blocks": 40,
+            "live_source_completions": 0,
+            "remaining_source_records": 40,
+            "working_window_source_records": 0
+          }
+        ],
+        "live_source_cpu_completions": 0,
+        "real_semantic_candidate_retirement_proven": false,
+        "later_committed_model_replies": 0,
+        "task_continuation_after_release_proven": false
+      },
+      "effective_gc_task_continuation": false,
+      "owner_cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "server_decode_tokens_excluding_first": 68720,
+      "server_decode_seconds": 2543.497288322076,
+      "request_weighted_decode_tokens_per_second": 27.017917540354055,
+      "requests_excluded_from_decode_metric": 0,
+      "mean_server_time_to_first_token_seconds": 1.6322206246749134,
+      "longest_consecutive_identical_bash": {
+        "command_sha256": "2302e7ebe4e089b31cc8fb3a6f38af6aa30cadff6b55ee128871cc92c501e078",
+        "count": 142,
+        "first_reply": "00016",
+        "first_prompt_tokens": 10660,
+        "last_reply": "00157"
+      },
+      "planned_task_requests": 159,
+      "requests_without_complete_native_reply": 0,
+      "complete_native_replies_without_commit": 1,
+      "decode_metric_coverage": "completed committed task replies only; excludes incomplete/cancelled requests, whose elapsed time remains in task wall time",
+      "all_complete_native_generation": {
+        "responses": 159,
+        "timed_responses": 159,
+        "decode_tokens_excluding_first": 85103,
+        "decode_seconds": 3156.3501644339412,
+        "decode_tokens_per_second": 26.962471071476426,
+        "scope": "Includes complete GPU generations rejected later by tool parsing; omits generations that never produced complete native.json"
+      },
+      "summary_sha256": "1fe1b3de04539cb6579316238aefd81689d5ddabb258de0d1c30f3190ffe68a9",
+      "classification": "completed_trial"
+    },
+    {
+      "task": "validate-and-solve-sudoku",
+      "gc_mode": "delete",
+      "job": "sudoku-gc-delete-v4-01",
+      "reward": 0.0,
+      "verifier_summary": "13 failed, 1 passed in 0.31s",
+      "exception": null,
+      "dsh_status": "closed",
+      "dsh_reason_kind": "completed",
+      "operator_stopped": false,
+      "dsh_turn_seconds": 353.948,
+      "agent_execution_seconds": 361.46782,
+      "measured_task_seconds": 359.00566215626895,
+      "generated_model_replies": 16,
+      "committed_model_replies": 16,
+      "input_token_usage": 155425,
+      "output_tokens": 7888,
+      "model_api_reply_seconds": 351.74644136428833,
+      "committed_output_tokens_per_api_second": 22.425244643287648,
+      "model_issued_tool_calls": {
+        "bash": 14,
+        "write": 1
+      },
+      "maintenance_handoffs": 1,
+      "maintenance_replay_tokens": 21,
+      "maximum_logical_prompt_tokens": 14187,
+      "candidate_source_spans": [
+        {
+          "relative_path": "sudoku_solver.py",
+          "artifact_sha256": "7b798f2f9128027debce394f435882f20e8cbd6d25ba8ac21ee8ca3ae5c4b972",
+          "source_begin": 4899,
+          "source_end": 6596,
+          "candidate_blocks": 52,
+          "live_source_releases": 52,
+          "remaining_source_records": 0,
+          "working_window_source_records": 0,
+          "error": null
+        }
+      ],
+      "live_source_cpu_completions": 52,
+      "retired_source_tokens": 1664,
+      "committed_snapshot_evidence": {
+        "semantic_producer_present": true,
+        "source_spans": [
+          {
+            "owner": "tbpro-03ac9332bead479586f9205bf3735aeb-delete-19ace823b2a32b1bba6b39186061f9439c32feb6",
+            "span_id": "file-body-2-4fd3f7cffccc",
+            "relative_path": "sudoku_solver.py",
+            "error": null,
+            "candidate_blocks": 52,
+            "live_source_completions": 52,
+            "remaining_source_records": 0,
+            "working_window_source_records": 0
+          }
+        ],
+        "live_source_cpu_completions": 52,
+        "real_semantic_candidate_retirement_proven": true,
+        "later_committed_model_replies": 11,
+        "task_continuation_after_release_proven": true
+      },
+      "effective_gc_task_continuation": true,
+      "owner_cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "server_decode_tokens_excluding_first": 7872,
+      "server_decode_seconds": 305.97214865125716,
+      "request_weighted_decode_tokens_per_second": 25.727831878490342,
+      "requests_excluded_from_decode_metric": 0,
+      "mean_server_time_to_first_token_seconds": 1.3575856001116335,
+      "longest_consecutive_identical_bash": null,
+      "planned_task_requests": 16,
+      "requests_without_complete_native_reply": 0,
+      "complete_native_replies_without_commit": 0,
+      "decode_metric_coverage": "completed committed task replies only; excludes incomplete/cancelled requests, whose elapsed time remains in task wall time",
+      "all_complete_native_generation": {
+        "responses": 16,
+        "timed_responses": 16,
+        "decode_tokens_excluding_first": 7872,
+        "decode_seconds": 305.97214865125716,
+        "decode_tokens_per_second": 25.727831878490342,
+        "scope": "Includes complete GPU generations rejected later by tool parsing; omits generations that never produced complete native.json"
+      },
+      "summary_sha256": "cf8bc2c6b64100543403475a5d8db9b9aa8f600942b0c3dc7e11f88f6e1402e6",
+      "classification": "completed_trial"
+    },
+    {
+      "task": "advanced-json-to-rfc4180-csv-converter",
+      "gc_mode": "off",
+      "job": "json-gc-off-v4-01",
+      "reward": 0.0,
+      "verifier_summary": "1 failed, 89 passed in 0.15s",
+      "exception": null,
+      "dsh_status": "closed",
+      "dsh_reason_kind": "completed",
+      "operator_stopped": false,
+      "dsh_turn_seconds": 1795.711,
+      "agent_execution_seconds": 1802.787571,
+      "measured_task_seconds": 1800.7978826826438,
+      "generated_model_replies": 45,
+      "committed_model_replies": 45,
+      "input_token_usage": 1702434,
+      "output_tokens": 43068,
+      "model_api_reply_seconds": 1791.3732552528381,
+      "committed_output_tokens_per_api_second": 24.041890696822584,
+      "model_issued_tool_calls": {
+        "bash": 37,
+        "edit": 4,
+        "write": 1,
+        "read": 2
+      },
+      "maintenance_handoffs": 0,
+      "maintenance_replay_tokens": 0,
+      "maximum_logical_prompt_tokens": 83984,
+      "candidate_source_spans": [
+        {
+          "relative_path": "json_to_csv.py",
+          "artifact_sha256": "492c71f110260485f2148b8a60181645f3dee58dd0c05aaa73d3aed19c47cb15",
+          "source_begin": 12813,
+          "source_end": 17839,
+          "candidate_blocks": 156,
+          "live_source_releases": 0,
+          "remaining_source_records": 156,
+          "working_window_source_records": 0,
+          "error": null
+        }
+      ],
+      "live_source_cpu_completions": 0,
+      "retired_source_tokens": 0,
+      "committed_snapshot_evidence": {
+        "semantic_producer_present": true,
+        "source_spans": [
+          {
+            "owner": "tbpro-5a9d09ee765e4d17b01e751d15f15c50-off-4968710dab54d1fcbe7db14d8e3f809fe0a90dcb",
+            "span_id": "file-body-4-e3bc52c07d3f",
+            "relative_path": "json_to_csv.py",
+            "error": null,
+            "candidate_blocks": 156,
+            "live_source_completions": 0,
+            "remaining_source_records": 156,
+            "working_window_source_records": 0
+          }
+        ],
+        "live_source_cpu_completions": 0,
+        "real_semantic_candidate_retirement_proven": false,
+        "later_committed_model_replies": 0,
+        "task_continuation_after_release_proven": false
+      },
+      "effective_gc_task_continuation": false,
+      "owner_cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "server_decode_tokens_excluding_first": 43023,
+      "server_decode_seconds": 1651.0344961062074,
+      "request_weighted_decode_tokens_per_second": 26.058207809385728,
+      "requests_excluded_from_decode_metric": 0,
+      "mean_server_time_to_first_token_seconds": 2.449531270770563,
+      "longest_consecutive_identical_bash": null,
+      "planned_task_requests": 45,
+      "requests_without_complete_native_reply": 0,
+      "complete_native_replies_without_commit": 0,
+      "decode_metric_coverage": "completed committed task replies only; excludes incomplete/cancelled requests, whose elapsed time remains in task wall time",
+      "all_complete_native_generation": {
+        "responses": 45,
+        "timed_responses": 45,
+        "decode_tokens_excluding_first": 43023,
+        "decode_seconds": 1651.0344961062074,
+        "decode_tokens_per_second": 26.058207809385728,
+        "scope": "Includes complete GPU generations rejected later by tool parsing; omits generations that never produced complete native.json"
+      },
+      "summary_sha256": "82dd3950ed2df209b12d7745fb14fead9da062614f6a8147fdf8613718a03939",
+      "classification": "completed_trial"
+    },
+    {
+      "task": "advanced-json-to-rfc4180-csv-converter",
+      "gc_mode": "delete",
+      "job": "json-gc-delete-v4-01",
+      "reward": 0.0,
+      "verifier_summary": "2 failed, 88 passed in 0.18s",
+      "exception": null,
+      "dsh_status": "failed",
+      "dsh_reason_kind": "aborted",
+      "operator_stopped": true,
+      "dsh_turn_seconds": 703.261,
+      "agent_execution_seconds": 710.145865,
+      "measured_task_seconds": 708.2113317260519,
+      "generated_model_replies": 18,
+      "committed_model_replies": 18,
+      "input_token_usage": 386047,
+      "output_tokens": 17378,
+      "model_api_reply_seconds": 699.1085956096649,
+      "committed_output_tokens_per_api_second": 24.857368524907542,
+      "model_issued_tool_calls": {
+        "bash": 11,
+        "edit": 2,
+        "read": 3,
+        "write": 2
+      },
+      "maintenance_handoffs": 1,
+      "maintenance_replay_tokens": 24,
+      "maximum_logical_prompt_tokens": 34218,
+      "candidate_source_spans": [
+        {
+          "relative_path": "json_to_csv.py",
+          "artifact_sha256": "492c71f110260485f2148b8a60181645f3dee58dd0c05aaa73d3aed19c47cb15",
+          "source_begin": 12813,
+          "source_end": 17839,
+          "candidate_blocks": 156,
+          "live_source_releases": 156,
+          "remaining_source_records": 0,
+          "working_window_source_records": 0,
+          "error": null
+        },
+        {
+          "relative_path": "validate_csv.py",
+          "artifact_sha256": "ee2731e48432c6f7f6d7958411800751abe5c7734183c0861e1f93355015527c",
+          "source_begin": 34269,
+          "source_end": 36242,
+          "candidate_blocks": 0,
+          "live_source_releases": 0,
+          "remaining_source_records": null,
+          "working_window_source_records": null,
+          "error": null
+        }
+      ],
+      "live_source_cpu_completions": 156,
+      "retired_source_tokens": 4992,
+      "committed_snapshot_evidence": {
+        "semantic_producer_present": true,
+        "source_spans": [
+          {
+            "owner": "tbpro-a749df316df0489ba7808f892a3b2548-delete-4da32118e5e27091448b457c56490d73bac147e7",
+            "span_id": "file-body-4-f3bfba1fd3be",
+            "relative_path": "json_to_csv.py",
+            "error": null,
+            "candidate_blocks": 156,
+            "live_source_completions": 156,
+            "remaining_source_records": 0,
+            "working_window_source_records": 0
+          }
+        ],
+        "live_source_cpu_completions": 156,
+        "real_semantic_candidate_retirement_proven": true,
+        "later_committed_model_replies": 12,
+        "task_continuation_after_release_proven": true
+      },
+      "effective_gc_task_continuation": true,
+      "owner_cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "server_decode_tokens_excluding_first": 17360,
+      "server_decode_seconds": 653.5662297736853,
+      "request_weighted_decode_tokens_per_second": 26.561959919519342,
+      "requests_excluded_from_decode_metric": 0,
+      "mean_server_time_to_first_token_seconds": 2.1072424325264163,
+      "classification": "operator_interrupted_for_human_requested_cloud_shutdown",
+      "comparable_completed_trial": false
+    }
+  ],
+  "recorded_trials": 4,
+  "interrupted_trials": 1,
+  "unstarted_trials": 2,
+  "stop_reason": "Human requested cloud RTX4090 shutdown; active JSON DELETE interrupted, remaining log tasks not started",
+  "unstarted_cases": [
+    "logs-gc-delete-v4-01",
+    "logs-gc-off-v4-01"
+  ]
+}

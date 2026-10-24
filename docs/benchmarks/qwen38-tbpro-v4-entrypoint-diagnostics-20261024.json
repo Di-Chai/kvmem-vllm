@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "supplemental entrypoint-only diagnostic of the accepted write; not official benchmark score",
+    "protocol_revision": 4,
+    "exit_code": 0,
+    "seconds": 21.864980929531157,
+    "reward": "0",
+    "source_sha256": "7b798f2f9128027debce394f435882f20e8cbd6d25ba8ac21ee8ca3ae5c4b972",
+    "model_requests": 0,
+    "gc_mode": "delete",
+    "original_name": "sudoku_solver.py",
+    "diagnostic_name": "main.py",
+    "official_score_unchanged": 0,
+    "verifier_summary": "6 failed, 8 passed, 2 warnings in 0.28s",
+    "failure_scope": "Valid solution digits are emitted without spaces within each row; original verifier requires 81 whitespace-separated integers"
+  }
+]

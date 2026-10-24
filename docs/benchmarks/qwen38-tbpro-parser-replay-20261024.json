@@ -1,0 +1,11 @@
+{
+  "kind": "saved real model response replay; no model inference",
+  "real_output_tokens": 1110,
+  "raw_sha256": "b95cee777acfd8a034c0f81d75e78ce8c3434adcd0de14321166560d9dcf9f54",
+  "dense_character_chunks": 4184,
+  "local_prefix_parses": 203,
+  "remote_complete_tool_parses": 1,
+  "tool_output_matches_original_official_parser": true,
+  "seconds": 0.9251129878684878,
+  "model_requests": 0
+}
