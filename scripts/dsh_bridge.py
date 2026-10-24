@@ -236,7 +236,15 @@ def validate_system_pin_budget(data, protocol):
             plan.probe_tokens or plan.pressure_probe_tokens):
         raise ValueError('System-pin admission requires the declared generation and replay profile')
     allowed_reselect=('auto','force') if getattr(protocol,'artifact_gc_force_allowed',False) else ('auto',)
-    if plan.query_mode != 'agent' or plan.reselect not in allowed_reselect or plan.query is None or not plan.query_id:
+    maintenance=(getattr(protocol,'artifact_gc_maintenance_allowed',False) and
+        plan.query_mode=='raw' and plan.reselect in ('force','auto') and plan.query is not None and
+        plan.query[0]==(plan.query[1]-1)//block*block and
+        plan.query_id=='artifact-maintenance-'+str(plan.query[1]) and
+        (plan.reselect=='auto' or plan.query[1]==len(data['prompt'])))
+    single_task=(getattr(protocol,'single_query_task',False) and plan.query_mode=='agent' and
+        plan.query is None and plan.reselect=='auto' and bool(plan.query_id))
+    if ((plan.query_mode != 'agent' and not maintenance) or plan.reselect not in allowed_reselect or
+            (plan.query is None and not single_task) or not plan.query_id):
         raise ValueError('System-pin admission requires a verified agent Query epoch')
     replay = plan.replay_end - plan.replay_begin if plan.query is not None else 0
     if replay > cfg['query_replay_budget']:
@@ -321,9 +329,15 @@ def create_app(args,tokenizer):
     else:
         protocol=Protocol(args.protocol)
     artifact_root=getattr(args,'artifact_gc_root',None)
+    artifact_mode=getattr(args,'artifact_gc_mode',None)
+    artifact_container=getattr(args,'artifact_gc_container',None)
+    if (artifact_mode is not None or artifact_container is not None) and artifact_root is None:
+        raise ValueError('Artifact container/mode requires the explicit artifact experiment')
     if artifact_root is not None and (args.backend != 'http://127.0.0.1:8186' or not pin_system or max_inflight != 1):
         raise ValueError('Artifact GC experiment requires the owned loopback C1 pinned-system backend')
     protocol.artifact_gc_force_allowed=artifact_root is not None
+    protocol.artifact_gc_maintenance_allowed=artifact_root is not None and artifact_mode=='delete'
+    protocol.single_query_task=getattr(args,'single_query_task',False)
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     artifact_armed={}
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
@@ -393,7 +407,25 @@ def create_app(args,tokenizer):
                 output_limit=min(limit,remaining_context)
                 data=backend_request(model=args.model,tokens=tokens,session=owner,
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
-                if (artifact_root is not None and artifact_armed.get(owner) and
+                single_task=None
+                if protocol.single_query_task:
+                    if (query_source.get('status')!='verified-user-source' or query_source.get('user_ordinal')!=0 or
+                            sum(m.get('role')=='user' for m in body['messages'])!=1):
+                        raise ValueError('Single-task benchmark requires exactly its original verified user Query')
+                    if state.turns and (not prepared[5] or plan.get('kvmem_query_id')!=state.plan.get('kvmem_query_id')):
+                        raise ValueError('Single-task continuation changed the original user Query or accepted prefix')
+                    if not state.turns and len(tokens)>args.select_budget-32:
+                        raise ValueError('The complete initial task must fit the declared selected capacity')
+                    single_task=dict(original_query_span=plan.get('kvmem_query_span'),
+                        policy='stream_initial_task_without_historical_scoring',model_input_unchanged=True)
+                    data.pop('kvmem_query_span',None)
+                    data.pop('kvmem_replay_span',None)
+                    data['kvmem_reselect']='auto'
+                maintenance=None
+                if artifact_root is not None and artifact_armed.get(owner) and artifact_mode is not None:
+                    from diagnostics.dsh_artifact_gc import maintenance_boundary
+                    maintenance=maintenance_boundary(data,artifact_mode)
+                elif (artifact_root is not None and artifact_armed.get(owner) and
                         plan.get('kvmem_query_id') != state.plan.get('kvmem_query_id') and
                         plan.get('kvmem_query_span') is not None):
                     data['kvmem_reselect']='force'
@@ -402,6 +434,9 @@ def create_app(args,tokenizer):
                 pin_admission=validate_system_pin_budget(data, planner.protocol)
                 for k in ('temperature','top_p','top_k','min_p','presence_penalty','repetition_penalty','seed'):
                     if k in body:data[k]=body[k]
+                for k in ('temperature','seed'):
+                    value=getattr(args,k,None)
+                    if value is not None:data[k]=value
                 directory=args.output/owner/f'{state.turns+1:05d}'
                 if directory.exists() and (directory/'request.json').exists():
                     directory.rename(directory.with_name(directory.name+'-attempt-'+uuid.uuid4().hex[:8]))
@@ -411,11 +446,13 @@ def create_app(args,tokenizer):
                     dict(prompt_tokens=len(tokens),exact_output_prefix_reused=prepared[5],
                          query_source=query_source,requested_output_cap=limit,
                          effective_output_cap=output_limit,logical_remaining_tokens=remaining_context)|
-                    (dict(system_pin_admission=pin_admission) if pin_admission is not None else {}),indent=2))
+                    (dict(system_pin_admission=pin_admission) if pin_admission is not None else {})|
+                    (dict(artifact_gc_maintenance=maintenance) if maintenance is not None else {})|
+                    (dict(single_query_task=single_task) if single_task is not None else {}),indent=2))
                 if artifact_root is not None:
                     from diagnostics.dsh_artifact_gc import verified_candidates
                     armed_ids=artifact_armed.setdefault(owner,set())
-                    candidates=await asyncio.to_thread(verified_candidates,artifact_root,args.output,owner,state,prepared,body,artifact_decoder.token_bytes,armed_ids)
+                    candidates=await asyncio.to_thread(verified_candidates,artifact_root,args.output,owner,state,prepared,body,artifact_decoder.token_bytes,armed_ids,container=artifact_container)
                     for candidate in candidates:
                         armed=await client.post(args.backend+'/collective_rpc',json=dict(method='dsh_artifact_gc_arm',kwargs=dict(plan=candidate)))
                         armed.raise_for_status()
@@ -584,6 +621,11 @@ if __name__=='__main__':
     p.add_argument('--max-output-segments',type=int,choices=range(1,5),default=1)
     p.add_argument('--require-query-provenance',action='store_true')
     p.add_argument('--artifact-gc-root',type=Path,help='Opt-in verified-file GC experiment workspace; owned loopback backend only')
+    p.add_argument('--artifact-gc-container',help='Read actual workspace files in this owned local Docker task container')
+    p.add_argument('--artifact-gc-mode',choices=('off','delete'),help='Explicit paired experiment; delete adds bounded real-input maintenance handoffs')
+    p.add_argument('--single-query-task',action='store_true',help='Verified one-instruction benchmark: stream the full initial task in normal prefill chunks, without historical Query scoring')
+    p.add_argument('--temperature',type=float,help='Explicit sampling override for controlled paired experiments')
+    p.add_argument('--seed',type=int,help='Explicit sampling seed for controlled paired experiments')
     p.add_argument('--restore-from',type=Path,action='append',default=[]);args=p.parse_args()
     from transformers import AutoTokenizer
     import uvicorn

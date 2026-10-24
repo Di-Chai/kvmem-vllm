@@ -120,7 +120,7 @@ def test_handoff_uses_native_picker_and_preserves_every_other_record(count,prote
     records={(s.handle.slot,s.handle.generation):SimpleNamespace(handle=s.handle,history_begin=i*32,count=min(32,count-i*32)) for i,s in enumerate(spans)}
     handles=[s.handle for s in spans]
     candidates={(h.slot,h.generation) for h in handles[2:4]}
-    authority=SimpleNamespace(memory=memory,records=records,history_end=count,_verified_artifact_namespace=('owner','owner'))
+    authority=SimpleNamespace(memory=memory,records=records,history_end=count,_verified_artifact_namespace=('owner','owner'),archive=SimpleNamespace(_history_mode='delete'))
     controller=Controller();controller.states=[dict(flushed=True,error=None,plan=dict(namespace=['owner','owner']),candidate_handles=[list(k) for k in candidates],events=[])]
     mandatory=[handles[3]] if protect_source else []
     expected=set(records)-candidates
@@ -156,3 +156,43 @@ def test_pinned_bridge_accepts_force_only_for_explicit_artifact_experiment():
         validate_system_pin_budget(data,protocol)
     protocol.artifact_gc_force_allowed=True
     assert validate_system_pin_budget(data,protocol)['declared_select_budget']==36864
+
+
+def test_off_and_shadow_never_remove_artifacts_from_attention_window():
+    from diagnostics.dsh_artifact_gc import Controller
+    for mode in ('off','shadow',None):
+        authority=SimpleNamespace(archive=SimpleNamespace(_history_mode=mode))
+        assert Controller().select_window(authority,[],256) is None
+
+
+def test_single_task_streaming_requires_explicit_profile_and_keeps_system_pin():
+    from scripts.dsh_bridge import validate_system_pin_budget
+    protocol=SimpleNamespace(pin_system=True,system_pin_policy=dict(block_tokens=32,gen_budget=16384,
+        query_replay_budget=128,select_budget=36864,sink_blocks=1,recent_blocks=1,rounding_reserve_blocks=2))
+    data=dict(prompt=[1]*4096,max_tokens=16384,kvmem_reselect='auto',kvmem_query_mode='agent',
+        kvmem_query_id='original-long-task',kvmem_mandatory_parts='none',
+        kvmem_mandatory_spans=[dict(begin=0,end=64,kind='system')])
+    with pytest.raises(ValueError,match='verified agent Query'):validate_system_pin_budget(data,protocol)
+    protocol.single_query_task=True
+    assert validate_system_pin_budget(data,protocol)['actual_query_replay_tokens']==0
+
+
+@pytest.mark.parametrize('count',[257,288,300])
+def test_internal_maintenance_replays_only_actual_prompt_tail_and_keeps_off_unchanged(count):
+    from diagnostics.dsh_artifact_gc import maintenance_boundary
+    from scripts.dsh_bridge import validate_system_pin_budget
+    data=dict(prompt=list(range(count)),max_tokens=32,kvmem_reselect='auto',kvmem_query_mode='agent',
+        kvmem_query_id='human-query',kvmem_query_span=[64,80],kvmem_mandatory_parts='none',
+        kvmem_mandatory_spans=[dict(begin=0,end=64,kind='system')])
+    import copy
+    original=copy.deepcopy(data)
+    assert maintenance_boundary(data,'off') is None and data==original
+    provenance=maintenance_boundary(data,'delete')
+    assert data['prompt']==original['prompt'] and provenance['original_query']['kvmem_query_id']=='human-query'
+    assert 1<=provenance['replay_tokens']<=32
+    protocol=SimpleNamespace(pin_system=True,artifact_gc_force_allowed=True,artifact_gc_maintenance_allowed=True,
+        system_pin_policy=dict(block_tokens=32,gen_budget=16384,query_replay_budget=128,
+        select_budget=36864,sink_blocks=1,recent_blocks=1,rounding_reserve_blocks=2))
+    assert validate_system_pin_budget(data,protocol)['declared_select_budget']==36864
+    protocol.artifact_gc_maintenance_allowed=False
+    with pytest.raises(ValueError,match='verified agent Query'):validate_system_pin_budget(data,protocol)

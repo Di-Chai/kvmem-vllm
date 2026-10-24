@@ -6,12 +6,14 @@ and accepts unknown/high importance (1). Default statistical settings stay 3/3.
 Only an owned loopback development server loads this worker extension.
 """
 import copy
+import base64
 import functools
 import hashlib
 import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -49,7 +51,63 @@ def file_body_tokens(ids, raw, content, token_bytes):
     return covered[0], covered[-1]+1
 
 
-def verified_candidate(root, output, owner, state, prepared, body, token_bytes, call_id=None):
+def workspace_artifact(root, path, *, container=None):
+    """Read bounded real file bytes in the tool's filesystem, without a shell."""
+    if container is not None:
+        program = '''import base64,json,sys
+from pathlib import Path
+root=Path(sys.argv[1]).resolve(strict=True)
+path=Path(sys.argv[2])
+if not path.is_absolute(): path=root/path
+try:
+ resolved=path.resolve(strict=True)
+ valid=not path.is_symlink() and resolved.is_relative_to(root) and resolved.is_file() and resolved.stat().st_size<=1048576
+ data=resolved.read_bytes() if valid else None
+ print(json.dumps(None if data is None or len(data)>1048576 else dict(path=str(path),relative_path=str(resolved.relative_to(root)),data=base64.b64encode(data).decode())))
+except (OSError,ValueError): print('null')
+'''
+        result = subprocess.run(['docker','exec',container,'python','-c',program,str(root),str(path)],
+            capture_output=True,timeout=15,check=True)
+        value=json.loads(result.stdout)
+        if value is None:
+            return None
+        data=base64.b64decode(value['data'],validate=True)
+        if len(data)>1048576:
+            raise ValueError('Artifact reader exceeded the bounded file size')
+        return Path(value['path']),value['relative_path'],data
+    root=root.resolve(strict=True)
+    if not path.is_absolute():
+        path=root/path
+    if path.is_symlink():
+        return None
+    resolved=path.resolve(strict=True)
+    if not resolved.is_relative_to(root) or not resolved.is_file() or resolved.stat().st_size>1048576:
+        return None
+    data=resolved.read_bytes()
+    return None if len(data)>1048576 else (path,str(resolved.relative_to(root)),data)
+
+
+def maintenance_boundary(data, mode):
+    """Use the current real prompt tail for a bounded internal GC handoff.
+
+    This is an explicit raw scoring span, not a new human Query or generated
+    judge request. OFF retains normal continuation and the full attention view.
+    """
+    if mode != 'delete':
+        return None
+    count=len(data['prompt'])
+    begin=(count-1)//32*32
+    if begin<=0:
+        raise ValueError('GC maintenance requires a complete accepted prompt')
+    original={k:data[k] for k in ('kvmem_query_id','kvmem_query_span','kvmem_query_mode') if k in data}
+    data.update(kvmem_reselect='force',kvmem_query_span=[begin,count],
+        kvmem_query_mode='raw',kvmem_query_id='artifact-maintenance-'+str(count))
+    data.pop('kvmem_replay_span',None)
+    return dict(kind='verified_artifact_maintenance',original_query=original,
+        replay_span=[begin,count],replay_tokens=count-begin)
+
+
+def verified_candidate(root, output, owner, state, prepared, body, token_bytes, call_id=None, *, container=None):
     """Consume the real previous write/result pair; fail closed on ambiguity."""
     if not state.turns or not prepared[5]:
         return None
@@ -64,18 +122,12 @@ def verified_candidate(root, output, owner, state, prepared, body, token_bytes, 
     args = json.loads(call['function']['arguments'])
     if set(args) != {'file_path', 'content'}:
         return None
-    root = root.resolve(strict=True)
-    path = Path(args['file_path'])
-    if not path.is_absolute():
-        path = root/path
-    # Keep a strict workspace boundary, including all symlink ancestors.
-    if not path.is_absolute() or path.is_symlink():
+    artifact=workspace_artifact(root,Path(args['file_path']),container=container)
+    if artifact is None:
         return None
-    resolved = path.resolve(strict=True)
-    if not resolved.is_relative_to(root) or not resolved.is_file() or resolved.stat().st_size > 1048576:
-        return None
+    path,relative_path,data=artifact
     content = args['content']
-    if not isinstance(content, str) or resolved.read_bytes() != content.encode():
+    if not isinstance(content, str) or data != content.encode():
         return None
     expected = [f'<path>{path}</path>\n<type>file</type>\n<content>\n{verb} file\n</content>' for verb in ('Created','Updated')]
     results = [m for m in body['messages'] if m.get('role') == 'tool' and m.get('tool_call_id') == call['id']]
@@ -108,12 +160,12 @@ def verified_candidate(root, output, owner, state, prepared, body, token_bytes, 
     return dict(span_id=f'file-body-{state.turns}-'+hashlib.sha256(call['id'].encode()).hexdigest()[:12], namespace=[owner, owner],
         prompt_tokens=len(tokens), prefix_sha256=token_digest(tokens),
         source_begin=begin, source_end=end, result_begin=rb, result_end=re,
-        relative_path=str(resolved.relative_to(root)), artifact_sha256=hashlib.sha256(content.encode()).hexdigest(),
+        relative_path=relative_path, artifact_sha256=hashlib.sha256(content.encode()).hexdigest(),
         artifact_bytes=len(content.encode()), source='verified_dsh_write_artifact',
         importance=1.0, cold=False, observations=1)
 
 
-def verified_candidates(root, output, owner, state, prepared, body, token_bytes, already):
+def verified_candidates(root, output, owner, state, prepared, body, token_bytes, already, *, container=None):
     """Find current verified artifacts from committed real tool history."""
     values=[]
     if not prepared[5]:
@@ -140,7 +192,7 @@ def verified_candidates(root, output, owner, state, prepared, body, token_bytes,
             identity=f"file-body-{older.turns}-"+hashlib.sha256(call['id'].encode()).hexdigest()[:12]
             if identity in already:
                 continue
-            value=verified_candidate(root,output,owner,older,prepared,body,token_bytes,call['id'])
+            value=verified_candidate(root,output,owner,older,prepared,body,token_bytes,call['id'],container=container)
             if value is not None:
                 values.append(value)
     return values
@@ -177,6 +229,8 @@ class Controller:
 
     def select_window(self, authority, mandatory, limit):
         """Public Query handoff for all-fit histories; never release P/M early."""
+        if getattr(getattr(authority,'archive',None),'_history_mode',None) != 'delete':
+            return None
         namespace=getattr(authority,'_verified_artifact_namespace',None)
         states=[s for s in self.states if s['flushed'] and s['error'] is None and tuple(s['plan']['namespace'])==namespace]
         candidates={tuple(h) for s in states for h in s['candidate_handles']}
