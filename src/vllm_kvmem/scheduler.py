@@ -250,6 +250,17 @@ class KVMemScheduler(Scheduler):
             raise RuntimeError("Wait for all target/speculation work before refreshing")
         if request.request_id in self.transactions or request.request_id in self.connector.pending:
             raise RuntimeError("Request already has a refresh transaction")
+        if selection == 'query':
+            # K is a ceiling. A proactive Query can refresh before its current
+            # physical window reaches K; never reserve nonexistent prefix KV.
+            extents = {request.num_computed_tokens-manager.offsets.get(request.request_id, 0)
+                       for manager in self.window_managers.values()}
+            if len(extents) != 1:
+                raise ValueError('Query refresh groups disagree on the current physical window')
+            current = extents.pop()
+            if current < window_tokens:
+                block = self.query_policy.block_tokens
+                window_tokens = current // block * block
         prepared = []
         try:
             for group_id, manager in self.window_managers.items():

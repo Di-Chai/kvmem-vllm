@@ -19,3 +19,5 @@ P/M checkpoint holds remain intact during decode. At the next public Query selec
 A tool-result witness may include surrounding mixed framing to protect at least one sealed full block intersecting the real result; such extra protection cannot overlap a reclaimed source block.
 
 The normal scheduler deliberately skips Query selection below K. For proactive GC the bridge therefore uses an explicit `force` at a new, provenance-verified user Query when it has armed artifact candidates. Forced Query boundaries now participate in both refresh reservation and launch below K; auto behavior and configured K/G remain unchanged. Stable tool callbacks and output continuation segments keep auto mode. This adds one boundary refresh, not a concurrent judge request or a periodic decode interruption.
+
+A proactive Query also caps its refresh reservation at the actual existing physical prefix, rounded down to a KV block. Reserving the configured K before K is filled references nonexistent history; mismatched group extents are rejected before any ticket is prepared. Worker-selected tokens must still fit that reservation. The profile's configured K remains unchanged.

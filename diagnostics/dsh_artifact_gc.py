@@ -204,7 +204,7 @@ class Controller:
         for state in states:
             state['events'].append(dict(kind='query_handoff_prepared',at=time.perf_counter(),
                 accepted_history=authority.history_end, excluded_blocks=len(candidates), selected_budget=budget,
-                configured_budget=limit))
+                configured_budget=authority.memory.config.select_budget,reserved_limit=limit))
         return plan
 
     def poll(self, authority):
@@ -285,6 +285,7 @@ class Controller:
                         continue
                     state['candidate_handles'] = [[r.handle.slot, r.handle.generation] for r in sources]
                     state['result_handles'] = [[r.handle.slot, r.handle.generation] for r in results]
+                    state['archive_request_id'] = authority.memory.request_id
                     state['registered'] = True
                     state['events'].append(dict(kind='registered', at=time.perf_counter(), accepted_history=authority.history_end, candidate_blocks=len(sources)))
                 if not state['observed']:
@@ -324,7 +325,7 @@ def install():
         retired(gc, record)
         key = [record.handle.slot, record.handle.generation]
         for state in controller.states:
-            if key in state['candidate_handles']:
+            if gc.memory.request_id == state.get('archive_request_id') and key in state['candidate_handles']:
                 state['events'].append(dict(kind='source_record_released', handle=key,
                     history_begin=record.history_begin, at=time.perf_counter(), during_live_scope=not gc.stopped))
     HistoricalAuthorityGc._record_retired = record_retired

@@ -292,3 +292,24 @@ def test_import_and_query_refresh_share_one_native_forward_but_commit_in_order(m
     for manager in scheduler.window_managers.values():
         manager.free('new'); manager.free('b')
     assert [p.get_num_free_blocks() for p in pools] == [16, 16]
+
+
+def test_proactive_query_reserves_only_the_existing_physical_prefix():
+    scheduler, request, _ = setup_scheduler()
+    scheduler.query_policy = SimpleNamespace(block_tokens=16)
+    for manager in scheduler.window_managers.values():
+        manager.offsets[request.request_id] = 48
+    scheduler.begin_refresh(request, 32, selection='query', query_span=(64,72), replay_tokens=8)
+    command, _ = scheduler.transactions[request.request_id]
+    assert all(ticket.window_tokens == 16 for _, ticket in command.groups)
+    assert all(ticket.history_end == 64 for _, ticket in command.groups)
+
+
+def test_proactive_query_rejects_inconsistent_group_extents_before_preparation():
+    scheduler, request, _ = setup_scheduler()
+    scheduler.query_policy = SimpleNamespace(block_tokens=16)
+    scheduler.window_managers[0].offsets[request.request_id] = 48
+    with pytest.raises(ValueError, match='groups disagree'):
+        scheduler.begin_refresh(request, 32, selection='query', query_span=(64,72), replay_tokens=8)
+    assert not scheduler.transactions
+    assert all(not manager.pending for manager in scheduler.window_managers.values())
