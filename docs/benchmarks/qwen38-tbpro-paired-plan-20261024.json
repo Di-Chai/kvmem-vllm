@@ -106,5 +106,18 @@
     "per_model_start": true,
     "included_in_task_metrics": false
   },
-  "frozen_before_model_tasks_unix": 1792807437.0848548
+  "frozen_before_model_tasks_unix": 1792807437.0848548,
+  "protocol_revision": 2,
+  "qualified_plan_frozen_unix": 1792807974.8331974,
+  "tool_parser": "cloud CPU vLLM 0.30.0 Qwen3Parser, same verified tokenizer; no additional model inference",
+  "bootstrap_exclusions": [
+    {
+      "job": "json-gc-off-01",
+      "reason": "admission incorrectly counted DSH framework user frames; no native task model request"
+    },
+    {
+      "job": "json-gc-off-02",
+      "reason": "local vLLM parser dependency missing after first 60 native output tokens; no tools executed; transport setup failure"
+    }
+  ]
 }

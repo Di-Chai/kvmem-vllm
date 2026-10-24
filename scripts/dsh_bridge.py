@@ -338,6 +338,24 @@ def create_app(args,tokenizer):
     protocol.artifact_gc_force_allowed=artifact_root is not None
     protocol.artifact_gc_maintenance_allowed=artifact_root is not None and artifact_mode=='delete'
     protocol.single_query_task=getattr(args,'single_query_task',False)
+    parser_url=getattr(args,'tool_parser_url',None)
+    if parser_url is not None:
+        if parser_url!='http://127.0.0.1:18389' or not disable_thinking:
+            raise ValueError('Remote official parser requires the owned loopback no-thinking route')
+        with httpx.Client(trust_env=False,timeout=180) as parser_client:
+            check=parser_client.get(parser_url+'/health')
+            check.raise_for_status()
+            manifest=check.json()
+            if (not manifest.get('cpu_only') or manifest.get('provenance',{}).get('files')!=protocol.provenance['files'] or
+                    manifest.get('provenance',{}).get('chat_template_kwargs')!=protocol.kwargs or
+                    manifest.get('provenance',{}).get('tool_parser')!=protocol.provenance['tool_parser']):
+                raise ValueError('Remote parser differs from the audited local tokenizer assets')
+        def parse_remote(text,tools):
+            with httpx.Client(trust_env=False,timeout=180) as parser_client:
+                parsed=parser_client.post(parser_url+'/parse',json=dict(text=text,tools=tools))
+                parsed.raise_for_status()
+                return parsed.json()
+        protocol.parse=parse_remote
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     artifact_armed={}
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
@@ -409,14 +427,19 @@ def create_app(args,tokenizer):
                     max_tokens=min(output_limit,args.gen_budget),plan=plan,backend_kind='kvmem')
                 single_task=None
                 if protocol.single_query_task:
-                    if (query_source.get('status')!='verified-user-source' or query_source.get('user_ordinal')!=0 or
-                            sum(m.get('role')=='user' for m in body['messages'])!=1):
+                    # DSH may include framework context as additional wire-user
+                    # frames. Its source proof identifies the human Query; the
+                    # native role alone must not be used to count human inputs.
+                    if (query_source.get('status')!='verified-user-source' or
+                            not query_source.get('message_id') or plan.get('kvmem_query_span') is None):
                         raise ValueError('Single-task benchmark requires exactly its original verified user Query')
                     if state.turns and (not prepared[5] or plan.get('kvmem_query_id')!=state.plan.get('kvmem_query_id')):
                         raise ValueError('Single-task continuation changed the original user Query or accepted prefix')
                     if not state.turns and len(tokens)>args.select_budget-32:
                         raise ValueError('The complete initial task must fit the declared selected capacity')
                     single_task=dict(original_query_span=plan.get('kvmem_query_span'),
+                        source_user_ordinal=query_source['user_ordinal'],
+                        wire_user_frames=sum(m.get('role')=='user' for m in body['messages']),
                         policy='stream_initial_task_without_historical_scoring',model_input_unchanged=True)
                     data.pop('kvmem_query_span',None)
                     data.pop('kvmem_replay_span',None)
@@ -626,6 +649,7 @@ if __name__=='__main__':
     p.add_argument('--single-query-task',action='store_true',help='Verified one-instruction benchmark: stream the full initial task in normal prefill chunks, without historical Query scoring')
     p.add_argument('--temperature',type=float,help='Explicit sampling override for controlled paired experiments')
     p.add_argument('--seed',type=int,help='Explicit sampling seed for controlled paired experiments')
+    p.add_argument('--tool-parser-url',help='Owned remote CPU service using the exact official vLLM parser')
     p.add_argument('--restore-from',type=Path,action='append',default=[]);args=p.parse_args()
     from transformers import AutoTokenizer
     import uvicorn

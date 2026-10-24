@@ -87,6 +87,7 @@ class DshGcAgent(BaseAgent):
             '--max-inflight','1','--max-output-segments','1','--require-query-provenance',
             '--single-query-task',
             '--temperature','0','--seed','20261024',
+            '--tool-parser-url','http://127.0.0.1:18389',
             '--artifact-gc-root',self.workspace,'--artifact-gc-container',self.container,
             '--artifact-gc-mode',self.options.gc_mode]
         env=dict(os.environ,CUDA_VISIBLE_DEVICES='',NVIDIA_VISIBLE_DEVICES='void',
