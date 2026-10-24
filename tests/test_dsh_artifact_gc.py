@@ -165,6 +165,47 @@ def test_off_and_shadow_never_remove_artifacts_from_attention_window():
         assert Controller().select_window(authority,[],256) is None
 
 
+def test_handoff_stops_when_source_leaves_window_and_rejects_foreign_or_incomplete_evidence():
+    from diagnostics.dsh_artifact_gc import artifact_handoff_needed
+    base=dict(plan=dict(namespace=['owner','owner'],source='verified_dsh_write_artifact'),
+        flushed=True,complete=True,observed=True,error=None,window_source_records=3,remaining_source_records=3)
+    assert artifact_handoff_needed(dict(results=[[base]]),'owner')
+    assert not artifact_handoff_needed(dict(results=[[base]]),'other')
+    for changes in [dict(window_source_records=0),dict(remaining_source_records=0),
+                    dict(complete=False),dict(observed=False),dict(flushed=False),dict(error='invalid')]:
+        assert not artifact_handoff_needed(dict(results=[[dict(base,**changes)]]),'owner')
+
+
+def test_following_handoff_can_fit_after_previous_gc_left_logical_history_gaps():
+    from diagnostics.dsh_artifact_gc import Controller
+    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.memory import RequestMemory
+    from test_core import append,Event
+    memory=RequestMemory('gaps',KVMemConfig(block_tokens=32,select_budget=256,gen_budget=256,
+        repository_blocks=16,sink_blocks=1,recent_blocks=1))
+    rows=append(memory,256)
+    records={(s.handle.slot,s.handle.generation):SimpleNamespace(handle=s.handle,history_begin=i*32,count=32)
+        for i,s in enumerate(rows)}
+    keys=list(records)
+    authority=SimpleNamespace(memory=memory,records=records,history_end=256,
+        _verified_artifact_namespace=('owner','owner'),archive=SimpleNamespace(_history_mode='delete'))
+    controller=Controller()
+    controller.states=[dict(flushed=True,error=None,plan=dict(namespace=['owner','owner']),
+        candidate_handles=[list(k) for k in keys[2:4]],events=[])]
+    try:
+        controller.select_window(authority,[],256)
+        memory.attach_completion(Event(True));assert memory.commit_selection()
+        for key in keys[2:4]:records.pop(key)
+        controller.states.append(dict(flushed=True,error=None,plan=dict(namespace=['owner','owner']),
+            candidate_handles=[list(keys[4])],events=[]))
+        assert authority.history_end>192
+        assert controller.select_window(authority,[],192) is not None
+        memory.attach_completion(Event(True));assert memory.commit_selection()
+        assert {(r[0],r[1]) for r in memory._store.working_records()}==set(records)-{keys[4]}
+    finally:
+        assert memory.close()
+
+
 def test_explicit_sampling_preset_is_shared_and_ordinary_callers_keep_their_values():
     from scripts.dsh_bridge import apply_sampling_overrides
     data=dict(temperature=.4,seed=3,top_p=.9)

@@ -365,7 +365,7 @@ class AsyncRefresh:
                 raise ValueError('Missing required historical evidence')
             artifact_select=getattr(authority,'_verified_artifact_selection',None)
             artifact_plan=(artifact_select(mandatory,cfg.select_budget)
-                if artifact_select is not None and job.command.selection!='pressure' and job.history<=cfg.select_budget else None)
+                if artifact_select is not None and job.command.selection!='pressure' else None)
             if artifact_plan is not None:
                 plan=artifact_plan
             elif job.command.selection=='pressure':

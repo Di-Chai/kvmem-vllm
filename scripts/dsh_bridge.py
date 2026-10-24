@@ -368,6 +368,7 @@ def create_app(args,tokenizer):
         protocol.parse=parse_remote
     artifact_decoder=AcceptedTextDecoder(tokenizer) if artifact_root is not None else None
     artifact_armed={}
+    artifact_pending={}
     app=FastAPI();planner=Planner(protocol,tokenizer,args.gen_budget)
     client=httpx.AsyncClient(trust_env=False,timeout=3600)
     owners={};restored=set();args.output.mkdir(parents=True,exist_ok=True)
@@ -455,9 +456,14 @@ def create_app(args,tokenizer):
                     data.pop('kvmem_replay_span',None)
                     data['kvmem_reselect']='auto'
                 maintenance=None
+                maintenance_deferred=None
                 if artifact_root is not None and artifact_armed.get(owner) and artifact_mode is not None:
-                    from diagnostics.dsh_artifact_gc import maintenance_boundary
-                    maintenance=maintenance_boundary(data,artifact_mode)
+                    if artifact_mode=='delete' and artifact_pending.get(owner):
+                        if len(tokens)<=args.select_budget-256:
+                            from diagnostics.dsh_artifact_gc import maintenance_boundary
+                            maintenance=maintenance_boundary(data,artifact_mode)
+                        else:
+                            maintenance_deferred='Use ordinary bounded-window selection beyond the complete-history maintenance bound'
                 elif (artifact_root is not None and artifact_armed.get(owner) and
                         plan.get('kvmem_query_id') != state.plan.get('kvmem_query_id') and
                         plan.get('kvmem_query_span') is not None):
@@ -479,6 +485,7 @@ def create_app(args,tokenizer):
                          effective_output_cap=output_limit,logical_remaining_tokens=remaining_context)|
                     (dict(system_pin_admission=pin_admission) if pin_admission is not None else {})|
                     (dict(artifact_gc_maintenance=maintenance) if maintenance is not None else {})|
+                    (dict(artifact_gc_deferred=maintenance_deferred) if maintenance_deferred is not None else {})|
                     (dict(single_query_task=single_task) if single_task is not None else {}),indent=2))
                 if artifact_root is not None:
                     from diagnostics.dsh_artifact_gc import verified_candidates
@@ -572,7 +579,10 @@ def create_app(args,tokenizer):
                 if artifact_root is not None:
                     snapshot=await client.post(args.backend+'/collective_rpc',json=dict(method='dsh_artifact_gc_snapshot'))
                     snapshot.raise_for_status()
-                    (directory/'artifact-gc-state.json').write_text(json.dumps(snapshot.json(),indent=2)+'\n')
+                    snapshot_data=snapshot.json()
+                    from diagnostics.dsh_artifact_gc import artifact_handoff_needed
+                    artifact_pending[owner]=artifact_handoff_needed(snapshot_data,owner)
+                    (directory/'artifact-gc-state.json').write_text(json.dumps(snapshot_data,indent=2)+'\n')
                 log(dict(at=time.time(),owner=owner,turn=state.turns,request_id=request_id,
                     prompt_tokens=len(tokens),output_tokens=len(output_ids),
                     query_span=plan.get('kvmem_query_span'),

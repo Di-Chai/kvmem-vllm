@@ -107,6 +107,15 @@ def maintenance_boundary(data, mode):
         replay_span=[begin,count],replay_tokens=count-begin)
 
 
+def artifact_handoff_needed(snapshot,owner):
+    """A handoff is needed only for published sources still in the GPU view."""
+    return any(s.get('plan',{}).get('namespace')==[owner,owner] and
+        s.get('plan',{}).get('source')=='verified_dsh_write_artifact' and
+        s.get('flushed') and s.get('complete') and s.get('observed') and s.get('error') is None and
+        (s.get('window_source_records') or 0)>0 and (s.get('remaining_source_records') or 0)>0
+        for worker in snapshot.get('results',[]) for s in worker)
+
+
 def verified_candidate(root, output, owner, state, prepared, body, token_bytes, call_id=None, *, container=None):
     """Consume the real previous write/result pair; fail closed on ambiguity."""
     if not state.turns or not prepared[5]:

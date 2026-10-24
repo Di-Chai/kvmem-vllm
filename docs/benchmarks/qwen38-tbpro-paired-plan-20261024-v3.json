@@ -106,7 +106,7 @@
   },
   "frozen_before_model_tasks_unix": 1792807437.0848548,
   "protocol_revision": 3,
-  "qualified_plan_frozen_unix": 1792809970.4535391,
+  "qualified_plan_frozen_unix": 1792810881.7124555,
   "tool_parser": "cloud CPU vLLM 0.30.0 Qwen3Parser, same verified tokenizer; no additional model inference",
   "bootstrap_exclusions": [
     {
@@ -140,5 +140,11 @@
       "comparison_status": "greedy-preset diagnostic, no paired GC result; preserve independently",
       "kv_prefix_reuse_verified": true
     }
-  ]
+  ],
+  "maintenance_policy": {
+    "trigger": "published, complete verified source still in working window and CPU history",
+    "complete_history_bound_tokens": 36608,
+    "after_source_leaves_window": "no further maintenance replay for that source",
+    "beyond_bound": "defer to ordinary bounded-window selection; do not score a raw header against a long archive"
+  }
 }
