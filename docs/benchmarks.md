@@ -1,5 +1,35 @@
 # Benchmarks
 
+## Local Terminal-Bench deadlines
+
+New suites default to `--agent-time-limit relaxed`: each original task's Agent
+deadline is multiplied by **2**, with verifier, environment setup and individual
+tool limits unchanged. For example, 30 minutes becomes 60 and 40 becomes 80.
+`official` retains the original deadlines; `none` explicitly removes them.
+The copied task files and `agent-time-policy.json` record both original and
+effective values. Start from the original task dataset, not a copy whose
+deadlines have already been removed or multiplied.
+
+The Agent budget includes model requests, model queueing and tool waits.
+On expiry, Harbor stops the Agent and continues its normal artifact collection,
+verification and cleanup. Preserve the timeout exception even if the verifier
+produces a score. Do not automatically rerun a timed-out task.
+
+For relaxed runs, the worker's `agent-pause-intervals.json` has schema
+`{"schema_version":1,"intervals":[{"started_at":EPOCH,"finished_at":null}]}`.
+Atomically record the pause before stopping the worker; replace `null` with
+the resume epoch before continuing it. The Agent clock excludes those
+intervals, including time spent under SIGSTOP. The journal alone does not
+pause execution, and it does not alter tool/HTTP or verifier deadlines.
+
+Both GC policies must use identical timing rules for a fresh paired comparison.
+Old unlimited scores remain unchanged and must not be presented as results
+under the new limit. Already-started workers have loaded their timing rules;
+editing task files does not retrofit their in-memory timers. A paused campaign
+requires an audited timing handoff before resumption, with previous active time
+charged rather than resetting the budget. Configuration changes do not authorize
+resuming or retrying a paused attempt.
+
 ## Real DeepSWE agents on RTX 5090
 
 The real-agent measurement on **2026-10-31** used one RTX 5090 (32,607 MiB

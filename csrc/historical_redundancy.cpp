@@ -58,7 +58,7 @@ struct HistoricalFeatureSource::State {
     std::shared_ptr<void> index_charge, rings_charge;
     std::vector<std::shared_ptr<const Key>> keys;
     std::array<size_t, 4> shape{};
-    uint64_t version = 0, epoch = 0, invalid = 0, key_count = 0;
+    uint64_t version = 0, epoch = 0, invalid = 0, key_count = 0, observation_revision = 0;
     mutable std::atomic<uint64_t> missing{0};
     size_t expected = 0, accepted = 0;
     bool ready = false;
@@ -71,6 +71,7 @@ struct HistoricalFeatureSource::State {
     size_t query_width() const { return shape[0] * shape[2] * shape[3]; }
     void invalidate() {
         ++epoch;
+        observation_revision = 0;
         ready = false; expected = accepted = observed = slow_count = slow_head = 0;
         building.reset(); question.reset(); observations.reset();
         std::fill(fast_ring.begin(), fast_ring.end(), 0.f);
@@ -238,6 +239,7 @@ bool HistoricalFeatureSource::observe(uint64_t epoch,const float *p,size_t token
     }
     next->segments=segments;
     s.observations=std::move(next);
+    ++s.observation_revision;
     return true;
 }
 void HistoricalFeatureSource::invalidate_question() {
@@ -271,7 +273,7 @@ uint64_t HistoricalFeatureSource::key_version(Handle h) const {
 HistoricalFeatureSource::Snapshot HistoricalFeatureSource::snapshot() const {
     auto &s=*state_; std::lock_guard<std::mutex> lock(s.mu);
     if(!s.ready || !s.question) { ++s.missing; return {}; }
-    return {s.epoch,s.shape,s.question,s.observations};
+    return {s.epoch,s.shape,s.question,s.observations,s.observation_revision};
 }
 const float *HistoricalFeatureSource::Snapshot::segment(size_t i) const {
     if(!question || i>=segments()) throw std::out_of_range("Historical query segment");
@@ -306,40 +308,81 @@ std::map<std::string,uint64_t> HistoricalFeatureSource::stats() const {
 
 struct HistoricalRedundancyPolicy::State {
     struct Seen { uint64_t generation=0, version=0; };
+    struct Peak {
+        uint64_t generation=0, version=0, epoch=0;
+        double value=-std::numeric_limits<double>::infinity();
+    };
     struct Row {
         HistoricalBlockMeta meta;
         std::shared_ptr<const HistoricalFeatureSource::Key> key;
         double importance=-std::numeric_limits<double>::infinity(), similarity=-1, score=0;
         size_t witness=SIZE_MAX;
-        bool reference=false, valid=false;
+        bool reference=false, valid=false, retained=false, supports=false, attempted=false;
+    };
+    struct LruEntry {
+        HistoricalBlockMeta meta;
+        bool prior_carry=false;
+    };
+    struct Newer {
+        bool operator()(const LruEntry &a,const LruEntry &b) const {
+            return std::make_tuple(a.prior_carry,age(a.meta))>std::make_tuple(b.prior_carry,age(b.meta));
+        }
     };
     size_t capacity;
     HistoricalRedundancyConfig config;
     std::shared_ptr<const HistoricalFeatureSource> source;
     HistoricalFeatureSource::Snapshot query;
     std::vector<Seen> carry;
+    std::vector<Peak> peaks;
     std::vector<uint64_t> reference_generations;
+    std::vector<size_t> row_slots;
     std::vector<HistoricalBlockMeta> candidates, refs;
+    std::vector<LruEntry> lru;
     std::vector<Row> rows;
-    std::vector<size_t> ranked, fallback;
+    std::vector<size_t> ranked, fallback, preference;
     uint64_t incarnation=0,round=0;
     size_t cursor=0,origin=0,score_row=0,score_segment=0,pair_row=0,pair_ref=0,emit_cursor=0,fallback_cursor=0;
+    size_t awaiting_redundancy=0;
     bool initialized=false,done=false,collected=false,scored=false,paired=false;
+    bool refresh_checked=false,refreshing=false,pairwise_prepared=false;
     bool slots_pressure=false,bytes_pressure=false;
     HistoricalPolicyStatus terminal=HistoricalPolicyStatus::NoCandidate;
-    State(size_t n,HistoricalRedundancyConfig c):capacity(n),config(c),carry(n),reference_generations(n) {
-        static_assert(sizeof(Seen)+sizeof(uint64_t)<=64,"Update admission metadata charge");
-        static_assert(sizeof(HistoricalBlockMeta)+sizeof(Row)+2*sizeof(size_t)<=512,"Update admission pool charge");
+    State(size_t n,HistoricalRedundancyConfig c):capacity(n),config(c),carry(n),peaks(n),reference_generations(n),row_slots(n,SIZE_MAX) {
+        static_assert(sizeof(Seen)+sizeof(Peak)+sizeof(uint64_t)+sizeof(size_t)<=64,"Update admission metadata charge");
+        static_assert(sizeof(LruEntry)<=128,"Update fallback admission metadata charge");
+        static_assert(sizeof(HistoricalBlockMeta)+sizeof(Row)+3*sizeof(size_t)<=512,"Update admission pool charge");
         candidates.reserve(std::min(n,c.candidate_blocks)); refs.reserve(std::min(n,c.reference_blocks));
         rows.reserve(std::min(n,c.candidate_blocks)+std::min(n,c.reference_blocks));
         ranked.reserve(std::min(n,c.candidate_blocks)); fallback.reserve(std::min(n,c.candidate_blocks));
+        preference.reserve(std::min(n,c.candidate_blocks)+std::min(n,c.reference_blocks));
+        if(c.lru_fallback) lru.reserve(n);
     }
     bool carries(const HistoricalBlockMeta &m) const {
         return m.handle.slot<carry.size() && carry[m.handle.slot].generation==m.handle.generation &&
             carry[m.handle.slot].version && carry[m.handle.slot].version==m.feature_version;
     }
     bool eligible(const HistoricalBlockMeta &m) const {
-        return m.live && m.sealed && m.handle.generation && !m.mandatory && !carries(m);
+        return fallback_eligible(m) && in_scope(m);
+    }
+    bool in_scope(const HistoricalBlockMeta &m) const {
+        return !config.thinking_only || (m.thinking_complete && m.thinking_only);
+    }
+    bool fallback_eligible(const HistoricalBlockMeta &m) const {
+        return reclaimable(m) && !prior_representative(m);
+    }
+    bool reclaimable(const HistoricalBlockMeta &m) const {
+        return m.live && m.sealed && m.handle.generation && !m.mandatory && m.handle.slot<carry.size();
+    }
+    bool prior_representative(const HistoricalBlockMeta &m) const {
+        // Missing features must not silently move an old representative into
+        // the ordinary LRU tier. Its generation retains that identity.
+        return m.handle.slot<carry.size() && carry[m.handle.slot].generation==m.handle.generation;
+    }
+    bool protected_in_round(const HistoricalBlockMeta &m) const {
+        if(m.handle.slot>=row_slots.size()) return false;
+        const size_t index=row_slots[m.handle.slot];
+        return index<rows.size() && same(rows[index].meta.handle,m.handle) &&
+            (rows[index].supports || rows[index].attempted);
     }
     bool reference_better(const HistoricalBlockMeta &a,const HistoricalBlockMeta &b) const {
         return std::make_tuple(a.mandatory,carries(a),age(a)) > std::make_tuple(b.mandatory,carries(b),age(b));
@@ -358,14 +401,18 @@ struct HistoricalRedundancyPolicy::State {
     }
     void clear_round() {
         for(const auto &m:refs) reference_generations[m.handle.slot]=0;
-        query={}; candidates.clear(); refs.clear(); rows.clear(); ranked.clear(); fallback.clear();
+        for(const auto &r:rows) row_slots[r.meta.handle.slot]=SIZE_MAX;
+        query={}; candidates.clear(); refs.clear(); rows.clear(); ranked.clear(); fallback.clear();preference.clear();lru.clear();
         cursor=score_row=score_segment=pair_row=pair_ref=emit_cursor=fallback_cursor=0;
         collected=scored=paired=done=false;
+        refresh_checked=refreshing=pairwise_prepared=false;awaiting_redundancy=0;
     }
     HistoricalPolicyResult finish(HistoricalPolicyStatus status,size_t examined=0,size_t emitted=0) {
         done=true; terminal=status;
         // Old immutable source banks must not stay charged until another pressure episode.
-        query={}; rows.clear();
+        query={};
+        for(const auto &r:rows) row_slots[r.meta.handle.slot]=SIZE_MAX;
+        rows.clear();
         return {status,examined,emitted};
     }
     double importance(const HistoricalFeatureSource::Key &key,const float *q) const {
@@ -400,6 +447,14 @@ struct HistoricalRedundancyPolicy::State {
         return std::make_tuple(rows[a].meta.mandatory,carries(rows[a].meta),rows[a].importance,age(rows[a].meta)) >
                std::make_tuple(rows[b].meta.mandatory,carries(rows[b].meta),rows[b].importance,age(rows[b].meta));
     }
+    void remember_peak(Row &row) {
+        if(!config.epoch_peak || !row.valid || !std::isfinite(row.importance)) return;
+        auto &peak=peaks[row.meta.handle.slot];
+        if(peak.generation!=row.meta.handle.generation || peak.version!=row.meta.feature_version || peak.epoch!=query.epoch)
+            peak={row.meta.handle.generation,row.meta.feature_version,query.epoch,row.importance};
+        else peak.value=std::max(peak.value,row.importance);
+        row.importance=peak.value;
+    }
 };
 
 HistoricalRedundancyPolicy::HistoricalRedundancyPolicy(size_t capacity,HistoricalRedundancyConfig config)
@@ -412,7 +467,7 @@ HistoricalRedundancyPolicy::HistoricalRedundancyPolicy(size_t capacity,Historica
             !valid_count(config.candidate_blocks) || !valid_count(config.pair_comparisons) ||
             !valid_count(config.query_segments_per_step) || !config.feature_cache_bytes ||
             config.feature_cache_bytes>(uint64_t(1)<<40) || !config.query_cache_bytes ||
-            config.query_cache_bytes>(uint64_t(1)<<40))
+            config.query_cache_bytes>(uint64_t(1)<<40) || (config.allow_lossy_fallback && config.lru_fallback))
         throw std::invalid_argument("Invalid historical redundancy policy configuration");
 }
 HistoricalRedundancyPolicy::~HistoricalRedundancyPolicy()=default;
@@ -424,11 +479,21 @@ void HistoricalRedundancyPolicy::reset() {
     auto &s=*state_; s.clear_round();
     s.initialized=false; s.slots_pressure=s.bytes_pressure=false; s.origin=0;
     std::fill(s.carry.begin(),s.carry.end(),State::Seen{});
+    std::fill(s.peaks.begin(),s.peaks.end(),State::Peak{});
 }
 bool HistoricalRedundancyPolicy::wants_snapshot(const HistoricalPressure &p) {
     auto &s=*state_; s.pressure(p); auto [slots,bytes]=s.needed(p); return slots || bytes;
 }
+bool HistoricalRedundancyPolicy::permits_pressure(const HistoricalPressure &p) {return wants_snapshot(p);}
 bool HistoricalRedundancyPolicy::permits(const HistoricalBlockMeta &b) const {return state_->eligible(b);}
+bool HistoricalRedundancyPolicy::permits_intent(const HistoricalBlockMeta &b,const HistoricalDeleteIntent &i) const {
+    if(i.reason==HistoricalDeleteReason::LruFallback || i.reason==HistoricalDeleteReason::LruRepresentativeFallback) {
+        const bool tier=i.reason==HistoricalDeleteReason::LruRepresentativeFallback
+            ? state_->reclaimable(b) && state_->prior_representative(b) : state_->fallback_eligible(b);
+        return state_->config.lru_fallback && tier && !state_->protected_in_round(b);
+    }
+    return permits(b);
+}
 HistoricalPolicyResult HistoricalRedundancyPolicy::step(const HistoricalSnapshot &snapshot,
         const HistoricalPressure &p,HistoricalWorkBudget budget,HistoricalDecisionBatch &out) {
     auto &s=*state_;
@@ -442,82 +507,137 @@ HistoricalPolicyResult HistoricalRedundancyPolicy::step(const HistoricalSnapshot
         if(s.initialized && !s.done) throw std::logic_error("Historical snapshot changed before redundancy round completion");
         if(!s.initialized || s.incarnation!=snapshot.incarnation) {
             std::fill(s.carry.begin(),s.carry.end(),State::Seen{});
-            // wants_snapshot may already have latched low-water pressure.
-            // Preserve it if ready capacity moved into the hysteresis band
-            // while this first metadata snapshot was being assembled.
+            std::fill(s.peaks.begin(),s.peaks.end(),State::Peak{});
+            // wants_snapshot may have latched pressure before snapshot assembly.
             if(s.initialized) s.slots_pressure=s.bytes_pressure=false;
         }
-        s.clear_round(); s.initialized=true; s.incarnation=snapshot.incarnation; s.round=snapshot.round;
+        s.clear_round();s.initialized=true;s.incarnation=snapshot.incarnation;s.round=snapshot.round;
         if(s.source) s.query=s.source->snapshot();
     }
     if(s.done) return {s.terminal,0,0};
-    s.pressure(p); auto [slots,bytes]=s.needed(p);
-    if(!slots && !bytes) return s.finish(HistoricalPolicyStatus::Complete);
-    if(!s.source || !s.query.valid() || s.source->snapshot().epoch!=s.query.epoch)
-        return s.finish(HistoricalPolicyStatus::NoCandidate);
+    s.pressure(p);auto [slots,bytes]=s.needed(p);
+    if(!slots&&!bytes) return s.finish(HistoricalPolicyStatus::Complete);
+    const auto latest=s.source?s.source->snapshot():HistoricalFeatureSource::Snapshot{};
+    const bool query_valid=s.query.valid() && latest.valid() && latest.epoch==s.query.epoch;
+    if(!query_valid && !s.config.lru_fallback) return s.finish(HistoricalPolicyStatus::NoCandidate);
     size_t examined=0;
+    bool progressed=false;
     if(!s.collected) {
-        // One bounded rotating candidate pool plus a newest/mandatory reference
-        // heap. References are retained for this whole round, preventing chains
-        // or A->B/B->C within a single decision batch.
         const size_t limit=std::min(s.config.reference_blocks,std::max<size_t>(1,s.capacity/4));
         const auto compare=[&](const auto &a,const auto &b){return s.reference_better(a,b);};
         while(s.cursor<snapshot.blocks.size() && examined<budget.scan_blocks) {
-            const auto &m=snapshot.blocks[(s.origin+s.cursor++)%snapshot.blocks.size()]; ++examined;
-            if(!m.live || !m.sealed || !m.handle.generation || m.handle.slot>=s.capacity || !m.feature_version) continue;
+            const auto &m=snapshot.blocks[(s.origin+s.cursor++)%snapshot.blocks.size()];++examined;
+            if(!m.live || !m.sealed || !m.handle.generation || m.handle.slot>=s.capacity) continue;
             auto &seen=s.carry[m.handle.slot];
-            if(seen.generation!=m.handle.generation || seen.version!=m.feature_version) seen={};
-            if(s.refs.size()<limit) {s.refs.push_back(m);std::push_heap(s.refs.begin(),s.refs.end(),compare);}
-            else if(s.reference_better(m,s.refs.front())) {
-                std::pop_heap(s.refs.begin(),s.refs.end(),compare);s.refs.back()=m;std::push_heap(s.refs.begin(),s.refs.end(),compare);
+            // Missing features do not establish that a retained representative changed.
+            if(seen.generation!=m.handle.generation || (m.feature_version && seen.version!=m.feature_version)) seen={};
+            if(s.config.lru_fallback && s.reclaimable(m)) {
+                s.lru.push_back({m,s.prior_representative(m)});std::push_heap(s.lru.begin(),s.lru.end(),State::Newer{});
+            }
+            if(!query_valid || !m.feature_version) continue;
+            if(s.in_scope(m) || s.config.all_history_references) {
+                if(s.refs.size()<limit) {s.refs.push_back(m);std::push_heap(s.refs.begin(),s.refs.end(),compare);}
+                else if(s.reference_better(m,s.refs.front())) {
+                    std::pop_heap(s.refs.begin(),s.refs.end(),compare);s.refs.back()=m;std::push_heap(s.refs.begin(),s.refs.end(),compare);
+                }
             }
             if(s.eligible(m) && s.candidates.size()<s.config.candidate_blocks) s.candidates.push_back(m);
         }
-        if(s.cursor<snapshot.blocks.size()) return {HistoricalPolicyStatus::Yielded,examined,0};
+        if(s.cursor<snapshot.blocks.size()) return {HistoricalPolicyStatus::Yielded,examined,0,true};
         auto append=[&](const HistoricalBlockMeta &m,bool reference) {
             auto key=s.source->key(m.handle);
             const bool valid=key && key->version==m.feature_version;
+            s.row_slots[m.handle.slot]=s.rows.size();
             s.rows.push_back({m,std::move(key),-std::numeric_limits<double>::infinity(),-1,0,SIZE_MAX,reference,valid});
         };
         for(const auto &m:s.refs) {s.reference_generations[m.handle.slot]=m.handle.generation;append(m,true);}
-        for(const auto &m:s.candidates) {
+        for(const auto &m:s.candidates)
             if(s.reference_generations[m.handle.slot]!=m.handle.generation) append(m,false);
-        }
-        s.collected=true;
+        s.collected=true;progressed=true;
         s.origin=snapshot.blocks.empty()?0:(s.origin+s.config.candidate_blocks)%snapshot.blocks.size();
     }
-    size_t scored=0;
-    while(s.score_row<s.rows.size() && scored<s.config.query_segments_per_step) {
-        auto &row=s.rows[s.score_row];
-        if(!row.valid) {++s.score_row;s.score_segment=0;continue;}
-        const double value=s.importance(*row.key,s.query.segment(s.score_segment++)); ++scored;
-        if(!std::isfinite(value)) {row.valid=false;++s.score_row;s.score_segment=0;continue;}
-        row.importance=std::max(row.importance,value);
-        if(s.score_segment==s.query.segments()) {++s.score_row;s.score_segment=0;}
-    }
-    if(s.score_row<s.rows.size()) return {HistoricalPolicyStatus::Yielded,examined,0};
-    size_t pairs=0;
-    while(s.pair_row<s.rows.size() && pairs<s.config.pair_comparisons) {
-        auto &row=s.rows[s.pair_row];
-        if(row.reference || !row.valid) {++s.pair_row;s.pair_ref=0;continue;}
-        while(s.pair_ref<s.refs.size() && pairs<s.config.pair_comparisons) {
-            const size_t ref=s.pair_ref++; ++pairs;
-            if(!s.rows[ref].valid) continue;
-            const double cosine=s.cosine(*row.key,*s.rows[ref].key);
-            if(!std::isfinite(cosine)) continue;
-            row.similarity=std::max(row.similarity,cosine);
-            if(cosine>=s.config.representative_similarity && s.witness_better(ref,row.witness)) row.witness=ref;
+    if(query_valid && !s.paired) {
+        // One shared budget across all rows and the optional observation refresh.
+        size_t scored=0;
+        auto score_rows=[&]() {
+            while(s.score_row<s.rows.size() && scored<s.config.query_segments_per_step) {
+                auto &row=s.rows[s.score_row];
+                if(!row.valid) {++s.score_row;s.score_segment=s.refreshing?s.query.question->segments:0;continue;}
+                if(s.score_segment<s.query.segments()) {
+                    const double value=s.importance(*row.key,s.query.segment(s.score_segment++));++scored;
+                    if(!std::isfinite(value)) row.valid=false;
+                    else row.importance=std::max(row.importance,value);
+                }
+                if(!row.valid || s.score_segment==s.query.segments()) {
+                    s.remember_peak(row);++s.score_row;s.score_segment=s.refreshing?s.query.question->segments:0;
+                }
+            }
+            progressed|=scored!=0;
+            return s.score_row==s.rows.size();
+        };
+        if(!score_rows()) return {HistoricalPolicyStatus::Yielded,examined,0,progressed};
+        if(!s.refresh_checked) {
+            s.refresh_checked=true;
+            if(s.config.refresh_before_rank && latest.observation_revision!=s.query.observation_revision) {
+                // Same question; refresh observations once without repeating Q dots.
+                s.query=latest;s.refreshing=true;s.score_row=0;s.score_segment=s.query.question->segments;
+                progressed=true;
+                if(!score_rows()) return {HistoricalPolicyStatus::Yielded,examined,0,progressed};
+            }
         }
-        if(s.pair_ref==s.refs.size()) {++s.pair_row;s.pair_ref=0;}
-    }
-    if(s.pair_row<s.rows.size()) return {HistoricalPolicyStatus::Yielded,examined,0};
-    if(!s.paired) {
+        size_t pairs=0;
+        if(s.config.pool_pairwise) {
+            if(!s.pairwise_prepared) {
+                s.preference.resize(s.rows.size());std::iota(s.preference.begin(),s.preference.end(),0);
+                std::sort(s.preference.begin(),s.preference.end(),[&](size_t a,size_t b){
+                    if(s.witness_better(a,b)) return true;
+                    if(s.witness_better(b,a)) return false;
+                    return a<b;
+                });
+                for(auto &row:s.rows) row.retained=row.reference && row.valid;
+                s.pairwise_prepared=true;progressed=true;
+            }
+            // Direct retained representatives need O(pool) storage, no N*N edges.
+            while(s.pair_row<s.preference.size() && pairs<s.config.pair_comparisons) {
+                auto &row=s.rows[s.preference[s.pair_row]];
+                if(row.reference || !row.valid) {++s.pair_row;s.pair_ref=0;progressed=true;continue;}
+                while(s.pair_ref<s.rows.size() && pairs<s.config.pair_comparisons) {
+                    const size_t ref=s.pair_ref++;++pairs;
+                    if(!s.rows[ref].valid || !s.rows[ref].retained || ref==s.preference[s.pair_row]) continue;
+                    const double cosine=s.cosine(*row.key,*s.rows[ref].key);
+                    if(!std::isfinite(cosine)) continue;
+                    row.similarity=std::max(row.similarity,cosine);
+                    if(cosine>=s.config.representative_similarity && s.witness_better(ref,row.witness)) row.witness=ref;
+                }
+                if(s.pair_ref==s.rows.size()) {row.retained=row.witness==SIZE_MAX;++s.pair_row;s.pair_ref=0;}
+            }
+            progressed|=pairs!=0;
+            if(s.pair_row<s.preference.size()) return {HistoricalPolicyStatus::Yielded,examined,0,progressed};
+        } else {
+            while(s.pair_row<s.rows.size() && pairs<s.config.pair_comparisons) {
+                auto &row=s.rows[s.pair_row];
+                if(row.reference || !row.valid) {++s.pair_row;s.pair_ref=0;progressed=true;continue;}
+                while(s.pair_ref<s.refs.size() && pairs<s.config.pair_comparisons) {
+                    const size_t ref=s.pair_ref++;++pairs;
+                    if(!s.rows[ref].valid) continue;
+                    const double cosine=s.cosine(*row.key,*s.rows[ref].key);
+                    if(!std::isfinite(cosine)) continue;
+                    row.similarity=std::max(row.similarity,cosine);
+                    if(cosine>=s.config.representative_similarity && s.witness_better(ref,row.witness)) row.witness=ref;
+                }
+                if(s.pair_ref==s.refs.size()) {++s.pair_row;s.pair_ref=0;}
+            }
+            progressed|=pairs!=0;
+            if(s.pair_row<s.rows.size()) return {HistoricalPolicyStatus::Yielded,examined,0,progressed};
+        }
         double max_importance=-std::numeric_limits<double>::infinity(),max_similarity=-1;
         for(size_t i=0;i<s.rows.size();++i) {
             auto &row=s.rows[i];
             if(row.reference || !row.valid) continue;
-            if(row.witness!=SIZE_MAX) {s.ranked.push_back(i);max_importance=std::max(max_importance,row.importance);max_similarity=std::max(max_similarity,row.similarity);}
-            else s.fallback.push_back(i);
+            if(row.witness!=SIZE_MAX) {
+                s.ranked.push_back(i);s.rows[row.witness].supports=true;
+                max_importance=std::max(max_importance,row.importance);max_similarity=std::max(max_similarity,row.similarity);
+            } else s.fallback.push_back(i);
         }
         double sum_importance=0,sum_similarity=0;
         for(auto i:s.ranked) {sum_importance+=std::exp(s.rows[i].importance-max_importance);sum_similarity+=std::exp(s.rows[i].similarity-max_similarity);}
@@ -525,7 +645,11 @@ HistoricalPolicyResult HistoricalRedundancyPolicy::step(const HistoricalSnapshot
             (1-s.config.importance_weight)*std::exp(s.rows[i].similarity-max_similarity)/sum_similarity;
         std::sort(s.ranked.begin(),s.ranked.end(),[&](size_t a,size_t b){return std::make_tuple(s.rows[a].score,age(s.rows[a].meta))<std::make_tuple(s.rows[b].score,age(s.rows[b].meta));});
         std::sort(s.fallback.begin(),s.fallback.end(),[&](size_t a,size_t b){return std::make_tuple(s.rows[a].importance,age(s.rows[a].meta))<std::make_tuple(s.rows[b].importance,age(s.rows[b].meta));});
-        s.paired=true;
+        s.paired=true;progressed=true;
+    }
+    if(!query_valid) {
+        // Explicit LRU fallback does not depend on complete Query observations.
+        s.ranked.clear();s.fallback.clear();s.emit_cursor=s.fallback_cursor=0;s.paired=true;
     }
     size_t emitted=0;
     while((slots||bytes) && emitted<budget.delete_blocks && out.remaining()) {
@@ -535,22 +659,57 @@ HistoricalPolicyResult HistoricalRedundancyPolicy::step(const HistoricalSnapshot
         else if(s.config.allow_lossy_fallback && !p.requested_ready_slots && s.fallback_cursor<s.fallback.size()) {
             index=s.fallback[s.fallback_cursor++];reason=HistoricalDeleteReason::LossyPressure;
         }
-        if(index==SIZE_MAX) return s.finish(HistoricalPolicyStatus::NoCandidate,examined,emitted);
-        const auto &row=s.rows[index];
-        if(!s.eligible(row.meta)) continue;
+        if(index==SIZE_MAX) break;
+        auto &row=s.rows[index];
+        if(!s.eligible(row.meta) || (reason==HistoricalDeleteReason::LossyPressure && row.supports)) continue;
         HistoricalDeleteIntent intent{row.meta.handle,snapshot.incarnation,snapshot.round};
         intent.reason=reason;intent.feature_version=row.key->version;intent.question_epoch=s.query.epoch;
         if(reason==HistoricalDeleteReason::Redundancy) {
             const auto &w=s.rows[row.witness];intent.witness=w.meta.handle;intent.witness_feature_version=w.key->version;
+            ++s.awaiting_redundancy;
         }
-        out.push(intent);++emitted;if(slots)--slots;bytes=bytes>row.meta.cpu_bytes?bytes-row.meta.cpu_bytes:0;
+        row.attempted=true;out.push(intent);++emitted;if(slots)--slots;bytes=bytes>row.meta.cpu_bytes?bytes-row.meta.cpu_bytes:0;
+    }
+    if(s.config.lru_fallback) {
+        // Consume all redundancy ACKs, then recheck real deficits in a new step.
+        if(emitted) return {HistoricalPolicyStatus::Yielded,examined,emitted,true};
+        if(s.awaiting_redundancy) return {HistoricalPolicyStatus::Backpressure,examined,0,progressed};
+        size_t popped=0;
+        while((slots||bytes) && emitted<budget.delete_blocks && out.remaining() &&
+                !s.lru.empty() && popped<budget.scan_blocks) {
+            std::pop_heap(s.lru.begin(),s.lru.end(),State::Newer{});
+            const auto entry=s.lru.back();s.lru.pop_back();++popped;
+            const auto &meta=entry.meta;
+            if(!s.reclaimable(meta) || s.protected_in_round(meta)) continue;
+            // An ordinary snapshot entry cannot become a same-round victim
+            // immediately after it acquires a successful representative hold.
+            if(!entry.prior_carry && s.prior_representative(meta)) continue;
+            HistoricalDeleteIntent intent{meta.handle,snapshot.incarnation,snapshot.round};
+            intent.reason=entry.prior_carry?HistoricalDeleteReason::LruRepresentativeFallback:HistoricalDeleteReason::LruFallback;
+            intent.feature_version=meta.feature_version;
+            out.push(intent);++emitted;if(slots)--slots;bytes=bytes>meta.cpu_bytes?bytes-meta.cpu_bytes:0;
+        }
+        if(emitted || !s.lru.empty()) return {HistoricalPolicyStatus::Yielded,examined,emitted,progressed || popped!=0};
     }
     if(!slots&&!bytes) return s.finish(HistoricalPolicyStatus::Complete,examined,emitted);
-    return {HistoricalPolicyStatus::Yielded,examined,emitted};
+    if(s.emit_cursor==s.ranked.size() && (!s.config.allow_lossy_fallback || s.fallback_cursor==s.fallback.size() || p.requested_ready_slots))
+        return s.finish(HistoricalPolicyStatus::NoCandidate,examined,emitted);
+    return {HistoricalPolicyStatus::Yielded,examined,emitted,progressed};
 }
+
 void HistoricalRedundancyPolicy::on_result(const HistoricalDeleteIntent &i,HistoricalCommitCode code) noexcept {
-    if(code!=HistoricalCommitCode::Committed || i.reason!=HistoricalDeleteReason::Redundancy) return;
     auto &s=*state_;
+    if(i.incarnation!=s.incarnation) return;
+    if(i.reason==HistoricalDeleteReason::LruRepresentativeFallback) {
+        if((code==HistoricalCommitCode::Committed || code==HistoricalCommitCode::Shadow) &&
+                i.handle.slot<s.carry.size() && s.carry[i.handle.slot].generation==i.handle.generation)
+            s.carry[i.handle.slot]={};
+        return;
+    }
+    if(i.reason!=HistoricalDeleteReason::Redundancy || i.incarnation!=s.incarnation) return;
+    if(i.round==s.round && code!=HistoricalCommitCode::Retry && s.awaiting_redundancy) --s.awaiting_redundancy;
+    const bool simulated=code==HistoricalCommitCode::Shadow && (s.config.pool_pairwise || s.config.lru_fallback);
+    if(code!=HistoricalCommitCode::Committed && !simulated) return;
     if(i.incarnation!=s.incarnation || i.witness.slot>=s.carry.size() || !i.witness.generation || !i.witness_feature_version) return;
     s.carry[i.witness.slot]={i.witness.generation,i.witness_feature_version};
 }

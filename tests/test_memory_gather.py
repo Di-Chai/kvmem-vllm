@@ -83,7 +83,10 @@ def test_cpu_authority_full_and_region_gather_obey_order_and_namespace(tmp_path,
 
 
 @pytest.mark.parametrize('region', [False, True])
-def test_parallel_cpu_authority_native_gather_matches_reference(tmp_path, region):
+def test_parallel_cpu_authority_native_gather_matches_reference(tmp_path, monkeypatch, region):
+    # Exercise parallel ordering without making this ownership test allocate
+    # full-size production regions; the real threshold is tested separately.
+    monkeypatch.setattr(memory_storage, 'CPU_REGION_GATHER_PARALLEL_MIN_BYTES', 8*1024**2)
     size = 4*1024**2 if region else 2*1024**2
     archive, repo, leases, values = _archive_records(tmp_path, size=size, records=4, workers=3)
     order = [3, 0, 2, 1]
@@ -173,6 +176,7 @@ def test_tier_keeps_general_destination_span_order_and_gaps():
 @pytest.mark.parametrize('region', [False, True])
 def test_failed_read_keeps_generation_lease_until_all_copy_tasks_drain(tmp_path, monkeypatch, region):
     # At most 16 MiB of source data; this checks ownership, not bandwidth.
+    monkeypatch.setattr(memory_storage, 'CPU_REGION_GATHER_PARALLEL_MIN_BYTES', 8*1024**2)
     size = 8*1024**2 if region else 4*1024**2
     archive, repo, leases, values = _archive_records(tmp_path, size=size, records=2, workers=2)
     started, release = Event(), Event()
@@ -205,6 +209,56 @@ def test_failed_read_keeps_generation_lease_until_all_copy_tasks_drain(tmp_path,
         assert repo.reclaim(handle, lambda record: archive.reclaim('a', record)) == _native.ReclaimResult.RECLAIMED
     finally:
         release.set()
+        assert archive.close()
+
+
+def test_production_small_layer_region_uses_native_inline_copy_without_pool_jobs(tmp_path, monkeypatch):
+    archive, repo, leases, values = _archive_records(tmp_path,size=4*1024**2,records=4,workers=3)
+    length=2*1024**2;order=[3,0,2,1]
+    def forbidden(*args,**kwargs):
+        pytest.fail('An 8-MiB layer region must not submit gather pool jobs or use Python copying')
+    monkeypatch.setattr(archive._gather_executor,'submit',forbidden)
+    monkeypatch.setattr(memory_storage,'gather_records_python',forbidden)
+    try:
+        data,stats=archive.read_region('a',[leases[i] for i in order],length,length).result(5)
+        assert data==b''.join(values[i][length:] for i in order)
+        assert stats['cache_gather_tasks']==1
+        usage=archive.io_usage()
+        assert usage['cpu_region_gather_parallel_min_bytes']==32*1024**2
+        assert usage['cpu_region_gather_inline_calls']==1 and usage['cpu_region_gather_parallel_calls']==0
+        assert usage['cpu_region_gather_inline_bytes']==8*1024**2
+        assert usage['archive_io_pending_bytes']==0
+    finally:
+        assert archive.close()
+
+
+def test_production_large_region_retains_parallel_native_copy(tmp_path):
+    archive,repo,leases,values=_archive_records(tmp_path,size=16*1024**2,records=4,workers=3)
+    length=8*1024**2;order=[3,0,2,1]
+    try:
+        data,stats=archive.read_region('a',[leases[i] for i in order],length,length).result(10)
+        assert data==b''.join(values[i][length:] for i in order)
+        assert stats['cache_gather_tasks']==3
+        usage=archive.io_usage()
+        assert usage['cpu_region_gather_parallel_calls']==1 and usage['cpu_region_gather_inline_calls']==0
+        assert usage['cpu_region_gather_parallel_bytes']==32*1024**2
+        assert usage['archive_io_pending_bytes']==0
+    finally:
+        assert archive.close()
+
+
+def test_production_paired_layer_regions_share_one_lease_and_copy_inline(tmp_path, monkeypatch):
+    archive,repo,leases,values=_archive_records(tmp_path,size=4*1024**2,records=4,workers=3)
+    length=2*1024**2;order=[3,0,2,1]
+    monkeypatch.setattr(archive._gather_executor,'submit',lambda *a,**k:pytest.fail('Unexpected small-region pool task'))
+    try:
+        data,stats=archive.read_regions('a',[leases[i] for i in order],[(0,length),(length,length)]).result(5)
+        assert data==b''.join(values[i][:length] for i in order)+b''.join(values[i][length:] for i in order)
+        assert stats['cache_gather_tasks']==2
+        usage=archive.io_usage()
+        assert usage['cpu_region_gather_inline_calls']==2 and usage['cpu_region_gather_parallel_calls']==0
+        assert usage['archive_io_pending_bytes']==0
+    finally:
         assert archive.close()
 
 

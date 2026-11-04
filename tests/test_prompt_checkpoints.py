@@ -255,7 +255,15 @@ def test_live_checkpoint_replacement_is_atomic_and_reuses_its_byte_credit(tmp_pa
 
 @pytest.mark.parametrize('pressure', [False, True])
 def test_terminal_checkpoint_keeps_partial_accepted_raw_kv_tail_and_fences_import(tmp_path, pressure):
+    from vllm_kvmem.historical_gc import RedundancyHistory
+    from vllm_kvmem.session_control import SessionBinding
+    from test_historical_redundancy_capture import Scope
     pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    authority.redundancy_history = features = RedundancyHistory(Scope(), 1, 1, 2, 3)
+    original = SessionBinding(old.namespace, 1, 'a', tuple(range(8)),
+        query_span=(0, 4), question_span=(0, 4), question_id='stable-task')
+    features.accept(original, 0, 8, prefill=True, rows=torch.ones(1, 8, 2, 3))
+    epoch = features.epoch
     raw, values = payload(8, 2)
     assert authority.append(raw, values, history_begin=8, local_rope_begin=8)
     adapter.runner._kvmem_capture_runtime = type('Runtime', (), {
@@ -281,6 +289,11 @@ def test_terminal_checkpoint_keeps_partial_accepted_raw_kv_tail_and_fences_impor
     assert plan.remaps[-1].n_tokens == 2
     authority.memory.attach_completion(Event(True)); assert authority.memory.commit_selection()
     assert pool.finish_claim(terminal, Event(True)) is authority
+    continuation = replace(original, request_id='new', tokens=tuple(range(14)),
+        history=10, query_span=None)
+    features.begin(continuation, 10)
+    assert features.complete and not features.invalid and features.epoch == epoch
+    assert features.stats['question_reuses'] == 1 and features.stats['invalidations'] == 0
     del plan
     assert authority.append(*payload(10, 2), history_begin=10, local_rope_begin=6 if pressure else 10)
     drain(authority)

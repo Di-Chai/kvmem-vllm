@@ -5,13 +5,16 @@ import sys
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'ui':
+        from .webui.server import main as ui_main
+        return ui_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == 'elastic-serve':
         from .elastic_serve import main as elastic_main
         return elastic_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == 'serve':
         from .serve import main as serve_main
         return serve_main(sys.argv[2:])
-    parser = argparse.ArgumentParser(epilog='Experimental profile serving: vllm-kvmem serve --help')
+    parser = argparse.ArgumentParser(epilog='Serving: vllm-kvmem serve --help; local console: vllm-kvmem ui --help')
     parser.add_argument("--draft-load-compat", action="store_true")
     parser.add_argument("command", choices=["vllm"])
     args, remaining = parser.parse_known_args()

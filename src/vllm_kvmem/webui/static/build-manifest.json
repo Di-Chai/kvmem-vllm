@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "source": {
+    "schema_version": 1,
+    "console_source": {
+      "repository": "https://github.com/kvmem/kvmem",
+      "commit": "7440af4d85f8405d08ba1e385ee3e9ef6d87f23c",
+      "paths": [
+        "ui/monitor",
+        "ui/lightweight"
+      ],
+      "modifications": "vLLM profile editor, vLLM telemetry, namespaced conversation sessions, capability-aware chat settings"
+    },
+    "shared_chat_components": {
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "commit": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+      "paths": [
+        "tools/ui/src/lib",
+        "tools/ui/src/app.css",
+        "tools/ui/src/app.d.ts",
+        "tools/ui/src/virtual-nerdamer.d.ts",
+        "tools/ui/scripts/vite-plugin-nerdamer.ts"
+      ],
+      "license": "MIT",
+      "license_file": "llama.cpp-LICENSE",
+      "notes": "Shared component sources are vendored; no llama.cpp inference checkout or executable is required. Upstream full-app routes, tests, stories and PWA lifecycle are not initialized."
+    },
+    "design_notices": [
+      "monitor/Strata-LICENSE.txt",
+      "monitor/Outfit-OFL.txt"
+    ],
+    "build": {
+      "command": "python3 scripts/build_webui.py",
+      "dependency_lock": "ui/chat/package-lock.json",
+      "output": "src/vllm_kvmem/webui/static",
+      "node_minimum_major": 22,
+      "source_maps": false,
+      "dependency_notices": [
+        "DEPENDENCIES.json",
+        "THIRD_PARTY_NOTICES.txt"
+      ]
+    }
+  },
+  "dependency_lock_sha256": "77054988bfe3c62dfbfdb67a2c130d0348fefbb6706cdd61e4e5deafc7945545",
+  "files": {
+    "DEPENDENCIES.json": "a1a6066fe08014af28765d3892460358a31ba52a1431ad4aa0d4d4fa70189041",
+    "PROVENANCE.json": "b9624383e095e7305909ac1c8869844be05dec627887d9fdb4de61ce09628bee",
+    "THIRD_PARTY_NOTICES.txt": "2d46817715bc83ba70eab03cfcf3c2f44db26bca68a74124981afd60bfe043f8",
+    "chat/view/_app/immutable/assets/bundle.BPPc4ly9.css": "8407f458786b52ecec573ac9df17b8a5b946c1d9877744e66a52c188b393524f",
+    "chat/view/_app/immutable/bundle.BsF5qctF.js": "248a78e61c6db1ad5fad08903e0d1a303db5d0afe074e483f391b69415dacd2e",
+    "chat/view/_app/version.json": "79366bfd93ff51ec052bc93ecd04733ca8b790215844c57980ef4657739dbb8f",
+    "chat/view/index.html": "fd109945b4f6f937cef97a4a7d8c84ab54fd149329a5c57832cade476c5ae0e3",
+    "llama.cpp-LICENSE": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+    "monitor/Outfit-OFL.txt": "c676351bf8576b9aba743cd5eaa8c0e7ee0d51f805d720447b4df4ddb6a2e416",
+    "monitor/Strata-LICENSE.txt": "949b9b0aada7476006469e58ee4ffb0e0f68c2d9137e90a356757b61a09d37f0",
+    "monitor/console-shell.css": "271592d054b9276403d4bcbb95191d5807962252eaf35e99ee8c7fcb1c1925fe",
+    "monitor/console-shell.js": "bf593922d5bd891d0e8cca9b76b5218be7de13a3dd07c98e703f63497d0b86d8",
+    "monitor/history-export.html": "ee0bb3ae4d7122aa572773eef58543d36b8825572dfb061f2e43e763546a5f96",
+    "monitor/i18n.js": "c19758bb508b6cee0945cc914908748edf0bb04c37273645fc2b0aeb69569599",
+    "monitor/index.html": "82ff4bda1ef4579d2d62ba297d869a8c694485600aaf65b04297892134aae7be",
+    "monitor/launcher.css": "a915d20f2af1494c13d4782a36382feba98e1ed50b0ab24760a508034177f3aa",
+    "monitor/launcher.js": "edee9d46713250811ce10861da0a19e69e12cecdf4f16a2eb69739ab8030f7f3",
+    "monitor/logs.css": "8ff1d198024153f6ff849859954f6557772098dd66dd6dfd4bee3950e1aa7caf",
+    "monitor/logs.js": "af2890781de0e7d470ecaa1ba06c9196bbef8d9620bd7281ee7dde2614d7706f",
+    "monitor/monitor.css": "1e8711a7f1385a0b5c8395a7a31de12ddf2fc8ee467aac56d4c0b269bd366569",
+    "monitor/monitor.js": "87d3558cc25967a57441fdda71abccf69dbdd9c8339fce074b13b02a415c7925",
+    "monitor/outfit-latin-wght.woff2": "6c18d579fd87c3776be068b762cbc83fde3acb543d49eabd3ade842eb987e887"
+  }
+}

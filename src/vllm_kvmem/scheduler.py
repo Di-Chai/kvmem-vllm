@@ -185,7 +185,7 @@ class KVMemScheduler(Scheduler):
             history_bytes, _ = split_cpu_history_budget(options)
             history_bytes, _ = split_historical_feature_budget(options, history_bytes,
                 self.scheduler_config.max_num_seqs + options.session_capacity)
-            row_bytes = archive_bytes_per_token(self.kv_cache_config)
+            row_bytes = archive_bytes_per_token(self.kv_cache_config, self.vllm_config.model_config)
             record_bytes = row_bytes * config.block_tokens
             capacity = min(history_bytes,
                 record_bytes * config.repository_blocks * (self.scheduler_config.max_num_seqs + options.session_capacity))

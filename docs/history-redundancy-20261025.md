@@ -67,9 +67,11 @@
   时保护对应内容，不静默改用 LRU。
 - scheduler 与 archive 使用同一预算函数：从配置 CPU 总额度中先扣共享 FPS/窗口
   缓存，再扣所有可能存活 scope 的特征/Query 缓存、策略元数据和共享 Query 暂存。
-  暂存保守预留 512 MiB；不会把这些容量重复作为可准入的历史 KV。
+  暂存保守预留 `8 × query_capture_bytes`，默认 512 MiB；不会把这些容量重复作为可准入的历史 KV。
 - Query 只传输公开问题涉及的 prefill 行和实际接受的 target decode 行。单传输槽
-  上限 64 MiB，最多四槽；超限使该问题观测无效，不截断后冒充完整问题。
+  上限由 `query_capture_bytes` 指定，默认 64 MiB、允许正整数至 256 MiB，最多四槽；
+  超限使该问题观测无效，不截断后冒充完整问题。启用 `thinking_only` 时还会在启动
+  检查单槽足以容纳实际 scheduler 批量上限的 BF16 Query；atomic Query 不受普通 prefill chunk 限制。
   MTP 拒绝行、未接受输入、私有重放不会进入观测。
 - Query 必须在真实前向中完整采集。工具续接仅在已验证相同问题/前缀时复用；缺少
   已缓存问题的观测时保护历史，不为了 GC 额外重放用户输入。

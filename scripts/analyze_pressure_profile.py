@@ -70,6 +70,43 @@ def held_concurrency(rows):
     return dict(sorted(seconds.items()))
 
 
+def layerwise_query_intervals(events, refreshes):
+    """Keep initial global refresh and causal per-layer selection distinct."""
+    owners=defaultdict(list)
+    for event in events:
+        if event['event'] in ('armed','layer_selected','completed'):
+            owners[event['request_id']].append(event)
+    result=[]
+    for rid,rows in owners.items():
+        armed=[e for e in rows if e['event']=='armed']
+        done=[e for e in rows if e['event']=='completed']
+        layers=[e for e in rows if e['event']=='layer_selected']
+        if len(armed)!=1 or len(done)!=1 or [e['layer'] for e in layers]!=list(range(armed[0]['layers'])):
+            raise ValueError('Incomplete or duplicate final Query timing evidence')
+        key='monotonic_at' if all('monotonic_at' in e for e in rows) else 'at'
+        start,end=armed[0][key],done[0][key]
+        if end<start:raise ValueError('Final Query timing moved backwards')
+        refresh=[r for r in refreshes if r['request_id']==rid and r['phase']=='query']
+        if len(refresh)!=1:raise ValueError('Final Query timing needs its unique initial refresh')
+        full=None
+        if key=='monotonic_at':
+            if not refresh[0]['start']<=start<=end or refresh[0]['end']>end:
+                raise ValueError('Final Query/refresh clock boundaries disagree')
+            full=end-refresh[0]['start']
+        result.append(dict(request_id=rid,clock=key,selection_chain_seconds=end-start,
+            refresh_to_last_layer_assembly_seconds=full,
+            scoring_host_seconds=sum(e['scoring_seconds'] for e in layers),
+            assembly_submit_host_seconds=sum(e['assembly_host_seconds'] for e in layers),
+            initial_refresh_seconds=refresh[0]['seconds'],layers=len(layers)))
+    return dict(owners=result,selection_chain_seconds=distribution([r['selection_chain_seconds'] for r in result]),
+        refresh_to_last_layer_assembly_seconds=distribution([r['refresh_to_last_layer_assembly_seconds']
+            for r in result if r['refresh_to_last_layer_assembly_seconds'] is not None]),
+        scope='Initial async Query refresh is global preselection/assembly. Selection chain runs from arming '
+              'through final-layer KV assembly, including scheduling and intervening model layers; it ends '
+              'before the final attention computation. Host score/assembly times are nested, not additive '
+              'wall losses. Legacy wall-clock events cannot be joined to monotonic refresh timestamps.')
+
+
 def analyze(capture):
     def records(name):
         path = capture / name
@@ -90,10 +127,12 @@ def analyze(capture):
             uploaded_bytes=sum(r['uploaded_bytes'] for r in selected),
             held_jobs_by_concurrency_seconds=held_concurrency(selected))
     result = dict(phases=phases, refreshes=rows,
+        layerwise_query=layerwise_query_intervals(records('layerwise_query.jsonl'),rows),
         scope='Per-owner suspended-to-ready latency. Stage intervals are disjoint within a refresh. '
               'Different owners overlap, including with public forwards. Do not sum owners, '
               'nested Action scopes, or CPU archive counters as wall-time losses. '
-              'Held-job concurrency is not GPU-idle attribution.')
+              'Held-job concurrency is not GPU-idle attribution. Query here ends at initial async refresh; '
+              'the separate layerwise_query field covers later causal layer selection.')
     steps = records('model_step_latency.jsonl')
     prefill = [r for r in steps if r['prefill_tokens'] and not r['decode_requests']]
     if prefill:

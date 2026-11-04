@@ -37,11 +37,17 @@ class PackedRead:
             self.owners = ()
 
 
-def begin_read_packed_records(authority, handles, *, destination=None, region=None, wait=True):
+def begin_read_packed_records(authority, handles, *, destination=None, region=None, regions=None, wait=True):
     """Submit through the existing archive executor; optionally decline busy admission."""
     from .authority import record_key
     if not handles:
         raise ValueError("No immutable records requested")
+    if regions is not None:
+        if region is not None:
+            raise ValueError('Specify one region or paired regions, never both')
+        regions = tuple(tuple(item) for item in regions)
+        if len(regions) != 2:
+            raise ValueError('Packed paired read requires exactly two regions')
     authority.poll()
     records = [authority.records[record_key(handle)] for handle in handles]
     if any(not record.archived or record.count != authority.shape[1] for record in records):
@@ -65,8 +71,11 @@ def begin_read_packed_records(authority, handles, *, destination=None, region=No
         deadline = time.monotonic() + 180
         waited = 0.0
         while True:
-            job = (authority.archive.read(authority.memory.request_id, leases, **kwargs) if region is None else
-                   authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
+            if regions is not None:
+                job = authority.archive.read_regions(authority.memory.request_id, leases, regions, **kwargs)
+            else:
+                job = (authority.archive.read(authority.memory.request_id, leases, **kwargs) if region is None else
+                       authority.archive.read_region(authority.memory.request_id, leases, *region, **kwargs))
             if job is not None:
                 break
             if not wait:
@@ -79,7 +88,8 @@ def begin_read_packed_records(authority, handles, *, destination=None, region=No
             if remaining <= 0 or not authority.archive.wait_for_idle(remaining):
                 raise TimeoutError('Archive read admission did not drain')
             waited += time.monotonic() - start
-        size = authority.record_bytes if region is None else region[1]
+        size = (sum(item[1] for item in regions) if regions is not None else
+                authority.record_bytes if region is None else region[1])
         result = PackedRead(job, leases, (authority, *sources), len(handles)*size, destination, waited)
         transferred = True
         return result
@@ -98,9 +108,10 @@ def begin_read_packed_records(authority, handles, *, destination=None, region=No
                 lease.reset()
 
 
-def read_packed_records(authority, handles, *, destination=None, region=None):
+def read_packed_records(authority, handles, *, destination=None, region=None, regions=None):
     """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
-    return begin_read_packed_records(authority, handles, destination=destination, region=region).result()
+    return begin_read_packed_records(authority, handles, destination=destination,
+                                     region=region, regions=regions).result()
 
 
 class PackedReadAhead:
@@ -178,7 +189,7 @@ class PackedReadAhead:
 
 
 @triton.jit
-def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
+def _assemble_packed(payload, bases, rope_bases, page_table, trig, kcache, vcache, scale,
                      k0: tl.constexpr, k1: tl.constexpr, k2: tl.constexpr,
                      v0: tl.constexpr, v1: tl.constexpr, v2: tl.constexpr,
                      TRIG_STRIDE: tl.constexpr, RECORD_TOKENS: tl.constexpr,
@@ -192,6 +203,7 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     position = tl.load(bases + record).to(tl.int64) + offset
     page = tl.load(page_table + position // PAGE).to(tl.int64)
     cache_offset = position % PAGE
+    rope_position = tl.load(rope_bases + record).to(tl.int64) + offset
     layer_elements: tl.constexpr = RECORD_TOKENS * HEADS * DIM
     raw_elements: tl.constexpr = LAYERS * layer_elements
     d = tl.arange(0, BLOCK)
@@ -202,8 +214,8 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     other_d = tl.where(d < HALF, d + HALF, d - HALF)
     mate = fp8_to_float(tl.load(raw + raw_base + other_d, mask=d < 2*HALF, other=0.0), SOFTWARE_FP8 and RAW_BYTES == 1)
     freq = d % HALF
-    cos = tl.load(trig + position * TRIG_STRIDE + freq).to(tl.float32)
-    sin = tl.load(trig + position * TRIG_STRIDE + HALF + freq).to(tl.float32)
+    cos = tl.load(trig + rope_position * TRIG_STRIDE + freq).to(tl.float32)
+    sin = tl.load(trig + rope_position * TRIG_STRIDE + HALF + freq).to(tl.float32)
     rotated = tl.where(d < HALF, x*cos - mate*sin, x*cos + mate*sin)
     rotated = tl.where(d < 2*HALF, rotated, x).to(ROPE_TYPE).to(tl.float32)
     # FP8 source reconstruction is byte-qualified against the CPU oracle.
@@ -223,9 +235,13 @@ def _assemble_packed(payload, bases, page_table, trig, kcache, vcache, scale,
     tl.store(dst + page*v0 + cache_offset*v1 + head*v2 + d, value, mask=mask)
 
 
-def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_tokens, raw_dtype):
+def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_tokens, raw_dtype,
+                          rope_bases=None):
     """Caller validates destination page ownership, uniqueness and position bounds."""
     key, value = layer.key, layer.value
+    rope_bases = bases if rope_bases is None else rope_bases
+    if rope_bases.shape != bases.shape or rope_bases.dtype != bases.dtype:
+        raise ValueError('RoPE and physical base arrays must have matching geometry')
     if key.ndim != 4 or value.shape != key.shape or key.dtype != torch.float8_e4m3fn or value.dtype != key.dtype:
         raise ValueError("Packed assembly needs matching native FP8 cache views")
     heads, dim = key.shape[-2:]
@@ -238,7 +254,7 @@ def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_t
             payload.numel() != bases.numel() * layers * block_tokens * heads * dim *
                 (raw_dtype.itemsize+1)):
         raise ValueError("Packed record extent does not match destination bases")
-    tensors = (payload, bases, key, value, layer.kernel_page_table, layer.cos_sin, layer.key_scale)
+    tensors = (payload, bases, rope_bases, key, value, layer.kernel_page_table, layer.cos_sin, layer.key_scale)
     if payload.device.type != 'cuda' or any(t.device != payload.device for t in tensors):
         raise ValueError("Packed assembly requires one CUDA device")
     if (layer.cos_sin.ndim != 2 or not 0 < layer.cos_sin.shape[1] <= dim or
@@ -247,10 +263,10 @@ def assemble_packed_layer(payload, bases, layer, *, layer_index, layers, block_t
         raise ValueError("Invalid native scale, rotary geometry or inner stride")
     if not bases.numel():
         return
-    key_input,software = fp8_storage(key)
+    key_input,software = fp8_storage(key, for_write=True)
     value_input,_ = fp8_storage(value)
     _assemble_packed[(bases.numel() * block_tokens, heads)](
-        payload, bases, layer.kernel_page_table, layer.cos_sin, key_input, value_input, layer.key_scale,
+        payload, bases, rope_bases, layer.kernel_page_table, layer.cos_sin, key_input, value_input, layer.key_scale,
         *key.stride()[:3], *value.stride()[:3], layer.cos_sin.stride(0), block_tokens,
         layers, layer_index, heads, dim, layer.cos_sin.shape[1] // 2, key.shape[1],
         triton.next_power_of_2(dim),

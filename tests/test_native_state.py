@@ -100,6 +100,18 @@ def test_recurrent_source_contract_matches_installed_native_implementation():
     verify_state_sources()
 
 
+def test_dilated_ple_convolution_canonicalizes_accepted_prefix_without_ssm():
+    owner, _, _, _ = adapter()
+    # PLE kernel width 4, dilation 3 => nine retained convolution positions.
+    conv = torch.arange(6*2*12, dtype=torch.float32).reshape(6, 2, 12)
+    before = conv.clone()
+    owner.groups = {0: {'ple': (conv,)}}
+    owner.conv_widths, owner.conv_dim_first = {'ple': 10}, True
+    owner.canonicalize_accepted('a', retained_tokens=2, query_tokens=2, speculative=True)
+    assert torch.equal(conv[1, :, :9], before[1, :, 1:10])
+    assert torch.equal(conv[3:], before[3:])
+
+
 @pytest.mark.parametrize('confirmed', [True, False])
 def test_non_speculative_resume_publishes_only_its_actual_accepted_prefix(monkeypatch, confirmed):
     from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch

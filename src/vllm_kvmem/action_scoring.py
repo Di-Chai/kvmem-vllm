@@ -52,13 +52,16 @@ def _segment_mass(P, Starts, Counts, Out, HEADS: tl.constexpr, WIDTH: tl.constex
 
 def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
                    starts, counts, length, *, scale, q_dtype, q_scale, block_tokens, profile=None,
-                   fused=False, complete_partition=False):
+                   fused=False, complete_partition=False, rope_positions=None):
     """Return [sampled rows, historical segments], averaged over Q heads."""
     if (raw_q.ndim!=3 or key.ndim!=4 or raw_q.shape[-1]!=key.shape[-1] or
             raw_q.shape[1]%key.shape[2] or not 0<length<=table.numel()*key.shape[1] or
             starts.numel()!=counts.numel() or positions.shape!=(raw_q.shape[0],) or
             q_dtype not in (torch.bfloat16,torch.float16,torch.float8_e4m3fn)):
         raise ValueError('Invalid sampled action attention geometry/codec')
+    if rope_positions is not None and (rope_positions.shape != positions.shape or
+                                      rope_positions.device != positions.device):
+        raise ValueError('Original RoPE positions must cover the same sampled rows')
     if raw_q.shape[0] > 64:
         # Sampling density must not depend on whether vLLM admitted an ordinary
         # chunk or a complete explicit Query. Only split independent Q rows;
@@ -67,6 +70,7 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
             cos_sin,key_scale,starts,counts,length,scale=scale,q_dtype=q_dtype,
             q_scale=q_scale,block_tokens=block_tokens,
             fused=fused,complete_partition=complete_partition,
+            rope_positions=None if rope_positions is None else rope_positions[i:i+64],
             profile=profile.child(row_tile=i, sample_rows=min(64,raw_q.shape[0]-i)) if profile else None)
             for i in range(0,raw_q.shape[0],64)]
         result=torch.cat(chunks,dim=0)
@@ -77,7 +81,7 @@ def page_attention(raw_q, positions, key, table, cos_sin, key_scale,
         profile = profile.child(query_shape=list(raw_q.shape), key_shape=list(key.shape),
                                 position_shape=list(positions.shape))
     with profile.stage('score.trig_gather', gpu=True) if profile else nullcontext():
-        trig=cos_sin.index_select(0,positions.long())
+        trig=cos_sin.index_select(0,(positions if rope_positions is None else rope_positions).long())
     half=trig.shape[-1]//2
     with profile.stage('score.rope', gpu=True) if profile else nullcontext():
         q=neox_rope(raw_q,trig[:,:half],trig[:,half:])

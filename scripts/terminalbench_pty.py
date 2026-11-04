@@ -112,11 +112,29 @@ def pump(master, inputs, output, signal_fd, on_input, on_output, on_signal,
                         return
 
 
-def record(command, env, writer, get_tty_size, notify, key_bindings,
-           tty_stdin_fd=0, tty_stdout_fd=1):
-    from asciinema.pty_ import SignalFD
-    from asciinema.tty_ import raw
-    started = time.time()
+@contextmanager
+def signal_pipe(signals):
+    """The 2.1 recorder exposes no SignalFD; restore its process signal state."""
+    reader, writer = os.pipe()
+    os.set_blocking(writer, False)
+    previous = signal.set_wakeup_fd(writer)
+    handlers = {}
+    try:
+        for number in signals:
+            handlers[number] = signal.signal(number, lambda *_: None)
+        yield reader
+    finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+        signal.set_wakeup_fd(previous)
+        os.close(reader)
+        os.close(writer)
+
+
+def _record(command, env, writer, get_tty_size, notify, key_bindings,
+            signal_context, raw_context, tty_stdin_fd=0, tty_stdout_fd=1,
+            time_offset=0, rec_stdin=True):
+    started = time.time()-time_offset
     paused = None
     prefix_mode = False
     prefix_key, pause_key = key_bindings.get('prefix'), key_bindings.get('pause')
@@ -142,7 +160,7 @@ def record(command, env, writer, get_tty_size, notify, key_bindings,
                     paused = time.time()
                     notify('Paused recording')
             return b''
-        if paused is None:
+        if rec_stdin and paused is None:
             writer.write_stdin(time.time()-started, data)
         return data
 
@@ -166,26 +184,104 @@ def record(command, env, writer, get_tty_size, notify, key_bindings,
         inputs.append(0)
     try:
         resize()
-        with SignalFD(signals) as signal_fd, raw(tty_stdin_fd):
+        with signal_context(signals) as signal_fd, raw_context(tty_stdin_fd):
             pump(master, inputs, tty_stdout_fd, signal_fd, received, emitted, signalled)
     finally:
         os.close(master)
         os.waitpid(pid, 0)
 
 
-def main():
+def record(command, env, writer, get_tty_size, notify, key_bindings,
+           tty_stdin_fd=0, tty_stdout_fd=1):
+    from asciinema.pty_ import SignalFD
+    from asciinema.tty_ import raw
+    return _record(command, env, writer, get_tty_size, notify, key_bindings,
+                   SignalFD, raw, tty_stdin_fd, tty_stdout_fd)
+
+
+def record_legacy(command, writer, env=os.environ, rec_stdin=False, time_offset=0,
+                  notifier=None, key_bindings=None):
+    # Ubuntu 22.04 ships 2.1: its writer, append offset and input opt-in belong
+    # to the original recorder; adapt only the PTY callback signature.
+    from asciinema import term
+    notify = notifier.notify if notifier is not None else lambda _: None
+    return _record(command, env, writer, term.get_size, notify, key_bindings or {},
+                   signal_pipe, term.raw, time_offset=time_offset, rec_stdin=rec_stdin)
+
+
+def record_2_0(command, writer, env=os.environ, rec_stdin=False):
+    # In 2.0.2 the async/raw writer takes bytes only. Its own clock also owns
+    # append offsets; forwarding the newer transport timestamp would either
+    # raise TypeError or apply that offset twice. Keep the upstream writer.
+    from asciinema import term
+
+    class ByteWriter:
+        def write_stdout(self, _elapsed, data):
+            writer.write_stdout(data)
+
+        def write_stdin(self, _elapsed, data):
+            writer.write_stdin(data)
+
+    return _record(command, env, ByteWriter(), term.get_size, lambda _: None, {},
+                   signal_pipe, term.raw, rec_stdin=rec_stdin)
+
+
+def install_duplex():
+    """Qualify the real recording API even when the CLI only asks --version."""
+    import inspect
     import asciinema
-    from asciinema import recorder
-    if asciinema.__version__ not in ('2.2.0', '2.4.0'):
-        raise RuntimeError('Unqualified asciinema version: '+asciinema.__version__)
-    original = recorder.record
+    version = getattr(asciinema, '__version__', None)
+    if version not in ('2.0.2', '2.1.0', '2.2.0', '2.4.0'):
+        raise RuntimeError('Unqualified asciinema version: '+str(version))
+    if version in ('2.0.2', '2.1.0'):
+        from asciinema import term
+        dependencies = (term.get_size, term.raw)
+    else:
+        from asciinema.pty_ import SignalFD
+        from asciinema.tty_ import raw
+        dependencies = (SignalFD, raw)
+    if not all(callable(value) for value in dependencies):
+        raise RuntimeError('Asciinema terminal API is unavailable')
+    if version == '2.0.2':
+        target, attribute, parameter, callback = asciinema, 'record_asciicast', 'record', record_2_0
+        # Both public CLI formats use a bytes-only writer in this release.
+        from asciinema.asciicast.v2 import async_writer
+        from asciinema.asciicast.raw import writer as raw_writer
+        try:
+            for writer_type in (async_writer, raw_writer):
+                for method in ('write_stdout', 'write_stdin'):
+                    inspect.signature(getattr(writer_type, method)).bind(None, b'')
+        except (AttributeError, TypeError, ValueError) as error:
+            raise RuntimeError('Asciinema 2.0.2 bytes-only writer API changed') from error
+    else:
+        from asciinema import recorder
+        target, attribute = recorder, 'record'
+        parameter, callback = ('record', record_legacy) if version == '2.1.0' else ('record_', record)
+    original = getattr(target, attribute, None)
+    if not callable(original):
+        raise RuntimeError('Asciinema recording entry point is unavailable: '+attribute)
+    signature = inspect.signature(original)
+    hook = signature.parameters.get(parameter)
+    if (hook is None or hook.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            or not callable(hook.default)):
+        raise RuntimeError('Asciinema recorder callback signature changed: '+str(inspect.signature(original)))
+    if version == '2.0.2':
+        try:
+            inspect.signature(hook.default).bind(['sh'], object(), {}, False)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError('Asciinema 2.0.2 PTY callback API changed') from error
 
     def duplex_record(*args, **kwargs):
-        if 'record_' in kwargs:
+        bound = signature.bind(*args, **kwargs)
+        if 'record_' in bound.arguments or 'record' in bound.arguments:
             raise ValueError('Unexpected recorder override')
-        return original(*args, record_=record, **kwargs)
+        return original(*args, **kwargs, **{parameter: callback})
 
-    recorder.record = duplex_record
+    setattr(target, attribute, duplex_record)
+
+
+def main():
+    install_duplex()
     from asciinema.__main__ import main as cli
     return cli()
 

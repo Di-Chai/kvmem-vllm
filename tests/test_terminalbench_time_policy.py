@@ -5,7 +5,7 @@ import tomllib
 
 import pytest
 
-from scripts.terminalbench_policy import configure_task_deadlines, disable_agent_deadline
+from scripts.terminalbench_policy import configure_task_deadlines, disable_agent_deadline, relax_agent_deadline
 
 
 TASK = b'''version = "1.0"
@@ -30,7 +30,7 @@ def test_only_agent_timeout_bytes_change():
     assert disable_agent_deadline(changed)[0] == changed
 
 
-@pytest.mark.parametrize('mode', ['none', 'official'])
+@pytest.mark.parametrize('mode', ['none', 'official', 'relaxed'])
 def test_task_copy_policy_retains_other_phases(tmp_path, mode):
     task = tmp_path/'example/task.toml'
     task.parent.mkdir()
@@ -40,9 +40,29 @@ def test_task_copy_policy_retains_other_phases(tmp_path, mode):
     expected = tomllib.loads(TASK.decode())
     if mode == 'none':
         expected['agent'].pop('timeout_sec')
+    elif mode == 'relaxed':
+        expected['agent']['timeout_sec'] *= 2
     assert actual == expected
     assert policy['official_timing_comparable'] == (mode == 'official')
     assert policy['tasks']['example']['verifier_unchanged']
+
+
+def test_relaxed_deadline_only_doubles_agent_and_retains_comments():
+    changed, audit = relax_agent_deadline(TASK)
+    assert changed == TASK.replace(b'timeout_sec = 0.01', b'timeout_sec = 0.02')
+    assert audit['effective_agent_timeout_sec'] == .02
+
+
+@pytest.mark.parametrize('value', ['0', '-1', 'inf', 'nan', 'true'])
+def test_relaxed_deadline_rejects_missing_invalid_original_before_any_mutation(tmp_path, value):
+    first=tmp_path/'a/task.toml'; first.parent.mkdir(); first.write_bytes(TASK)
+    last=tmp_path/'z/task.toml'; last.parent.mkdir()
+    last.write_text('[agent]\ntimeout_sec = '+value+'\n')
+    with pytest.raises(ValueError):
+        configure_task_deadlines(tmp_path, 'relaxed')
+    assert first.read_bytes() == TASK
+    with pytest.raises(ValueError):
+        relax_agent_deadline(disable_agent_deadline(TASK)[0])
 
 
 @pytest.mark.parametrize('data', [
@@ -79,14 +99,17 @@ def harbor_trial(data, tmp_path):
 def test_pinned_harbor_resolves_true_none_and_preserves_other_timeouts(tmp_path):
     original = harbor_trial(TASK, tmp_path)
     unlimited = harbor_trial(disable_agent_deadline(TASK)[0], tmp_path)
+    relaxed = harbor_trial(relax_agent_deadline(TASK)[0], tmp_path)
     assert original._compute_agent_timeout_sec() == .01
     assert unlimited._compute_agent_timeout_sec() is None
+    assert relaxed._compute_agent_timeout_sec() == .02
     for method in ('_compute_verifier_timeout_sec', '_compute_agent_setup_timeout_sec',
                    '_compute_environment_build_timeout_sec'):
         assert getattr(unlimited, method)() == getattr(original, method)()
+        assert getattr(relaxed, method)() == getattr(original, method)()
 
 
-@pytest.mark.parametrize('mode', ['official', 'none', 'cancel'])
+@pytest.mark.parametrize('mode', ['official', 'relaxed', 'none', 'cancel'])
 def test_real_harbor_agent_phase_deadline_and_cancellation(tmp_path, monkeypatch, mode):
     pytest.importorskip('harbor')
     import harbor.trial.sync_trajectory as sync_module
@@ -99,7 +122,8 @@ def test_real_harbor_agent_phase_deadline_and_cancellation(tmp_path, monkeypatch
         yield
 
     async def check():
-        data = TASK if mode == 'official' else disable_agent_deadline(TASK)[0]
+        data = (TASK if mode == 'official' else relax_agent_deadline(TASK)[0]
+                if mode == 'relaxed' else disable_agent_deadline(TASK)[0])
         trial = harbor_trial(data, tmp_path)
         entered = asyncio.Event()
         finished = []
@@ -126,7 +150,7 @@ def test_real_harbor_agent_phase_deadline_and_cancellation(tmp_path, monkeypatch
         target = SimpleNamespace()
         task = asyncio.create_task(Trial._run_agent_phase(trial, target=target,
             instruction='original task', timeout_sec=trial._compute_agent_timeout_sec(), user=None))
-        if mode == 'official':
+        if mode in ('official', 'relaxed'):
             with pytest.raises(AgentTimeoutError):
                 await task
             assert not finished

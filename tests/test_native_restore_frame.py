@@ -196,6 +196,61 @@ def test_retired_checkpoint_page_is_rejected_not_rescued():
     assert memory.close()
 
 
+@pytest.mark.parametrize('native_restore', [False, True])
+@pytest.mark.parametrize('gpu_only', [False, True])
+def test_restore_hands_retired_previous_window_to_completion_fence(native_restore, gpu_only):
+    memory, checkpoint = fixture(current='same' if gpu_only else 'different')
+    old = memory._store.handle(1)  # Outside the saved frame and its checkpoint pins.
+    if gpu_only:
+        # A resident page can belong to the old GPU allocation without being
+        # selected in the logical working set. Demotion must not drop its last
+        # owner before the restore plan's assembly fence.
+        memory._store.working_resident(old, True)
+    assert memory.repository.retire_permanently(old) == _native.RetireResult.COMMITTED
+    assert not memory.repository.pin(old)
+    released = []
+
+    def release(record):
+        released.append(record.handle)
+        return True
+
+    assert memory.repository.reclaim(old, release) == _native.ReclaimResult.READERS
+    plan = memory.restore_window(checkpoint, native_restore_frame=native_restore)
+    assert all(row.block_id != old.slot for row in plan.remaps)
+    assert all(not row.skip and not row.working_k_resident for row in plan.remaps)
+    assert not memory.repository.pin(old)  # Handoff must not rescue or re-admit.
+    fence = Event(False)
+    memory.attach_completion(fence)
+    assert not memory.commit_selection()
+    assert memory.repository.reclaim(old, release) == _native.ReclaimResult.READERS
+    assert not released
+    fence.done = True
+    assert memory.commit_selection()
+    assert tuple(memory._store.working_records()) == checkpoint.records
+    assert memory.repository.reclaim(old, release) == _native.ReclaimResult.READERS
+    del plan  # The caller is also an intentional owner until assembly finishes.
+    assert memory.repository.reclaim(old, release) == _native.ReclaimResult.RECLAIMED
+    assert released == [old] and not memory.repository.pin(old)
+    assert memory.close()
+
+
+def test_failed_restore_target_admission_keeps_previous_gpu_residency():
+    memory, _ = fixture(current='different')
+    control, _ = fixture(current='different')
+    stale = memory._store.handle(1)
+    assert memory.repository.retire_permanently(stale) == _native.RetireResult.COMMITTED
+    before = tuple(memory._store.working_records()), memory.repository.stats['leases']
+    with pytest.raises(RuntimeError, match='retired block'):
+        memory._store.restore_selection([memory._store.handle(0), stale])
+    assert (tuple(memory._store.working_records()), memory.repository.stats['leases']) == before
+    # Non-forced selection exposes an accidental residency reset on the live
+    # target admitted before the failing second target.
+    actual = memory._store.select([memory._store.handle(slot) for slot in (0, 2)])
+    expected = control._store.select([control._store.handle(slot) for slot in (0, 2)])
+    assert plan_value(actual) == plan_value(expected)
+    assert memory.close() and control.close()
+
+
 def test_complete_frame_cannot_exceed_store_active_plus_generation_budget():
     config = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=4,
                         repository_blocks=8, sink_blocks=0, recent_blocks=0)

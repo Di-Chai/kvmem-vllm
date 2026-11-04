@@ -56,6 +56,15 @@ def test_rolling_oracle_rejects_corruption_without_success_record(monkeypatch, t
     with pytest.raises((RuntimeError, ValueError)):
         oracle.verify(job)
     assert not (tmp_path/'verified_rolling_pressure.jsonl').exists()
+    failure = tmp_path/'rolling_pressure_mismatch.jsonl'
+    assert failure.exists() == (damage == 'kv')
+    if damage == 'kv':
+        report = json.loads(failure.read_text())
+        assert report['failures'][0]['layer'] == 'target'
+        assert report['failures'][0]['kind'] == 'key'
+        assert report['failures'][0]['mismatch_bytes'] == 1
+        assert report['failures'][0]['examples'][0]['actual'] == [99]
+        assert report['failures'][0]['examples'][0]['expected'] == [0]
 
 
 def test_oracle_rejects_stale_publication_and_cancel_never_claims_target_proof(monkeypatch, tmp_path):

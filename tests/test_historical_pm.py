@@ -27,7 +27,9 @@ def eventually(worker, predicate):
 
 
 @pytest.mark.parametrize("boundaries", [False, True])
-def test_pm_frames_survive_lru_and_cancelled_successor_rebases_only_its_partial_tail(tmp_path, boundaries):
+@pytest.mark.parametrize("native_restore_frame", [False, True])
+def test_pm_frames_survive_lru_and_cancelled_successor_rebases_only_its_partial_tail(
+        tmp_path, boundaries, native_restore_frame):
     config = KVMemConfig(block_tokens=2, select_budget=4, gen_budget=4,
                         repository_blocks=16, sink_blocks=1, recent_blocks=0)
     archive = MemoryArchive(str(tmp_path), 24, 32, native_payloads=True)
@@ -40,7 +42,7 @@ def test_pm_frames_survive_lru_and_cancelled_successor_rebases_only_its_partial_
         from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
         authority.query_boundaries = QueryBoundaryHistory(('tenant', 's'), block_tokens=2)
         authority.query_boundaries.update_message_spans([(0, 8, 'user'), (8, 20, 'assistant')])
-    pool = PromptCheckpointPool(2, 8192, retain_prompt=True)
+    pool = PromptCheckpointPool(2, 8192, retain_prompt=True, native_restore_frame=native_restore_frame)
     adapter, conv, ssm, draft, _ = fixture()
 
     def publish():

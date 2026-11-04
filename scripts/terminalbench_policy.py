@@ -1,8 +1,45 @@
 """Explicit, audited Agent timing policy for local Terminal-Bench runs."""
 from copy import deepcopy
 import hashlib
+import math
 import re
 import tomllib
+
+
+RELAXED_AGENT_MULTIPLIER = 2.0
+
+
+def relaxed_agent_timeout(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        raise ValueError('Relaxed timing requires a finite positive original Agent deadline')
+    result = value * RELAXED_AGENT_MULTIPLIER
+    if not math.isfinite(result):
+        raise ValueError('Relaxed Agent deadline overflow')
+    return result
+
+
+def relax_agent_deadline(data):
+    """Multiply only the original Agent deadline; never scale verifier/setup."""
+    # Reuse the strict single-step/layout validation before making any change.
+    _, audit = disable_agent_deadline(data)
+    value = relaxed_agent_timeout(audit['original_agent_timeout_sec'])
+    original = tomllib.loads(data.decode('utf-8'))
+    expected = deepcopy(original)
+    expected['agent']['timeout_sec'] = value
+    lines, in_agent = [], False
+    for line in data.decode('utf-8').splitlines(keepends=True):
+        if line.lstrip().startswith('['):
+            in_agent = bool(re.fullmatch(r'\s*\[agent\]\s*(?:#.*)?', line.strip()))
+        if in_agent and re.match(r'^\s*timeout_sec\s*=', line):
+            # Keep indentation, inline comments and line endings.
+            line = re.sub(r'(^\s*timeout_sec\s*=\s*)[^#\r\n]*',
+                          lambda m: m[1] + str(value) + ' ', line)
+        lines.append(line)
+    result = ''.join(lines).encode('utf-8')
+    if tomllib.loads(result.decode('utf-8')) != expected:
+        raise ValueError('Could not change only the Agent deadline')
+    return result, dict(audit, effective_agent_timeout_sec=value,
+                       effective_sha256=hashlib.sha256(result).hexdigest())
 
 
 def disable_agent_deadline(data):
@@ -40,20 +77,30 @@ def disable_agent_deadline(data):
 
 
 def configure_task_deadlines(tasks_dir, mode):
-    if mode not in ('none', 'official'):
+    if mode not in ('none', 'official', 'relaxed'):
         raise ValueError('Unknown Agent time limit policy')
-    rows = {}
+    rows, updates = {}, []
     for path in sorted(tasks_dir.glob('*/task.toml')):
         original = path.read_bytes()
         if mode == 'none':
             effective, audit = disable_agent_deadline(original)
-            path.write_bytes(effective)
+        elif mode == 'relaxed':
+            effective, audit = relax_agent_deadline(original)
         else:
             value = tomllib.loads(original.decode('utf-8')).get('agent', {}).get('timeout_sec')
             digest = hashlib.sha256(original).hexdigest()
+            effective = original
             audit = dict(original_agent_timeout_sec=value, effective_agent_timeout_sec=value,
                          original_sha256=digest, effective_sha256=digest,
                          verifier_unchanged=True, environment_unchanged=True)
+        updates.append((path, effective))
         rows[path.parent.name] = audit
-    return dict(agent_time_limit=mode, official_timing_comparable=(mode == 'official'),
-                scope='Agent execution only; verifier/setup/tool timeouts retained', tasks=rows)
+    # Validate the whole input before modifying the copied dataset.
+    for path, effective in updates:
+        path.write_bytes(effective)
+    policy = dict(agent_time_limit=mode, official_timing_comparable=(mode == 'official'),
+                  scope='Agent execution only; verifier/setup/tool timeouts retained', tasks=rows)
+    if mode == 'relaxed':
+        policy.update(agent_multiplier=RELAXED_AGENT_MULTIPLIER,
+                      clock='Agent elapsed time including model/tool waits, excluding recorded pauses')
+    return policy

@@ -356,6 +356,7 @@ class RuntimeOptions:
     cpu_mean_index_simd: bool = False
     assembly_read_prefetch: bool = False
     assembly_fused_layers: bool = False
+    flashinfer_gemm_bucket_alignment: bool = False
     prefill_physical_coalescing: bool = False
     prefill_physical_max_chunks: int = 2
     action_native_prefill_cta_gate: bool = False
@@ -603,7 +604,7 @@ class RuntimeOptions:
         for name in ('split_capture_dma', 'native_prefill_commit', 'async_checkpoint_capture',
                      'restore_stage_timing', 'host_stage_timing', 'native_checkpoint_capture',
                      'native_restore_frame', 'native_action_metadata',
-                     'action_profiling'):
+                     'action_profiling', 'flashinfer_gemm_bucket_alignment'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f'{name} must be boolean')
         for name in ('action_profile_interval', 'action_profile_max_events'):
@@ -980,6 +981,7 @@ class RuntimeOptions:
             ('cpu_mean_index_simd', False),
             ('assembly_read_prefetch', False),
             ('assembly_fused_layers', False),
+            ('flashinfer_gemm_bucket_alignment', False),
             ('prefill_physical_coalescing', False),
             ('prefill_physical_max_chunks', 2),
             ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),

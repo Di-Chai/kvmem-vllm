@@ -1,7 +1,9 @@
 #include "historical_manager.hpp"
 #include "historical_redundancy.hpp"
+#include "restore_frame.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <functional>
@@ -37,13 +39,13 @@ struct Fixture {
 
     Fixture(HistoricalGcMode mode = HistoricalGcMode::Delete, bool background = false,
             std::unique_ptr<HistoricalKvPolicy> policy = {}, uint32_t max_scopes = 1, bool preallocate = false,
-            HistoricalPolicyParameters params = {}, std::string policy_name = "lru") {
+            HistoricalPolicyParameters params = {}, std::string policy_name = "lru", uint32_t poll_ms = 1) {
         arena = std::make_shared<Payload>(Payload::Config{16, 16, 1, 16, 16, background});
         repo = std::make_shared<Repo>(Repo::Config{8, 4});
         HistoricalGcWorker::Config config;
         config.max_scopes = max_scopes;
         config.scope_capacity = preallocate ? 8 : 0;
-        config.poll_ms = 1;
+        config.poll_ms = poll_ms;
         config.ready_low = 2;
         config.ready_high = 4;
         config.scan_blocks = 8;
@@ -172,6 +174,89 @@ static void proactive_policy_can_delete_unsealed_active_blocks_without_pressure(
     check(fixture.gpu[0].record().token_begin == 0, "proactive deletion interrupted old operation");
 }
 
+static void current_window_protection_is_a_mechanical_constraint_only_when_enabled() {
+    for (const bool temporary : {false, true}) {
+        Fixture fixture(HistoricalGcMode::Delete, false, std::make_unique<DeletePublished>());
+        fixture.append(HistoricalGpu | (temporary ? 0 : HistoricalCurrentWindow));
+        auto hold = temporary ? fixture.scope->protect_selection({fixture.handles[0]}) : nullptr;
+        check(!temporary || bool(hold), "current frame admission failed");
+        fixture.step(8);
+        check(fixture.scope->stats().retired == 0 && fixture.scope->stats().rejected_ineligible > 0,
+              "custom policy retired an exact current session frame");
+        hold.reset();
+        check(fixture.scope->update(fixture.gpu[0], HistoricalGpu), "current frame release failed");
+        fixture.step(8);
+        check(fixture.scope->stats().retired == 1, "old GPU-only frame stayed protected");
+    }
+    Fixture fixture(HistoricalGcMode::Delete, false, std::make_unique<DeletePublished>());
+    fixture.append();
+    auto stale = fixture.handles[0];
+    ++stale.generation;
+    check(!fixture.scope->protect_selection({fixture.handles[0], stale}), "stale current frame was admitted");
+    fixture.step(8);
+    check(fixture.scope->stats().retired == 1, "failed current admission leaked its mechanical hold");
+}
+
+static void owned_session_keeps_only_its_current_logical_frame_checkpointable() {
+    Fixture fixture;
+    qw3::KvMemStoreConfig config;
+    config.block_tokens = 4; config.select_budget = 16; config.gen_budget = 16;
+    config.sink_blocks = 0; config.recent_blocks = 0;
+    auto store = std::make_unique<qw3::KvMemStore>(config, fixture.repo);
+    store->attach_history_observer(fixture.scope);
+    store->set_protect_current_window(true);
+    auto append = store->prepare_repository_append(32, 0);
+    check(bool(append), "owned session append failed");
+    append->commit(32);
+    append.reset();
+    for (unsigned slot = 0; slot < 8; ++slot) {
+        auto lease = fixture.repo->try_pin_slot(slot);
+        std::array<uint8_t, 16> bytes{};
+        fixture.arena->publish({slot, slot + 1}, bytes.data(), bytes.size());
+        auto cpu = fixture.arena->acquire({slot, slot + 1});
+        check(fixture.scope->publish(lease, cpu, HistoricalSealed), "owned backing publication failed");
+        fixture.handles.push_back(lease.handle());
+    }
+    fixture.step(24);
+    check(fixture.scope->stats().retired == 0, "first prefill lost a current frame before checkpoint capture");
+    auto before = store->repository_checkpoint(32);
+    check(store->repository_checkpoint_valid(before), "first exact current checkpoint is invalid");
+    before.reset();
+    auto plan = store->set_repository_selection({fixture.handles[0], fixture.handles[7]});
+    fixture.step(24);
+    check(fixture.scope->stats().retired == 4 && fixture.scope->stats().cpu_released == 4,
+          "old GPU-only pages were protected by current-window mode");
+    check(fixture.scope->stats().slots_released == 0, "old GPU metadata bypassed its completion fence");
+    for (auto slot : plan.stage_out)
+        store->set_block_tier(slot, qw3::KvTier::SSD, -1, -1, fixture.handles[slot].generation);
+    auto exact = fixture.scope->protect({fixture.handles[0], fixture.handles[7]});
+    auto checkpoint = store->repository_checkpoint(32);
+    check(bool(exact) && store->repository_checkpoint_valid(checkpoint), "M capture lost a selected generation");
+    plan.repository_previous_window.reset();
+    fixture.step(8);
+    check(fixture.scope->stats().slots_released == 4, "old GPU frame did not release after completion");
+    auto successor = store->prepare_repository_append(4, 8);
+    const auto fresh = successor->spans()[0].handle;
+    successor->commit(4);
+    successor.reset();
+    check(fresh.generation != fixture.handles[fresh.slot].generation, "test did not reuse a retired slot");
+    auto lease = fixture.repo->try_pin(fresh);
+    std::array<uint8_t, 16> bytes{};
+    fixture.arena->publish({8, 9}, bytes.data(), bytes.size());
+    auto cpu = fixture.arena->acquire({8, 9});
+    check(fixture.scope->publish(lease, cpu, HistoricalSealed), "successor backing publication failed");
+    lease.reset(); cpu.reset();
+    fixture.scope->request_capacity(8); // Even an impossible target cannot delete the current frame.
+    fixture.step(24);
+    check(bool(fixture.repo->try_pin(fresh)) && bool(fixture.repo->try_pin(fixture.handles[0])) &&
+          bool(fixture.repo->try_pin(fixture.handles[7])), "reused current generation was not protected");
+    store->clear_working_set();
+    exact.reset(); checkpoint.reset();
+    fixture.step(24);
+    check(!fixture.repo->try_pin(fresh), "clear_working_set leaked current protection");
+    store.reset();
+}
+
 class ThrowAfterOne final : public HistoricalKvPolicy {
     bool emitted_ = false;
 public:
@@ -250,7 +335,8 @@ static void background_manager_progresses_without_foreground_policy_calls() {
                "native background manager made no metadata progress");
 }
 
-static void store_can_finish_and_stage_out_a_retired_gpu_window() {
+static void store_can_finish_and_stage_out_a_retired_gpu_window(bool restoring = false,
+                                                               bool gpu_only = false) {
     Fixture fixture;
     qw3::KvMemStoreConfig config;
     config.block_tokens = 4;
@@ -273,6 +359,8 @@ static void store_can_finish_and_stage_out_a_retired_gpu_window() {
         check(fixture.scope->publish(io, cpu, 0), "I/O backing publication failed");
         fixture.handles.push_back(io.handle());
     }
+    if (gpu_only) store->clear_working_set();
+    auto prefix = store->repository_checkpoint(32, false);
     store->gc_begin_step();
     fixture.step(16);
     check(fixture.scope->stats().cpu_released == 4 && fixture.scope->stats().slots_released == 0,
@@ -283,10 +371,18 @@ static void store_can_finish_and_stage_out_a_retired_gpu_window() {
     try { store->set_repository_selection({fixture.handles[1]}); }
     catch (const std::runtime_error &) { rejected = true; }
     check(rejected, "old GPU ownership granted a retired block new selection rights");
-    auto plan = store->set_repository_selection({fixture.handles[0], fixture.handles[5],
-                                                fixture.handles[6], fixture.handles[7]});
-    check(plan.stage_out.size() == 4 && plan.total_window_tokens == 16,
-          "normal refresh failed to include retired old GPU pages in stage-out");
+    std::vector<kvmem_restore::FrameRecord> frame;
+    for (auto slot : {0u, 5u, 6u, 7u}) {
+        const auto h = fixture.handles[slot];
+        frame.emplace_back(h.slot, h.generation, slot * 4, 4, frame.size() * 4);
+    }
+    auto plan = restoring ? kvmem_restore::restore_frame(*store, prefix, frame)
+        : store->set_repository_selection({fixture.handles[0], fixture.handles[5],
+                                          fixture.handles[6], fixture.handles[7]});
+    check(plan.stage_out.size() == (restoring ? 0 : 4) && plan.total_window_tokens == 16,
+          "window transition did not handle retired old GPU pages");
+    if (restoring) for (const auto &remap : plan.remaps)
+        check(!remap.skip && !remap.working_k_resident, "restore reused old GPU bytes");
     for (auto slot : plan.stage_out)
         store->set_block_tier(slot, qw3::KvTier::SSD, -1, -1, fixture.handles[slot].generation);
     fixture.step(4);
@@ -294,6 +390,21 @@ static void store_can_finish_and_stage_out_a_retired_gpu_window() {
     plan.repository_previous_window.reset();
     fixture.step(8);
     check(fixture.scope->stats().slots_released == 4, "ordinary refresh did not release retired GPU generations");
+    if (restoring) {
+        auto appended = store->prepare_repository_append(4, 16);
+        check(bool(appended), "released restore slot could not be reused");
+        const auto newer = appended->spans()[0].handle;
+        appended->commit(4);
+        appended.reset();
+        const auto old = fixture.handles[newer.slot];
+        check(old.slot == newer.slot && old.generation != newer.generation &&
+              !fixture.repo->try_pin(old), "restore reused an old generation identity");
+        bool rejected_old = false;
+        try { store->set_block_tier(old.slot, qw3::KvTier::SSD, -1, -1, old.generation); }
+        catch (const std::runtime_error &) { rejected_old = true; }
+        check(rejected_old && store->blocks()[newer.slot].tier == qw3::KvTier::GPU,
+              "old restore completion changed a reused GPU slot");
+    }
     store.reset();
 }
 
@@ -617,17 +728,174 @@ static void pooled_redundancy_scope_discards_features_question_and_carry_between
     }
 }
 
+class ObserveThinking final : public HistoricalKvPolicy {
+public:
+    std::vector<HistoricalBlockMeta> observed;
+    bool active = true;
+    bool wants_snapshot(const HistoricalPressure &) override { return active; }
+    HistoricalPolicyResult step(const HistoricalSnapshot &s, const HistoricalPressure &,
+                                HistoricalWorkBudget, HistoricalDecisionBatch &) override {
+        observed = s.blocks;
+        active = false;
+        return {HistoricalPolicyStatus::Complete, s.blocks.size(), 0};
+    }
+};
+
+static void thinking_provenance_is_complete_and_generation_bound() {
+    auto policy = std::make_unique<ObserveThinking>();
+    auto *observer = policy.get();
+    Fixture fixture(HistoricalGcMode::Delete, false, std::move(policy));
+    fixture.append(); fixture.append(); fixture.append(); fixture.append();
+    fixture.append(); fixture.append(); fixture.append(); fixture.append();
+    check(fixture.scope->publish_thinking(fixture.gpu[0], 4, 4), "pure thinking publication failed");
+    check(fixture.scope->publish_thinking(fixture.gpu[1], 2, 4), "mixed publication failed");
+    check(fixture.scope->publish_thinking(fixture.gpu[2], 2, 2), "partial publication failed");
+    fixture.step();
+    check(observer->observed.size() == 8, "provenance snapshot lost records");
+    check(observer->observed[0].thinking_complete && observer->observed[0].thinking_only,
+          "complete pure thinking was not eligible");
+    check(observer->observed[1].thinking_complete && !observer->observed[1].thinking_only,
+          "mixed record was classified as pure thinking");
+    check(!observer->observed[2].thinking_complete && !observer->observed[3].thinking_only,
+          "unknown or incomplete record was classified as pure thinking");
+    check(fixture.scope->stats().thinking_classified == 2 && fixture.scope->stats().thinking_pure == 1,
+          "classification counters were incorrect");
+    bool rejected = false;
+    try { fixture.scope->publish_thinking(fixture.gpu[0], 5, 4); }
+    catch (const std::invalid_argument &) { rejected = true; }
+    check(rejected, "invalid thinking counts were accepted");
+    auto foreign = std::make_shared<Repo>(Repo::Config{8, 4});
+    auto lease = foreign->try_reserve(0, 4).commit();
+    rejected = false;
+    try { fixture.scope->publish_thinking(lease, 4, 4); }
+    catch (const std::invalid_argument &) { rejected = true; }
+    check(rejected, "foreign thinking lease was accepted");
+    const auto old = fixture.handles[0];
+    check(fixture.repo->retire_permanently(old) == Repo::RetireResult::Committed, "test retirement failed");
+    check(!fixture.scope->publish_thinking(fixture.gpu[0], 4, 4), "retired record accepted thinking metadata");
+    fixture.gpu[0].reset();
+    fixture.step(8);
+    auto replacement = fixture.repo->try_reserve(16, 4).commit();
+    check(replacement.handle().slot == old.slot, "test did not reuse the classified slot");
+    std::array<uint8_t, 16> bytes{};
+    fixture.arena->publish({8, 9}, bytes.data(), bytes.size());
+    auto cpu = fixture.arena->acquire({8, 9});
+    check(fixture.scope->publish(replacement, cpu, HistoricalSealed), "replacement publication failed");
+    observer->active = true;
+    fixture.step();
+    for (const auto &block : observer->observed)
+        if (block.handle == replacement.handle())
+            check(!block.thinking_complete && !block.thinking_only, "replacement inherited old thinking provenance");
+}
+
+class ScoringProgress final : public HistoricalKvPolicy {
+public:
+    std::atomic<unsigned> steps{0};
+    bool wants_snapshot(const HistoricalPressure &) override { return steps.load() < 12; }
+    HistoricalPolicyResult step(const HistoricalSnapshot &, const HistoricalPressure &,
+                                HistoricalWorkBudget, HistoricalDecisionBatch &) override {
+        const auto count = steps.fetch_add(1) + 1;
+        return {count < 12 ? HistoricalPolicyStatus::Yielded : HistoricalPolicyStatus::Complete, 0, 0, true};
+    }
+};
+
+static void pure_scoring_progress_keeps_the_worker_burst_running() {
+    auto policy = std::make_unique<ScoringProgress>();
+    auto *scoring = policy.get();
+    Fixture fixture(HistoricalGcMode::Delete, true, std::move(policy), 1, false, {}, "lru", 200);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (scoring->steps.load() < 12) {
+        check(std::chrono::steady_clock::now() < deadline,
+              "scoring-only progress incorrectly put the background worker to sleep after each slice");
+        std::this_thread::yield();
+    }
+}
+
+static void lru_fallback_does_not_require_query_or_feature_guards() {
+    auto policy = std::make_unique<ScriptedDecisions>();
+    auto *script = policy.get();
+    script->prepare = [](const HistoricalSnapshot &s, HistoricalDecisionBatch &out) {
+        out.push({s.blocks[0].handle, s.incarnation, s.round, HistoricalDeleteReason::LruFallback});
+    };
+    Fixture fixture(HistoricalGcMode::Delete, false, std::move(policy), 1, false, {}, "redundancy");
+    fixture.append();
+    fixture.step(8);
+    check(script->results.size() == 1 && script->results[0] == HistoricalCommitCode::Committed,
+          "LRU fallback was blocked by missing query/features");
+    const auto stats = fixture.scope->stats();
+    check(stats.lru_fallback_retired == 1 && stats.lossy_retired == 1 && stats.redundancy_retired == 0,
+          "LRU fallback was not distinguished from witnessed redundancy");
+}
+
+// Inject scheduler/history changes at the real policy-to-manager boundary.
+// Forward all policy gates so the test exercises the built-in pressure rules.
+class BoundaryChangePolicy final : public HistoricalKvPolicy {
+public:
+    std::unique_ptr<HistoricalKvPolicy> inner;
+    std::function<void()> after_emit, after_first_commit;
+    bool changed=false;
+    size_t committed=0;
+    explicit BoundaryChangePolicy(bool redundancy) {
+        if(redundancy) {
+            HistoricalRedundancyConfig config;config.lru_fallback=true;
+            inner=std::make_unique<HistoricalRedundancyPolicy>(8,config);
+        } else inner=std::make_unique<HistoricalLruPolicy>(8);
+    }
+    void bind_features(std::shared_ptr<const HistoricalFeatureSource> features) override {inner->bind_features(std::move(features));}
+    bool wants_snapshot(const HistoricalPressure &pressure) override {return inner->wants_snapshot(pressure);}
+    bool permits_pressure(const HistoricalPressure &pressure) override {return inner->permits_pressure(pressure);}
+    bool permits_intent(const HistoricalBlockMeta &meta,const HistoricalDeleteIntent &intent) const override {
+        return inner->permits_intent(meta,intent);
+    }
+    HistoricalPolicyResult step(const HistoricalSnapshot &snapshot,const HistoricalPressure &pressure,
+                                HistoricalWorkBudget budget,HistoricalDecisionBatch &out) override {
+        const auto result=inner->step(snapshot,pressure,budget,out);
+        if(!changed && !out.empty()) {changed=true;if(after_emit)after_emit();}
+        return result;
+    }
+    void on_result(const HistoricalDeleteIntent &intent,HistoricalCommitCode code) noexcept override {
+        inner->on_result(intent,code);
+        if(code==HistoricalCommitCode::Committed && ++committed==1 && after_first_commit) after_first_commit();
+    }
+};
+
+static void builtin_commit_rechecks_pressure_and_recent_range() {
+    for(bool redundancy:{false,true}) for(unsigned kind=0;kind<3;++kind) {
+        auto policy=std::make_unique<BoundaryChangePolicy>(redundancy);
+        auto *change=policy.get();
+        Fixture fixture(HistoricalGcMode::Delete,false,std::move(policy),1,false,{},"redundancy");
+        for(unsigned i=0;i<4;++i)fixture.append(); // ready=4, already at static high watermark.
+        fixture.scope->request_capacity(6);      // Only the explicit request creates a deficit.
+        if(kind==0)change->after_emit=[&]{fixture.scope->request_capacity(0);};
+        if(kind==1)change->after_emit=[&]{fixture.scope->history_changed(16,0);};
+        if(kind==2)change->after_first_commit=[&]{fixture.scope->request_capacity(5);};
+        fixture.step(8);
+        const auto stats=fixture.scope->stats();
+        if(kind==0) {
+            check(stats.retired==0 && stats.cancelled_decisions==2,"withdrawn pressure still committed queued intents");
+        } else if(kind==1) {
+            check(stats.retired==0 && stats.rejected_ineligible>=2,"new recent range did not protect delayed candidates");
+        } else {
+            check(stats.retired==1 && stats.cancelled_decisions==1,"batch did not stop after its reduced target was supplied");
+        }
+    }
+}
+
 int main() {
     try {
         lru_retirement_and_cpu_reclamation_do_not_wait_for_gpu();
         completions_are_reliable_until_acknowledged_and_across_reuse();
         off_and_shadow_do_not_change_real_history();
         proactive_policy_can_delete_unsealed_active_blocks_without_pressure();
+        current_window_protection_is_a_mechanical_constraint_only_when_enabled();
+        owned_session_keeps_only_its_current_logical_frame_checkpointable();
         policy_failure_and_pause_do_not_stop_committed_releases();
         original_io_can_publish_after_retirement_without_resurrection();
         foreign_owners_and_overwrites_are_rejected_and_scope_slots_recycle();
         background_manager_progresses_without_foreground_policy_calls();
         store_can_finish_and_stage_out_a_retired_gpu_window();
+        store_can_finish_and_stage_out_a_retired_gpu_window(true, false);
+        store_can_finish_and_stage_out_a_retired_gpu_window(true, true);
         engine_metadata_does_not_contend_with_io_publication();
         execution_admission_races_retirement_and_generation_reuse();
         policy_frame_holds_revalidate_old_decisions_and_release_without_cpu_pins();
@@ -643,6 +911,10 @@ int main() {
         contended_feature_commit_retries_without_consuming_the_intent();
         features_require_live_sealed_backing_and_never_resurrect_history();
         pooled_redundancy_scope_discards_features_question_and_carry_between_owners();
+        thinking_provenance_is_complete_and_generation_bound();
+        pure_scoring_progress_keeps_the_worker_burst_running();
+        lru_fallback_does_not_require_query_or_feature_guards();
+        builtin_commit_rechecks_pressure_and_recent_range();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

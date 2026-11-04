@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from benchmarks.deepswe.claude_bridge import Planner, Protocol, Trajectory, backend_request, canonical
-from scripts.dsh_query_epoch import apply_query_provenance
+from scripts.dsh_query_epoch import prepare_with_query_provenance
 
 
 def to_anthropic(body):
@@ -208,8 +208,8 @@ def restore_trajectory(planner,owner,directories):
     for turn,path in sorted(turns.items()):
         if turn!=state.turns+1:raise ValueError('Accepted history has a missing turn; refusing an inexact restore')
         body=json.loads((path/'request.json').read_text());payload=to_anthropic(body)
-        prepared=planner.prepare(payload,state);saved=json.loads((path/'plan.json').read_text())
-        apply_query_provenance(body, prepared)
+        prepared,_=prepare_with_query_provenance(planner,payload,state,body)
+        saved=json.loads((path/'plan.json').read_text())
         if len(prepared[0])!=saved['prompt_tokens'] or prepared[5]!=saved['exact_output_prefix_reused']:
             raise ValueError('Accepted history does not match its recorded prompt prefix')
         # Extra mandatory pins were removed by this deployment before submit.
@@ -218,7 +218,8 @@ def restore_trajectory(planner,owner,directories):
         content=to_anthropic(dict(model=body['model'],messages=[wire['choices'][0]['message']]))['messages'][0]['content']
         ids=json.loads((path/'accepted.json').read_text())['token_ids']
         if len(ids)!=wire['usage']['completion_tokens']:raise ValueError('Accepted history has inconsistent token usage')
-        planner.commit(state,prepared,payload,dict(content=content),ids)
+        planner.commit(state,prepared,payload,dict(content=content,
+            stop_reason='max_tokens' if wire['choices'][0].get('finish_reason')=='length' else 'end_turn'),ids)
     return state
 
 
@@ -334,11 +335,11 @@ def create_app(args,tokenizer):
                     state=await asyncio.to_thread(restore_trajectory,planner,owner,sources)
                     owners[owner]=(lock,state);restored.add(owner)
                     if state.turns:log(dict(at=time.time(),owner=owner,restored_turns=state.turns))
-                started=time.time();prepared=await host_work(planner.prepare,payload,state)
+                started=time.time()
+                prepared,query_source=await host_work(prepare_with_query_provenance,
+                    planner,payload,state,body,required=getattr(args,'require_query_provenance',False))
                 handoff_timings={'prepare_seconds':time.time()-started}
                 tokens,plan,rendered,*_=prepared
-                query_source = apply_query_provenance(body, prepared,
-                    required=getattr(args, 'require_query_provenance', False))
                 # Locality/query coordinates remain available for graph recall;
                 # transport policy explicitly disables all semantic extra pins.
                 plan['kvmem_mandatory_parts']='none';plan['kvmem_mandatory_spans']=[]
@@ -362,6 +363,7 @@ def create_app(args,tokenizer):
                 await record(directory/'request.json',body)
                 await record(directory/'plan.json',{k:v for k,v in data.items() if k!='prompt'}|
                     dict(prompt_tokens=len(tokens),exact_output_prefix_reused=prepared[5],
+                         input_closure_tokens=getattr(prepared,'input_closure_tokens',0),
                          query_source=query_source))
                 data.update(stream=True,stream_options=dict(include_usage=True))
                 wire=QwenStream(planner.protocol,rendered['tools'],cache_parse=optimized);output_ids=[];usage=None;finish=None
@@ -414,6 +416,10 @@ def create_app(args,tokenizer):
                     if (segment_usage is None or finish is None or
                             segment_usage['completion_tokens']!=len(output_ids)-begin or
                             segment_usage['completion_tokens']>segment_data['max_tokens']):
+                        await record(directory/'stream-failure.json',dict(request_id=request_id,
+                            segment=segment,finish_reason=finish,usage=segment_usage,
+                            received_token_ids=len(output_ids)-begin,max_tokens=segment_data['max_tokens'],
+                            prompt_tokens=len(segment_data['prompt'])))
                         raise ValueError('Incomplete model stream or accepted-token/usage mismatch')
                     report=dict(index=segment,id=request_id,prompt_tokens=len(segment_data['prompt']),
                         output_tokens=len(output_ids)-begin,finish_reason=finish,metrics=segment_metrics)

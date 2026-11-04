@@ -55,6 +55,12 @@ inline HistoricalRedundancyConfig redundancy_config(const HistoricalPolicyParame
         };
         if(key=="keep_mandatory") config.keep_mandatory=boolean();
         else if(key=="allow_lossy_fallback") config.allow_lossy_fallback=boolean();
+        else if(key=="thinking_only") config.thinking_only=boolean();
+        else if(key=="pool_pairwise") config.pool_pairwise=boolean();
+        else if(key=="all_history_references") config.all_history_references=boolean();
+        else if(key=="refresh_before_rank") config.refresh_before_rank=boolean();
+        else if(key=="epoch_peak") config.epoch_peak=boolean();
+        else if(key=="lru_fallback") config.lru_fallback=boolean();
         else if(key=="importance_weight") config.importance_weight=number(0,1);
         else if(key=="representative_similarity") config.representative_similarity=number(-1,1);
         else if(key=="reference_blocks") config.reference_blocks=integer(65536);
@@ -63,9 +69,12 @@ inline HistoricalRedundancyConfig redundancy_config(const HistoricalPolicyParame
         else if(key=="query_segments_per_step") config.query_segments_per_step=integer(65536);
         else if(key=="feature_cache_bytes") config.feature_cache_bytes=integer(uint64_t(1)<<40);
         else if(key=="query_cache_bytes") config.query_cache_bytes=integer(uint64_t(1)<<40);
+        else if(key=="query_capture_bytes") config.query_capture_bytes=integer(uint64_t(256)<<20);
         else throw std::invalid_argument("Unknown historical_gc.policy_params.redundancy parameter: "+key);
     }
     if(!config.keep_mandatory) throw std::invalid_argument("Redundancy GC requires keep_mandatory=true");
+    if(config.lru_fallback && config.allow_lossy_fallback)
+        throw std::invalid_argument("Choose lru_fallback or allow_lossy_fallback, not both");
     return config;
 }
 } // namespace historical_policy_detail

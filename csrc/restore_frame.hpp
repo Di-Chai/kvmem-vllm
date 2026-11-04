@@ -78,40 +78,10 @@ inline qw3::KvMemPlan restore_frame(qw3::KvMemStore &store,
     if (store.history_end() != prefix->position())
         throw std::invalid_argument("Rewind authority before restoring its checkpoint window");
 
-    // Match working_records' directory predicate and baked-position order, but
-    // never materialize its five-field tuples or a second Python Handle list.
-    struct Current {
-        qw3::KvMemBlockHandle handle;
-        int64_t position;
-    };
-    std::vector<Current> current;
-    for (const auto &block : store.blocks()) {
-        if (block.repository_generation && block.n_tokens &&
-                (block.in_working_set || block.tier == qw3::KvTier::GPU))
-            current.push_back({{block.block_id, block.repository_generation}, block.baked_pos});
-    }
-    std::sort(current.begin(), current.end(), [](const auto &a, const auto &b) {
-        return a.position < b.position;
-    });
-    std::vector<qw3::KvMemRepository::Lease> current_leases;
-    current_leases.reserve(current.size());
-    for (const auto &row : current) {
-        if (store.repository_handle(row.handle.slot) != row.handle)
-            throw std::invalid_argument("Current window contains a recycled generation");
-        auto lease = store.repository()->try_pin(row.handle);
-        if (!lease)
-            throw std::invalid_argument("Current window contains a retired block");
-        current_leases.push_back(std::move(lease));
-    }
-
-    // All ordinary input/state validation precedes the first tier mutation.
-    // Do not claim strong exception safety for allocation failure inside the
-    // original selector or for caller violations of the single-producer rule.
-    for (const auto &row : current)
-        store.set_block_tier(row.handle.slot, qw3::KvTier::SSD, -1, -1, row.handle.generation);
-    for (const auto handle : saved)
-        store.set_block_tier(handle.slot, qw3::KvTier::SSD, -1, -1, handle.generation);
-    return store.set_repository_selection(saved, true);
+    // Admit only the saved frame. Store transfers already-owned current-window
+    // leases through the plan, including permanent GC retirement, before cold
+    // reset. The caller retains the plan through its assembly completion fence.
+    return store.restore_repository_selection(saved);
 }
 
 } // namespace kvmem_restore

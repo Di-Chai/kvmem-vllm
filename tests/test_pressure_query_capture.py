@@ -5,8 +5,28 @@ import pytest
 import torch
 
 from vllm_kvmem.pressure_query_capture import (
-    PressureQueryWindow, configured_method, PRESSURE_QUERY_WINDOW)
+    PressureQueryWindow, configured_method, pressure_query_required, PRESSURE_QUERY_WINDOW)
 from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
+
+
+@pytest.mark.parametrize('prefill,decode,required', [
+    ('same_method', 'same_method', True),
+    ('accumulated_attention', 'same_method', True),
+    ('same_method', 'accumulated_attention', True),
+    ('accumulated_attention', 'accumulated_attention', False)])
+def test_pressure_tail_q_only_removed_when_both_stages_do_not_consume_it(monkeypatch, prefill, decode, required):
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', 'block_value_norm')
+    monkeypatch.setenv('KVMEM_PREFILL_PRESSURE_METHOD', prefill)
+    monkeypatch.setenv('KVMEM_DECODE_PRESSURE_METHOD', decode)
+    assert pressure_query_required() is required
+
+
+def test_pressure_tail_capture_never_silently_accepts_unknown_policy(monkeypatch):
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', 'block_value_norm')
+    monkeypatch.setenv('KVMEM_PREFILL_PRESSURE_METHOD', 'accumulated_attention')
+    monkeypatch.setenv('KVMEM_DECODE_PRESSURE_METHOD', 'unknown')
+    with pytest.raises(ValueError, match='no fallback'):
+        pressure_query_required()
 
 
 def queries(count, *, first=0, layers=2, heads=2, dim=3):

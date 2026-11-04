@@ -10,6 +10,7 @@ their own experiments; they are not default installation instructions.
 | --- | --- |
 | [Installation](installation.md) | Install dependencies, obtain the model/tokenizer and validate a profile. |
 | [Serving and sessions](serving.md) | Start a server, submit chat or token-ID requests, and size memory budgets. |
+| [Local web console](webui.md) | Configure and start a model, chat, inspect metrics and read logs in a browser. |
 | [Support matrix](support.md) | Check model, GPU, API and runtime boundaries. |
 | [Benchmarks](benchmarks.md) | Read real-agent observations, historical generation results and their measurement limits. |
 | [Development](development.md) | Build the host core and run focused Python/C++ checks. |
@@ -20,9 +21,11 @@ their own experiments; they are not default installation instructions.
 | Topic | Notes |
 | --- | --- |
 | [vLLM compatibility](vllm-compatibility.md) | Interface checks, supported adapters and actual-model validation of native SystemOne. |
+| [Qwen3.8 Flash Next](qwen38-flash-next.md) | Explicit B12X QSA adapter, FP4-Local profile, FP8 KV and MTP boundaries. |
 | [Rolling long output](rolling-long-output.md) | Generation across bounded working-window refreshes; requires token-ID requests. |
 | [Graph scoring configuration](graph-scoring-v2-configuration.md) | Explicit graph-policy choices and validation rules. |
 | [Query replay](query-replay-20261022.md) | Implementation and measured behavior of complete query replay. |
+| [Thinking history GC](historical-thinking-gc.md) | Keep direct thinking representatives, then reclaim history with an explicit LRU fallback. |
 | [Elastic serving](elastic-serving.md) | A separate authenticated turn gateway, with its own profiles and API. |
 | [Multi-user serving](multi-user-serving.md) | The legacy direct multi-user middleware and its distinct support boundaries. |
 

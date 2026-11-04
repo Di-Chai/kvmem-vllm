@@ -18,7 +18,9 @@ TARGET = 'vllm.v1.core.kv_cache_utils'
 
 def physical_config(config):
     from .options import RuntimeOptions
-    if config.model_config.max_model_len <= 1048576:
+    from .pressure_query_capture import configured_method
+    recall = configured_method()
+    if not recall and config.model_config.max_model_len <= 1048576:
         return config
     transfer = config.kv_transfer_config
     if (transfer is None or transfer.kv_connector != 'KVMemConnector' or
@@ -27,7 +29,23 @@ def physical_config(config):
         raise ValueError('Bounded logical KV planning requires the owned KVMem scheduler/connector')
     options = RuntimeOptions.from_vllm(config)
     gc = options.historical_gc
-    if (gc is None or gc.mode != 'delete' or not options.request_planning or
+    if recall:
+        # This opt-in campaign retains the complete CPU history while native
+        # attention owns one frozen K+G frame per explicitly declared owner.
+        # The native planner below still checks the complete all-owner pool.
+        # Do not extend this exception
+        # to ordinary no-GC serving or a different logical/physical geometry.
+        if (config.model_config.max_model_len != 524288 or
+                os.getenv('KVMEM_RECALL_CONCURRENT_OWNERS', '1') not in ('1', '2', '4', '8') or
+                str(config.scheduler_config.max_num_seqs) != os.getenv('KVMEM_RECALL_CONCURRENT_OWNERS', '1') or
+                gc is not None or
+                options.memory.block_tokens != 32 or
+                options.memory.select_budget != 36864 or
+                options.memory.gen_budget != 16384 or not options.async_refresh):
+            raise ValueError('Unqualified recall logical/physical KV configuration')
+    elif gc is None or gc.mode != 'delete':
+        raise ValueError('Unqualified bounded logical KV planning configuration')
+    if (not options.request_planning or
             not options.rolling_active_window or not options.cpu_history_coordination or
             not options.cpu_progress_reserve or not options.session_capacity or
             config.speculative_config is None or config.speculative_config.method != 'mtp' or

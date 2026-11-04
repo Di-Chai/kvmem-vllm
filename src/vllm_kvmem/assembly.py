@@ -85,7 +85,7 @@ def assemble_fp8(raw_k, values, positions, slots, cos_sin_cache, key_cache, valu
     if not tokens:
         return
     raw_input,raw_bytes = fp8_storage(raw_k)
-    key_input,software = fp8_storage(key_cache)
+    key_input,software = fp8_storage(key_cache, for_write=True)
     value_input,_ = fp8_storage(value_cache)
     values_input,_ = fp8_storage(values if values is not None else value_cache)
     _assemble[(tokens, heads)](

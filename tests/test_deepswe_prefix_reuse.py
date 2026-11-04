@@ -158,7 +158,10 @@ def renderer(*, request):
                 tools=request.get('tools', []), pins=[], query_index=-1)
 
 
-def test_structured_producer_keeps_actual_output_and_suffix_coordinates(boundary_tokenizer):
+@pytest.mark.parametrize('terminator', ['<|im_end|>', '<|endoftext|>'])
+def test_structured_producer_keeps_actual_output_and_suffix_coordinates(boundary_tokenizer, terminator):
+    if terminator == '<|endoftext|>':
+        boundary_tokenizer.add_special_tokens({'additional_special_tokens': [terminator]})
     planner = bridge.Planner(renderer, boundary_tokenizer)
     state = bridge.Trajectory()
     payload = dict(messages=[dict(role='user', content='测试🙂重复')], tools=['declaration'])
@@ -168,7 +171,7 @@ def test_structured_producer_keeps_actual_output_and_suffix_coordinates(boundary
     assert prepared[1]['kvmem_locality_provenance']['status'] == 'exact'
     # Deliberately choose accepted IDs which cannot be recovered by rendering
     # the returned assistant text. Only the actual accepted list is authoritative.
-    output = [17, 18, 19, planner.end]
+    output = [17, 18, 19, boundary_tokenizer.convert_tokens_to_ids(terminator)]
     response = dict(content='displayed answer')
     planner.commit(state, prepared, payload, response, output)
     accepted_end = len(prepared[0]) + len(output)
@@ -219,6 +222,41 @@ def test_incomplete_header_or_nonterminal_output_does_not_invent_assistant_end(b
         first = planner.prepare(payload, state)
         planner.commit(state, first, payload, dict(content='answer'), output)
         assert all(role != 'assistant' for _,_,role in state.locality_spans)
+
+
+@pytest.mark.parametrize('optimized', [False, True])
+def test_length_finish_preserves_accepted_ids_and_closes_only_in_next_input(boundary_tokenizer, optimized):
+    planner = bridge.Planner(renderer, boundary_tokenizer, optimized_handoff=optimized)
+    state = bridge.Trajectory()
+    payload = dict(messages=[dict(role='user',content='question')])
+    first = planner.prepare(payload,state)
+    output = [17,18,19]  # Deliberately unlike re-encoded display text, with no EOS.
+    response = dict(content='truncated answer',stop_reason='max_tokens')
+    planner.commit(state,first,payload,response,output)
+    before = copy.deepcopy(state)
+    following = dict(messages=payload['messages']+[
+        dict(role='assistant',content=response['content']),dict(role='user',content='continue')])
+    new = planner.prepare(following,state)
+    accepted = first[0]+output
+    assert new[5] and new[0][:len(accepted)]==accepted
+    assert new.input_closure_tokens==1 and new[0][len(accepted)]==planner.end
+    assert state.output==output and state==before
+    spans=new[1]['kvmem_locality_spans']
+    assistant=[s for s in spans if s['role']=='assistant']
+    assert assistant==[dict(begin=first.assistant_begin,end=len(accepted)+1,role='assistant')]
+    assert new[1]['kvmem_locality_provenance']['unknown_spans']==0
+    # Edits still invalidate history; closure is never permission to ignore them.
+    following['messages'][1]['content']='modified old answer'
+    assert not planner.prepare(following,state)[5]
+    assert not planner.prepare(dict(following,rewrite='changed history'),state)[5]
+
+
+def test_unproven_partial_stream_never_gets_a_template_closure(boundary_tokenizer):
+    planner=bridge.Planner(renderer,boundary_tokenizer);state=bridge.Trajectory()
+    payload=dict(messages=[dict(role='user',content='question')]);first=planner.prepare(payload,state)
+    planner.commit(state,first,payload,dict(content='partial'),[17,18])
+    following=dict(messages=payload['messages']+[dict(role='assistant',content='partial'),dict(role='user',content='next')])
+    assert not planner.prepare(following,state)[5]
 
 
 def test_canonical_fallback_agrees_with_accepted_assistant_eos(boundary_tokenizer):

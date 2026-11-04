@@ -21,7 +21,8 @@ using Payload = HistoricalPayloadArena;
     X(published) X(ticks) X(examined) X(decisions) X(retired) X(cpu_released) \
     X(slots_released) X(pending_slots) X(pending_cpu_bytes) X(retries) X(stale) \
     X(policy_failures) X(shadow_decisions) X(admission_attempts) X(admission_retries) \
-    X(redundancy_retired) X(lossy_retired) X(rejected_ineligible) X(cancelled_decisions)
+    X(redundancy_retired) X(lossy_retired) X(rejected_ineligible) X(cancelled_decisions) \
+    X(lru_fallback_retired) X(lru_representative_retired) X(thinking_classified) X(thinking_pure)
 
 struct AtomicStats {
 #define FIELD(name) std::atomic<uint64_t> name{0};
@@ -46,7 +47,9 @@ struct PublishedBlock {
     // publish backing at the same time without making decode acquire its guard.
     std::atomic<uint64_t> engine_version{0}, engine_generation{0}, engine_logical_id{0}, engine_use{0};
     std::atomic<uint32_t> engine_flags{0};
-    std::atomic<uint32_t> policy_holds{0};
+    std::atomic<uint32_t> policy_holds{0}, current_holds{0};
+    std::atomic<uint64_t> thinking_version{0}, thinking_generation{0};
+    std::atomic<uint32_t> thinking_flags{0};
     std::atomic_flag policy_gate = ATOMIC_FLAG_INIT;
     std::atomic<uint64_t> cpu_event{0}, cpu_ack{0}, slot_event{0}, slot_ack{0};
 };
@@ -54,6 +57,7 @@ struct PublishedBlock {
 struct BlockView {
     HistoricalBlockMeta meta;
     Payload::Handle payload;
+    bool current_window = false;
 };
 
 struct PendingBlock {
@@ -85,7 +89,17 @@ bool sample(const PublishedBlock &source, uint32_t slot, BlockView &out) {
     out.meta.sealed = flags & HistoricalSealed;
     out.meta.mandatory = flags & HistoricalMandatory;
     out.meta.gpu_resident = flags & HistoricalGpu;
+    out.current_window = (flags & HistoricalCurrentWindow) ||
+        source.current_holds.load(std::memory_order_acquire) != 0;
+    out.meta.mandatory |= out.current_window;
     out.meta.mandatory |= source.policy_holds.load(std::memory_order_acquire) != 0;
+    const auto thinking_version = source.thinking_version.load(std::memory_order_acquire);
+    if (thinking_version & 1) return false;
+    const auto thinking_generation = source.thinking_generation.load(std::memory_order_relaxed);
+    const auto thinking_flags = source.thinking_flags.load(std::memory_order_relaxed);
+    if (thinking_version != source.thinking_version.load(std::memory_order_acquire)) return false;
+    out.meta.thinking_complete = thinking_generation == out.meta.handle.generation && (thinking_flags & 1);
+    out.meta.thinking_only = out.meta.thinking_complete && (thinking_flags & 2);
     out.payload = {source.payload_slot.load(std::memory_order_relaxed),
                    source.payload_generation.load(std::memory_order_relaxed)};
     if (out.meta.handle.generation != source.generation.load(std::memory_order_relaxed)) out.payload = {};
@@ -422,17 +436,30 @@ struct HistoricalScopeState {
             if (records[second].policy_gate.test_and_set(std::memory_order_acquire)) return Code::Retry;
             gates.second = &records[second];
         }
-        BlockView current;
-        if (!sample(records[intent.handle.slot], intent.handle.slot, current)) return Code::Retry;
         auto live = repository->try_pin(intent.handle);
         if (!live) return repository->retired_at(intent.handle.slot) == intent.handle ? Code::AlreadyRetired : Code::Stale;
+        // The accepted append publishes its current-frame flag before making
+        // a Writing reservation Live. Sample after this acquire, otherwise an
+        // old pre-Live metadata sample could miss that protection.
+        BlockView current;
+        if (!sample(records[intent.handle.slot], intent.handle.slot, current)) return Code::Retry;
         current.meta.live = true;
         if (current.meta.handle != intent.handle) return Code::Stale;
+        // Exact session capture requires the current logical frame's durable
+        // bytes. This is an execution constraint, independent of custom policy
+        // eligibility; old GPU-only leases have no such protection.
+        if (current.current_window) return Code::Ineligible;
+        // A rewind can move the recent window behind this round's snapshot.
+        // Reapply its current logical range before strategy-owned eligibility.
+        const auto recent = recent_begin.load(std::memory_order_acquire);
+        const auto end = history_end.load(std::memory_order_acquire);
+        if (end && live.record().token_begin < end && live.record().token_end() > recent)
+            current.meta.mandatory = true;
         // This is only the proposed version for the policy's carry check.
         // The nonblocking source guard below must verify the actual version
         // before retirement. It distinguishes contention from missing keys.
         current.meta.feature_version = intent.feature_version;
-        if (!policy->permits(current.meta)) return Code::Ineligible;
+        if (!policy->permits_intent(current.meta, intent)) return Code::Ineligible;
         Repo::Lease witness;
         if (redundancy) {
             BlockView other;
@@ -444,7 +471,8 @@ struct HistoricalScopeState {
         // No scoring or feature copying occurs under these guards. The
         // source guard freezes question/feature identity until retirement.
         HistoricalFeatureSource::CommitGuard feature_guard;
-        if (intent.reason != HistoricalDeleteReason::Lru) {
+        if (intent.reason != HistoricalDeleteReason::Lru && intent.reason != HistoricalDeleteReason::LruFallback &&
+                intent.reason != HistoricalDeleteReason::LruRepresentativeFallback) {
             if (!features) return Code::Ineligible;
             feature_guard = features->try_commit_guard(intent);
             if (!feature_guard.acquired) return Code::Retry;
@@ -472,6 +500,13 @@ struct HistoricalScopeState {
         using Code = HistoricalCommitCode;
         const auto &values = batch.values();
         while (batch_cursor < values.size()) {
+            // A scheduler can withdraw its target while an intent is delayed,
+            // and prior items may already have supplied the remaining credit.
+            if (!policy->permits_pressure(pressure(global_pending))) {
+                cancel_batch();
+                if (policy_round_done) round_active = false;
+                return true;
+            }
             const auto &intent = values[batch_cursor];
             const auto code = commit_one(intent, global_pending);
             if (code == Code::Retry) {
@@ -489,6 +524,13 @@ struct HistoricalScopeState {
                         stats.redundancy_retired.fetch_add(1, std::memory_order_relaxed);
                     if (intent.reason == HistoricalDeleteReason::LossyPressure)
                         stats.lossy_retired.fetch_add(1, std::memory_order_relaxed);
+                    if (intent.reason == HistoricalDeleteReason::LruFallback ||
+                            intent.reason == HistoricalDeleteReason::LruRepresentativeFallback) {
+                        stats.lru_fallback_retired.fetch_add(1, std::memory_order_relaxed);
+                        stats.lossy_retired.fetch_add(1, std::memory_order_relaxed);
+                        if (intent.reason == HistoricalDeleteReason::LruRepresentativeFallback)
+                            stats.lru_representative_retired.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             } else if (code == Code::Stale) stats.stale.fetch_add(1, std::memory_order_relaxed);
             else if (code == Code::Ineligible) stats.rejected_ineligible.fetch_add(1, std::memory_order_relaxed);
@@ -577,7 +619,7 @@ struct HistoricalScopeState {
                                 result.status == HistoricalPolicyStatus::NoCandidate;
             if (!batch.empty()) commit_batch(global_pending);
             else if (policy_round_done) round_active = false;
-            return result.examined || result.emitted || progress;
+            return result.examined || result.emitted || result.progressed || progress;
         } catch (...) {
             // A failed strategy must not stop reclamation of earlier commits.
             cancel_batch();
@@ -735,15 +777,26 @@ HistoricalGcScope::HistoricalGcScope(std::shared_ptr<HistoricalManagerState> own
                                     std::shared_ptr<HistoricalScopeState> state, Repo::Lease lease)
     : owner_(std::move(owner)), state_(std::move(state)), registry_lease_(std::move(lease)) {}
 HistoricalGcScope::~HistoricalGcScope() { close(); }
-HistoricalFrameHold::HistoricalFrameHold(std::shared_ptr<HistoricalScopeState> state) : state_(std::move(state)) {}
+HistoricalFrameHold::HistoricalFrameHold(std::shared_ptr<HistoricalScopeState> state, bool current)
+    : state_(std::move(state)), current_(current) {}
 HistoricalFrameHold::~HistoricalFrameHold() {
-    for (const auto &lease : leases_)
+    for (const auto &lease : leases_) {
+        if (current_)
+            state_->records[lease.handle().slot].current_holds.fetch_sub(1, std::memory_order_release);
         state_->records[lease.handle().slot].policy_holds.fetch_sub(1, std::memory_order_release);
+    }
 }
 
 std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect(const std::vector<Handle> &handles) {
+    return protect_impl(handles, false);
+}
+std::shared_ptr<void> HistoricalGcScope::protect_selection(const std::vector<Handle> &handles) {
+    return protect_impl(handles, true);
+}
+std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect_impl(const std::vector<Handle> &handles,
+                                                                  bool current) {
     if (!state_ || handles.empty()) return {};
-    auto hold = std::shared_ptr<HistoricalFrameHold>(new HistoricalFrameHold(state_));
+    auto hold = std::shared_ptr<HistoricalFrameHold>(new HistoricalFrameHold(state_, current));
     hold->leases_.reserve(handles.size());
     for (auto handle : handles) {
         if (handle.slot >= state_->repository->capacity()) return {};
@@ -753,6 +806,7 @@ std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect(const std::vecto
         const bool admitted = bool(lease);
         if (lease) {
             entry.policy_holds.fetch_add(1, std::memory_order_release);
+            if (current) entry.current_holds.fetch_add(1, std::memory_order_release);
             hold->leases_.push_back(std::move(lease));
         }
         entry.policy_gate.clear(std::memory_order_release);
@@ -798,6 +852,34 @@ bool HistoricalGcScope::publish_features(const Repo::Lease &lease, const float *
     }
     return true;
 }
+bool HistoricalGcScope::publish_thinking(const Repo::Lease &lease, uint32_t thinking_tokens,
+                                        uint32_t known_tokens) {
+    if (!state_ || state_->closing.load(std::memory_order_acquire)) return false;
+    if (!state_->repository->owns(lease))
+        throw std::invalid_argument("Historical thinking has a foreign repository lease");
+    const auto &record = lease.record();
+    if (thinking_tokens > known_tokens || known_tokens > record.token_count)
+        throw std::invalid_argument("Historical thinking counts exceed the record");
+    auto &published = state_->records[record.handle.slot];
+    if (published.policy_gate.test_and_set(std::memory_order_acquire)) return false;
+    struct Unlock {
+        PublishedBlock &block;
+        ~Unlock() { block.policy_gate.clear(std::memory_order_release); }
+    } unlock{published};
+    auto live = state_->repository->try_pin(record.handle);
+    if (!live || state_->closing.load(std::memory_order_acquire)) return false;
+    const bool same = published.thinking_generation.load(std::memory_order_relaxed) == record.handle.generation;
+    const auto previous = same ? published.thinking_flags.load(std::memory_order_relaxed) : 0;
+    const uint32_t flags = known_tokens == record.token_count
+        ? (1u | (thinking_tokens == record.token_count ? 2u : 0u)) : 0u;
+    const auto version = published.thinking_version.fetch_add(1, std::memory_order_acq_rel);
+    published.thinking_flags.store(flags, std::memory_order_relaxed);
+    published.thinking_generation.store(record.handle.generation, std::memory_order_relaxed);
+    published.thinking_version.store(version + 2, std::memory_order_release);
+    if ((flags & 1) && !(previous & 1)) state_->stats.thinking_classified.fetch_add(1, std::memory_order_relaxed);
+    if ((flags & 2) && !(previous & 2)) state_->stats.thinking_pure.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
 uint64_t HistoricalGcScope::begin_question(uint64_t expected_tokens) {
     if (!state_ || state_->closing.load(std::memory_order_acquire) || !state_->features) return 0;
     return state_->features->begin_question(expected_tokens);
@@ -826,9 +908,11 @@ std::map<std::string, uint64_t> HistoricalGcScope::feature_stats() const {
 void HistoricalGcScope::used(uint64_t sequence) {
     if (state_) state_->use_stamp.store(sequence, std::memory_order_release);
 }
-void HistoricalGcScope::observe(const Repo::Lease &lease, bool sealed, bool gpu, bool mandatory) {
+void HistoricalGcScope::observe(const Repo::Lease &lease, bool sealed, bool gpu, bool mandatory,
+                                bool current_window) {
     const uint32_t flags = (sealed ? HistoricalSealed : 0u) | (gpu ? HistoricalGpu : 0u) |
-                           (mandatory ? HistoricalMandatory : 0u);
+                           (mandatory ? HistoricalMandatory : 0u) |
+                           (current_window ? HistoricalCurrentWindow : 0u);
     if (!update(lease, flags)) throw std::logic_error("Concurrent engine history publishers");
 }
 void HistoricalGcScope::history_changed(uint64_t end, uint64_t recent) {

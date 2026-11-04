@@ -60,6 +60,10 @@ class SessionBinding:
     message_spans: tuple = ()
     locality_spans: tuple = ()
     locality_provenance: tuple = ()
+    # Historical features retain the explicit Question even when exact-prefix
+    # continuation removes its already-completed selection/replay operation.
+    question_span: tuple | None = None
+    question_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,8 @@ class _Entry:
     mandatory: tuple = ()
     active_records: tuple = ()
     query_id: str | None = None
+    question_span: tuple | None = None
+    question_id: str | None = None
     guided_anchor: int = 0
     prompt_guided_anchor: int = 0
     _fingerprint_tokens: bytes | None = field(default=None, repr=False, compare=False)
@@ -308,6 +314,10 @@ class SessionLedger:
                 entry.query = plan.query or entry.query
                 entry.query_id = plan.query_id
                 entry.mandatory = effective.mandatory
+            # Only this request's explicit, validated source is eligible. An
+            # omitted Query or explicit off must not inherit an old Question.
+            entry.question_span = plan.query if plan is not None else None
+            entry.question_id = plan.query_id if entry.question_span is not None else None
             entry.pressure_restore = False  # Storage alone never triggers selection.
             entry.restore_window = 0
             capacity = self.select_budget + self.gen_budget if effective is not None else None
@@ -394,6 +404,8 @@ class SessionLedger:
             self.set_plan(request,plan)
             entry.query,entry.mandatory = plan.query,plan.mandatory
             entry.query_id = plan.query_id
+            entry.question_span = plan.query
+            entry.question_id = plan.query_id if plan.query is not None else None
         self.entries[namespace] = self.requests[request.request_id] = entry
         return 0
 
@@ -466,7 +478,8 @@ class SessionLedger:
             plan.query if plan is not None else None,plan.mandatory if plan is not None else (),
             plan.message_spans if plan is not None else (),
             plan.locality_spans if plan is not None else (),
-            plan.locality_provenance if plan is not None else ()))
+            plan.locality_provenance if plan is not None else (),
+            question_span=entry.question_span, question_id=entry.question_id))
         self.hits += int(bool(external_tokens))
         self.misses += int(not external_tokens)
 

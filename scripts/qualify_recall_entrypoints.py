@@ -39,12 +39,13 @@ def functional_sampling(fixture, profile, *, followup=False):
     return sampling
 
 
-def append_user_query(initial, generated, tokenizer):
+def append_user_query(initial, generated, tokenizer, *, thinking=True):
     """Append a genuine Qwen user-message span after the complete first output."""
     encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
-    prefix = encode('\n</think>\n<|im_end|>\n<|im_start|>user\n')
+    prefix = encode(('\n</think>' if thinking else '') + '\n<|im_end|>\n<|im_start|>user\n')
     question = encode(FOLLOWUP_QUESTION)
-    suffix = encode('<|im_end|>\n<|im_start|>assistant\n<think>\n')
+    suffix = encode('<|im_end|>\n<|im_start|>assistant\n' +
+                    ('<think>\n' if thinking else '<think>\n\n</think>\n\n'))
     p.require(question and tokenizer.decode(question, skip_special_tokens=False) == FOLLOWUP_QUESTION,
               'Functional follow-up Query cannot be located exactly')
     tokens = list(initial) + list(generated) + prefix
@@ -156,7 +157,8 @@ def run_client(root, method, capture, output, *, tokenizer=None, stream_fn=None,
         first = call('long_generation', initial, source['served_query'], sampling)
         p.audit_events(events_by_phase['long_generation'], method, profile,
             query_span=source['served_query'], required_types=p.EVENT_TYPES)
-        followup, query = append_user_query(initial, first['output_ids'], tokenizer)
+        followup, query = append_user_query(initial, first['output_ids'], tokenizer,
+                                            thinking=fixture.get('starts_in_thinking', True))
         call('followup_query', followup, query, functional_sampling(fixture, profile, followup=True))
         audit = audit_entrypoints(events_by_phase['long_generation'], events_by_phase['followup_query'],
             method, profile, source['served_query'], query, len(initial))
@@ -180,7 +182,7 @@ def run(args):
     fixture, _ = campaign.verify(root)
     runtime = (args.runtime or Path(fixture['runtime_source'])).resolve()
     campaign.verify(root, runtime)
-    methods = (args.method,) if args.method else p.METHODS
+    methods = (args.method,) if args.method else p.campaign_methods(fixture)
     environment = {key: value for key, value in os.environ.items() if not key.startswith('KVMEM_')}
     environment.update(PYTHONPATH=str(runtime / 'src'), PYTHONDONTWRITEBYTECODE='1',
                        TOKENIZERS_PARALLELISM='false')
@@ -215,12 +217,12 @@ def parser():
     sub = command.add_subparsers(dest='action', required=True)
     client = sub.add_parser('client')
     client.add_argument('--root', type=Path, required=True)
-    client.add_argument('--method', choices=p.METHODS, required=True)
+    client.add_argument('--method', choices=p.ALL_METHODS, required=True)
     client.add_argument('--capture', type=Path, required=True)
     client.add_argument('--output', type=Path, required=True)
     runner = sub.add_parser('run')
     runner.add_argument('--root', type=Path, required=True)
-    runner.add_argument('--method', choices=p.METHODS)
+    runner.add_argument('--method', choices=p.ALL_METHODS)
     runner.add_argument('--runtime', type=Path)
     runner.add_argument('--python', type=Path, default=Path(sys.executable))
     runner.add_argument('--gpu-lock', type=Path, default=Path('/tmp/kvmem-recall-comparison.lock'))

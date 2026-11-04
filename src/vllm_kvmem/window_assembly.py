@@ -16,6 +16,7 @@ from .assembly import assemble_fp8
 from .codec import native_vllm_fp8_views
 from .memory import Phase
 from .transfer import PackedTransfers
+from .original_rope import enabled as original_rope
 
 
 @dataclass
@@ -73,11 +74,12 @@ def _validate_destinations(remaps, by_slot, layers):
             capacity = min((limit[0] for limit in bounds), default=float('inf'))
             rope = min((limit[1] for limit in bounds), default=float('inf'))
         end = remap.to_base + remap.n_tokens
-        if end > capacity or end > rope:
+        rope_end = record.history_begin + remap.n_tokens if original_rope() else end
+        if end > capacity or rope_end > rope:
             for layer_capacity, layer_rope in bounds:
                 if end > layer_capacity:
                     raise ValueError("Selected working window exceeds native allocated pages")
-                if end > layer_rope:
+                if rope_end > layer_rope:
                     raise ValueError("Selected position exceeds the model RoPE table")
 
 
@@ -331,7 +333,11 @@ class NativeWindowAssembler:
     @classmethod
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=None, packed=False,
                     direct_pinned_reads=False, *, arena='main', lease=None):
-        if arena not in ('main', 'refresh'):
+        if getattr(runner, '_kvmem_qsa_layers', None):
+            from .qsa_assembly import QSAWindowAssembler
+            return QSAWindowAssembler(runner, request_id, layer_names, block_tokens,
+                                      chunk_blocks, arena=arena, lease=lease)
+        if arena not in ('main', 'refresh', 'layerwise', 'pressure'):
             raise ValueError('Unknown assembly arena')
         options = getattr(getattr(runner, '_kvmem_capture_runtime', None), 'options', None)
         if chunk_blocks is None:
@@ -361,8 +367,12 @@ class NativeWindowAssembler:
             key, value = native_vllm_fp8_views(attn.kv_cache, module.num_kv_heads, module.head_dim)
             layers.append(LayerWindow(key, value, module.rotary_emb.cos_sin_cache,
                                       attn._k_scale, tables[group_id], group_id if lease is not None else None))
-        staging_name = '_kvmem_assembly_staging' if arena == 'main' else '_kvmem_refresh_assembly_staging'
-        cache_name = '_kvmem_gpu_raw_cache' if arena == 'main' else '_kvmem_refresh_gpu_raw_cache'
+        # Single-layer Query assembly and full-layer checkpoint import have
+        # different scratch geometry. Neither may publish into the other's
+        # runner-owned pool; checkpoint restore can follow the first Query.
+        prefix = '' if arena == 'main' else '_' + arena
+        staging_name = '_kvmem' + prefix + '_assembly_staging'
+        cache_name = '_kvmem' + prefix + '_gpu_raw_cache'
         staging = getattr(runner, staging_name, None)
         raw_cache = getattr(runner, cache_name, None)
         if direct_pinned_reads and options is not None and options.gpu_raw_k_cache_bytes and raw_cache is None:
@@ -477,6 +487,8 @@ class NativeWindowAssembler:
         # Validate the entire destination before changing any GPU cache bytes.
         _validate_destinations(remaps, by_slot, self.layers)
         pending = [remap for remap in remaps if not remap.skip]
+        if original_rope() and (self.raw_cache is not None or self.reuse_resident_v):
+            raise ValueError('Original RoPE is not qualified for split/raw-cache assembly')
         if (pending and (self.raw_cache is not None or self.reuse_resident_v) and
                 authority.raw_dtype in (torch.bfloat16, torch.float16, torch.float8_e4m3fn)):
             complete = [r for r in pending if r.n_tokens == self.block_tokens]
@@ -514,10 +526,17 @@ class NativeWindowAssembler:
         read_stats = {}
         metadata_start = time.perf_counter()
         bases = self._upload_metadata([remap.to_base for remap in pending]) if pending and self.packed else None
+        rope_bases = (self._upload_metadata([by_slot[r.block_id].history_begin for r in pending])
+                      if pending and self.packed and original_rope() else None)
         positions = None
+        rope_positions = None
         if pending and (not self.packed or any(r.n_tokens != self.block_tokens for r in pending)):
             positions = self._upload_metadata([position for remap in pending
                 for position in range(remap.to_base, remap.to_base + remap.n_tokens)])
+            if original_rope():
+                rope_positions = self._upload_metadata([position for remap in pending
+                    for position in range(by_slot[remap.block_id].history_begin,
+                        by_slot[remap.block_id].history_begin + remap.n_tokens)])
         host_prepare_seconds += time.perf_counter() - metadata_start
         position_begin = 0
         for start in range(0, len(pending), self.chunk_blocks):
@@ -574,7 +593,9 @@ class NativeWindowAssembler:
                 chunk_bases = bases[start:start+len(chunk)]
                 for i, layer in enumerate(self.layers):
                     assemble_packed_layer(gpu, chunk_bases, layer, layer_index=i, layers=len(self.layers),
-                                          block_tokens=self.block_tokens, raw_dtype=authority.raw_dtype)
+                                          block_tokens=self.block_tokens, raw_dtype=authority.raw_dtype,
+                                          **({'rope_bases': rope_bases[start:start+len(chunk)]}
+                                             if rope_bases is not None else {}))
             else:
                 elements = raw.numel()
                 raw_size = elements * authority.raw_element_bytes
@@ -584,7 +605,8 @@ class NativeWindowAssembler:
                 for i, layer in enumerate(self.layers):
                     page_tokens = layer.key.shape[1]
                     slots = layer.kernel_page_table[chunk_positions // page_tokens].to(torch.int64) * page_tokens + chunk_positions % page_tokens
-                    assemble_fp8(raw_gpu[i], values_gpu[i], chunk_positions, slots, layer.cos_sin,
+                    rp = rope_positions[position_begin:position_begin+count] if rope_positions is not None else chunk_positions
+                    assemble_fp8(raw_gpu[i], values_gpu[i], rp, slots, layer.cos_sin,
                                  layer.key, layer.value, layer.key_scale)
             self.staging.consumed(slot)
             position_begin += count

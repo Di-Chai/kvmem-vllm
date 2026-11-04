@@ -63,6 +63,7 @@ class PromptCheckpoint:
     claim_graph_history: object = None
     claim_graph_end: int = 0
     guided_seed: object = None
+    layerwise_pressure: object = None
 
     @property
     def position(self):
@@ -133,7 +134,8 @@ class PromptCheckpointPool:
         checkpoint.claim_graph_history = None
         checkpoint.claim_graph_end = 0
 
-    def capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False, terminal=False):
+    def capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False, terminal=False,
+                prepared_window=None):
         self.poll_captures()
         previous = self.entries.get(namespace)
         if previous is not None and not replace:
@@ -157,8 +159,15 @@ class PromptCheckpointPool:
         if token_size >= self.max_payload_bytes - retained_bytes:
             raise BufferError('Prompt checkpoint payload capacity is exhausted')
         identity = token_bytes(tokens, position, native=self.native_checkpoint_capture)
-        window = authority.memory.checkpoint_window(allow_partial=terminal,
-            **({'native_validation': True} if self.native_checkpoint_capture else {}))
+        if prepared_window is None:
+            window = authority.memory.checkpoint_window(allow_partial=terminal,
+                **({'native_validation': True} if self.native_checkpoint_capture else {}))
+        else:
+            if (not terminal or prepared_window.request_id != authority.memory.request_id or
+                    prepared_window.position != position or
+                    prepared_window.records != tuple(authority.memory._store.working_records())):
+                raise ValueError('Prepared terminal checkpoint differs from the current authority frame')
+            window = prepared_window
         # Account for the serialized frame geometry as well as token/model data.
         # Python object overhead and authority/archive storage are separate quotas.
         fixed = len(identity) + len(window.records) * 5 * 8
@@ -175,6 +184,11 @@ class PromptCheckpointPool:
             fixed += len(action_snapshot[0])*16+8
             if len(action_snapshot)>2:
                 fixed += len(action_snapshot[2][0])*24+24
+        from .layerwise_checkpoints import capture_for_pool
+        layerwise_snapshot = capture_for_pool(model_adapter, request_id, authority,
+                                             position, terminal=terminal)
+        if layerwise_snapshot is not None:
+            fixed += layerwise_snapshot.bytes
         graph = selection_metadata(authority)
         graph_snapshot = graph.snapshot(position) if graph is not None else None
         try:
@@ -195,6 +209,7 @@ class PromptCheckpointPool:
         checkpoint.action_history = action_snapshot
         checkpoint.graph_history = graph_snapshot
         checkpoint.guided_seed = seed
+        checkpoint.layerwise_pressure = layerwise_snapshot
         # Keep the previous snapshot available if any validation/copy/admission
         # above fails. In-flight replaced snapshots retain their buffers and
         # payload credit until their own D2H fence completes.
@@ -229,6 +244,8 @@ class PromptCheckpointPool:
         without rerunning selection from the older pressure frame.
         """
         self._owned(checkpoint)
+        if checkpoint.layerwise_pressure is not None:
+            raise ValueError('Frozen layerwise P checkpoint cannot adopt a later shared window')
         if (checkpoint.phase is not CheckpointPhase.LIVE or
                 checkpoint.authority.history_end != checkpoint.position):
             raise ValueError('Window update requires the exact live checkpoint boundary')
@@ -451,6 +468,8 @@ class PromptCheckpointPool:
             raise ValueError('No unsubmitted checkpoint import')
         if not self.model_ready(checkpoint):
             raise RuntimeError('Claimed model checkpoint payload is not ready')
+        if checkpoint.layerwise_pressure is not None and (pressure or checkpoint.claim_action_history is not None):
+            raise ValueError('Layerwise P restore cannot change its window or import future scores')
         if metadata_binding is not None and selection_metadata(checkpoint.authority) is not None:
             from .prompt_spans import graph_metadata
             from .block_graph import _merge_spans
@@ -601,6 +620,7 @@ class PromptCheckpointPool:
 
     def _release_payload(self, checkpoint):
         checkpoint.guided_seed = None
+        checkpoint.layerwise_pressure = None
         self.payload_bytes -= checkpoint.payload_bytes
         for name in ('graph_history', 'claim_graph_history'):
             snapshot = getattr(checkpoint, name, None)

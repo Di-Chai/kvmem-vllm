@@ -370,6 +370,7 @@ def _merge_spans(old, old_known, supplied, prefix):
     # spans can contradict the proven prefix; scanning all pairs made every
     # long Agent handoff quadratic in its number of messages.
     cursor = 0
+    all_supplied = True
     for begin, end, role, known in retained:
         while cursor < len(incoming) and incoming[cursor][1] <= begin:
             cursor += 1
@@ -381,16 +382,44 @@ def _merge_spans(old, old_known, supplied, prefix):
                         new_end < end or (known and new_end != end)):
                     raise ValueError('Conflicting message boundaries in validated historical prefix')
             index += 1
-    # A newly supplied complete span can extend an inherited unknown end.
-    # A valid nonoverlapping list has at most one span for each (begin, role).
-    # Index that identity directly instead of repeatedly scanning the result.
-    result = {(begin, role): ((begin, end, role), known) for begin, end, role, known in retained}
-    for span in incoming:
-        result[(span[0], span[2])] = (span, True)
-    merged = sorted(result.values())
-    ordered = tuple(span for span, _ in merged)
+        all_supplied = all_supplied and index > cursor
+    if all_supplied:
+        # Full-history handoffs commonly supply every retained identity. The
+        # loop above proved exact compatibility, including known endpoints;
+        # incoming is already validated and is exactly the resulting union.
+        return incoming, (True,) * len(incoming)
+    # Both lists are already ordered. Merge directly, replacing an inherited
+    # endpoint with the newly supplied complete span of the same identity.
+    # Keep the final validation: overlapping or malformed output must still
+    # fail before any metadata owner publishes it.
+    ordered, ends = [], []
+    left = right = 0
+    while left < len(retained) and right < len(incoming):
+        begin, end, role, known = retained[left]
+        span = incoming[right]
+        if begin < span[0]:
+            ordered.append((begin, end, role))
+            ends.append(known)
+            left += 1
+        elif span[0] < begin:
+            ordered.append(span)
+            ends.append(True)
+            right += 1
+        else:
+            if role != span[2]:
+                raise ValueError('Conflicting message boundaries in validated historical prefix')
+            ordered.append(span)
+            ends.append(True)
+            left += 1
+            right += 1
+    for begin, end, role, known in retained[left:]:
+        ordered.append((begin, end, role))
+        ends.append(known)
+    ordered.extend(incoming[right:])
+    ends.extend(True for _ in incoming[right:])
+    ordered = tuple(ordered)
     _spans(ordered)
-    return ordered, tuple(known for _, known in merged)
+    return ordered, tuple(ends)
 
 
 class BlockGraph:

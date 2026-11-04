@@ -1,5 +1,6 @@
 """Original bounded qw3 FP16 page-softmax kernel, on the current Torch stream."""
 from functools import lru_cache
+from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
@@ -92,6 +93,12 @@ def mean_key_scores(queries, means, eligible, *, scale=None):
     # and mandatory pages. Scatter scores back without changing history order.
     compact_means = means.index_select(1, indices).to(
         dtype=torch.float16, memory_format=torch.contiguous_format)
+    values = _compact_values(queries, compact_means, scale)
+    scores.index_copy_(0, indices, values)
+    return scores
+
+
+def _compact_values(queries, compact_means, scale):
     attention_scale = queries.shape[-1] ** -.5 if scale is None else scale
     scorer = kernel()
     if queries.dtype == torch.float16 and queries.is_contiguous():
@@ -102,11 +109,38 @@ def mean_key_scores(queries, means, eligible, *, scale=None):
         # a 2304-token BF16 Query otherwise duplicates 432 MiB at handoff.
         bytes_per_token = queries.shape[0] * queries.shape[2] * queries.shape[3] * 2
         chunk_tokens = max(1, QUERY_CONVERSION_BYTES // bytes_per_token)
-        values = torch.zeros(indices.numel(), device=queries.device, dtype=torch.float32)
+        values = torch.zeros(compact_means.shape[1], device=queries.device, dtype=torch.float32)
         for begin in range(0, queries.shape[1], chunk_tokens):
             chunk = queries[:, begin:begin+chunk_tokens].to(
                 dtype=torch.float16, memory_format=torch.contiguous_format)
             values.add_(scorer.score(chunk, compact_means, attention_scale))
             del chunk
-    scores.index_copy_(0, indices, values)
+    return values
+
+
+@dataclass(frozen=True)
+class PreparedMeanKeyIndex:
+    indices: torch.Tensor
+    means: torch.Tensor
+    pages: int
+
+
+def prepare_mean_key_index(means, eligible):
+    """Freeze only the immutable candidate domain; never cache a Query or scores."""
+    if (means.ndim!=4 or eligible.shape!=(means.shape[1],) or eligible.dtype!=torch.bool or
+            eligible.device!=means.device):
+        raise ValueError('Invalid static MeanK index domain')
+    indices=eligible.nonzero().flatten()
+    compact=means.index_select(1,indices).to(dtype=torch.float16,memory_format=torch.contiguous_format)
+    return PreparedMeanKeyIndex(indices,compact,means.shape[1])
+
+
+def prepared_layer_scores(queries, index, layer, *, scale=None):
+    if (queries.ndim!=4 or queries.shape[0]!=1 or any(n<=0 for n in queries.shape) or
+            not 0<=layer<index.means.shape[0] or queries.device!=index.means.device):
+        raise ValueError('Current layer Query does not match its prepared index')
+    scores=torch.zeros(index.pages,device=queries.device,dtype=torch.float32)
+    if index.indices.numel():
+        values=_compact_values(queries,index.means[layer:layer+1],scale)
+        scores.index_copy_(0,index.indices,values)
     return scores

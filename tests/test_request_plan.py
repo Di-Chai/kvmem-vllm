@@ -158,6 +158,58 @@ def test_warm_tool_preserves_pages_if_actual_output_fits():
     assert p.selection_budget(51616,51634,53248)==36800
 
 
+@pytest.mark.parametrize('tail', [0, 1, 7, 33, 65])
+def test_layerwise_query_reserves_complete_assistant_suffix_before_layers_diverge(tail):
+    from dataclasses import replace
+    query = (107324, 107359)
+    prompt = query[1] + tail
+    capacity = 36864 + 16384
+    plan = RequestPlan(query, block_tokens=32, gen_budget=16384,
+                       output_tokens=16384, reserve_query_output=True)
+    history = plan.replay_begin
+    budget = plan.selection_budget(history, prompt, capacity)
+    offset = history - budget
+    assert budget <= 36864 and budget % 32 == 0
+    assert budget + prompt - history + plan.output_tokens <= capacity - 32
+    assert plan.action(history, prompt, 0, capacity) == 'query'
+    # Every remaining sealed input or generated position must preserve the
+    # layer-specific mapping rather than start a shared-history refresh.
+    assert all(plan.action(h, prompt, offset, capacity) is None
+               for h in range(query[1], prompt + plan.output_tokens))
+    assert plan.query == query and plan.gen_budget == plan.output_tokens == 16384
+    if tail == 7:
+        ordinary = replace(plan, reserve_query_output=False)
+        assert ordinary.selection_budget(history, prompt, capacity) == 36864
+        assert ordinary.action(107360, prompt, history - 36864, capacity) == 'pressure'
+        assert budget == 36736
+
+
+@pytest.mark.parametrize('mode,native,enabled', [
+    (None, False, False), ('sequential', False, False),
+    (None, True, False), ('sequential', True, True), ('global', True, True)])
+def test_query_output_reservation_is_server_only_and_scoped_to_native_layerwise(
+        monkeypatch, mode, native, enabled):
+    from types import SimpleNamespace
+    from vllm_kvmem.request_plan import request_plan
+    monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', '{}')
+    monkeypatch.delenv('KVMEM_LAYERWISE_QUERY_MODE', raising=False)
+    monkeypatch.delenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES', raising=False)
+    if mode:
+        monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_MODE', mode)
+    if native:
+        monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES', '1')
+    request = SimpleNamespace(num_prompt_tokens=107366, max_tokens=16384,
+        kv_transfer_params={'kvmem_request_plan': {
+            'kvmem_query_span': [107324, 107359], 'kvmem_reselect': 'force'}})
+    plan = request_plan(request, 32, 16384)
+    assert plan.reserve_query_output is enabled
+    assert 'reserve_query_output' not in plan.payload()
+    assert plan.selection_budget(plan.replay_begin, 107366, 53248) == (
+        36736 if enabled else 36864)
+    with pytest.raises(ValueError, match='Unknown'):
+        RequestPlan.parse({'reserve_query_output': True}, 107366, 32, 16384)
+
+
 def test_rolling_window_defers_output_reserve_until_actual_decode_pressure():
     from dataclasses import replace
     p = RequestPlan(None, block_tokens=32, gen_budget=16384,

@@ -363,7 +363,8 @@ class AsyncRefresh:
         self.emit(job,'assembly_queued')
 
     def _assemble(self,job,queries,ready):
-        from .recall_experiment import configured_method, select_for_event
+        from .recall_experiment import (ACCUMULATED_ATTENTION, configured_event_method,
+                                       configured_method, select_for_event)
         from .request_plan import RequestPlan, selection_config
         from .window_assembly import NativeWindowAssembler
         pressure_policy = getattr(self.options, 'pressure_policy', None) or (
@@ -399,11 +400,14 @@ class AsyncRefresh:
                     stage = getattr(job.command, 'pressure_stage', '')
                     if stage not in ('prefill', 'decode'):
                         raise ValueError('Recall pressure event lacks its original execution stage')
-                    window = getattr(authority, 'pressure_query_window', None)
-                    if window is None:
-                        raise ValueError('Recall pressure requires captured accepted Q')
-                    recall_q, metadata = window.read(job.history)
                     event_type = stage + '_pressure'
+                    if configured_event_method(event_type) == ACCUMULATED_ATTENTION:
+                        recall_q, metadata = None, {}
+                    else:
+                        window = getattr(authority, 'pressure_query_window', None)
+                        if window is None:
+                            raise ValueError('Recall pressure requires captured accepted Q')
+                        recall_q, metadata = window.read(job.history)
                 elif job.command.selection == 'query' and job.command.query_span is not None:
                     recall_q = queries
                     begin, end = job.command.query_span
@@ -412,6 +416,9 @@ class AsyncRefresh:
                     event_type = 'query'
                 else:
                     raise ValueError('Recall experiment encountered an unqualified selection entry')
+                if (os.getenv('KVMEM_VALUE_RECALL_REFERENCE') == '1' and
+                        configured_event_method(event_type) != ACCUMULATED_ATTENTION):
+                    authority.recall_value_scales = self.runtime.scales[:authority.scoring_layers].detach().cpu()
                 plan = select_for_event(authority, recall_q, mandatory, max_tokens=cfg.select_budget,
                     event_type=event_type, query_metadata=metadata, request_id=job.command.request_id,
                     output=self.runner._kvmem_probe_output)
@@ -442,6 +449,11 @@ class AsyncRefresh:
             assembler=NativeWindowAssembler.from_runner(self.runner,job.command.request_id,self.runtime.names,
                 cfg.block_tokens,packed=self.options.packed_assembly,
                 direct_pinned_reads=self.options.direct_pinned_reads,arena='refresh')
+            pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+            if (pressure is not None and pressure.single_assembly and
+                    job.command.selection == 'pressure'):
+                from .layerwise_pressure_efficiency import install_single_assembly
+                install_single_assembly(assembler, pressure, job, self.runtime.names)
             if self.maintenance is not None:
                 assembler.bandwidth_limiter = self.maintenance.transfer_budget
             assembly=assembler.assemble(authority,plan)

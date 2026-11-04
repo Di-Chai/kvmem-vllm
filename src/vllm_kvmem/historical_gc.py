@@ -10,6 +10,13 @@ from threading import Event
 from dataclasses import dataclass, field
 
 
+# Added capacity in the two bulk and two decode D2H slots. Only relevant
+# Question rows and generated rows are transmitted, never the whole history.
+REDUNDANCY_Q_SLOT_BYTES = 64 * 1024**2
+REDUNDANCY_Q_MAX_SLOT_BYTES = 256 * 1024**2
+REDUNDANCY_Q_MAX_SLOTS = 4
+
+
 # Public schemas mirror the native factory. No Python policy callbacks execute
 # on the worker; adding a policy requires registering its native constructor.
 _POLICY_DEFAULTS = {'lru': {'keep_mandatory': True}, 'redundancy': {
@@ -17,13 +24,10 @@ _POLICY_DEFAULTS = {'lru': {'keep_mandatory': True}, 'redundancy': {
     'representative_similarity': 0.9, 'reference_blocks': 32,
     'candidate_blocks': 128, 'pair_comparisons': 512,
     'query_segments_per_step': 8, 'feature_cache_bytes': 134217728,
-    'query_cache_bytes': 8388608, 'allow_lossy_fallback': False}}
-
-# Added capacity in the two bulk and two decode D2H slots. Only relevant
-# Question rows and generated rows are transmitted, never the whole history.
-REDUNDANCY_Q_SLOT_BYTES = 64 * 1024**2
-REDUNDANCY_Q_MAX_SLOTS = 4
-
+    'query_cache_bytes': 8388608, 'query_capture_bytes': REDUNDANCY_Q_SLOT_BYTES,
+    'allow_lossy_fallback': False,
+    'thinking_only': False, 'pool_pairwise': False, 'all_history_references': False,
+    'refresh_before_rank': False, 'epoch_peak': False, 'lru_fallback': False}}
 
 def redundancy_layers(target_layers):
     if type(target_layers) is not int or target_layers <= 0:
@@ -44,6 +48,7 @@ class RedundancyHistory:
         self.layers = redundancy_layers(target_layers)
         self.configured = scope.configure_features(len(self.layers), kv_heads, query_heads, head_dim)
         self.request_id = self.namespace = self.span = self.digest = None
+        self.question_id = None
         self.epoch = None
         self.offset = 0
         self.complete = False
@@ -52,14 +57,18 @@ class RedundancyHistory:
             question_tokens=0, observation_tokens=0, question_reuses=0,
             invalidations=0, missing_cached_question=0, transport_overflow=0)
 
-    def invalidate(self, *, overflow=False):
-        self.scope.invalidate_question()
+    def invalidate(self, *, overflow=False, reset_request=True):
+        if not self.invalid:
+            self.scope.invalidate_question()
+            self.stats['invalidations'] += 1
         self.epoch = None
         self.complete = False
         self.invalid = True
         self.digest = None
-        self.request_id = None
-        self.stats['invalidations'] += 1
+        if reset_request:
+            # Explicit lifecycle rollback may rebuild within the same request.
+            # A failed packet remains invalid until a genuinely new request.
+            self.request_id = None
         self.stats['transport_overflow'] += int(overflow)
 
     @staticmethod
@@ -87,26 +96,28 @@ class RedundancyHistory:
         if self.configured is False:
             self.invalid = True
             return
-        if self.request_id == binding.request_id:
-            return
-        span = binding.query_span
         namespace = binding.namespace, binding.generation
+        if self.request_id == binding.request_id and self.namespace == namespace:
+            return
+        span = getattr(binding, 'question_span', None) or binding.query_span
+        question_id = getattr(binding, 'question_id', None)
         reusable = (self.complete and not self.invalid and self.namespace == namespace and
+            self.question_id == question_id and
             self.span == span and span is not None and binding.history >= span[1] and
             history_begin >= span[1] and self.digest == self._digest(binding, span))
         self.request_id = binding.request_id
         if reusable:
             self.stats['question_reuses'] += 1
             return
-        self.namespace, self.span = namespace, span
+        self.namespace, self.span, self.question_id = namespace, span, question_id
         self.offset, self.complete, self.invalid, self.digest = 0, False, False, None
         if span is None or not 0 <= span[0] < span[1] <= len(binding.tokens):
-            self.invalidate()
+            self.invalidate(reset_request=False)
             return
         if history_begin > span[0]:
             # No real forward exists for the missing cached Question prefix.
             self.stats['missing_cached_question'] += 1
-            self.invalidate()
+            self.invalidate(reset_request=False)
             return
         self.epoch = self.scope.begin_question(span[1]-span[0])
 
@@ -138,14 +149,14 @@ class RedundancyHistory:
                rows=None, overflow=False):
         self.begin(binding, history_begin)
         if overflow:
-            self.invalidate(overflow=True)
+            self.invalidate(overflow=True, reset_request=False)
         if self.invalid or not retained:
             return
         if rows is None:
             relevant = (max(history_begin, self.span[0]) < min(history_begin+retained, self.span[1])
                 if prefill else self.complete and history_begin+retained > len(binding.tokens))
             if relevant:
-                self.invalidate()
+                self.invalidate(reset_request=False)
             return
         if prefill:
             begin = max(history_begin+row_offset, self.span[0])
@@ -154,12 +165,12 @@ class RedundancyHistory:
                 return
             offset = begin-self.span[0]
             if offset != self.offset:
-                self.invalidate()
+                self.invalidate(reset_request=False)
                 return
             start = begin-history_begin-row_offset
             selected = self._float_rows(rows[:, start:start+end-begin])
             if not self.scope.append_question(self.epoch, offset, selected, end-begin):
-                self.invalidate()
+                self.invalidate(reset_request=False)
                 return
             self.offset += end-begin
             self.stats['question_tokens'] += end-begin
@@ -172,7 +183,7 @@ class RedundancyHistory:
             if count > 0:
                 selected = self._float_rows(rows[:, start:start+count])
                 if not self.scope.observe_query(self.epoch, selected, count):
-                    self.invalidate()
+                    self.invalidate(reset_request=False)
                 else:
                     self.stats['observation_tokens'] += count
 
@@ -215,12 +226,18 @@ class HistoricalGcSettings:
                 lower = -1 if key == 'representative_similarity' else 0
                 if type(value) not in (int, float) or not lower <= value <= 1 or not math.isfinite(value):
                     raise ValueError(f'historical_gc.policy_params.{key} must be finite and in [{lower},1]')
-            elif type(value) is not int or not 1 <= value <= (2**40 if key.endswith('_bytes') else 65536):
-                raise ValueError(f'historical_gc.policy_params.{key} must be a positive bounded integer')
+            else:
+                limit = (REDUNDANCY_Q_MAX_SLOT_BYTES if key == 'query_capture_bytes' else
+                         2**40 if key.endswith('_bytes') else 65536)
+                if type(value) is not int or not 1 <= value <= limit:
+                    raise ValueError(f'historical_gc.policy_params.{key} must be an integer in [1,{limit}]')
         # Own the configuration and expand defaults without changing the input.
         object.__setattr__(self, 'policy_params', {**defaults, **self.policy_params})
         if self.policy == 'redundancy' and not self.policy_params['keep_mandatory']:
             raise ValueError('historical_gc redundancy requires keep_mandatory=true')
+        if (self.policy == 'redundancy' and self.policy_params['lru_fallback'] and
+                self.policy_params['allow_lossy_fallback']):
+            raise ValueError('Choose lru_fallback or allow_lossy_fallback, not both')
         for name in ('poll_ms', 'scan_blocks', 'delete_blocks'):
             value = getattr(self, name)
             if type(value) is not int or not 1 <= value <= 65536:

@@ -69,6 +69,13 @@ def test_followup_keeps_entire_accepted_response_and_exact_new_user_span(qualifi
     assert '<|im_start|>assistant\n<think>\n' in Tokenizer().decode(tokens[span[1]:])
 
 
+def test_non_thinking_followup_uses_official_empty_think_block(qualifier):
+    tokens, span = qualifier.append_user_query([1, 2], [3, 4], Tokenizer(), thinking=False)
+    assert tokens[:4] == [1, 2, 3, 4]
+    assert Tokenizer().decode(tokens[slice(*span)]) == qualifier.FOLLOWUP_QUESTION
+    assert Tokenizer().decode(tokens[span[1]:]).endswith('<|im_start|>assistant\n<think>\n\n</think>\n\n')
+
+
 @pytest.mark.parametrize('change,terminal_change,message', [
     ({'finish_reason': 'stop'}, {}, 'stopped'),
     ({'output_ids': [1]}, {}, 'stopped'),

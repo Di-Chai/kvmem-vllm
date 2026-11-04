@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from scripts.dsh_query_epoch import apply_query_provenance
+from scripts.dsh_query_epoch import apply_query_provenance, prepare_with_query_provenance
 
 
 def fixture():
@@ -47,3 +47,89 @@ def test_auxiliary_call_without_a_real_user_has_no_query_and_legacy_is_explicit(
     body.pop('kvmem_query_provenance')
     assert apply_query_provenance(body,p)['status']=='legacy-role-query'
     with pytest.raises(ValueError,match='required'):apply_query_provenance(body,p,required=True)
+
+
+class CharacterTokenizer:
+    def convert_tokens_to_ids(self, token):
+        return 999
+
+    def encode(self, text, **kwargs):
+        return list(text.encode())
+
+    def __call__(self, text, **kwargs):
+        return dict(input_ids=self.encode(text), offset_mapping=[(i, i+1) for i in range(len(text))])
+
+
+def planner_with_feedback(*, feedback_size=256):
+    from benchmarks.deepswe.claude_bridge import Planner, Trajectory
+    from scripts.terminalbench_query import TaskQuery
+    from test_deepswe_prefix_reuse import renderer
+
+    def protocol(*, request):
+        result = renderer(request=request)
+        result['query_index'] = max(i for i, m in enumerate(request['messages']) if m['role'] == 'user')
+        return result
+
+    planner = Planner(protocol, CharacterTokenizer(), gen_budget=128)
+    state = Trajectory()
+    source = TaskQuery('s', 'task', 'solve', 'solve')
+    body = dict(prompt_cache_key='s', messages=[dict(role='user', content='solve')])
+    body['kvmem_query_provenance'] = source.proof(body['messages'])
+    first, _ = prepare_with_query_provenance(planner, body, state, body, required=True)
+    planner.commit(state, first, body, dict(content='answer'), [17, 18, planner.end])
+    following = dict(prompt_cache_key='s', messages=body['messages'] + [
+        dict(role='assistant', content='answer'), dict(role='user', content='X'*feedback_size)])
+    following['kvmem_query_provenance'] = source.proof(following['messages'])
+    return planner, state, source, first, following
+
+
+def test_verified_task_query_precedes_legacy_feedback_capacity_check_and_keeps_exact_ids():
+    planner, state, _, first, body = planner_with_feedback()
+    before = copy.deepcopy(body)
+    with pytest.raises(ValueError, match='Query exceeds G replay capacity'):
+        planner.prepare(body, state)
+    prepared, proof = prepare_with_query_provenance(planner, body, state, body, required=True)
+    assert prepared[5] and prepared[0][:len(state.tokens)+len(state.output)] == state.tokens+state.output
+    assert prepared[1]['kvmem_query_span'] == first[1]['kvmem_query_span']
+    assert prepared[1]['kvmem_query_id'] == first[1]['kvmem_query_id']
+    assert proof['status'] == 'verified-user-source' and proof['user_ordinal'] == 0
+    assert body == before and state.turns == 1
+
+
+@pytest.mark.parametrize('damage', ['missing', 'session', 'digest', 'ordinal', 'identity'])
+def test_long_feedback_cannot_bypass_validation_with_missing_or_bad_provenance(damage):
+    planner, state, _, _, body = planner_with_feedback()
+    if damage == 'missing':
+        body.pop('kvmem_query_provenance')
+        body['defer_validation'] = True  # An arbitrary raw field grants nothing.
+    else:
+        key, value = {'session': ('session_id', 'other'), 'digest': ('user_messages_sha256', 'bad'),
+                      'ordinal': ('query_user_ordinal', True), 'identity': ('query_message_id', '')}[damage]
+        body['kvmem_query_provenance'][key] = value
+    before = copy.deepcopy(state)
+    with pytest.raises(ValueError):
+        prepare_with_query_provenance(planner, body, state, body)
+    assert state == before
+
+
+def test_resolved_real_question_still_obeys_full_query_capacity_and_headroom():
+    planner, state, _, _, body = planner_with_feedback()
+    body['kvmem_query_provenance'].update(query_user_ordinal=1, query_message_id='new-human-source')
+    with pytest.raises(ValueError, match='Query exceeds G replay capacity'):
+        prepare_with_query_provenance(planner, body, state, body, required=True)
+    # This fits G itself, but still lacks the ordinary one-block replay reserve.
+    planner, state, _, _, body = planner_with_feedback(feedback_size=100)
+    body['kvmem_query_provenance'].update(query_user_ordinal=1, query_message_id='new-human-source')
+    with pytest.raises(ValueError, match='pressure headroom'):
+        prepare_with_query_provenance(planner, body, state, body, required=True)
+
+
+def test_off_and_missing_required_sources_remain_distinct():
+    planner, state, _, _, body = planner_with_feedback()
+    body['kvmem_query_provenance'].update(query_user_ordinal=None, query_message_id=None)
+    prepared, source = prepare_with_query_provenance(planner, body, state, body, required=True)
+    assert prepared[1]['kvmem_reselect'] == 'off' and 'kvmem_query_span' not in prepared[1]
+    assert source['user_ordinal'] is None
+    body.pop('kvmem_query_provenance')
+    with pytest.raises(ValueError, match='source metadata is required'):
+        prepare_with_query_provenance(planner, body, state, body, required=True)

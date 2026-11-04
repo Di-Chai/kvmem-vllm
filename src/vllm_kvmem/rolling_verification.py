@@ -74,6 +74,7 @@ class RollingPressureOracle:
                 stable_tokens += remap.n_tokens
             actual = session._target_bytes(job.command.request_id, job.selected_tokens)
             if not torch.equal(actual, expected):
+                self._record_kv_mismatch(job, actual, expected, stable_tokens)
                 raise RuntimeError('Rolling pressure target/MTP KV differs from immutable FP8 history')
             target_bytes = actual.numel()
         row = dict(request_id=job.command.request_id, history_end=job.history,
@@ -87,4 +88,44 @@ class RollingPressureOracle:
             mtp_attention_layers=len(getattr(self.runner, '_kvmem_mtp_modules', {})),
             previous_accepted_step=self.last_step, private_forward_steps=job.steps)
         with (self.runner._kvmem_probe_output/'verified_rolling_pressure.jsonl').open('a') as stream:
+            stream.write(json.dumps(row)+'\n')
+
+    def _record_kv_mismatch(self, job, actual, expected, stable_tokens):
+        """Keep bounded failure evidence without weakening the byte oracle."""
+        names = self.runner._kvmem_capture_runtime.names
+        shape = (2 * len(names), job.selected_tokens, self.width)
+        actual, expected = actual.reshape(shape), expected.reshape(shape)
+        old = self.old_native.reshape(shape[0], self.old_tokens, self.width)
+        remaps = list(job.result[2].remaps)
+        failures = []
+        for index in range(shape[0]):
+            different = actual[index] != expected[index]
+            count = int(different.sum())
+            if not count:
+                continue
+            # Inspect one small row at a time: do not materialize coordinates
+            # for every corrupt byte in a full working window.
+            tokens = different.any(-1).nonzero().flatten()
+            examples = []
+            for token in tokens[:4].tolist():
+                columns = different[token].nonzero().flatten()[:4].tolist()
+                remap = next((r for r in remaps if r.to_base <= token < r.to_base + r.n_tokens), None)
+                source = (remap.from_base + token - remap.to_base
+                          if remap is not None and remap.from_base >= 0 else None)
+                examples.append(dict(token=token, columns=columns,
+                    actual=actual[index, token, columns].tolist(),
+                    expected=expected[index, token, columns].tolist(),
+                    old_native=old[index, source, columns].tolist()
+                        if source is not None and source < self.old_tokens else None,
+                    remap={key: getattr(remap, key) for key in
+                        ('block_id', 'skip', 'working_k_resident', 'from_base', 'to_base', 'n_tokens')}
+                        if remap is not None else None))
+            failures.append(dict(layer=names[index // 2], kind='key' if index % 2 == 0 else 'value',
+                mismatch_bytes=count, mismatch_tokens=tokens.numel(), examples=examples))
+        row = dict(request_id=job.command.request_id, history_end=job.history,
+            selected_tokens=job.selected_tokens, old_tokens=self.old_tokens,
+            stable_tokens=stable_tokens, previous_accepted_step=self.last_step,
+            remap_count=len(remaps), remap_token_counts=sorted({r.n_tokens for r in remaps}),
+            failures=failures)
+        with (self.runner._kvmem_probe_output/'rolling_pressure_mismatch.jsonl').open('a') as stream:
             stream.write(json.dumps(row)+'\n')

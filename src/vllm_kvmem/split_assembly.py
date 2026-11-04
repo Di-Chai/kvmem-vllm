@@ -201,7 +201,7 @@ def assemble_split_layer(raw, raw_indices, values, value_indices, bases, layer, 
                          value_record_bytes,value_offset=0,raw_dtype=torch.bfloat16):
     key,value=layer.key,layer.value
     heads,dim=key.shape[-2:]
-    key_input,software=fp8_storage(key)
+    key_input,software=fp8_storage(key,for_write=True)
     value_input,_=fp8_storage(value)
     raw_input,_=fp8_storage(raw)
     values_input,_=fp8_storage(values)
@@ -275,7 +275,7 @@ def assemble_split_layers(raw,raw_indices,values,value_indices,bases,table,geome
                           layers,block_tokens,raw_record_bytes,value_record_bytes,
                           value_offset=0,raw_dtype=torch.bfloat16):
     """Launch a prevalidated whole layer bundle; launch errors never fall back."""
-    software=software_fp8(raw.device)
+    software=software_fp8(raw.device,for_write=True)
     raw_input,_=fp8_storage(raw)
     values_input,_=fp8_storage(values)
     _assemble_split_layers[(bases.numel()*block_tokens,geometry.heads,layers)](

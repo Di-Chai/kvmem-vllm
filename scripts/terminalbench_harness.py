@@ -1,7 +1,8 @@
 """Opt-in, frozen Terminus transport repair. Never imported by historical jobs.
 
-Completion is proven only for a single submitted shell line from a known Bash
-prompt. Multiline/interactive input keeps the requested observation interval.
+Completion is proven for a single shell line or a complete, standalone quoted
+heredoc from a known Bash prompt. Other multiline/interactive input keeps the
+requested observation interval.
 No agent deadline, command rewrite, background process kill or answer retry.
 """
 import asyncio
@@ -19,16 +20,18 @@ CONTROL = re.compile(r'(?:C-[cdz]\s*)+')
 INSTRUCTIONS = '''
 Local terminal executor capabilities (custom harness): standalone C-c, C-d and
 C-z are keys, without a newline; repeated standalone control keys are supported.
-For single-line shell commands the executor may return before duration when Bash
-confirms completion. No output does NOT imply completion. Explicit idle waits and
-interactive/multiline input retain duration. Executor status reports completion
+For single-line shell commands and complete standalone quoted heredocs the
+executor may return before duration when Bash confirms completion. No output does
+NOT imply completion. Explicit idle waits and other interactive/multiline input
+retain duration. Executor status reports completion
 and exit code or an unconfirmed/running state. A batch stops after an unconfirmed
 interrupt; remaining commands are NOT sent. Decide the next action from output.
 Interactive-shell curl defaults: connect timeout 15s, <1 byte/s for 120s aborts,
 up to 2 retries within 300s; wget: read/connect timeout 120s, 3 tries. Explicit
 command options override these defaults; scripts using their own tools are not
-rewritten. There is no overall agent or CPU-command time limit. For a stuck
-network/script operation use explicit bounds or send C-c and inspect the result.
+rewritten. Job-configured agent deadlines still apply. The executor adds no
+CPU-command deadline. For a stuck network/script operation use explicit bounds
+or send C-c and inspect the result.
 '''
 
 
@@ -38,6 +41,39 @@ def controls(text):
 
 def single_line(text):
     return bool(text and text.endswith('\n') and '\n' not in text[:-1] and '\r' not in text and not controls(text))
+
+
+# Deliberately accept only a simple command with literal shell words, optionally
+# one literal output path, and one quoted heredoc. In particular, do not infer
+# completion for arbitrary batches from their first intermediate Bash prompt.
+HEREDOC_HEADER = re.compile(
+    r"(?P<program>[A-Za-z_./][A-Za-z0-9_./+\-]*)"
+    r"(?:[ \t]+[A-Za-z0-9_./=:+,\-]+)*"
+    r"(?:[ \t]+>[ \t]*[A-Za-z0-9_./+\-]+)?"
+    r"[ \t]+<<[ \t]*(?P<quote>['\"])(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=quote)[ \t]*"
+)
+SHELL_RESERVED = frozenset('if then elif else fi for while until do done case esac select function time coproc in'.split())
+
+
+def standalone_heredoc(text):
+    """Recognize one complete command, without parsing or rewriting its body.
+
+    Quoting the delimiter keeps body substitutions from introducing interactive
+    input. The exact delimiter must occur only at the end: an earlier match
+    could expose the remaining text as a second top-level shell command.
+    """
+    if (not text or not text.endswith('\n') or
+            any((ord(c) < 32 and c not in '\n\t') or ord(c) == 127 for c in text)):
+        return False
+    lines = text[:-1].split('\n')
+    if len(lines) < 2:
+        return False
+    match = HEREDOC_HEADER.fullmatch(lines[0])
+    if match is None or match['program'] in SHELL_RESERVED:
+        return False
+    delimiter = match['delimiter']
+    return lines[-1] == delimiter and delimiter not in lines[1:-1]
 
 
 def hook_source(path):
@@ -98,8 +134,24 @@ async def probe(session):
 
 async def prepare_recorder(session, audit):
     """Stage a private recorder adapter without changing installed packages."""
-    result = await session.environment.exec(
-        command='p=$(command -v asciinema) && head -n 1 "$p"', user=session._user)
+    async def probe_command(stage, command):
+        started = time.monotonic()
+        try:
+            result = await session.environment.exec(command=command, user=session._user, timeout_sec=30)
+        except Exception as error:
+            audit(event='recorder_probe', stage=stage, command=command, timeout_sec=30,
+                  elapsed_seconds=time.monotonic()-started, error=repr(error))
+            raise RuntimeError(f'Recorder {stage} probe failed: {error!r}') from error
+        detail = dict(stage=stage, command=command, timeout_sec=30,
+            elapsed_seconds=time.monotonic()-started, return_code=result.return_code,
+            stdout=result.stdout, stderr=result.stderr)
+        audit(event='recorder_probe', **detail)
+        if result.return_code:
+            # Docker/Harbor combines stderr into stdout. Keep both fields and
+            # the exit code so a failed setup never becomes an opaque "None".
+            raise RuntimeError('Recorder qualification failed: '+json.dumps(detail, ensure_ascii=False))
+        return result
+    result = await probe_command('interpreter', 'p=$(command -v asciinema) && head -n 1 "$p"')
     line = (result.stdout or '').strip()
     if result.return_code or not line.startswith('#!'):
         raise RuntimeError('Asciinema Python interpreter cannot be identified')
@@ -111,11 +163,8 @@ async def prepare_recorder(session, audit):
     remote = '/tmp/.kb-recorder-'+uuid.uuid4().hex+'.py'
     await session.environment.upload_file(source_path=source, target_path=remote)
     command = ' '.join(shlex.quote(x) for x in [*interpreter, remote])
-    result = await session.environment.exec(command=(
-        f"printf '%s  %s\\n' {digest} {remote} | sha256sum -c - && {command} --version"),
-        user=session._user)
-    if result.return_code:
-        raise RuntimeError('Private duplex recorder qualification failed: '+str(result.stderr))
+    result = await probe_command('uploaded_adapter',
+        f"printf '%s  %s\\n' {digest} {remote} | sha256sum -c - && {command} --version")
     audit(event='recorder_prepared', session=session.environment.session_id,
           source_sha256=digest, interpreter=interpreter, remote=remote,
           version=(result.stdout or '').strip(), policy='bounded-duplex-v1')
@@ -208,7 +257,8 @@ def install(audit_path, expected_sources=None, terminal_tool_bundles=None, recor
                 # idle marker while Bash is reading a heredoc proves nothing.
                 session._kb_ready=True
                 session._kb_pending=None
-            eligible=bool(single_line(text) and session._kb_ready and before['shell'])
+            eligible=bool((single_line(text) or standalone_heredoc(text))
+                          and session._kb_ready and before['shell'])
             if keys:
                 eligible=True
             if not text:

@@ -1,7 +1,8 @@
 """Instance-local Qwen gated-attention adapter; native batched projections remain.
 
-Only the fused norm/RoPE kernel is extended to return its pre-RoPE intermediates.
-Weight quantization, attention and recurrent execution stay owned by vLLM.
+The ordinary adapter extends fused norm/RoPE; B12X QSA uses its own explicit
+projection adapter. Weight quantization, attention and recurrent execution
+stay owned by vLLM.
 The sink must copy or retain captured tensors through asynchronous completion.
 """
 from contextlib import contextmanager
@@ -22,6 +23,9 @@ class CapturedLayer:
     query: torch.Tensor
     key: torch.Tensor
     value: torch.Tensor
+    # Lossless model-specific bytes carried in an auxiliary archive V plane.
+    # Auxiliary planes follow all scoring/MTP layers and never enter MeanK.
+    archive_value_bytes: torch.Tensor | None = None
 
 
 _sink: ContextVar[Callable[[CapturedLayer], None] | None] = ContextVar("kvmem_capture", default=None)
@@ -38,17 +42,21 @@ def capture_to(sink: Callable[[CapturedLayer], None]):
 
 def install_qwen_capture(model) -> list[str]:
     from vllm.model_executor.models.qwen3_next import Qwen3NextAttention
+    from .qsa_adapter import is_b12x_qsa, install_qsa_projection
     layers = [(name, module) for name, module in model.named_modules()
-              if isinstance(module, Qwen3NextAttention)]
+              if isinstance(module, Qwen3NextAttention) or is_b12x_qsa(module)]
     if not layers:
         raise ValueError("No compatible Qwen gated attention layers found")
     # Validate all layers before changing any instance.
     for name, layer in layers:
-        if not layer.use_fused_qk_norm_rope_gate:
+        if not is_b12x_qsa(layer) and not layer.use_fused_qk_norm_rope_gate:
             raise ValueError(f"Capture adapter not qualified for unfused layer {name}")
         if hasattr(layer, "_kvmem_original_projection"):
             raise ValueError(f"Capture already installed on {name}")
     for name, layer in layers:
+        if is_b12x_qsa(layer):
+            install_qsa_projection(layer, name)
+            continue
         layer._kvmem_original_projection = layer._project_qkv_gate
         layer._kvmem_capture_name = name
         layer._project_qkv_gate = MethodType(_project_with_capture, layer)

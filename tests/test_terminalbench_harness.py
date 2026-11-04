@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 import uuid
 import pytest
-from scripts.terminalbench_harness import controls, single_line, install
+from scripts.terminalbench_harness import controls, single_line, standalone_heredoc, install
 
 @pytest.mark.parametrize('text,expected', [('C-c',['C-c']),('C-c\n',['C-c']),('C-cC-c',['C-c','C-c']),('C-d',['C-d']),('echo C-c\n',None),('cat <<EOF\nC-c\nEOF\n',None),('',None)])
 def test_exact_controls(text,expected):
@@ -15,6 +15,42 @@ def test_exact_controls(text,expected):
 
 @pytest.mark.parametrize('text,expected',[('echo hi\n',True),('echo hi',False),('echo hi\nsleep 5\n',False),('C-c\n',False)])
 def test_single_line_only(text,expected):assert single_line(text)==expected
+
+
+@pytest.mark.parametrize('text', [
+    "python3 << 'EOF'\nprint('ok')\nEOF\n",
+    'python3 - <<"PY_END"\nprint("EOF")\nPY_END\n',
+    "cat > /tmp/plain-text <<'DATA'\n$HOME `false`\nDATA\n",
+    "cat <<'EMPTY'\nEMPTY\n",
+])
+def test_standalone_heredoc_accepts_only_complete_literal_command(text):
+    assert standalone_heredoc(text)
+
+
+@pytest.mark.parametrize('text', [
+    "python3 <<'EOF'\nprint('still entering')\n",
+    "python3 <<'EOF'\nprint('ok')\nEOF",
+    "python3 <<'EOF'\nprint('ok')\nEOF\nsleep 10\n",
+    "python3 <<'EOF'\nEOF\nsleep 10\nEOF\n",
+    "python3 <<'EOF' | cat\nprint('ok')\nEOF\n",
+    "true && python3 <<'EOF'\nprint('ok')\nEOF\n",
+    "false; python3 <<'EOF'\nprint('ok')\nEOF\n",
+    "python3 <<EOF\n$(sleep 10)\nEOF\n",
+    "cat <<-'EOF'\n\tEOF\n",
+    "cat <<'A' <<'B'\nA\nB\n",
+    "python3 <<'EOF'\nprint('ok')\n EOF\n",
+    "if true <<'EOF'\nEOF\n",
+    "for value <<'EOF'\nEOF\n",
+    "python3 <<'EOF'\nprint('ok')\nEOF\n\n",
+    "python3 <<'EOF'\n\x00\nEOF\n",
+    "cat <<'EOF'\n\x03sleep 10\nEOF\n",
+    "cat <<'EOF'\n\x04\nEOF\n",
+    "cat <<'EOF'\n\x1b[200~EOF\nEOF\n",
+    "cat <<'EOF'\nEOX\x7fF\nEOF\n",
+    "python3 <<'EOF'\r\nprint('ok')\r\nEOF\r\n",
+])
+def test_standalone_heredoc_rejects_ambiguous_or_multiple_commands(text):
+    assert not standalone_heredoc(text)
 
 class LocalEnvironment:
     session_id='isolated-harness-test'
@@ -108,6 +144,23 @@ def test_real_tmux(tmp_path):
         assert 'alive' in out and 'completion confirmed' in out
         start=time.monotonic();await execute('echo first\nsleep .7\necho last\n',1)
         assert time.monotonic()-start>=1
+        # A displayed prompt is not completion. Only Bash's private hook after
+        # this entire command returns may acknowledge the quoted heredoc.
+        start=time.monotonic()
+        _,out=await execute("python3 <<'KB_DOC'\nimport time\nprint('root@fake:/app# ', flush=True)\ntime.sleep(.8)\nraise SystemExit(7)\nKB_DOC\n",4)
+        elapsed=time.monotonic()-start
+        assert .8 <= elapsed < 3.5 and 'completion confirmed, exit=7' in out
+        # A suffix is another top-level command, so keep the observation time.
+        start=time.monotonic()
+        _,out=await execute("cat <<'KB_DOC'\none\nKB_DOC\nsleep .3\nprintf 'suffix-done\\n'\n",1)
+        assert time.monotonic()-start>=1 and 'completion unconfirmed' in out
+        # An incomplete delimiter must not be mistaken for an idle shell even
+        # when Bash still has its previous prompt's sequence marker on disk.
+        start=time.monotonic()
+        _,out=await execute("cat <<'KB_DOC'\npartial\n",.4)
+        assert time.monotonic()-start>=.4 and 'completion unconfirmed' in out
+        _,out=await execute("KB_DOC\n",.5)
+        assert 'partial' in out
         _,out=await execute('bash --noprofile --norc\n',.2)
         assert 'completion unconfirmed' in out
         await execute('exit\n',.3)
@@ -161,3 +214,44 @@ def test_probe_preserves_other_errors_and_cancellation(error):
     session=SimpleNamespace(_kb_path='/tmp/probe',_session_name='test',_user=None,
                             environment=SimpleNamespace(exec=execute))
     with pytest.raises(type(error)):asyncio.run(probe(session))
+
+
+@pytest.mark.parametrize('failure',[None,TimeoutError('qualification deadline')])
+def test_recorder_setup_keeps_merged_output_exit_code_and_timeout_evidence(failure):
+    from scripts.terminalbench_harness import prepare_recorder
+    events=[];calls=[]
+    async def execute(command,**kwargs):
+        calls.append(kwargs)
+        if len(calls)==1:
+            return SimpleNamespace(return_code=0,stdout='#!/usr/bin/python3\n',stderr=None)
+        if failure is not None:raise failure
+        return SimpleNamespace(return_code=1,stdout='Traceback: unsupported recorder version',stderr=None)
+    async def upload(**kwargs):pass
+    session=SimpleNamespace(_user=None,environment=SimpleNamespace(exec=execute,upload_file=upload))
+    with pytest.raises(RuntimeError,match='deadline' if failure else 'unsupported recorder version'):
+        asyncio.run(prepare_recorder(session,lambda **row:events.append(row)))
+    assert all(row['timeout_sec']==30 for row in calls)
+    assert events[-1]['stage']=='uploaded_adapter' and events[-1]['timeout_sec']==30
+    if failure:
+        assert 'qualification deadline' in events[-1]['error']
+    else:
+        assert events[-1]['return_code']==1 and events[-1]['stderr'] is None
+        assert 'unsupported recorder version' in events[-1]['stdout']
+
+
+def test_recorder_setup_quotes_interpreter_without_reinterpreting_shell_text():
+    import shlex
+    from scripts.terminalbench_harness import prepare_recorder
+    commands = []; events = []; uploaded = []
+    interpreter = ['/opt/Python runtime/bin/python3', '-I', 'literal$(do-not-run)`literal`']
+    async def execute(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(return_code=0, stderr=None,
+            stdout='#!'+shlex.join(interpreter)+'\n' if len(commands)==1 else 'asciinema 2.0.2\n')
+    async def upload(**kwargs): uploaded.append(kwargs)
+    session = SimpleNamespace(_user=None, environment=SimpleNamespace(
+        session_id='qualification', exec=execute, upload_file=upload))
+    command = asyncio.run(prepare_recorder(session, lambda **row: events.append(row)))
+    assert shlex.split(command) == [*interpreter, uploaded[0]['target_path']]
+    assert commands[1].endswith(' && '+command+' --version')
+    assert events[-1]['event'] == 'recorder_prepared' and events[-1]['interpreter'] == interpreter

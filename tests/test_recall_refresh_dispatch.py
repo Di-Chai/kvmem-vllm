@@ -17,6 +17,10 @@ def setup_dispatch(monkeypatch, tmp_path, *, selection='pressure', stage='prefil
                    history=512, budget=256, method='fps4'):
     monkeypatch.setenv('KVMEM_RECALL_METHOD', method)
     monkeypatch.setenv('KVMEM_PRESSURE_QUERY_WINDOW', '128')
+    if method in recall_experiment.VALUE_METHODS:
+        monkeypatch.setenv('KVMEM_VALUE_RECALL_REFERENCE', '1')
+    else:
+        monkeypatch.delenv('KVMEM_VALUE_RECALL_REFERENCE', raising=False)
     monkeypatch.delenv('KVMEM_RETRIEVAL_DIAGNOSTICS', raising=False)
     # Mirrors the existing AsyncRefresh tests: model/device work is replaced by
     # explicit ready/assembly sentinels, while the actual dispatch runs intact.
@@ -48,7 +52,7 @@ def setup_dispatch(monkeypatch, tmp_path, *, selection='pressure', stage='prefil
         return original_read(end)
 
     window.read = read
-    authority = NS(history_end=history, records=records, memory=memory,
+    authority = NS(history_end=history, records=records, memory=memory, scoring_layers=2,
         archive=NS(wait_for_capacity=lambda _: True), pressure_query_window=window,
         publish_sealed=lambda waiter: calls.publication.append(True), select_for_queries=legacy)
     query_span = (history+3, history+9) if selection == 'query' else None
@@ -59,7 +63,7 @@ def setup_dispatch(monkeypatch, tmp_path, *, selection='pressure', stage='prefil
              guided_pressure=False, guided_rows=[])
     manager = AsyncRefresh.__new__(AsyncRefresh)
     manager.runner = NS(device='mock-cuda', _kvmem_probe_output=tmp_path,
-        _kvmem_capture_runtime=NS(names=('layer0', 'layer1')))
+        _kvmem_capture_runtime=NS(names=('layer0', 'layer1'), scales=torch.tensor([2., .5])))
     manager.options = NS(memory=config, pressure_policy='attention', action_profiling=False,
         packed_assembly=False, direct_pinned_reads=False)
     manager.stream = NS(wait_event=lambda ready: calls.waits.append(ready))

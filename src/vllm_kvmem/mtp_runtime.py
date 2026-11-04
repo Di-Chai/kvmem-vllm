@@ -32,6 +32,9 @@ def install_mtp_runtime(runner):
             # device gate survives both prefill and independent draft replays.
             module._kvmem_capture_gate = torch.zeros((), dtype=torch.int32, device=runner.device)
     runner._kvmem_mtp_modules = mapped
+    from .qsa_adapter import is_b12x_qsa, install_qsa_mtp_positions
+    if any(is_b12x_qsa(module) for module in mapped.values()):
+        install_qsa_mtp_positions(runner)
     runner._kvmem_archive_layers = [*runner._kvmem_layers, *mapped]
     # Stable prefix outputs survive the independent single-token draft graphs.
     captures = install_persistent_capture(proposer.model, names, runner.max_num_tokens,
@@ -39,6 +42,8 @@ def install_mtp_runtime(runner):
     for record, name in zip(captures, mapped):
         record.name = name
     runner._kvmem_mtp_captures = captures
+    from .original_rope import enabled, MTPPositions
+    rope_positions = MTPPositions(runner, mapped.values()) if enabled() else None
     original_prefill = proposer._prefill
 
     def prefill(self, *args, **kwargs):
@@ -73,6 +78,8 @@ def install_mtp_runtime(runner):
         action = getattr(runtime, 'action', None)
         staged = False
         try:
+            if rope_positions is not None and pending is not None:
+                rope_positions.begin(input_batch)
             if pending is not None and pending[1] is input_batch and action is not None:
                 staged = action.stage_before_mtp(pending[0], input_batch)
             result = original_propose(draft_batch, *args, **kwargs)
@@ -100,5 +107,9 @@ def install_mtp_runtime(runner):
                 runner._kvmem_pending_capture = None
                 runner._kvmem_mtp_rejected = None
             raise
+
+        finally:
+            if rope_positions is not None:
+                rope_positions.end()
 
     proposer.propose = MethodType(propose, proposer)

@@ -31,6 +31,7 @@ public:
         uint64_t epoch = 0;
         std::array<size_t, 4> geometry{};
         std::shared_ptr<const QueryBank> question, observations;
+        uint64_t observation_revision = 0;
         bool valid() const { return epoch && question && question->segments; }
         size_t segments() const {
             return question ? question->segments + (observations ? observations->segments : 0) : 0;
@@ -71,7 +72,10 @@ struct HistoricalRedundancyConfig {
     size_t reference_blocks = 32, candidate_blocks = 128, pair_comparisons = 512;
     size_t query_segments_per_step = 8;
     size_t feature_cache_bytes = 134217728, query_cache_bytes = 8388608;
+    size_t query_capture_bytes = 67108864;
     bool allow_lossy_fallback = false;
+    bool thinking_only = false, pool_pairwise = false, all_history_references = false;
+    bool refresh_before_rank = false, epoch_peak = false, lru_fallback = false;
 };
 
 class HistoricalRedundancyPolicy final : public HistoricalKvPolicy {
@@ -81,7 +85,9 @@ public:
     void bind_features(std::shared_ptr<const HistoricalFeatureSource>) override;
     void reset() override;
     bool wants_snapshot(const HistoricalPressure &) override;
+    bool permits_pressure(const HistoricalPressure &) override;
     bool permits(const HistoricalBlockMeta &) const override;
+    bool permits_intent(const HistoricalBlockMeta &, const HistoricalDeleteIntent &) const override;
     HistoricalPolicyResult step(const HistoricalSnapshot &, const HistoricalPressure &,
                                HistoricalWorkBudget, HistoricalDecisionBatch &) override;
     void on_result(const HistoricalDeleteIntent &, HistoricalCommitCode) noexcept override;

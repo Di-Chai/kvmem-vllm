@@ -34,6 +34,8 @@ class CapturedPacket:
     query_inputs: dict = field(default_factory=dict)
     # CPU metadata only; Q bytes share this packet's bounded DMA and lifetime.
     redundancy_queries: dict = field(default_factory=dict)
+    # Forward input IDs/positions share the accepted KV packet's bounded DMA.
+    thinking_tokens: dict = field(default_factory=dict)
     # Experiment-only public Q sidecar; acceptance owns branch/row validation.
     pressure_queries: dict = field(default_factory=dict)
     action_inputs: dict = field(default_factory=dict)
@@ -82,22 +84,34 @@ class CaptureRuntime(EarlyCaptureFeedback):
         self.config = self.options.memory
         modules = dict(runner.model.named_modules())
         modules.update(getattr(runner, '_kvmem_mtp_modules', {}))
+        modules.update(getattr(runner, '_kvmem_aux_modules', {}))
         self.names = tuple(getattr(runner, '_kvmem_archive_layers', runner._kvmem_layers))
         self.layers = [modules[name] for name in self.names]
         heads = {module.num_kv_heads for module in self.layers}
         dims = {module.head_dim for module in self.layers}
         if len(heads) != 1 or len(dims) != 1:
             raise ValueError("First continuous archive requires uniform target KV geometry")
-        if any(module.attn.kv_cache_dtype != "fp8_e4m3" for module in self.layers):
+        from .qsa_adapter import attention_owner
+        if any(attention_owner(module).kv_cache_dtype != "fp8_e4m3" for module in self.layers):
             raise ValueError("Continuous target archive currently qualifies FP8 e4m3")
         self.heads, self.dim = heads.pop(), dims.pop()
-        self.scales = torch.stack([module.attn._v_scale.reshape(()) for module in self.layers])
+        self.scales = torch.stack([attention_owner(module)._v_scale.reshape(()) for module in self.layers])
         if not torch.all(torch.isfinite(self.scales) & (self.scales > 0)).item():
             raise ValueError("Invalid target V scales")
         self.row_elements = len(self.layers) * self.heads * self.dim
         self.raw_dtype = torch.float8_e4m3fn
         gc = getattr(self.options, 'historical_gc', None)
         self.redundancy_enabled = gc is not None and gc.policy == 'redundancy' and gc.mode != 'off'
+        self.thinking_enabled = self.redundancy_enabled and gc.policy_params.get('thinking_only', False)
+        self.thinking_capture_stats = dict(packets=0, bytes=0, accepted_rows=0)
+        self.thinking_layout = None
+        if self.thinking_enabled:
+            from vllm.tokenizers import get_tokenizer
+            from .thinking_history import thinking_token_layout
+            model_config = runner.vllm_config.model_config
+            tokenizer = get_tokenizer(model_config.tokenizer, tokenizer_mode=model_config.tokenizer_mode,
+                trust_remote_code=model_config.trust_remote_code)
+            self.thinking_layout = thinking_token_layout(tokenizer)
         self.redundancy_q_stats = dict(packets=0, bytes=0, overflow_packets=0)
         q_slot_bytes = 0
         if self.redundancy_enabled:
@@ -111,18 +125,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
             if len(query_heads) != 1:
                 raise ValueError('Redundancy requires uniform target Query head geometry')
             self.redundancy_query_heads = query_heads.pop()
-            q_slot_bytes = REDUNDANCY_Q_SLOT_BYTES
-        from .pressure_query_capture import configured_method, PRESSURE_QUERY_WINDOW
-        self.pressure_query_enabled = configured_method() is not None
+            self.redundancy_q_slot_bytes = gc.policy_params.get('query_capture_bytes', REDUNDANCY_Q_SLOT_BYTES)
+            q_slot_bytes = self.redundancy_q_slot_bytes
+        from .pressure_query_capture import pressure_query_required, PRESSURE_QUERY_WINDOW, validate_capture_options
+        self.pressure_query_enabled = pressure_query_required()
         self.pressure_query_stats = dict(packets=0, bytes=0, accepted_rows=0)
         self.pressure_query_window = PRESSURE_QUERY_WINDOW
         if self.pressure_query_enabled:
-            unsupported = ('offline_prefill_coalescing', 'prefill_physical_coalescing',
-                           'prefill_publication_pipeline', 'early_capture_slot_release',
-                           'prefill_capture_ahead')
-            active = [key for key in unsupported if getattr(self.options, key, False)]
-            if active:
-                raise ValueError('Recall pressure Q capture requires disabled options: ' + ', '.join(active))
+            validate_capture_options(self.options)
             self.pressure_query_layers = tuple(range(len(runner._kvmem_layers)))
             query_heads = {self.layers[i].num_heads for i in self.pressure_query_layers}
             if len(query_heads) != 1:
@@ -134,11 +144,23 @@ class CaptureRuntime(EarlyCaptureFeedback):
         record_bytes = self.row_elements * self.config.block_tokens * 2
         if self.options.cpu_history_coordination:
             from .cache_manifest import archive_bytes_per_token
-            if archive_bytes_per_token(runner.kv_cache_config) != self.row_elements * 2:
+            if archive_bytes_per_token(runner.kv_cache_config, runner.vllm_config.model_config) != self.row_elements * 2:
                 raise ValueError('Worker CPU authority differs from scheduler credit geometry')
         output.mkdir(parents=True, exist_ok=True)
         max_tokens = runner.vllm_config.scheduler_config.max_num_batched_tokens
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
+        if self.thinking_enabled:
+            from .historical_feature_budget import THINKING_STAGING_BYTES
+            if 256 * max_tokens > THINKING_STAGING_BYTES:
+                raise ValueError('Thinking token capture exceeds its reserved staging budget')
+            required_q_bytes = max_tokens * len(self.redundancy_layers) * self.redundancy_query_heads * self.dim * 2
+            if required_q_bytes > self.redundancy_q_slot_bytes:
+                raise ValueError('thinking_only requires historical_gc.policy_params.query_capture_bytes '
+                    f'>= {required_q_bytes} for max_num_batched_tokens={max_tokens}; '
+                    f'configured {self.redundancy_q_slot_bytes}. Increase query_capture_bytes '
+                    '(maximum 268435456 bytes) or reduce the scheduler batch limit.')
+        self.thinking_max_pending_tokens = 4 * max_tokens
+        thinking_row_bytes = 16 if self.thinking_enabled else 0
         self._capture_pack_cache = None
         self.capture_pack_stats = {}
         if getattr(self.options, 'capture_fused_pack', False):
@@ -172,7 +194,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self.archive = make_shared_archive(self.options, output / 'continuous_archive', record_bytes,
                 max_reqs if getattr(runner, '_kvmem_bounded_target', False) else 1,
                 max_query_tokens=max_tokens)
-        self.downloads = PackedDownloads(max_tokens * self.row_elements * 2 + (4 * max_reqs + 1) * 8 + q_slot_bytes,
+        if (os.getenv('KVMEM_LIFECYCLE_TRACE') == '1' and
+                getattr(self.archive, '_history_worker', None) is not None):
+            self.archive.history_scope_metrics_path = output / 'historical_gc_scopes.jsonl'
+        self.downloads = PackedDownloads(max_tokens * (self.row_elements * 2 + thinking_row_bytes) + (4 * max_reqs + 1) * 8 + q_slot_bytes,
                                          2, runner.device)
         split_flag = os.getenv('KVMEM_SPLIT_CAPTURE_DMA',
             '1' if getattr(self.options, 'split_capture_dma', True) else '0')
@@ -188,7 +213,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             # bulk capacity remains sufficient for an all-prefill batch.
             small_tokens = min(max_tokens, max_reqs * self.decode_capture_limit)
             self.decode_downloads = PackedDownloads(
-                small_tokens * self.row_elements * 2 + (4 * max_reqs + 1) * 8 + q_slot_bytes,
+                small_tokens * (self.row_elements * 2 + thinking_row_bytes) + (4 * max_reqs + 1) * 8 + q_slot_bytes,
                 2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)
         self.authorities = {}
@@ -239,6 +264,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             if profile is not None:
                 profile.finish_batch(status='error')
             raise
+        from .qsa_adapter import append_qsa_captures
+        captured = append_qsa_captures(self.runner, captured)
         if tuple(c.name for c in captured) != self.names:
             raise ValueError("Continuous capture missed or reordered target layers")
         if any(c.key.dtype != torch.bfloat16 for c in captured):
@@ -303,6 +330,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         for lane, indices in groups:
             redundancy_queries = {}
             pressure_queries = {}
+            thinking_tokens = {}
             if staged is not None:
                 payload, t, download = staged
             else:
@@ -314,6 +342,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     payload, captured, batch, indices)
                 payload, pressure_queries = self._capture_pressure_queries(
                     payload, captured, batch, indices)
+                payload, thinking_tokens = self._capture_thinking_tokens(payload, batch, indices)
                 download = pool.download(payload)
                 if download is None:
                     raise RuntimeError("Capture queue failed to provide bounded staging after drain")
@@ -323,6 +352,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             packet.action_inputs = {rid: action_inputs[rid] for rid in packet.request_ids if rid in action_inputs}
             packet.redundancy_queries = redundancy_queries
             packet.pressure_queries = pressure_queries
+            packet.thinking_tokens = thinking_tokens
             packet.action_validation = getattr(action_inputs, 'validation', None)
             packet.pipeline_requests = frozenset(pipeline.intersection(packet.request_ids))
             if logical_group is not None:
@@ -429,6 +459,15 @@ class CaptureRuntime(EarlyCaptureFeedback):
         return ([('decode', small)] if small else []) + ([('bulk', large)] if large else [])
 
     def _capture_payload(self, captured, batch, rejected, indices):
+        from .original_rope import enabled as original_rope
+        if original_rope():
+            # The archive header's third plane is a PHYSICAL append position,
+            # even though CapturedLayer.positions now describes actual RoPE.
+            # Freeze the dense per-owner map before asynchronous publication.
+            from dataclasses import replace
+            window = getattr(self.runner, '_kvmem_window_batch', None)
+            if window is not None:
+                captured = [replace(captured[0], positions=window.positions), *captured[1:]]
         stats = self.__dict__.setdefault('capture_pack_stats', {})
         if getattr(getattr(self, 'options', None), 'capture_fused_pack', False):
             from .capture_pack import try_pack
@@ -446,6 +485,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         if positions.ndim == 2:
             positions = positions[0]
         if len(indices) == n:
+            rows = None
             t = batch.num_tokens
             header = torch.cat((starts, batch.positions[starts[:-1]], positions[starts[:-1]],
                                 rejected[:n].to(torch.int64)))
@@ -470,6 +510,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             vals = [c.value.index_select(0, rows) for c in captured]
         raw = torch.stack(keys).float().clamp(-448, 448).to(self.raw_dtype)
         values = (torch.stack(vals).float() / self.scales[:, None, None, None]).clamp(-448, 448).to(torch.float8_e4m3fn)
+        from .qsa_adapter import write_auxiliary_bytes
+        write_auxiliary_bytes(values, captured, rows=rows, tokens=t)
         return torch.cat((header.view(torch.uint8), raw.view(torch.uint8).flatten(),
                           values.view(torch.uint8).flatten())), t
 
@@ -501,7 +543,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             count = int(batch.query_start_loc_np[i+1]-batch.query_start_loc_np[i])
             prefill, offset = bool(batch.is_prefilling_np[i]), 0
             if prefill:
-                query = binding.query_span
+                query = getattr(binding, 'question_span', None) or binding.query_span
                 if query is None:
                     count = 0
                 else:
@@ -512,7 +554,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 batch_index=i, overflow=False)
             total += count*row_bytes
         self.redundancy_q_stats['packets'] += 1
-        if total > REDUNDANCY_Q_SLOT_BYTES:
+        if total > getattr(self, 'redundancy_q_slot_bytes', REDUNDANCY_Q_SLOT_BYTES):
             self.redundancy_q_stats['overflow_packets'] += 1
             for row in descriptors.values():
                 row['overflow'] = bool(row['count'])
@@ -561,6 +603,74 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 len(self.redundancy_layers), row['count'], self.redundancy_query_heads, self.dim)
         history.accept(row['binding'], history_begin, retained, prefill=row['prefill'],
             row_offset=row['row_offset'], rows=values, overflow=row['overflow'])
+
+    def _capture_thinking_tokens(self, payload, batch, indices):
+        if not getattr(self, 'thinking_enabled', False):
+            return payload, {}
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
+        descriptors, count_total = {}, 0
+        for i in indices:
+            rid = batch.req_ids[i]
+            binding = sessions.bindings.get(rid) if sessions is not None else None
+            if binding is None:
+                if sessions is None or rid not in getattr(sessions, 'release_requests', ()):
+                    raise ValueError('Thinking capture requires an owned session binding')
+                descriptors[rid] = dict(binding=None, count=0)
+                continue
+            count = int(batch.query_start_loc_np[i+1] - batch.query_start_loc_np[i])
+            descriptors[rid] = dict(binding=binding, count=count, index=i,
+                byte_offset=payload.numel() + count_total * 16)
+            count_total += count
+        self.thinking_capture_stats['packets'] += 1
+        if not count_total:
+            return payload, descriptors
+        result = torch.empty(payload.numel() + count_total * 16, dtype=torch.uint8, device=payload.device)
+        result[:payload.numel()].copy_(payload)
+        positions = batch.positions[0] if batch.positions.ndim == 2 else batch.positions
+        for row in descriptors.values():
+            if not row['count']:
+                continue
+            # CPU starts can be an adaptive-MTP upper bound. Gather from the
+            # actual device start, exactly as the accepted KV/Query captures do.
+            at = (batch.query_start_loc[row['index']].to(torch.int64) +
+                torch.arange(row['count'], device=payload.device, dtype=torch.int64)).clamp(0, batch.num_tokens-1)
+            begin = row['byte_offset']
+            target = result[begin:begin + row['count'] * 16].view(torch.int64).view(2, row['count'])
+            target[0].copy_(batch.input_ids.index_select(0, at))
+            target[1].copy_(positions.index_select(0, at))
+        self.thinking_capture_stats['bytes'] += count_total * 16
+        return result, descriptors
+
+    def _accept_thinking_tokens(self, packet, request_id, history_begin, retained):
+        if not getattr(self, 'thinking_enabled', False):
+            return
+        row = packet.thinking_tokens.pop(request_id, None)
+        if row is None:
+            raise RuntimeError('Accepted public owner lost its thinking token descriptor')
+        if row['binding'] is None or not retained:
+            return
+        if retained > row['count']:
+            raise RuntimeError('Thinking token capture is shorter than its accepted KV prefix')
+        at = row['byte_offset']
+        values = packet.download.payload[at:at + row['count'] * 16].view(torch.int64).view(2, row['count'])
+        # Only this retained input prefix has KV. A newly sampled output token
+        # gets classified when it is consumed by a subsequent target forward.
+        tokens, positions = values[:, :retained].tolist()
+        authority = self.authorities[request_id]
+        authority.thinking_history.accept(row['binding'], history_begin, retained,
+            tokens, positions, authority.memory.repository)
+        self.thinking_capture_stats['accepted_rows'] += retained
+
+    def _thinking_progress(self):
+        owners = {id(owner.thinking_history): owner.thinking_history
+            for owner in self.authorities.values() if getattr(owner, 'thinking_history', None) is not None}
+        names = ('accepted_tokens', 'thinking_tokens', 'unknown_tokens', 'pure_blocks',
+                 'mixed_blocks', 'publications', 'invalidations', 'unsupported_template')
+        return {**dict(getattr(self, 'thinking_capture_stats', {})),
+            'enabled': bool(getattr(self, 'thinking_enabled', False)),
+            'layout_supported': getattr(self, 'thinking_layout', None) is not None,
+            'active_owners': len(owners),
+            'owner_stats': {name: sum(owner.stats[name] for owner in owners.values()) for name in names}}
 
     def _capture_pressure_queries(self, payload, captured, batch, indices):
         """Copy original public Q into the same bounded accepted-prefix DMA.
@@ -762,13 +872,32 @@ class CaptureRuntime(EarlyCaptureFeedback):
         # for DMA or for an unrelated in-flight owner on this control path.
         small = (finished | set(deferred)) - self._large_pending_requests()
         self.drain_requests(small, wait=False)
+        sessions = getattr(getattr(self, 'runner', None), '_kvmem_sessions', None)
+        terminal_commands = {row.request_id: row for row in getattr(control.sessions, 'terminals', ())}
+        terminal_attempts = {}
+
+        def terminal_ready(request_id):
+            if not self.publication_ready((request_id,)):
+                return False
+            prepare = getattr(sessions, 'prepare_terminal_checkpoint', None)
+            command = terminal_commands.get(request_id)
+            if command is None:
+                command = getattr(sessions, 'terminal_captures', {}).get(request_id)
+            # Acquire the protected CPU frame before allowing native request
+            # state to disappear. A busy policy gate yields this owner only.
+            if prepare is None or command is None:
+                return True
+            if request_id not in terminal_attempts:
+                terminal_attempts[request_id] = prepare(request_id, command)
+            return terminal_attempts[request_id]
+
         with self._publication_lock():
             for request_id in list(finished):
-                if not self.publication_ready((request_id,)):
+                if not terminal_ready(request_id):
                     deferred[request_id] = prefixes.pop(request_id, None)
                     finished.remove(request_id)
             for request_id, prefix in list(deferred.items()):
-                if self.publication_ready((request_id,)):
+                if terminal_ready(request_id):
                     finished.add(request_id)
                     if prefix is not None:
                         prefixes[request_id] = prefix
@@ -1187,6 +1316,15 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 query_fps_cache_fp8=getattr(self.options, 'query_fps_cache_fp8', False),
                 mean_index_stats=self.cpu_mean_index_stats)
             authority.graph_options = self.options
+            if binding is not None and getattr(self.archive, 'history_scope_metrics_path', None) is not None:
+                self.archive.set_history_scope_context(authority.memory.request_id,
+                    binding.namespace, binding.generation)
+            if (binding is not None and getattr(authority.gc, 'native_history', False) and
+                    request_id not in getattr(sessions, 'release_requests', ())):
+                # This exact working frame may become the next session's M
+                # checkpoint. Protect it before the first page becomes live;
+                # older GPU leases remain independently retireable.
+                authority.memory._store.set_protect_current_window(True)
             if (getattr(self, 'redundancy_enabled', False) and
                     request_id not in getattr(sessions, 'release_requests', ())):
                 if binding is None or not getattr(authority.gc, 'native_history', False):
@@ -1195,6 +1333,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 from .historical_gc import RedundancyHistory
                 authority.redundancy_history = RedundancyHistory(authority.gc.scope,
                     len(self.runner._kvmem_layers), self.heads, self.redundancy_query_heads, self.dim)
+                if getattr(self, 'thinking_enabled', False):
+                    from .thinking_history import ThinkingHistory
+                    authority.thinking_history = ThinkingHistory(authority.gc.scope, self.thinking_layout,
+                        self.config.block_tokens, self.thinking_max_pending_tokens,
+                        identity=(binding.namespace, binding.generation))
             if boundary_enabled:
                 from .query_boundary_history import QueryBoundaryHistory
                 from .prompt_spans import install_selection_metadata
@@ -1564,6 +1707,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     action.accept(packet, request_id, accepted)
                     self._publication_metric('owner_action_seconds', time.perf_counter()-started, lane=packet.lane)
                 self._accept_redundancy_queries(packet, request_id, history_begin, accepted)
+                self._accept_thinking_tokens(packet, request_id, history_begin, accepted)
                 self._accept_pressure_queries(packet, request_id, history_begin, accepted)
             except BaseException:
                 if prepared is not None:
@@ -1718,6 +1862,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         busy = self._busy_requests()
         progress = {"batches_submitted": self.batches,
             'redundancy_q_capture': dict(getattr(self, 'redundancy_q_stats', {})),
+            'thinking_capture': self._thinking_progress(),
             'pressure_q_capture': dict(getattr(self, 'pressure_query_stats', {})),
             'batched_append_calls': getattr(self, 'batched_append_calls', 0),
             'batched_append_requests': getattr(self, 'batched_append_requests', 0),

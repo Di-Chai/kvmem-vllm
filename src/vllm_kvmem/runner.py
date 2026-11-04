@@ -6,6 +6,7 @@ This stage verifies actual target-layer capture on a real native batch.
 import json
 import os
 from dataclasses import replace
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -19,6 +20,15 @@ def make_probe_runner(base):
         def load_model(self, *args, **kwargs):
             from .options import RuntimeOptions
             options = RuntimeOptions.from_vllm(self.vllm_config)
+            from .qsa_adapter import validate_qsa_config
+            qsa = validate_qsa_config(self.vllm_config, options)
+            if qsa:
+                from .qsa_contract import verify_qsa_sources
+                verify_qsa_sources()
+                # MTP rebuilds VllmConfig in the spawned worker. Verify its
+                # connector guard before reading the large target checkpoint.
+                from vllm.v1.worker.gpu.spec_decode.eagle.utils import _make_eagle_draft_vllm_config
+                _make_eagle_draft_vllm_config(self.vllm_config)
             from .capture_compile import validate_capture_compile_config
             opaque_fingerprint = validate_capture_compile_config(
                 self.vllm_config, options.capture_opaque_projection)
@@ -34,7 +44,9 @@ def make_probe_runner(base):
                                      'and synchronous single-batch graphs')
                 # Register the ABI before native AOT unpickling resolves ops.
                 from .capture_opaque import install_opaque_capture
-            super().load_model(*args, **kwargs)
+            from .qsa_contract import release_target_loader_staging
+            with release_target_loader_staging(self) if qsa else nullcontext():
+                super().load_model(*args, **kwargs)
             from .draft_quantization import install_quantized_context
             install_quantized_context(self)
             self._kvmem_graph = os.getenv('KVMEM_FULL_GRAPH') == '1'
@@ -54,6 +66,9 @@ def make_probe_runner(base):
             if self.vllm_config.parallel_config.tensor_parallel_size != 1:
                 raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
+            if os.getenv('KVMEM_LAYERWISE_QUERY_MODE'):
+                from .layerwise_query import install_layerwise_query
+                install_layerwise_query(self)
             if self._kvmem_graph:
                 # Native memory profiling compiles before KV initialization.
                 # Allocate once now; later graph setup must retain these addresses.
@@ -63,11 +78,16 @@ def make_probe_runner(base):
                     self.input_buffers.positions)
             from .mtp_runtime import install_mtp_runtime
             install_mtp_runtime(self)
+            from .qsa_adapter import install_qsa_archive
+            install_qsa_archive(self)
             self._kvmem_capture_opaque = (install_opaque_capture(self, opaque_fingerprint)
                 if options.capture_opaque_projection else None)
             self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
             self._kvmem_probe_done = self._kvmem_serving
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+            if options.flashinfer_gemm_bucket_alignment:
+                from .flashinfer_gemm_buckets import install_flashinfer_gemm_bucket_alignment
+                install_flashinfer_gemm_bucket_alignment(self, options, self._kvmem_probe_output)
             self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
             self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
             # Install before profiling/compilation/CUDA graph capture. Graphs
@@ -97,6 +117,7 @@ def make_probe_runner(base):
                 from .storage import make_shared_archive
                 modules = dict(self.model.named_modules())
                 modules.update(getattr(self, '_kvmem_mtp_modules', {}))
+                modules.update(getattr(self, '_kvmem_aux_modules', {}))
                 layers = [modules[name] for name in getattr(self, '_kvmem_archive_layers', self._kvmem_layers)]
                 geometry = {(layer.num_kv_heads, layer.head_dim) for layer in layers}
                 if len(geometry) != 1:
@@ -382,6 +403,15 @@ def make_probe_runner(base):
             # target forward. Private maintenance uses prepare_attn directly,
             # and must never count here. This also counts prefill chunks that
             # produce no output tokens or do not reach sample_tokens.
+            # Native attention must see the first public sampling plan before
+            # that forward runs. Lazy construction after the first target used
+            # to force one full-batch reference-score recomputation.
+            if (observe_work and not kwargs.get('dummy_run') and not kwargs.get('is_profile') and
+                    getattr(self, '_kvmem_continuous', False) and
+                    getattr(self, '_kvmem_capture_runtime', None) is None and
+                    getattr(self, '_kvmem_native_attention', None) is not None):
+                from .capture_runtime import CaptureRuntime
+                self._kvmem_capture_runtime = CaptureRuntime(self, self._kvmem_probe_output)
             before = getattr(self, 'execute_model_state', None)
             runtime = getattr(self, '_kvmem_capture_runtime', None)
             refresh = getattr(self, '_kvmem_async_refresh', None)

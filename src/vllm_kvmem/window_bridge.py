@@ -21,6 +21,11 @@ def install_window_bridge(model_state, current_window):
         window = current_window(input_batch)
         if window is None:
             return result
+        from .original_rope import enabled
+        if enabled():
+            # Attention lengths/slots still use window.groups. Only model
+            # RoPE inputs retain the native original-history positions.
+            return result
         # Initial support is text-only. MRoPE's axes coincide for text tokens;
         # multimodal position maps need a separate qualified model adapter.
         original_positions = result.get("positions")

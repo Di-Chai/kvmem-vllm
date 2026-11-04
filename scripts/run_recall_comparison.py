@@ -7,6 +7,7 @@ technical request requires --retry-technical and keeps its original attempt.
 import argparse
 from array import array
 from contextlib import contextmanager
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 import fcntl
 import json
@@ -54,25 +55,73 @@ def prepare(args):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(upstream / relative, target)
     p.save(root / 'profile.json', profile)
-    for method in p.METHODS:
+    value_reference = getattr(args, 'value_reference', False)
+    hybrid = getattr(args, 'pressure_attention_hybrid', False)
+    prefix_pilot = getattr(args, 'answer_prefix_pilot', False)
+    pilot_method = getattr(args, 'pilot_method', None)
+    p.require(not hybrid or value_reference, 'Hybrid Value campaign requires --value-reference')
+    p.require(not prefix_pilot or hybrid, 'Answer-prefix pilot requires cumulative-attention pressure')
+    p.require(pilot_method is None or prefix_pilot and pilot_method in p.PREFIX_PILOT_METHODS,
+              '--pilot-method requires the declared answer-prefix protocol')
+    methods = ((pilot_method,) if pilot_method else p.PREFIX_PILOT_METHODS if prefix_pilot else
+               p.VALUE_METHODS[1:] if hybrid else p.VALUE_METHODS if value_reference else p.METHODS)
+    if value_reference:
+        p.require(profile['recall_experiment'].get('include_mandatory_in_softmax') is True,
+                  'Value reference requires mandatory blocks in attention normalization')
+    stages = [profile.get('recall_experiment', {}).get(stage + '_pressure_method') == 'accumulated_attention'
+              for stage in ('prefill', 'decode')]
+    p.require((all(stages) if hybrid else not any(stages)),
+              'Hybrid fixture/profile declaration mismatch')
+    for method in methods:
         p.save(root / 'profiles' / (method + '.json'), p.method_profile(profile, method))
     fixture = deepcopy(source)
     fixture.update(execution_profile=p.VERSION, input_directory='dataset/inputs', upstream_path='upstream',
         profile_sha256=p.sha(root / 'profile.json'), source_fixture_sha256=p.sha(source_path),
-        source_fixture_path=str(source_path), methods=list(p.METHODS), pressure_query_window=p.PRESSURE_WINDOW,
+        source_fixture_path=str(source_path), methods=list(methods), pressure_query_window=p.PRESSURE_WINDOW,
         qualification_ids=[row['id'] for row in p.execution_rows(source['rows'])[:10]],
-        workers=1, request_timeout_seconds=args.request_timeout,
+        workers=getattr(args, 'workers', 1), request_timeout_seconds=args.request_timeout,
         runtime_source=str(args.runtime.resolve()),
         experiment_scope='All three entrances use the named method, fixed accepted tail Q128 for pressure; '
             'original 260 inputs and sampling; no old answers inherited.')
+    p.require(type(fixture['workers']) is int and 1 <= fixture['workers'] <= profile['max_num_seqs'],
+              'Client workers must fit the explicitly frozen engine concurrency')
+    if value_reference:
+        fixture.update(value_recall_reference=True, full_value_comparison=True,
+            qualification_ids=['niah_multikey_3-0000', 'cwe-0000', 'qa_1-0000'],
+            experiment_scope='Fresh ExactMass/ValueNorm/DeletionError; candidate+mandatory normalization; '
+                '260 original samples per method; immutable small-sample same-state diagnostics before scored runs.')
+    if hybrid:
+        fixture.update(pressure_attention_hybrid=True, full_value_comparison=False,
+            experiment_scope='Explicit hybrid: existing accepted cumulative attention for prefill/decode pressure; '
+                'ValueNorm/DeletionError for public Query; unchanged budgets and original 260 inputs.')
+    qualification_ids = getattr(args, 'qualification_ids', None)
+    if qualification_ids is not None:
+        available = {row['id'] for row in source['rows']}
+        p.require(len(qualification_ids) == len(set(qualification_ids)) and
+                  set(qualification_ids) <= available and len(qualification_ids) > fixture['workers'],
+                  'Concurrency qualification needs unique original cases and at least one refill')
+        fixture['qualification_ids'] = qualification_ids
+    if prefix_pilot:
+        p.require(qualification_ids is not None, 'Freeze explicit paired pilot sample IDs')
+        counts = len(qualification_ids) // len(ruler.TASK_FAMILIES)
+        fixture.update(answer_prefix_pilot=True, pilot_samples_per_task=counts,pilot_selected_methods=list(methods),
+            experiment_scope='Paired small-batch Mean-K/ValueNorm/DeletionError with official assistant '
+                'answer prefixes; fixed cumulative-attention pressure, non-thinking and per-task output caps.')
+        p.campaign_methods(fixture)
+    if getattr(args,'optimize_value_query',False):
+        p.require(hybrid and profile['recall_experiment'].get('value_backend')=='streaming_packed',
+                  'Packed Query optimization requires the declared hybrid profile')
+        fixture['value_query_optimization']=True
     p.save(root / 'fixture.json', fixture)
     p.save(root / 'source-proof.json', p.source_manifest(args.runtime))
-    p.save(root / 'prepared.json', dict(version=p.VERSION, cases=260, methods=list(p.METHODS),
-        formal_runs=1300, pressure_query_window=p.PRESSURE_WINDOW,
+    runs = 0 if prefix_pilot else len(methods)*260
+    pilot_runs = len(methods)*len(fixture['qualification_ids']) if prefix_pilot else 0
+    p.save(root / 'prepared.json', dict(version=p.VERSION, cases=260, methods=list(methods),
+        formal_runs=runs, pilot_runs=pilot_runs, pressure_query_window=p.PRESSURE_WINDOW,
         fixture_sha256=p.sha(root / 'fixture.json'), profile_sha256=p.sha(root / 'profile.json'),
-        method_profile_sha256={method: p.sha(root / 'profiles' / (method + '.json')) for method in p.METHODS},
+        method_profile_sha256={method: p.sha(root / 'profiles' / (method + '.json')) for method in methods},
         source_proof_sha256=p.sha(root / 'source-proof.json'), prepared_at=time.time()))
-    print(json.dumps(dict(status='prepared', root=str(root), formal_runs=1300)), flush=True)
+    print(json.dumps(dict(status='prepared', root=str(root), formal_runs=runs, pilot_runs=pilot_runs)), flush=True)
 
 
 def verify(root, runtime=None):
@@ -82,9 +131,10 @@ def verify(root, runtime=None):
     for name, key in (('fixture.json', 'fixture_sha256'), ('profile.json', 'profile_sha256'),
                       ('source-proof.json', 'source_proof_sha256')):
         p.require(p.sha(root / name) == proof[key], 'Frozen campaign file changed: ' + name)
-    p.require(fixture['methods'] == list(p.METHODS) and fixture['pressure_query_window'] == 128,
+    methods = p.campaign_methods(fixture)
+    p.require(fixture['pressure_query_window'] == 128,
               'Frozen method/window matrix differs')
-    for method in p.METHODS:
+    for method in methods:
         arm_path = root / 'profiles' / (method + '.json')
         p.require(p.sha(arm_path) == proof['method_profile_sha256'][method] and
                   p.read(arm_path) == p.method_profile(profile, method), 'Method profiles differ beyond recall method')
@@ -158,7 +208,7 @@ def functional_qualified(root, method, profile):
 
 
 def qualification_gate(root, fixture, profile):
-    for method in p.METHODS:
+    for method in p.campaign_methods(fixture):
         p.require(functional_qualified(root, method, profile), 'Missing three-entrance functional qualification')
         for ident in fixture['qualification_ids']:
             result = p.read(root / 'arms' / method / 'qualification/cases' / ident / 'result.json')
@@ -172,6 +222,12 @@ def launch_audit(profile, capture, method):
     argv, env = launch['vllm_argv'], launch['environment']
     for key, value in p.method_environment(method).items():
         p.require(env.get(key) == value, 'Actual worker recall setting differs: ' + key)
+    for stage in ('prefill', 'decode'):
+        expected = profile['recall_experiment'].get(stage + '_pressure_method', 'same_method')
+        p.require(env.get('KVMEM_' + stage.upper() + '_PRESSURE_METHOD', 'same_method') == expected,
+                  'Actual pressure method differs from declared stage configuration')
+    if profile['recall_experiment'].get('include_mandatory_in_softmax'):
+        p.require(env.get('KVMEM_VALUE_RECALL_REFERENCE') == '1', 'Missing mandatory normalization contract')
     p.require(env.get('KVMEM_PREFILL_CHUNK_TOKENS') == str(profile['prefill_chunk_tokens']),
               'Actual prefill chunk differs')
     for key, value in (('--max-num-seqs', profile['max_num_seqs']),
@@ -223,6 +279,47 @@ def choose_attempt(case, *, retry_technical):
     return target, False
 
 
+def map_requests(rows, infer, workers):
+    """Keep only the declared number of requests in flight; fail before refill.
+
+    A technical failure never retries a completed answer or dispatches the rest
+    of the cohort. The owning controller stops its server on propagation, which
+    unblocks any other in-flight HTTP stream without waiting for the timeout.
+    """
+    if type(workers) is not int or workers not in p.SUPPORTED_CONCURRENCY:
+        raise ValueError('Client workers must be explicitly qualified in (1, 2, 4, 8)')
+    if workers == 1:
+        yield from map(infer, rows)
+        return
+    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='recall-case')
+    remaining = iter(enumerate(rows))
+    pending = {}
+    completed = False
+    def refill():
+        while len(pending) < workers:
+            try:
+                index, row = next(remaining)
+            except StopIteration:
+                break
+            pending[pool.submit(infer, row)] = index
+    try:
+        refill()
+        while pending:
+            ready, _ = wait(pending, return_when=FIRST_COMPLETED)
+            ready = sorted(ready, key=pending.__getitem__)
+            # Check every completed future before admitting another request.
+            values = [future.result() for future in ready]
+            for future in ready:
+                del pending[future]
+            yield from values
+            refill()
+        completed = True
+    finally:
+        for future in pending:
+            future.cancel()
+        pool.shutdown(wait=completed, cancel_futures=True)
+
+
 def run_client(root, method, phase, capture, *, retry_technical=False):
     runtime_src = str(Path(__file__).resolve().parents[1] / 'src')
     if runtime_src not in sys.path:
@@ -239,13 +336,11 @@ def run_client(root, method, phase, capture, *, retry_technical=False):
     output = root / 'arms' / method / phase
     output.mkdir(parents=True, exist_ok=True)
     p.save(output / 'launch-audit.json', launch_audit(profile, capture, method))
-    results = []
-    for row in phase_rows(fixture, phase):
+    def infer(row):
         case = output / 'cases' / row['id']
         result = saved_result(case, row, method, root)
         if result is not None:
-            results.append(result)
-            continue
+            return result
         attempt, retained = choose_attempt(case, retry_technical=retry_technical)
         try:
             cursor = None
@@ -257,7 +352,7 @@ def run_client(root, method, phase, capture, *, retry_technical=False):
                 session = 'recall-' + method + '-' + uuid.uuid4().hex
                 request = dict(session_id=session, capture=str(capture), method=method, sample_id=row['id'],
                     input_sha256=row['served_sha256'], input_tokens=len(tokens), query_span=row['served_query'],
-                    sampling=dict(fixture['sampling'], seed=row['seed']),
+                    sampling=p.case_sampling(fixture, row),
                     fixture_sha256=p.sha(root / 'fixture.json'),
                     profile_sha256=p.sha(root / 'profiles' / (method + '.json')))
                 p.save(attempt / 'request.json', request)
@@ -268,7 +363,7 @@ def run_client(root, method, phase, capture, *, retry_technical=False):
                 request_capture = capture
             p.require(request['fixture_sha256'] == p.sha(root / 'fixture.json') and
                       request['profile_sha256'] == p.sha(root / 'profiles' / (method + '.json')) and
-                      request['sampling'] == dict(fixture['sampling'], seed=row['seed']) and
+                      request['sampling'] == p.case_sampling(fixture, row) and
                       request['input_sha256'] == row['served_sha256'], 'Retained request settings changed')
             terminal = client.wait_retired(request_capture, response['response_id'])
             p.require(terminal['history_end'] == row['served_input_tokens'] + len(response['output_ids']) - 1 and
@@ -284,6 +379,8 @@ def run_client(root, method, phase, capture, *, retry_technical=False):
             result = dict(id=row['id'], task=row['task'], index=row['index'], method=method, phase=phase,
                 status='completed', input_sha256=row['served_sha256'], text=response['text'],
                 input_tokens=row['served_input_tokens'], completion_tokens=len(response['output_ids']),
+                max_tokens=request['sampling']['max_tokens'],
+                generation_limit_policy=fixture.get('generation_limit_policy', 'uniform'),
                 seconds=response['seconds'], ttft_seconds=response['ttft_seconds'],
                 finish_reason=response['finish_reason'], session=request['session_id'],
                 response_id=response['response_id'], fixture_sha256=p.sha(root / 'fixture.json'),
@@ -292,19 +389,26 @@ def run_client(root, method, phase, capture, *, retry_technical=False):
                 event_counts=audit['event_counts'],
                 **p.score_case(row, response, scorer, starts_in_thinking=fixture['starts_in_thinking']))
             p.save(case / 'result.json', result)
-            results.append(result)
-            p.save(output / 'progress.json', dict(method=method, phase=phase, completed=len(results),
-                expected=len(phase_rows(fixture, phase)), at=time.time()))
-            print(json.dumps(dict(method=method, phase=phase, completed=len(results), id=row['id'],
-                                  score=result['official_case_score'])), flush=True)
+            return result
         except BaseException as error:
             p.save(attempt / 'failure.json', dict(error=repr(error), at=time.time(),
                 completed_response_preserved=(attempt / 'response.json').exists()))
             raise
+    workers = fixture.get('workers', 1)
+    p.require(type(workers) is int and workers in p.SUPPORTED_CONCURRENCY and workers <= profile['max_num_seqs'],
+              'Requested client concurrency exceeds the frozen engine limit')
+    results = []
+    for result in map_requests(phase_rows(fixture, phase), infer, workers):
+        results.append(result)
+        p.save(output / 'progress.json', dict(method=method, phase=phase, completed=len(results),
+            expected=len(phase_rows(fixture, phase)), workers=workers, at=time.time()))
+        print(json.dumps(dict(method=method, phase=phase, completed=len(results), id=result['id'],
+                              score=result['official_case_score'])), flush=True)
     scores = None
     if phase == 'formal':
-        scores = ruler.score_suite(fixture['rows'], {(row['task'], row['index']): row['text'] for row in results},
-            scorer, samples_per_task=20, starts_in_thinking=fixture['starts_in_thinking'])
+        scores = ruler.score_suite(phase_rows(fixture, phase), {(row['task'], row['index']): row['text'] for row in results},
+            scorer, samples_per_task=20,
+            starts_in_thinking=fixture['starts_in_thinking'])
     p.save(output / 'completed.json', dict(status='completed', method=method, phase=phase, cases=len(results),
         qualification_only=phase == 'qualification', scores=scores, results=results,
         fixture_sha256=p.sha(root / 'fixture.json'), at=time.time()))
@@ -373,12 +477,15 @@ def run(args):
               '--qualify-entrypoints is only allowed in the qualification phase')
     root = args.root.resolve()
     fixture, profile = verify(root)
+    p.require(not fixture.get('answer_prefix_pilot') or args.phase == 'qualification',
+              'Small answer-prefix pilot cannot run the formal 260-case phase')
     runtime = (args.runtime or Path(fixture['runtime_source'])).resolve()
     sys.path.insert(0, str(runtime / 'src'))
     verify(root, runtime)
     if args.phase == 'formal':
         qualification_gate(root, fixture, profile)
-    methods = (args.method,) if args.method else p.METHODS
+    methods = (args.method,) if args.method else p.campaign_methods(fixture)
+    p.require(set(methods) <= set(p.campaign_methods(fixture)), 'Method outside frozen campaign')
     environment = {key: value for key, value in os.environ.items() if not key.startswith('KVMEM_')}
     environment.update(PYTHONPATH=str(runtime / 'src'), PYTHONDONTWRITEBYTECODE='1', TOKENIZERS_PARALLELISM='false')
     with termination_guard(), gpu_lock(args.gpu_lock):
@@ -398,6 +505,12 @@ def run(args):
             attempt.mkdir(exist_ok=False)
             command = [str(args.python), '-B', '-m', 'vllm_kvmem', 'serve', '--config',
                 str(root / 'profiles' / (method + '.json')), '--run-dir', str(attempt / 'server')]
+            if (fixture.get('value_recall_reference') and not fixture.get('pressure_attention_hybrid')
+                    and args.phase=='qualification'):
+                command.extend(['--value-recall-diagnostics','query'])
+            if (fixture.get('value_query_optimization') and args.phase=='qualification'
+                    and method=='block_value_norm' and not (output/'completed.json').exists()):
+                command.extend(['--value-recall-profile','query'])
             environment.update(p.method_environment(method))
             server = None
             try:
@@ -440,11 +553,21 @@ def parser():
     for name in ('inputs', 'upstream', 'tokenizer-source'):
         prep.add_argument('--' + name, type=Path)
     prep.add_argument('--request-timeout', type=int, default=7200)
+    prep.add_argument('--workers', type=int, choices=p.SUPPORTED_CONCURRENCY, default=1)
+    prep.add_argument('--qualification-ids', nargs='+',
+                      help='Freeze original cases for concurrency and immediate-refill qualification')
+    prep.add_argument('--value-reference', action='store_true')
+    prep.add_argument('--pressure-attention-hybrid', action='store_true')
+    prep.add_argument('--answer-prefix-pilot', action='store_true',
+                      help='Paired first-N-per-task Mean-K/ValueNorm/DeletionError pilot with official prefixes')
+    prep.add_argument('--pilot-method', choices=p.PREFIX_PILOT_METHODS,
+                      help='Freeze one requested method rather than the three-method prefix comparison')
+    prep.add_argument('--optimize-value-query', action='store_true')
     runner = sub.add_parser('run')
     runner.add_argument('--root', type=Path, required=True)
     runner.add_argument('--runtime', type=Path)
     runner.add_argument('--python', type=Path, default=Path(sys.executable))
-    runner.add_argument('--method', choices=p.METHODS)
+    runner.add_argument('--method', choices=p.ALL_METHODS)
     runner.add_argument('--phase', choices=('qualification', 'formal'), required=True)
     runner.add_argument('--retry-technical', action='store_true')
     runner.add_argument('--qualify-entrypoints', action='store_true',
@@ -452,13 +575,13 @@ def parser():
     runner.add_argument('--gpu-lock', type=Path, default=Path('/tmp/kvmem-recall-comparison.lock'))
     client = sub.add_parser('client')
     client.add_argument('--root', type=Path, required=True)
-    client.add_argument('--method', choices=p.METHODS, required=True)
+    client.add_argument('--method', choices=p.ALL_METHODS, required=True)
     client.add_argument('--phase', choices=('qualification', 'formal'), required=True)
     client.add_argument('--capture', type=Path, required=True)
     client.add_argument('--retry-technical', action='store_true')
     functional = sub.add_parser('qualify-events')
     functional.add_argument('--root', type=Path, required=True)
-    functional.add_argument('--method', choices=p.METHODS, required=True)
+    functional.add_argument('--method', choices=p.ALL_METHODS, required=True)
     functional.add_argument('--events', type=Path, required=True)
     binaries = sub.add_parser('bind-binaries')
     binaries.add_argument('--root', type=Path, required=True)

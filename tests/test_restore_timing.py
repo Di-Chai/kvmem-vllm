@@ -77,7 +77,7 @@ def test_memory_restore_timing_preserves_plan_and_fenced_commit(enabled):
     assert memory._store.working_records() == list(snapshot.records)
     if enabled:
         assert set(timing.summary()['totals']) == {
-            'window_validate', 'saved_handles', 'current_handles', 'residency_reset', 'native_select'}
+            'window_validate', 'saved_handles', 'native_select'}
     elif timing is not None:
         assert timing.summary()['stages'] == []
     assert memory.close()
@@ -131,7 +131,7 @@ def test_pool_prepare_observes_action_and_nested_window_without_changing_ownersh
     assert plan.total_window_tokens == 8 and len(action_calls) == 1
     assert checkpoint.restore_started
     assert set(timing.summary()['totals']) == {'token_prefix_compare', 'action_restore', 'window_restore',
-        'window_validate', 'saved_handles', 'current_handles', 'residency_reset', 'native_select', 'restore_records'}
+        'window_validate', 'saved_handles', 'native_select', 'restore_records'}
     authority.memory.attach_completion(Event(True))
     assert authority.memory.commit_selection()
     assert pool.finish_claim(checkpoint, Event(True)) is authority

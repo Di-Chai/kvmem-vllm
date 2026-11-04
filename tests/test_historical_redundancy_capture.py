@@ -95,6 +95,7 @@ def test_schema_defaults_independent_and_strict():
     config = HistoricalGcSettings(policy='redundancy', policy_params=params)
     assert config.policy_params['feature_cache_bytes'] == 128*1024**2
     assert config.policy_params['query_cache_bytes'] == 8*1024**2
+    assert config.policy_params['query_capture_bytes'] == 64*1024**2
     assert params == {'representative_similarity': -0.2}
     assert HistoricalGcSettings().policy_params == {'keep_mandatory': True}
     assert REDUNDANCY_Q_SLOT_BYTES == 64*1024**2 and REDUNDANCY_Q_MAX_SLOTS == 4
@@ -105,6 +106,18 @@ def test_schema_defaults_independent_and_strict():
                        ('representative_similarity', -1.01), ('unknown', 1)]:
         with pytest.raises(ValueError):
             HistoricalGcSettings(policy='redundancy', policy_params={key: value})
+
+
+@pytest.mark.parametrize('value', [1, 64*1024**2, 256*1024**2])
+def test_query_capture_bytes_accepts_positive_bounded_integers(value):
+    config = HistoricalGcSettings(policy='redundancy', policy_params={'query_capture_bytes': value})
+    assert config.policy_params['query_capture_bytes'] == value
+
+
+@pytest.mark.parametrize('value', [True, False, 0, -1, 1.0, '67108864', None, 256*1024**2+1])
+def test_query_capture_bytes_rejects_invalid_resource_limits(value):
+    with pytest.raises(ValueError, match='query_capture_bytes'):
+        HistoricalGcSettings(policy='redundancy', policy_params={'query_capture_bytes': value})
 
 
 def test_selected_layers_exclude_draft_and_no_extra_history_q_bytes():
@@ -178,6 +191,57 @@ def test_overflow_is_explicit_fail_closed_without_partial_question(monkeypatch):
     assert history.stats['transport_overflow'] == 1 and not history.scope.questions
 
 
+@pytest.mark.parametrize('capacity,overflow', [(3*4*2*3*2, False), (3*4*2*3*2-1, True)])
+def test_configured_query_slot_is_the_exact_capture_bound(monkeypatch, capacity, overflow):
+    import vllm_kvmem.historical_gc as gc
+    monkeypatch.setattr(gc, 'REDUNDANCY_Q_SLOT_BYTES', 4)
+    obj = runtime([binding(query=(0, 3), prompt=3)])
+    obj.redundancy_q_slot_bytes = capacity
+    payload, _ = packet_roundtrip(obj, batch(['r'], [0], [3], [True]), captures(3), retained=[3], history=[0])
+    history = obj.authorities['r'].redundancy_history
+    assert obj.redundancy_q_stats['overflow_packets'] == int(overflow)
+    assert history.invalid == overflow
+    assert payload.numel() == 48 + (0 if overflow else capacity)
+    assert bool(history.scope.questions) != overflow
+
+
+@pytest.mark.parametrize('thinking,capacity,too_small', [
+    (True, 64*1024**2, True), (True, 4136*4*24*256*2, False),
+    (True, 256*1024**2, False), (False, 64*1024**2, False)])
+def test_thinking_startup_checks_atomic_query_batch_before_allocating_slots(
+        tmp_path, monkeypatch, thinking, capacity, too_small):
+    import sys
+    import vllm_kvmem.capture_runtime as capture
+    import vllm_kvmem.pressure_query_capture as pressure
+    from vllm_kvmem.options import RuntimeOptions
+
+    options = NS(**vars(RuntimeOptions()))
+    options.historical_gc = HistoricalGcSettings(mode='delete', policy='redundancy', policy_params={
+        'thinking_only': thinking, 'query_capture_bytes': capacity})
+    monkeypatch.setattr(capture.RuntimeOptions, 'from_vllm', lambda _: options)
+    monkeypatch.setattr(pressure, 'configured_method', lambda: None)
+    monkeypatch.setitem(sys.modules, 'vllm.tokenizers', NS(get_tokenizer=lambda *a, **kw: object()))
+    monkeypatch.delenv('KVMEM_SPLIT_CAPTURE_DMA', raising=False)
+    allocations = []
+    monkeypatch.setattr(capture, 'PackedDownloads', lambda size, slots, device:
+        allocations.append((size, slots)) or NS(pending={}))
+    layers = {f'layer{i}': NS(num_heads=24, num_kv_heads=4, head_dim=256,
+        attn=NS(kv_cache_dtype='fp8_e4m3', _v_scale=torch.tensor(1.))) for i in range(4)}
+    runner = NS(_kvmem_layers=tuple(layers), _kvmem_prepared_archive=object(),
+        model=NS(named_modules=lambda: list(layers.items())), device=torch.device('cpu'), decode_query_len=5,
+        vllm_config=NS(scheduler_config=NS(max_num_batched_tokens=4136, max_num_seqs=8),
+            model_config=NS(tokenizer='test-only', tokenizer_mode='auto', trust_remote_code=False)))
+    if too_small:
+        with pytest.raises(ValueError, match=r'query_capture_bytes >= 203292672.*max_num_batched_tokens=4136'):
+            CaptureRuntime(runner, tmp_path)
+        assert not allocations
+        return
+    obj = CaptureRuntime(runner, tmp_path)
+    assert obj.redundancy_q_slot_bytes == capacity
+    row_bytes = 4*4*256*2 + (16 if thinking else 0)
+    assert allocations == [(4136*row_bytes+264+capacity, 2), (40*row_bytes+264+capacity, 2)]
+
+
 def test_exact_prefix_tool_reuse_and_rewind_invalidate_same_request():
     b = binding('first', query=(0, 2), prompt=2)
     history = RedundancyHistory(Scope(), 2, 1, 2, 3)
@@ -199,6 +263,100 @@ def test_changed_or_missing_cached_question_cannot_reuse():
     history.accept(changed, 2, 1, prefill=False, rows=torch.ones(1, 1, 2, 3))
     assert history.invalid and history.stats['missing_cached_question'] == 1
     assert not history.scope.observations
+
+
+def test_stable_question_survives_two_tool_rounds_without_replay_or_epoch_churn():
+    from dataclasses import replace
+    from test_session_control import planned_idle_session, request
+    from vllm_kvmem.session_control import SessionNotice
+
+    control, _, original, entry = planned_idle_session()
+    entry.query_id = 'task-1'
+    first = replace(original, query_span=(8, 15), question_span=(8, 15), question_id='task-1')
+    history = RedundancyHistory(Scope(), 2, 1, 2, 3)
+    history.accept(first, 0, 16, prefill=True, rows=torch.ones(2, 16, 2, 3))
+    epoch = history.epoch
+    for turn in range(2):
+        req = request(f'tool-{turn}', tokens=list(range(25))+[700+turn])
+        req.num_prompt_tokens = len(req.prompt_token_ids)
+        req.kv_transfer_params = {'kvmem_request_plan': dict(kvmem_query_span=[8, 15],
+            kvmem_query_mode='agent', kvmem_query_id='task-1')}
+        assert control.lookup(req, 0) == 16
+        control.allocated(req, 16)
+        current = control.take_commands().bindings[0]
+        assert current.query_span is None and current.question_span == (8, 15)
+        history.accept(current, 16, 10, prefill=True, rows=None)
+        for offset in range(3):
+            history.accept(current, len(current.tokens)+offset, 1, prefill=False,
+                rows=torch.ones(2, 1, 2, 3))
+        assert history.epoch == epoch and history.complete and not history.invalid
+        control.consume(SessionNotice('restored', current.namespace, current.generation, req.request_id, 16, 12))
+        control.capture_before_final_prefill(req, 10)
+        control.take_commands()
+        control.finished(req)
+        control.consume(SessionNotice('retired', current.namespace, current.generation, req.request_id, 16, 12))
+    assert history.stats['question_reuses'] == 2
+    assert history.stats['question_tokens'] == 7
+    assert history.stats['observation_tokens'] == 6
+    assert history.stats['invalidations'] == 0
+
+
+def test_public_sidecar_reads_question_source_without_restoring_query_replay():
+    from dataclasses import replace
+    current = replace(binding(query=None, prompt=3), question_span=(0, 3), question_id='task')
+    obj = runtime([current])
+    payload, _ = packet_roundtrip(obj, batch(['r'], [0], [3], [True]), captures(3),
+        retained=[3], history=[0])
+    features = obj.authorities['r'].redundancy_history
+    assert current.query_span is None and features.complete
+    assert features.span == (0, 3) and features.question_id == 'task'
+    assert payload.numel() == 48+3*4*2*3*2
+
+
+@pytest.mark.parametrize('change', ['unverified_history', 'early_forward', 'generation', 'namespace'])
+def test_question_source_metadata_alone_cannot_authorize_cached_reuse(change):
+    from dataclasses import replace
+    original = replace(binding(query=(0, 2), prompt=2), question_span=(0, 2), question_id='task')
+    features = RedundancyHistory(Scope(), 1, 1, 2, 3)
+    features.accept(original, 0, 2, prefill=True, rows=torch.ones(1, 2, 2, 3))
+    current = replace(original, request_id='next', query_span=None, history=2)
+    start = 2
+    if change == 'unverified_history':
+        current = replace(current, history=0)
+    elif change == 'early_forward':
+        start = 1
+    elif change == 'generation':
+        current = replace(current, generation=2)
+    else:
+        current = replace(current, namespace=('salt', 'another-session'))
+    features.begin(current, start)
+    assert features.invalid and features.stats['question_reuses'] == 0
+    assert features.stats['missing_cached_question'] == 1
+
+
+@pytest.mark.parametrize('reason', ['missing', 'changed_identity', 'changed_tokens', 'overflow'])
+def test_invalid_question_is_invalidated_once_per_request_and_can_reset_on_rewind(reason):
+    from dataclasses import replace
+    original = replace(binding(query=(0, 2), prompt=2), question_id='old')
+    history = RedundancyHistory(Scope(), 1, 1, 2, 3)
+    history.accept(original, 0, 2, prefill=True, rows=torch.ones(1, 2, 2, 3))
+    current = replace(original, request_id='next', history=2)
+    if reason == 'missing':
+        current = replace(current, query_span=None)
+    elif reason == 'changed_identity':
+        current = replace(current, question_id='new')
+    elif reason == 'changed_tokens':
+        current = replace(current, tokens=(9, 10))
+    for index in range(20):
+        history.accept(current, 2+index, 1, prefill=False,
+            rows=torch.ones(1, 1, 2, 3), overflow=reason == 'overflow')
+    assert history.invalid and history.stats['invalidations'] == 1
+    assert history.scope.invalidations == 1
+    assert history.request_id == 'next'
+    history.invalidate()  # An explicit lifecycle rewind allows a fresh forward.
+    restored = replace(current, query_span=(0, 2), history=0)
+    history.accept(restored, 0, 2, prefill=True, rows=torch.ones(1, 2, 2, 3))
+    assert history.complete and not history.invalid
 
 
 @pytest.mark.parametrize('valid,drained', [(True, True), (False, True), (True, False)])

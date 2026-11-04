@@ -147,11 +147,20 @@ static void missing_features_fallback_pressure_and_generation() {
 static void factory_validation() {
     check(!make_historical_feature_source("lru",{},8),"LRU allocated redundancy source");
     check(bool(make_historical_feature_source("redundancy",{},8)),"redundancy factory lacks source");
+    check(historical_policy_detail::redundancy_config({}).query_capture_bytes==size_t(64)<<20,
+          "default Query capture capacity changed");
+    for(int64_t bytes:{int64_t(1),int64_t(256)<<20}) {
+        const auto parsed=historical_policy_detail::redundancy_config({{"query_capture_bytes",bytes}});
+        check(parsed.query_capture_bytes==size_t(bytes),"Query capture capacity was not preserved");
+    }
     for(const HistoricalPolicyParameters &params:std::vector<HistoricalPolicyParameters>{
         {{"keep_mandatory",false}},{{"reference_blocks",true}},{{"pair_comparisons",int64_t(0)}},
         {{"query_segments_per_step",int64_t(65537)}},{{"importance_weight",true}},
         {{"importance_weight",std::numeric_limits<double>::infinity()}},{{"unknown",int64_t(1)}},
-        {{"representative_similarity",1.1}},{{"feature_cache_bytes",double(1024)}}}) {
+        {{"representative_similarity",1.1}},{{"feature_cache_bytes",double(1024)}},
+        {{"query_capture_bytes",true}},{{"query_capture_bytes",double(1024)}},
+        {{"query_capture_bytes",int64_t(0)}},{{"query_capture_bytes",int64_t(-1)}},
+        {{"query_capture_bytes",(int64_t(256)<<20)+1}}}) {
         bool failed=false;try{validate_historical_kv_policy("redundancy",params);}catch(const std::invalid_argument &){failed=true;}
         check(failed,"factory accepted invalid redundancy parameter");
     }
@@ -195,10 +204,186 @@ static void pending_credit_pressure_hysteresis_and_no_batch_chains() {
     p.ready_slots=2;snapshot.round=3;
     check(decide(policy,snapshot,p).size()==1,"snapshot assembly lost first-round hysteresis latch");
 }
+static HistoricalBlockMeta thinking(HistoricalBlockMeta m) {
+    m.thinking_complete=m.thinking_only=true;return m;
+}
+static std::vector<HistoricalDeleteIntent> decide_ack(HistoricalRedundancyPolicy &policy,
+        const HistoricalSnapshot &snapshot,HistoricalPressure p,HistoricalCommitCode ack=HistoricalCommitCode::Committed) {
+    HistoricalDecisionBatch batch(1);std::vector<HistoricalDeleteIntent> result;
+    for(size_t step=0;step<10000;++step) {
+        auto r=policy.step(snapshot,p,{1,1},batch);
+        check(r.examined<=1 && r.emitted<=1,"new policy exceeded work/intent bounds");
+        for(const auto &i:batch.values()) {
+            result.push_back(i);policy.on_result(i,ack);
+            if(ack==HistoricalCommitCode::Committed || ack==HistoricalCommitCode::Shadow) {
+                ++p.pending_slots;p.pending_cpu_bytes+=1024;p.scope_pending_cpu_bytes+=1024;
+            }
+        }
+        batch.clear_after_ack();
+        if(r.status==HistoricalPolicyStatus::Complete || r.status==HistoricalPolicyStatus::NoCandidate) return result;
+        check(r.status!=HistoricalPolicyStatus::Backpressure,"acknowledged batch remained blocked");
+    }
+    throw std::runtime_error("new policy did not finish bounded round");
+}
+static void thinking_redundancy_then_global_lru_preserves_witness() {
+    for(auto ack:{HistoricalCommitCode::Committed,HistoricalCommitCode::Shadow}) {
+        auto s=source();s->configure(1,1,1,2);question(s,{1,0});
+        auto old=thinking(block(s,0,{1,0},2)),rep=thinking(block(s,1,{1,0},3));
+        auto other=block(s,2,{0,1},1),unknown=block(s,3,{-1,0},4);
+        // Incomplete provenance cannot prove a thinking-only block.
+        unknown.thinking_only=true;
+        auto c=config();c.thinking_only=c.pool_pairwise=c.lru_fallback=true;
+        HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+        auto intents=decide_ack(policy,{1,1,{old,rep,other,unknown}},pressure(),ack);
+        check(intents.size()==3,"fallback failed to cover shortage outside thinking");
+        check(intents[0].reason==HistoricalDeleteReason::Redundancy && intents[0].handle==old.handle &&
+            intents[0].witness==rep.handle,"LRU ran before completed thinking redundancy");
+        check(intents[1].reason==HistoricalDeleteReason::LruFallback && intents[1].handle==other.handle,
+            "fallback did not choose oldest global block");
+        check(intents[2].reason==HistoricalDeleteReason::LruFallback && intents[2].handle==unknown.handle,
+            "unknown provenance entered redundancy or escaped global fallback");
+        for(const auto &i:intents) check(i.handle!=rep.handle,"fallback deleted direct representative");
+        // Missing features do not silently erase carry identity. A later round
+        // may reclaim it only after ordinary LRU, with a distinct lossy reason.
+        s->invalidate_question();rep.feature_version=0;
+        auto fresh=block(s,4,{0,-1},5);
+        auto next=decide_ack(policy,{1,2,{rep,fresh}},pressure(),ack);
+        check(next.size()==2 && next[0].handle==fresh.handle && next[0].reason==HistoricalDeleteReason::LruFallback &&
+            next[1].handle==rep.handle && next[1].reason==HistoricalDeleteReason::LruRepresentativeFallback,
+            "missing Q/features skipped ordinary LRU or lost representative tier identity");
+    }
+}
+static void lru_fallback_orders_by_use_and_honors_byte_and_ready_pressure() {
+    auto s=source();s->configure(1,1,1,2);question(s,{100,0});
+    auto old=block(s,0,{1,0},1),newer=block(s,1,{0,1},2),ref=block(s,7,{-1,-1},3,true);
+    auto c=config();c.lru_fallback=true;c.representative_similarity=1;
+    for(bool bytes:{false,true}) {
+        HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+        HistoricalPressure p;
+        if(bytes) {p.scope_cpu_bytes=3072;p.scope_cpu_limit=2048;}
+        else p.requested_ready_slots=1;
+        auto intents=decide_ack(policy,{1,1,{old,newer,ref}},p);
+        check(intents.size()==1 && intents[0].handle==old.handle && intents[0].reason==HistoricalDeleteReason::LruFallback,
+            "fallback used importance rather than LRU, or ignored ready/byte pressure");
+    }
+    s->invalidate_question();
+    HistoricalRedundancyPolicy no_query(8,c);no_query.bind_features(s);
+    old.feature_version=newer.feature_version=0;
+    HistoricalPressure p;p.requested_ready_slots=1;
+    auto intents=decide_ack(no_query,{1,1,{old,newer,ref}},p);
+    check(intents.size()==1 && intents[0].handle==old.handle,"LRU fallback improperly depended on Query/features");
+}
+static void no_fallback_before_ack_and_recheck_actual_deficit() {
+    auto s=source();s->configure(1,1,1,2);question(s,{1,0});
+    auto a=thinking(block(s,0,{1,0},2)),b=thinking(block(s,1,{1,0},3)),other=block(s,2,{0,1},1);
+    auto c=config();c.thinking_only=c.lru_fallback=true;
+    HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+    HistoricalSnapshot snap{1,1,{a,b,other}};auto p=pressure();HistoricalDecisionBatch batch(1);
+    HistoricalDeleteIntent intent;
+    for(size_t step=0;step<100;++step) {
+        auto r=policy.step(snap,p,{1,1},batch);
+        if(!batch.empty()) {intent=batch.values().front();break;}
+        check(r.status==HistoricalPolicyStatus::Yielded,"redundancy scan ended unexpectedly");
+    }
+    check(intent.handle==a.handle && intent.reason==HistoricalDeleteReason::Redundancy,"fallback raced sliced redundancy");
+    batch.clear_after_ack(); // Deliberately withhold the result callback.
+    auto waiting=policy.step(snap,p,{1,1},batch);
+    check(waiting.status==HistoricalPolicyStatus::Backpressure && batch.empty(),"fallback ran without redundancy ACK");
+    policy.on_result(intent,HistoricalCommitCode::Committed);
+    p.ready_slots=p.high_slots;
+    auto done=policy.step(snap,p,{1,1},batch);
+    check(done.status==HistoricalPolicyStatus::Complete && batch.empty(),"fallback ignored capacity returned after ACK");
+}
+static void representative_fallback_makes_progress_only_in_later_round() {
+    for(auto ack:{HistoricalCommitCode::Committed,HistoricalCommitCode::Shadow}) {
+        auto s=source();s->configure(1,1,1,4);question(s,{0,0,0,0});
+        HistoricalSnapshot snap{1,1,{}};
+        for(uint32_t group=0;group<3;++group) {
+            std::vector<float> key(4);key[group]=1;
+            snap.blocks.push_back(thinking(block(s,2*group,key,2*group+1)));
+            snap.blocks.push_back(thinking(block(s,2*group+1,key,2*group+2)));
+        }
+        snap.blocks.push_back(thinking(block(s,6,{0,0,0,1},7,true)));
+        snap.blocks.push_back(thinking(block(s,7,{0,0,0,-1},8,true)));
+        auto c=config();c.thinking_only=c.pool_pairwise=c.lru_fallback=true;
+        HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+        auto p=pressure();p.high_slots=4;
+        auto first=decide_ack(policy,snap,p,ack);
+        check(first.size()==3,"new representatives were deleted in their creation round");
+        for(const auto &i:first) check(i.reason==HistoricalDeleteReason::Redundancy,"first round resorted to representative fallback");
+        std::vector<HistoricalBlockMeta> live;
+        for(const auto &m:snap.blocks) {
+            bool deleted=false;for(const auto &i:first)deleted|=i.handle==m.handle;
+            if(!deleted)live.push_back(m);
+        }
+        snap={1,2,live};p.ready_slots=3;
+        auto second=decide_ack(policy,snap,p,ack);
+        check(second.size()==1 && second[0].reason==HistoricalDeleteReason::LruRepresentativeFallback &&
+            second[0].handle.slot==1,"old carry monopolized capacity or representative fallback was not LRU");
+        check(policy.permits(live[0]),"successful representative fallback retained its stale carry state");
+    }
+}
+static void bounded_pool_nontransitivity_and_reference_scope() {
+    auto s=source();s->configure(1,1,1,2);question(s,{1,0});
+    auto a=thinking(block(s,0,{1,0},1)),b=thinking(block(s,1,{.8660254f,.5f},2));
+    auto c=thinking(block(s,2,{.5f,.8660254f},3)),ref=thinking(block(s,7,{-1,0},4,true));
+    auto cfg=config();cfg.thinking_only=cfg.pool_pairwise=true;cfg.representative_similarity=.8;
+    HistoricalRedundancyPolicy policy(8,cfg);policy.bind_features(s);
+    auto intents=decide_ack(policy,{1,1,{a,b,c,ref}},pressure());
+    check(intents.size()==1 && intents[0].handle==b.handle && intents[0].witness==a.handle,
+        "pool comparison inferred transitive similarity or failed to retain strongest direct representative");
+    // Non-thinking history may be a witness only through the explicit option.
+    auto s2=source();s2->configure(1,1,1,2);question(s2,{1,0});
+    auto t=thinking(block(s2,0,{1,0},1)),outside=block(s2,7,{1,0},2,true);
+    for(bool all:{false,true}) {
+        cfg.all_history_references=all;HistoricalRedundancyPolicy scoped(8,cfg);scoped.bind_features(s2);
+        auto result=decide_ack(scoped,{1,1,{t,outside}},pressure());
+        check(result.size()==size_t(all),"reference scope did not honor thinking/all-history option");
+    }
+}
+static void refresh_once_before_rank_and_epoch_peak() {
+    auto build=[](bool refresh) {
+        auto s=source();s->configure(1,1,1,2);question(s,{1,0});
+        auto a=block(s,0,{1,0},1),b=block(s,1,{0,1},2),ref=block(s,7,{1,1},3,true);
+        auto c=config();c.refresh_before_rank=refresh;c.importance_weight=1;c.representative_similarity=.6;
+        HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+        HistoricalSnapshot snap{1,1,{a,b,ref}};HistoricalPressure p;p.requested_ready_slots=1;HistoricalDecisionBatch batch(1);
+        policy.step(snap,p,{3,1},batch);check(batch.empty(),"initial sliced score emitted early");
+        std::vector<float> focus_b(16);for(size_t t=0;t<8;++t)focus_b[t*2+1]=10;
+        auto epoch=s->snapshot().epoch;check(s->observe(epoch,focus_b.data(),8),"refresh observation failed");
+        policy.step(snap,p,{3,1},batch);policy.step(snap,p,{3,1},batch);
+        // Once refreshed, a later observation must not restart scoring forever.
+        std::vector<float> focus_a(16);for(size_t t=0;t<8;++t)focus_a[t*2]=20;
+        check(s->observe(epoch,focus_a.data(),8),"second refresh observation failed");
+        for(size_t step=0;step<100 && batch.empty();++step) policy.step(snap,p,{3,1},batch);
+        check(batch.values().size()==1 && batch.values()[0].handle==(refresh?a.handle:b.handle),
+            "one-time pre-rank refresh did not use the frozen latest observation");
+    };
+    build(false);build(true);
+    auto s=source();s->configure(1,1,1,2);question(s,{1,0});
+    auto a=block(s,0,{1,0},1),b=block(s,1,{0,1},2),ref=block(s,7,{1,1},3,true);
+    auto c=config();c.epoch_peak=true;c.importance_weight=1;c.representative_similarity=.6;
+    HistoricalRedundancyPolicy policy(8,c);policy.bind_features(s);
+    std::vector<float> high_a(16);for(size_t t=0;t<8;++t)high_a[t*2]=10;
+    auto epoch=s->snapshot().epoch;check(s->observe(epoch,high_a.data(),8),"peak observation failed");
+    HistoricalPressure p;p.requested_ready_slots=1;
+    auto first=decide(policy,{1,1,{a,b,ref}},p);check(first[0].handle==b.handle,"initial peak rank wrong");
+    std::vector<float> high_b(320);for(size_t t=0;t<160;++t)high_b[t*2+1]=2;
+    check(s->observe(epoch,high_b.data(),160),"peak ring replacement failed");
+    auto second=decide(policy,{1,2,{a,b,ref}},p);
+    check(second.size()==1 && second[0].handle==b.handle,"sliding observation ring forgot epoch peak");
+    question(s,{0,2});auto third=decide(policy,{1,3,{a,b,ref}},p);
+    check(third.size()==1 && third[0].handle==a.handle,"new question inherited old epoch peak");
+}
 int main() {
     complete_question_layout_and_observations();missing_invalid_immutable_and_budget();guards_and_version_revalidation();
     direct_witness_ack_and_nontransitivity();importance_gqa_head_order_and_segment_peak();
     missing_features_fallback_pressure_and_generation();factory_validation();
     continuous_generations_and_bounded_snapshots();pending_credit_pressure_hysteresis_and_no_batch_chains();
+    thinking_redundancy_then_global_lru_preserves_witness();
+    lru_fallback_orders_by_use_and_honors_byte_and_ready_pressure();
+    no_fallback_before_ack_and_recheck_actual_deficit();bounded_pool_nontransitivity_and_reference_scope();
+    representative_fallback_makes_progress_only_in_later_round();
+    refresh_once_before_rank_and_epoch_peak();
     std::cout<<"historical redundancy tests passed\n";
 }

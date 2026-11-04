@@ -23,6 +23,9 @@ struct HistoricalBlockMeta {
     bool gpu_resident = false;
     uint64_t references = 0;
     uint64_t feature_version = 0;
+    // Accepted-token provenance for this exact generation. Unknown and mixed
+    // records are not eligible for thinking-only redundancy.
+    bool thinking_complete = false, thinking_only = false;
 };
 
 struct HistoricalSnapshot {
@@ -43,7 +46,7 @@ struct HistoricalWorkBudget {
     size_t scan_blocks = 256, delete_blocks = 64;
 };
 
-enum class HistoricalDeleteReason { Lru, Redundancy, LossyPressure };
+enum class HistoricalDeleteReason { Lru, Redundancy, LossyPressure, LruFallback, LruRepresentativeFallback };
 enum class HistoricalCommitCode { Committed, AlreadyRetired, Shadow, Stale, Ineligible, Cancelled, Retry };
 
 struct HistoricalDeleteIntent {
@@ -59,6 +62,7 @@ enum class HistoricalPolicyStatus { Yielded, Complete, NoCandidate, Backpressure
 struct HistoricalPolicyResult {
     HistoricalPolicyStatus status;
     size_t examined = 0, emitted = 0;
+    bool progressed = false;
 };
 
 // The manager retains/acknowledges every intent before clearing this batch.
@@ -96,9 +100,15 @@ public:
     // Policy-owned trigger. Custom proactive policies default to requesting a
     // snapshot even without capacity pressure; the mechanism never vetoes it.
     virtual bool wants_snapshot(const HistoricalPressure &) { return true; }
+    // Recheck capacity demand before committing a delayed/batched intent.
+    // Proactive custom strategies are not implicitly constrained by watermarks.
+    virtual bool permits_pressure(const HistoricalPressure &) { return true; }
     // Strategy-owned revalidation of a delayed intent. The mechanism does not
     // impose sealed/mandatory/GPU eligibility rules on custom strategies.
     virtual bool permits(const HistoricalBlockMeta &) const { return true; }
+    virtual bool permits_intent(const HistoricalBlockMeta &meta, const HistoricalDeleteIntent &) const {
+        return permits(meta);
+    }
     virtual HistoricalPolicyResult step(const HistoricalSnapshot &, const HistoricalPressure &,
                                         HistoricalWorkBudget, HistoricalDecisionBatch &) = 0;
 };
@@ -123,6 +133,7 @@ public:
                deficit(pressure.requested_ready_slots, pressure.ready_slots, pressure.pending_slots) ||
                deficit(pressure.scope_cpu_bytes, pressure.scope_cpu_limit, pressure.scope_pending_cpu_bytes);
     }
+    bool permits_pressure(const HistoricalPressure &pressure) override { return wants_snapshot(pressure); }
     bool permits(const HistoricalBlockMeta &block) const override {
         return block.live && block.sealed && (!keep_mandatory_ || !block.mandatory);
     }

@@ -62,6 +62,22 @@ def test_policy_defaults_parameters_and_native_config_own_their_values():
     assert legacy.policy_params == {'keep_mandatory': True}
 
 
+def test_thinking_redundancy_configuration_is_opt_in_and_rejects_ambiguous_fallback():
+    names = ('thinking_only', 'pool_pairwise', 'all_history_references',
+             'refresh_before_rank', 'epoch_peak', 'lru_fallback')
+    baseline = HistoricalGcSettings(policy='redundancy')
+    assert all(baseline.policy_params[name] is False for name in names)
+    enabled = HistoricalGcSettings(policy='redundancy', policy_params=dict.fromkeys(names, True))
+    native = enabled.native(settings().memory, 2)
+    assert all(native.policy_params[name] is True for name in names)
+    with pytest.raises(ValueError, match='fallback'):
+        HistoricalGcSettings(policy='redundancy', policy_params={
+            'allow_lossy_fallback': True, 'lru_fallback': True})
+    for name in names:
+        with pytest.raises(ValueError, match=name):
+            HistoricalGcSettings(policy='redundancy', policy_params={name: 1})
+
+
 @pytest.mark.parametrize('value', [
     {'policy': 'fifo'}, {'policy': ''}, {'policy': 'LRU'}, {'policy': None}, {'policy': []},
     {'policy_params': None}, {'policy_params': []}, {'policy_params': False},

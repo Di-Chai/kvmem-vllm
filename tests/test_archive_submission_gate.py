@@ -23,7 +23,7 @@ def archive_fixture(tmp_path, *, cached=False):
     return archive, repo, leases
 
 
-@pytest.mark.parametrize('operation', ['write', 'seal', 'read', 'region', 'cached_read'])
+@pytest.mark.parametrize('operation', ['write', 'seal', 'read', 'region', 'regions', 'cached_read'])
 @pytest.mark.parametrize('failure', ['before', 'queued', 'running', 'holder'])
 def test_failed_submission_never_runs_io_or_double_releases_admission(
         tmp_path, monkeypatch, operation, failure):
@@ -59,7 +59,7 @@ def test_failed_submission_never_runs_io_or_double_releases_admission(
 
     archive.tier = ObservedTier()
     monkeypatch.setattr(archive, '_gather_region', gather)
-    destination = bytearray(b'z' * (32 if operation == 'region' else 64))
+    destination = bytearray(b'z' * (32 if operation in ('region','regions') else 64))
     original_submit = archive.executor.submit
     original_adjust = archive.executor._adjust_thread_count
     original_holder = storage.ArchiveJob
@@ -91,6 +91,8 @@ def test_failed_submission_never_runs_io_or_double_releases_admission(
                 archive.write_from_views('owner', [leases[1]], [b'b' * 32, b'c' * 32])
             elif operation in ('read', 'cached_read'):
                 archive.read('owner', [leases[0]], destination=destination)
+            elif operation == 'regions':
+                archive.read_regions('owner', [leases[0]], ((0,16),(48,16)), destination=destination)
             else:
                 archive.read_region('owner', [leases[0]], 16, 32, destination=destination)
         assert not touched

@@ -17,19 +17,47 @@ import uuid
 
 import httpx
 import psutil
-import run_agent_handoff_queue as q
+try:
+    from . import run_agent_handoff_queue as q
+except ImportError:
+    import run_agent_handoff_queue as q
 try:
     from .terminalbench_policy import configure_task_deadlines
     from .terminalbench_network import direct_environment, DIRECT_CONTAINER_ENV, assert_direct_docker
     from .terminalbench_network import copy_download_cache, cache_compose_override, CACHE_ENV
+    from .run_terminalbench_job import DEFAULT_CONTAINER_MEMORY_BYTES, HOST_MEMORY_RESERVE_BYTES, validate_memory_budget
 except ImportError:
     from terminalbench_policy import configure_task_deadlines
     from terminalbench_network import direct_environment, DIRECT_CONTAINER_ENV, assert_direct_docker
     from terminalbench_network import copy_download_cache, cache_compose_override, CACHE_ENV
+    from run_terminalbench_job import DEFAULT_CONTAINER_MEMORY_BYTES, HOST_MEMORY_RESERVE_BYTES, validate_memory_budget
 
 REPO = Path('/home/chaidi/kvmem-freetoken/kvmem-vllm')
 PYTHON = '/home/chaidi/kvmem-vllm/.venv/bin/python'
 HARBOR_PYTHON = '/tmp/kvmem-terminus-20261026-env/bin/python'
+BRIDGE_MAX_SESSIONS = 16
+
+
+def concurrency_limits(profile, task_count, trial_concurrency=None):
+    """Task slots include tool waits; model slots only bound native execution."""
+    model = profile.get('max_num_seqs', 8)
+    if type(model) is not int or model < 1:
+        raise ValueError('Terminal-Bench requires a positive integer model concurrency')
+    if type(task_count) is not int or task_count < 1:
+        raise ValueError('Terminal-Bench requires at least one selected task')
+    if trial_concurrency is not None and (type(trial_concurrency) is not int or trial_concurrency < 1):
+        raise ValueError('Terminal-Bench trial concurrency must be a positive integer')
+    # Preserve legacy defaults for profiles with fewer than eight native slots.
+    requested = min(8, model) if trial_concurrency is None else trial_concurrency
+    tasks = min(requested, task_count)
+    if tasks > BRIDGE_MAX_SESSIONS:
+        raise ValueError('Terminal-Bench trial concurrency exceeds bridge owner capacity')
+    sessions = profile.get('kvmem', {}).get('session_capacity', 0)
+    if type(sessions) is not int or sessions < tasks:
+        raise ValueError('Terminal-Bench session_capacity must cover every concurrent task owner; '
+                         'tool-waiting sessions retain their history')
+    return dict(task_concurrency=tasks, model_concurrency=model,
+                session_capacity=sessions, bridge_max_sessions=BRIDGE_MAX_SESSIONS)
 
 
 def hashes(root):
@@ -43,29 +71,81 @@ def reusable_image(row, proof, detail):
             proof.get('id') == detail.get('Id'))
 
 
-def prepare(root, dataset, reuse_images_from=None, agent_time_limit='none', download_cache=None):
-    if agent_time_limit not in ('none', 'official'):
+def freeze_runtime(repo, runtime):
+    """Freeze the current checkout and built native module, never a prior run."""
+    source = repo/'src/vllm_kvmem'
+    native = list(source.glob('_native*.so'))
+    if not native:
+        raise ValueError('Build the current native extension before freezing Terminal-Bench')
+    native_inputs = [p for folder in ('csrc', 'third_party/qw3') for p in (repo/folder).rglob('*')
+                     if p.is_file() and p.suffix in ('.cpp', '.hpp', '.h') and
+                     'tests' not in p.relative_to(repo/folder).parts]
+    if (repo/'setup.py').exists():
+        native_inputs.append(repo/'setup.py')
+    if native_inputs and min(p.stat().st_mtime_ns for p in native) < max(p.stat().st_mtime_ns for p in native_inputs):
+        raise ValueError('Native extension predates current sources; rebuild before freezing Terminal-Bench')
+    ignore = shutil.ignore_patterns('__pycache__', '*.pyc', '.git')
+    for folder in ('src/vllm_kvmem', 'csrc', 'third_party/qw3'):
+        shutil.copytree(repo/folder, runtime/folder, ignore=ignore)
+    for folder in ('scripts', 'benchmarks', 'benchmarks/deepswe'):
+        (runtime/folder).mkdir(parents=True, exist_ok=True)
+        (runtime/folder/'__init__.py').touch()
+    scripts = ('dsh_bridge.py', 'dsh_query_epoch.py', 'run_terminalbench_job.py',
+               'run_terminalbench_suite.py', 'run_agent_handoff_queue.py', 'terminalbench_view.py',
+               'finalize_terminalbench.py', 'terminalbench_policy.py', 'terminalbench_deadline.py', 'terminalbench_network.py',
+               'terminalbench_harness.py', 'terminalbench_pty.py', 'terminalbench_tool_bundle.py',
+               'terminalbench_verifier_cache.py',
+               'terminalbench_query.py', 'terminalbench_replay.py', 'terminalbench_gpu_probe.py',
+               'qualify_thinking_gc_preflight.py', 'gpu_efficiency_monitor.py')
+    for name in scripts:
+        shutil.copy2(repo/'scripts'/name, runtime/'scripts'/name)
+    shutil.copy2(repo/'benchmarks/deepswe/claude_bridge.py', runtime/'benchmarks/deepswe/claude_bridge.py')
+    copied = hashes(runtime)
+    for name, value in copied.items():
+        original = repo/name
+        if original.exists() and q.sha(original) != value:
+            raise ValueError('Checkout changed while freezing: '+name)
+    return dict(origin='current-working-tree', source=str(repo),
+                native={str(p.relative_to(repo)): q.sha(p) for p in native},
+                runtime_sha256=hashlib.sha256(json.dumps(copied, sort_keys=True).encode()).hexdigest())
+
+
+def task_query_manifest(root, harbor_python=HARBOR_PYTHON):
+    upstream = json.loads(subprocess.check_output([harbor_python, '-c',
+        'import hashlib,inspect,json; from pathlib import Path; '
+        'from harbor.agents.terminus_2.terminus_2 import Terminus2; '
+        'from harbor.llms.chat import Chat; '
+        'from harbor.agents.terminus_2.tmux_session import TmuxSession; '
+        'from harbor.agents.terminus_2.terminus_json_plain_parser import TerminusJSONPlainParser; '
+        'print(json.dumps({Path(inspect.getfile(c)).name:hashlib.sha256(Path(inspect.getfile(c)).read_bytes()).hexdigest() '
+        'for c in (Terminus2,Chat,TmuxSession,TerminusJSONPlainParser)}))'], text=True))
+    tasks = {str(p.parent.relative_to(root)): dict(task_id=p.parent.name, instruction_sha256=q.sha(p))
+             for p in [*sorted((root/'dataset/tasks').glob('*/instruction.md')), root/'smoke-task/instruction.md']}
+    query = dict(policy='verified-task-query-v1', tasks=tasks,
+                 upstream_sources={k: upstream[k] for k in ('terminus_2.py', 'chat.py')})
+    harness = dict(policy='completion-control-network-v1', recorder_transport=True,
+                   upstream_sources={k: upstream[k] for k in ('terminus_2.py', 'tmux_session.py', 'terminus_json_plain_parser.py')})
+    return query, harness
+
+
+def prepare(root, dataset, reuse_images_from=None, agent_time_limit='relaxed', download_cache=None,
+            profile_path=None, task_names=None, query_mode='task', trial_concurrency=None,
+            container_memory_admission_bytes=DEFAULT_CONTAINER_MEMORY_BYTES):
+    validate_memory_budget(container_memory_admission_bytes,total=psutil.virtual_memory().total)
+    if agent_time_limit not in ('none', 'official', 'relaxed'):
         raise ValueError('Unknown Agent time limit policy')
     if root.exists():raise ValueError('New root required')
     source = REPO/'artifacts/rolling-long-output-20261026-r1'
-    manifest = q.read(source/'manifest.json')
-    if hashes(source/'runtime') != manifest['runtime']:raise ValueError('Qualified runtime changed')
-    if not q.read(source/'final-review.json')['passed']:raise ValueError('Missing rolling correctness proof')
+    if query_mode not in ('task', 'legacy'):
+        raise ValueError('Unknown Terminal Query mode')
     root.mkdir(parents=True)
     if download_cache is None:
         download_cache=REPO/'artifacts/terminalbench21-network-repair-20261026-r1/verified-download-cache'
     copy_download_cache(download_cache,root/'download-cache')
     q.save(root/'download-cache-compose.json',cache_compose_override(root/'download-cache'))
     runtime=root/'runtime'
-    shutil.copytree(source/'runtime',runtime)
-    for folder in ('scripts','benchmarks','benchmarks/deepswe'):
-        (runtime/folder).mkdir(exist_ok=True)
-        (runtime/folder/'__init__.py').touch()
-    for name in ('dsh_bridge.py','dsh_query_epoch.py','run_terminalbench_job.py',
-                 'run_terminalbench_suite.py','run_agent_handoff_queue.py','terminalbench_view.py',
-                 'finalize_terminalbench.py','terminalbench_policy.py','terminalbench_network.py'):
-        shutil.copy2(REPO/'scripts'/name,runtime/'scripts'/name)
-    shutil.copy2(REPO/'benchmarks/deepswe/claude_bridge.py',runtime/'benchmarks/deepswe/claude_bridge.py')
+    runtime_proof = freeze_runtime(REPO, runtime)
+    q.save(root/'runtime-proof.json', runtime_proof)
     shutil.copy2(REPO/'artifacts/deepswe-first16-20261015-r16/protocol/protocol.so',root/'protocol.so')
     shutil.copy2(source/'input.bin',root/'warmup-tokens.bin')
     shutil.copytree(dataset/'tasks',root/'dataset/tasks')
@@ -77,14 +157,26 @@ def prepare(root, dataset, reuse_images_from=None, agent_time_limit='none', down
         config=tomllib.loads((task/'task.toml').read_text())
         rows.append(dict(name=task.name,environment=config['environment'],agent=config['agent'],verifier=config['verifier']))
     if len(rows)!=89:raise ValueError('Expected official 89 tasks')
+    names = {row['name'] for row in rows}
+    selected = sorted(names if task_names is None else task_names)
+    if not selected or len(set(selected)) != len(selected) or not set(selected).issubset(names):
+        raise ValueError('Terminal-Bench subset must contain distinct official task names')
     q.save(root/'tasks.json',rows)
-    profile=q.read(source/'profile.json')
-    profile.update(port=18880,max_num_seqs=8,verify_session_restore=False)
-    profile['served_model_name']='kvmem-qwen38-27b-96k'
+    profile=q.read(profile_path or source/'profile.json')
+    profile.setdefault('port',18880)
+    profile.setdefault('max_num_seqs',8)
+    profile.setdefault('served_model_name','kvmem-qwen38-27b')
+    limits=concurrency_limits(profile,len(selected),trial_concurrency)
+    concurrency=limits['task_concurrency']
+    # Warm only a small fixed prefix, compatible with explicit smaller K/G
+    # profiles. It supplies no task answer and is excluded from measurements.
+    warm=array.array('i');warm.frombytes((root/'warmup-tokens.bin').read_bytes())
+    warm_limit=min(4096,max(32,profile['kvmem']['select_budget']//2))
+    (root/'warmup-tokens.bin').write_bytes(warm[:warm_limit].tobytes())
     q.save(root/'profile.json',profile)
     q.save(root/'connection.json',dict(base='http://127.0.0.1:18388',control_token=uuid.uuid4().hex))
     os.chmod(root/'connection.json',0o600)
-    common=dict(n_attempts=1,n_concurrent_trials=8,quiet=True,timeout_multiplier=1.0,
+    common=dict(n_attempts=1,n_concurrent_trials=concurrency,quiet=True,timeout_multiplier=1.0,
         retry=dict(max_retries=0),environment=dict(type='docker',delete=False,
             env={**DIRECT_CONTAINER_ENV,**CACHE_ENV},
             extra_docker_compose=[str(root/'download-cache-compose.json')],
@@ -93,12 +185,13 @@ def prepare(root, dataset, reuse_images_from=None, agent_time_limit='none', down
         agents=[dict(name='terminus-2',model_name='openai/'+profile['served_model_name'],kwargs=dict(
             api_base='http://127.0.0.1:18388/v1',temperature=.6,
             enable_summarize=False,interleaved_thinking=True,session_id_headers=['X-Session-ID'],
-            model_info=dict(max_input_tokens=10000000,max_output_tokens=131072,
+            model_info=dict(max_input_tokens=profile['max_model_len'],max_output_tokens=131072,
                 input_cost_per_token=0,output_cost_per_token=0,litellm_provider='openai',mode='chat'),
             llm_kwargs=dict(api_key='local-kvmem',timeout=14400,num_retries=0),
             llm_call_kwargs=dict(max_tokens=131072,top_p=.95,seed=1000,
                 extra_body=dict(top_k=20,min_p=0,repetition_penalty=1,presence_penalty=0))))])
-    formal=dict(**common,job_name='formal',jobs_dir=str(root/'jobs'),datasets=[dict(path=str(root/'dataset/tasks'))])
+    formal=dict(**common,job_name='formal',jobs_dir=str(root/'jobs'),
+                tasks=[dict(path=str(root/'dataset/tasks'/name)) for name in selected])
     q.save(root/'job.json',formal)
     smoke=root/'smoke-task';(smoke/'environment').mkdir(parents=True);(smoke/'tests').mkdir()
     (smoke/'instruction.md').write_text('Write the exact text KVMEM_TERMINUS_OK followed by a newline to /tmp/kvmem-terminus-ok.txt, verify its content, then finish.\n')
@@ -115,8 +208,18 @@ def prepare(root, dataset, reuse_images_from=None, agent_time_limit='none', down
     # Archive the exact upstream source independently of its temporary checkout.
     with (root/'harbor-source.tar').open('xb') as out:
         subprocess.run(['git','-C','/tmp/qw3-harbor-inspect','archive',harbor_commit],stdout=out,check=True)
+    query, harness = task_query_manifest(root)
+    historical = profile['kvmem'].get('historical_gc') or {}
+    if historical.get('policy_params', {}).get('thinking_only'):
+        try:
+            from .qualify_thinking_gc_preflight import preflight_plan
+        except ImportError:
+            from qualify_thinking_gc_preflight import preflight_plan
+        preflight = preflight_plan(profile)
+    else:
+        preflight = None
     frozen={name:hashes(root/name) for name in ('runtime','dataset','smoke-task','download-cache')}
-    fixed=['profile.json','tasks.json','job.json','smoke-job.json','dependencies.json','protocol.so','warmup-tokens.bin','harbor-source.tar','agent-time-policy.json','download-cache-compose.json']
+    fixed=['runtime-proof.json','profile.json','tasks.json','job.json','smoke-job.json','dependencies.json','protocol.so','warmup-tokens.bin','harbor-source.tar','agent-time-policy.json','download-cache-compose.json']
     if reuse_images_from:
         prior_path=reuse_images_from/'pre-inference-handoff.json'
         if not prior_path.exists():prior_path=reuse_images_from/'proxy-switch-audit.json'
@@ -137,23 +240,37 @@ def prepare(root, dataset, reuse_images_from=None, agent_time_limit='none', down
         fixed.append('reused-images.json')
     q.save(root/'manifest.json',dict(created=time.time(),dataset='Terminal-Bench 2.1',dataset_commit=dataset_commit,
         harbor_commit=harbor_commit,harbor_version=versions['harbor'],tasks=89,attempts=1,
-        max_concurrency=8,container_memory_admission_bytes=24*1024**3,output_cap=131072,
+        launched_task_names=selected,subset=len(selected)!=89,query_mode=query_mode,
+        query_provenance=query if query_mode=='task' else None,harness_repair=harness,
+        thinking_gc_preflight=preflight,
+        max_concurrency=concurrency,**limits,
+        container_memory_admission_bytes=container_memory_admission_bytes,
+        container_memory_host_reserve_bytes=HOST_MEMORY_RESERVE_BYTES,output_cap=131072,
         agent_time_limit=agent_time_limit,official_timing_comparable=(agent_time_limit=='official'),
-        thinking_budget=4096,seed=1000,qualification=str(source/'final-review.json'),
+        thinking_budget=4096,seed=1000,runtime_proof=runtime_proof,
         frozen=frozen,files={f:q.sha(root/f) for f in fixed},
-        notes=['No task retries or selection; official task resources/verifiers unchanged',
-               'Agent execution has no wall-clock limit; custom local evaluation' if agent_time_limit=='none' else 'Official Agent deadlines retained',
+        notes=['Explicit task set, one fresh attempt per task; official task resources/verifiers unchanged',
+               'Current checkout and built native module frozen; no qualification inherited from an old runtime',
+               'Verified task Query metadata and bounded duplex recorder; complete messages unchanged',
+               {'none': 'Agent execution has no wall-clock limit; custom local evaluation',
+                'relaxed': 'Agent deadlines are 2x official; recorded pauses excluded; custom local evaluation',
+                'official': 'Official Agent deadlines retained'}[agent_time_limit],
                'Verifier/setup/tool timeouts retained; smoke Agent deadline remains 300 seconds',
                'No automatic summarization; retain reasoning across turns for exact token history',
+               'Task concurrency includes tool waits and verification; native model concurrency is independent',
                'Stock Terminus transport retries remain enabled; no completed task is regenerated',
                'Task containers retained stopped, logs and accepted token journals preserved',
                'Proxy-free host downloads and container exec; completed trials reclaim only owned empty networks',
                'Official uv/Python release archives are SHA256-verified and mounted read-only; verifier source unchanged',
                'Synthetic smoke is excluded from all 89 task scores and throughput']))
-    q.save(root/'status.json',dict(status='prepared',at=time.time(),expected=89))
+    q.save(root/'status.json',dict(status='prepared',at=time.time(),expected=len(selected)))
 
 
 def resources(root,owned):
+    try:
+        from .gpu_efficiency_monitor import snapshot
+    except ImportError:
+        from gpu_efficiency_monitor import snapshot
     owned.track()
     row=dict(at=time.time(),memory_available=psutil.virtual_memory().available,
         disk_free=shutil.disk_usage(root).free,system_free=shutil.disk_usage('/').free,
@@ -163,12 +280,17 @@ def resources(root,owned):
         capture_output=True,text=True,timeout=10,check=True)
     row['gpu_memory_mib']=sum(int(line.split(',')[1]) for line in gpu.stdout.splitlines()
         if line.strip() and int(line.split(',')[0]) in owned.rows)
+    # This coarse suite sample complements the dedicated 1-second monitor.
+    # Keep device utilization separate from owned-process VRAM attribution.
+    row['gpu_telemetry']=snapshot(owned.rows)
     with (root/'resources.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
     return row
 
 
 def fetch_images(root):
-    rows=q.read(root/'tasks.json');directory=root/'images';directory.mkdir()
+    selected=set(q.read(root/'manifest.json').get('launched_task_names',[]))
+    rows=[row for row in q.read(root/'tasks.json') if not selected or row['name'] in selected]
+    directory=root/'images';directory.mkdir()
     env=direct_environment()
     reused=q.read(root/'reused-images.json')['images'] if (root/'reused-images.json').exists() else {}
     q.save(root/'download-environment.json',assert_direct_docker())
@@ -193,12 +315,13 @@ def fetch_images(root):
         pending={pool.submit(pull,row):row['name'] for row in rows};completed=[]
         for future in concurrent.futures.as_completed(pending):
             completed.append(future.result())
-            q.save(root/'status.json',dict(status='preparing_images',at=time.time(),ready=len(completed),expected=89))
+            q.save(root/'status.json',dict(status='preparing_images',at=time.time(),ready=len(completed),expected=len(rows)))
     q.save(root/'image-audit.json',dict(passed=True,images=completed))
 
 
 def run(root):
     plan=q.read(root/'manifest.json')
+    expected_tasks=len(plan.get('launched_task_names',range(89)))
     for name,expected in plan['frozen'].items():
         if hashes(root/name)!=expected:raise ValueError('Frozen source changed: '+name)
     for name,expected in plan['files'].items():
@@ -219,6 +342,10 @@ def run(root):
             time.sleep(5)
         q.save(root/'status.json',dict(status='starting_model',at=time.time()))
         server=q.start_model(root/'model',root/'profile.json',runtime,PYTHON,owned)
+        gpu_monitor=owned.start([PYTHON,'-B',str(runtime/'scripts/gpu_efficiency_monitor.py'),
+            'sample','--output',str(root/'gpu-utilization.jsonl'),
+            '--owned-root-pid',str(server.pid),'--interval','1'],
+            runtime,q.environment(runtime),root/'gpu-monitor.log',root/'gpu-monitor-process.json')
         q.ready_http(f'http://127.0.0.1:{profile["port"]}/health',server,owned,timeout=3600,
                      progress_path=root/'model/startup.json')
         tokens=array.array('i');tokens.frombytes((root/'warmup-tokens.bin').read_bytes())
@@ -231,17 +358,35 @@ def run(root):
             payload.update(prompt=[151645],kv_transfer_params=dict(kvmem_release_session=True))
             result=client.post(f'http://127.0.0.1:{profile["port"]}/v1/completions',json=payload)
             result.raise_for_status();q.save(root/'warmup-release.json',result.json())
+        if plan.get('thinking_gc_preflight'):
+            q.save(root/'status.json',dict(status='thinking_gc_preflight',at=time.time(),expected=expected_tasks))
+            check=owned.start([PYTHON,'-B',str(runtime/'scripts/qualify_thinking_gc_preflight.py'),
+                '--base',f'http://127.0.0.1:{profile["port"]}','--profile',str(root/'profile.json'),
+                '--protocol',str(root/'protocol.so'),'--capture',str(root/'model/server/capture'),
+                '--output',str(root/'thinking-gc-preflight'),
+                '--target-tokens',str(plan['thinking_gc_preflight']['target_tokens'])],
+                runtime,direct_environment(q.environment(runtime)),root/'thinking-gc-preflight.log',
+                root/'thinking-gc-preflight-process.json')
+            while check.poll() is None:
+                if server.poll() is not None:
+                    raise RuntimeError('Owned model exited during thinking GC preflight')
+                time.sleep(1)
+            if check.returncode:
+                raise RuntimeError('Thinking GC preflight failed; official tasks were not started')
         q.require_free_port(18388)
         bridge=owned.start([PYTHON,'-B','-m','scripts.dsh_bridge','--protocol',str(root/'protocol.so'),
             '--tokenizer',profile['tokenizer'],'--backend',f'http://127.0.0.1:{profile["port"]}',
             '--model',profile['served_model_name'],'--output',str(root/'bridge'),'--port','18388',
-            '--owner-namespace','tb21','--max-model-len','10000000','--gen-budget','16384',
-            '--max-output-tokens','131072','--max-sessions','16','--optimized-handoff',
-            '--abort-on-disconnect','--progress-interval','2','--release-control-token',conn['control_token']],
+            '--owner-namespace','tb21','--max-model-len',str(profile['max_model_len']),
+            '--gen-budget',str(profile['kvmem']['gen_budget']),
+            '--max-output-tokens','131072','--max-sessions',str(plan.get('bridge_max_sessions',BRIDGE_MAX_SESSIONS)),
+            '--optimized-handoff',
+            '--abort-on-disconnect','--progress-interval','2','--release-control-token',conn['control_token'],
+            *(['--require-query-provenance'] if plan.get('query_provenance') else [])],
             runtime,direct_environment(q.environment(runtime)),root/'bridge.log',root/'bridge-process.json')
         q.ready_http(conn['base']+'/health',bridge,owned,timeout=120)
         for phase,config in [('smoke','smoke-job.json'),('formal','job.json')]:
-            q.save(root/'status.json',dict(status=phase,at=time.time(),expected=89))
+            q.save(root/'status.json',dict(status=phase,at=time.time(),expected=expected_tasks))
             env=direct_environment(q.environment(runtime));env.update(HARBOR_TELEMETRY='0',OPENAI_API_KEY='local-kvmem',
                 LITELLM_LOCAL_MODEL_COST_MAP='True')
             job=owned.start([HARBOR_PYTHON,'-B',str(runtime/'scripts/run_terminalbench_job.py'),str(root),str(root/config)],
@@ -253,17 +398,20 @@ def run(root):
                     try:job.wait(timeout=120)
                     except subprocess.TimeoutExpired:pass
                     raise RuntimeError('Host resource preservation guard; all attempt files retained')
-                if server.poll() is not None or bridge.poll() is not None:
+                if server.poll() is not None or bridge.poll() is not None or gpu_monitor.poll() is not None:
                     job.send_signal(signal.SIGINT)
                     try:job.wait(timeout=120)
                     except subprocess.TimeoutExpired:pass
-                    raise RuntimeError('Owned model/bridge exited')
+                    raise RuntimeError('Owned model/bridge/GPU monitor exited')
                 time.sleep(5)
             if job.returncode:raise RuntimeError(f'{phase} exited {job.returncode}; preserve logs, no retry')
             if phase=='smoke':
+                capture=root/'model/server/capture'
                 q.save(root/'formal-boundary.json',dict(at=time.time(),smoke_excluded=True,
-                    resources=resources(root,owned)))
-        q.save(root/'status.json',dict(status='needs_final_review',at=time.time(),expected=89))
+                    resources=resources(root,owned),
+                    capture={name:q.read(capture/(name+'.json'))
+                             for name in ('archive','progress','scheduler_resources')}))
+        q.save(root/'status.json',dict(status='needs_final_review',at=time.time(),expected=expected_tasks))
     except BaseException as error:
         q.save(root/'failure.json',dict(at=time.time(),error=repr(error)))
         q.save(root/'status.json',dict(status='failed',at=time.time(),error=repr(error)))
@@ -284,8 +432,18 @@ if __name__=='__main__':
     p.add_argument('--dataset',type=Path)
     p.add_argument('--reuse-images-from',type=Path)
     p.add_argument('--download-cache',type=Path,help='Verified public uv/Python archive cache')
-    p.add_argument('--agent-time-limit',choices=['none','official'],default='none',
-                   help='Agent execution deadline policy for newly prepared runs; default: none')
+    p.add_argument('--agent-time-limit',choices=['none','official','relaxed'],default='relaxed',
+                   help='Default: relaxed (2x official Agent limits, recorded pauses excluded); verifier/setup unchanged')
+    p.add_argument('--profile',type=Path,help='Model and GC configuration to freeze')
+    p.add_argument('--tasks',nargs='+',help='Explicit official task subset; omitted runs all 89')
+    p.add_argument('--trial-concurrency',type=int,
+                   help='Concurrent task lifecycles, including tools; default min(8, model slots). '
+                        'May exceed model slots when session capacity covers the owners')
+    p.add_argument('--query-mode',choices=['task','legacy'],default='task',help='Legacy only for an explicit baseline comparison')
+    p.add_argument('--container-memory-gib',type=int,default=48,
+                   help='Aggregate declared container-memory admission budget; default 48 GiB, with a separate 12-GiB host reserve')
     a=p.parse_args();root=a.root.resolve()
-    if a.action=='prepare':prepare(root,a.dataset.resolve(),a.reuse_images_from.resolve() if a.reuse_images_from else None,a.agent_time_limit,a.download_cache)
+    if a.action=='prepare':prepare(root,a.dataset.resolve(),a.reuse_images_from.resolve() if a.reuse_images_from else None,
+                                  a.agent_time_limit,a.download_cache,a.profile,a.tasks,a.query_mode,a.trial_concurrency,
+                                  a.container_memory_gib*1024**3)
     else:run(root)

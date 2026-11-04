@@ -10,10 +10,18 @@ import statistics
 import ruler_protocol as ruler
 
 METHODS = ('mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass')
+VALUE_METHODS = ('exact_mass', 'block_value_norm', 'block_deletion_error')
+PREFIX_PILOT_METHODS = ('mean_k', 'block_value_norm', 'block_deletion_error')
+ALL_METHODS = (*METHODS, *VALUE_METHODS[1:])
 CANDIDATES = METHODS[:4]
 PRESSURE_WINDOW = 128
 EVENT_TYPES = ('prefill_pressure', 'decode_pressure', 'query')
 VERSION = 'recall-comparison-w128-v1'
+SUPPORTED_CONCURRENCY = (1, 2, 4, 8)
+OFFICIAL_GENERATION_LIMITS = {
+    'niah': 128, 'variable_tracking': 30, 'common_words_extraction': 120,
+    'freq_words_extraction': 50, 'qa': 32,
+}
 
 
 def require(value, message):
@@ -46,6 +54,36 @@ def execution_rows(rows):
     return sorted(rows, key=lambda row: (row['index'], order[row['task']]))
 
 
+def official_task_limits():
+    """Generation limits from the pinned classic RULER v1 data constants."""
+    return {task: OFFICIAL_GENERATION_LIMITS[family] for task, family in ruler.TASK_FAMILIES.items()}
+
+
+def validate_generation_limits(fixture):
+    limits = fixture.get('task_max_tokens')
+    if limits is None:
+        return
+    require(isinstance(limits, dict) and limits == official_task_limits() and
+            all(type(value) is int for value in limits.values()),
+            'Task output limits differ from pinned RULER official generation limits')
+    require(fixture.get('generation_limit_policy') == 'ruler_v1_official_per_task' and
+            fixture.get('starts_in_thinking') is False and
+            fixture['sampling'].get('thinking_token_budget') is None,
+            'Official short output limits require the declared non-thinking protocol')
+    require(fixture['sampling']['max_tokens'] == max(limits.values()),
+            'Default output limit must be the maximum official per-task limit')
+
+
+def case_sampling(fixture, row):
+    """Resolve an audited per-task response cap without touching GPU KV budgets."""
+    validate_generation_limits(fixture)
+    sampling = dict(fixture['sampling'], seed=row['seed'])
+    if fixture.get('task_max_tokens') is not None:
+        require(row['task'] in fixture['task_max_tokens'], 'Task has no frozen output limit')
+        sampling['max_tokens'] = fixture['task_max_tokens'][row['task']]
+    return sampling
+
+
 def validate_fixture(fixture):
     require(fixture['cases'] == 260 and fixture['samples_per_task'] == 20 and
             fixture['target_length'] == 262144, 'Expected the original 260-case 256K cohort')
@@ -58,12 +96,52 @@ def validate_fixture(fixture):
         require(Path(row['id']).name == row['id'] and row['id'] not in ('.', '..'), 'Unsafe sample ID')
         begin, end = row['served_query']
         require(0 <= begin < end <= row['served_input_tokens'], 'Invalid original Query span')
+    validate_generation_limits(fixture)
     return fixture
+
+
+def campaign_methods(fixture):
+    if fixture.get('answer_prefix_pilot'):
+        selected_methods=fixture.get('pilot_selected_methods',list(PREFIX_PILOT_METHODS))
+        require(isinstance(selected_methods,list) and
+                (selected_methods==list(PREFIX_PILOT_METHODS) or
+                 len(selected_methods)==1 and selected_methods[0] in PREFIX_PILOT_METHODS) and
+                fixture.get('methods') == selected_methods and
+                fixture.get('pressure_attention_hybrid') is True and
+                fixture.get('value_recall_reference') is True and
+                fixture.get('full_value_comparison') is False and
+                fixture.get('answer_prefix_policy') == 'official_after_assistant_template_v1' and
+                fixture.get('starts_in_thinking') is False,
+                'Answer-prefix pilot requires its declared method matrix and hybrid protocol')
+        wanted = set(fixture['qualification_ids'])
+        selected = [row for row in fixture['rows'] if row['id'] in wanted]
+        counts = Counter(row['task'] for row in selected)
+        count = fixture.get('pilot_samples_per_task')
+        require(type(count) is int and 0 < count <= 20 and
+                counts == {task: count for task in ruler.TASK_FAMILIES} and
+                len(wanted) == len(selected) and
+                all(row['index'] < count for row in selected),
+                'Pilot must use the same first N original cases of every task')
+        return tuple(selected_methods)
+    if fixture.get('value_recall_reference'):
+        if fixture.get('pressure_attention_hybrid'):
+            require(fixture['methods'] == list(VALUE_METHODS[1:]) and
+                    fixture.get('full_value_comparison') is False,
+                    'Hybrid campaign must declare its two Query methods separately')
+            return VALUE_METHODS[1:]
+        require(fixture['methods'] == list(VALUE_METHODS), 'Value-reference method matrix changed')
+        require(fixture.get('full_value_comparison') is True, 'Value comparison must preserve the full 260-case cohort')
+        return VALUE_METHODS
+    require(fixture['methods'] == list(METHODS), 'Frozen method matrix changed')
+    return METHODS
 
 
 def validate_profile(profile):
     k = profile['kvmem']
-    require(profile['max_num_seqs'] == 1, 'The 4090 comparison uses one owner at a time')
+    require(type(profile['max_num_seqs']) is int and profile['max_num_seqs'] in SUPPORTED_CONCURRENCY,
+            'Recall comparisons require explicitly frozen owners in (1, 2, 4, 8)')
+    require(profile.get('recall_experiment', {}).get('concurrent_owners', 1) == profile['max_num_seqs'],
+            'Recall owner declaration differs from the frozen engine concurrency')
     require(k['block_tokens'] == 32 and k['select_budget'] > 0 and k['gen_budget'] > 0,
             'Invalid common physical block or KV budgets')
     fixed = (k.get('sink_blocks', 0) + k.get('recent_blocks', 0)) * k['block_tokens']
@@ -77,15 +155,20 @@ def validate_profile(profile):
 
 
 def method_environment(method):
-    require(method in METHODS, 'Unknown recall method')
+    require(method in ALL_METHODS, 'Unknown recall method')
     return dict(KVMEM_RECALL_METHOD=method, KVMEM_PRESSURE_QUERY_WINDOW=str(PRESSURE_WINDOW))
 
 
 def method_profile(base, method):
-    require(method in METHODS, 'Unknown recall method')
+    require(method in ALL_METHODS, 'Unknown recall method')
     profile = deepcopy(base)
     settings = dict(profile.get('recall_experiment') or {})
     settings.update(method=method, pressure_query_window=PRESSURE_WINDOW)
+    # Value kernels have a separate larger scratch tiling allowance. Keep the
+    # original representative scorers within their native bound; no candidates,
+    # Query rows, per-owner budgets or score definitions change.
+    if method not in VALUE_METHODS[1:] and settings.get('block_batch', 32) > 128:
+        settings['block_batch'] = 128
     profile['recall_experiment'] = settings
     return profile
 
@@ -135,8 +218,12 @@ def events_for_response(events, response, session):
 
 def audit_events(events, method, profile, *, query_span=None, required_types=()):
     """No mixed-method fallback may pass as a pure-method result."""
-    require(method in METHODS and events, 'Missing recall events')
+    require(method in ALL_METHODS and events, 'Missing recall events')
     counts = Counter()
+    actual_methods = set()
+    settings = profile.get('recall_experiment', {})
+    hybrid = any(settings.get(stage + '_pressure_method') == 'accumulated_attention'
+                 for stage in ('prefill', 'decode'))
     for event in events:
         require(all(key in event for key in ('sample_id', 'event_type', 'configured_method',
             'actual_method', 'query_source', 'candidate_block_count', 'selected_block_ids',
@@ -144,14 +231,42 @@ def audit_events(events, method, profile, *, query_span=None, required_types=())
             'Incomplete recall event contract')
         kind = event['event_type']
         require(kind in EVENT_TYPES, 'Unknown reselection event type')
-        require(event['configured_method'] == event['actual_method'] == method,
+        accumulated = kind.endswith('_pressure') and settings.get(kind.removesuffix('_pressure') + '_pressure_method') == 'accumulated_attention'
+        expected_method = 'accumulated_attention' if accumulated else method
+        require(event['configured_method'] == method and event['actual_method'] == expected_method,
                 'Mixed-method configuration or actual method mismatch')
+        if hybrid:
+            require(event.get('configuration_kind') == 'pressure_attention_query_recall' and
+                    event.get('configured_event_method') == expected_method and
+                    all(event.get(stage + '_pressure_method') == settings.get(stage + '_pressure_method', 'same_method')
+                        for stage in ('prefill', 'decode')),
+                    'Stage-specific configuration was not declared in the event')
+        if not accumulated and profile.get('recall_experiment',{}).get('include_mandatory_in_softmax'):
+            require(event.get('attention_normalization_domain')=='candidate_and_mandatory' and
+                    event.get('mandatory_in_normalization') is True and
+                    event.get('score_mask_count')==event['candidate_block_count'],
+                    'Value reference excluded candidate or mandatory attention tokens')
         require(event['fallback_reason'] in (None, ''), 'Recall fallback is not a pure-method run')
         require(isinstance(event['query_source'], str) and event['query_source'], 'Missing Query provenance')
         begin, end, accepted = event['query_begin'], event['query_end'], event['accepted_through']
         require(all(type(x) is int for x in (begin, end, accepted)) and 0 <= begin < end and accepted >= 0,
                 'Query used an invalid token range')
-        if kind.endswith('_pressure'):
+        if accumulated:
+            require(end <= accepted and begin == 0 and
+                    event.get('attention_normalization_domain') == 'sampled_causal_active_windows',
+                    'Cumulative pressure attention used unaccepted provenance')
+            if event.get('attention_source') == 'prefill':
+                require(event['query_source'] == 'accepted_prefill_accumulation' and
+                    event.get('prefill_attention_samples', 0) > 0 and
+                    event.get('prefill_attention_chunks', 0) > 0 and
+                    event.get('prefill_score_normalization') == 'decayed_mass_over_exposure',
+                    'Missing accepted cumulative prefill attention provenance')
+            else:
+                require(kind == 'decode_pressure' and event.get('attention_source') == 'output' and
+                        event['query_source'] == 'accepted_output_accumulation' and
+                        event.get('output_score_normalization') == 'existing_action_decay_and_sample_mean',
+                        'Missing accepted cumulative output attention provenance')
+        elif kind.endswith('_pressure'):
             require(end <= accepted, 'Pressure Query used an unaccepted token')
             require(end == accepted and begin == max(0, end - PRESSURE_WINDOW),
                     'Pressure Query is not the last 128 accepted tokens')
@@ -173,9 +288,10 @@ def audit_events(events, method, profile, *, query_span=None, required_types=())
         require(not event.get('propagation_applied', False) and not event.get('guided', False),
                 'An excluded recall enhancement executed')
         counts[kind] += 1
+        actual_methods.add(event['actual_method'])
     require(set(required_types) <= counts.keys(), 'Not all required reselection entrances executed')
     return dict(passed=True, method=method, window=PRESSURE_WINDOW, event_counts=dict(counts),
-                fallback_count=0, actual_methods=[method])
+                fallback_count=0, actual_methods=sorted(actual_methods))
 
 
 def score_case(row, response, scorer, *, starts_in_thinking):

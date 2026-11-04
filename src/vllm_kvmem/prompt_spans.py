@@ -44,16 +44,29 @@ def combine_spans(message_spans=(), locality_spans=()):
     """Keep the legacy message contract, rejecting contradictory exact evidence."""
     old = normalize_spans(message_spans, label='Message')
     new = normalize_spans(locality_spans)
+    if not old:
+        return new
+    if not new:
+        return old
+    merged = []
     i = j = 0
     while i < len(old) and j < len(new):
         left, right = old[i], new[j]
-        if max(left[0], right[0]) < min(left[1], right[1]) and left != right:
-            raise ValueError('Conflicting message/locality boundaries or roles')
-        if left[1] <= right[1]:
+        if left[1] <= right[0]:
+            merged.append(left)
             i += 1
-        else:
+        elif right[1] <= left[0]:
+            merged.append(right)
             j += 1
-    return tuple(sorted(set(old + new)))
+        elif left == right:
+            merged.append(left)
+            i += 1
+            j += 1
+        else:
+            raise ValueError('Conflicting message/locality boundaries or roles')
+    merged.extend(old[i:])
+    merged.extend(new[j:])
+    return tuple(merged)
 
 
 def normalize_provenance(value):
@@ -82,7 +95,11 @@ def graph_metadata(binding):
                           getattr(binding, 'locality_spans', ()))
     tokens = getattr(binding, 'tokens', None)
     if tokens is not None:
-        normalize_spans(spans, len(tokens))
+        # combine_spans already validated every coordinate, role and ordering.
+        # Nonoverlapping ordered spans have their largest endpoint last.
+        limit = len(tokens)
+        if spans and spans[-1][1] > limit:
+            raise ValueError('Invalid locality span')
     provenance = normalize_provenance(getattr(binding, 'locality_provenance', ()))
     if not provenance:
         provenance = normalize_provenance(dict(schema_version=1,

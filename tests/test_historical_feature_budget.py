@@ -5,7 +5,7 @@ import time
 import pytest
 
 from vllm_kvmem.historical_feature_budget import (
-    REDUNDANCY_Q_STAGING_BYTES, redundancy_policy_metadata_bytes,
+    REDUNDANCY_Q_STAGING_BYTES, THINKING_STAGING_BYTES, redundancy_policy_metadata_bytes,
     split_historical_feature_budget,
 )
 from vllm_kvmem.historical_gc import HistoricalGcSettings
@@ -36,6 +36,34 @@ def test_both_caches_and_all_live_session_owners_fit_the_same_total_budget():
 @pytest.mark.parametrize('historical', [None, HistoricalGcSettings(policy='lru')])
 def test_existing_policies_do_not_reserve_redundancy_memory(historical):
     assert split_historical_feature_budget(SimpleNamespace(historical_gc=historical), 42, 0) == (42, 0)
+
+
+def test_global_lru_fallback_reserves_its_capacity_sized_heap():
+    params = HistoricalGcSettings(policy='redundancy').policy_params
+    normal = redundancy_policy_metadata_bytes(16384, params)
+    fallback = redundancy_policy_metadata_bytes(16384, dict(params, lru_fallback=True))
+    assert fallback-normal == 128*16384
+
+
+def test_thinking_state_and_transfer_slots_are_charged_to_the_shared_budget():
+    options = feature_options()
+    _, baseline = split_historical_feature_budget(options, options.cpu_read_cache_bytes, 3)
+    options.historical_gc = HistoricalGcSettings(policy='redundancy', policy_params={'thinking_only': True})
+    _, thinking = split_historical_feature_budget(options, options.cpu_read_cache_bytes, 3)
+    assert thinking-baseline == 3*512*options.memory.repository_blocks+THINKING_STAGING_BYTES
+
+
+def test_larger_query_slots_scale_shared_staging_without_multiplying_by_owners():
+    options = feature_options()
+    _, baseline = split_historical_feature_budget(options, options.cpu_read_cache_bytes, 3)
+    options.historical_gc = HistoricalGcSettings(policy='redundancy', policy_params={
+        'query_capture_bytes': 256*1024**2})
+    _, expanded = split_historical_feature_budget(options, options.cpu_read_cache_bytes, 3)
+    assert expanded-baseline == 8*(256-64)*1024**2
+    options.historical_gc = HistoricalGcSettings(policy='redundancy', policy_params={
+        'query_capture_bytes': 1})
+    _, minimum = split_historical_feature_budget(options, options.cpu_read_cache_bytes, 3)
+    assert baseline-minimum == REDUNDANCY_Q_STAGING_BYTES-8
 
 
 def test_reservation_fails_before_capacity_can_be_overadmitted():
@@ -88,7 +116,8 @@ def test_redundancy_public_profile_roundtrip_preserves_policy_knobs(tmp_path):
     profile = model_profile(tmp_path)
     gc = dict(mode='shadow', policy='redundancy', policy_params={
         'representative_similarity': 0.92, 'candidate_blocks': 96,
-        'importance_weight': 0.2, 'allow_lossy_fallback': False})
+        'importance_weight': 0.2, 'allow_lossy_fallback': False,
+        'query_capture_bytes': 256*1024**2})
     profile['kvmem'].update(graph_mode='off', archive_backend='cpu',
         cpu_read_cache_bytes=16*1024**3, async_seal=True,
         cpu_history_coordination=True, historical_gc=gc)
@@ -101,5 +130,6 @@ def test_redundancy_public_profile_roundtrip_preserves_policy_knobs(tmp_path):
     assert native.policy == 'redundancy'
     assert native.policy_params['representative_similarity'] == .92
     assert native.policy_params['candidate_blocks'] == 96
+    assert native.policy_params['query_capture_bytes'] == 256*1024**2
     replay = build_launch(json.loads(json.dumps(launch['profile'])), tmp_path, tmp_path/'replay')
     assert worker_payload(replay)['historical_gc'] == gc and profile == original

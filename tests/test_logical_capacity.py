@@ -8,6 +8,13 @@ from vllm_kvmem.logical_capacity import physical_config, wrap_planner, check_spe
 from test_deepswe_lru_10m import config as profile
 
 
+@pytest.fixture(autouse=True)
+def isolated_recall_environment(monkeypatch):
+    monkeypatch.delenv('KVMEM_RECALL_METHOD', raising=False)
+    monkeypatch.delenv('KVMEM_PRESSURE_QUERY_WINDOW', raising=False)
+    monkeypatch.delenv('KVMEM_RECALL_CONCURRENT_OWNERS', raising=False)
+
+
 def config(tmp_path):
     from vllm.config import CacheConfig
     p = profile(tmp_path)
@@ -18,12 +25,22 @@ def config(tmp_path):
                              kv_connector_extra_config={'kvmem':p['kvmem']}),
         scheduler_config=NS(scheduler_cls='vllm_kvmem.scheduler.KVMemScheduler',
                             async_scheduling=False,max_num_seqs=8,disable_hybrid_kv_cache_manager=False),
-        cache_config=cache, num_prefill_lookahead_tokens=0,
+        cache_config=cache,
         speculative_config=NS(method='mtp',num_speculative_tokens=4,
             use_multi_module_mtp=lambda:False,use_eagle=lambda:False,use_eagle_block_drop=lambda:False),
         parallel_config=NS(tensor_parallel_size=1,pipeline_parallel_size=1,
             decode_context_parallel_size=1,prefill_context_parallel_size=1),
         attention_config=NS(hisparse_config=None))
+
+
+def recall_config(tmp_path):
+    cfg = config(tmp_path)
+    cfg.model_config.max_model_len = cfg.model_config.original_max_model_len = 524288
+    cfg.scheduler_config.max_num_seqs = 1
+    cfg.kv_transfer_config.kv_connector_extra_config['kvmem'].update(
+        select_budget=36864, gen_budget=16384, block_tokens=32,
+        historical_gc=None, session_capacity=4)
+    return cfg
 
 
 def specs():
@@ -83,6 +100,126 @@ def test_prior_lengths_use_native_planner_without_changes():
     planner=wrap_planner(lambda *args:calls.append(args) or 'native')
     assert planner(cfg,[],[1])=='native' and calls==[(cfg,[],[1])]
     assert wrap_planner(planner) is planner
+
+
+@pytest.mark.parametrize('method', ['mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass'])
+def test_recall_retains_logical_length_and_uses_only_frozen_physical_frame(tmp_path, monkeypatch, method):
+    cfg = recall_config(tmp_path)
+    before = deepcopy(cfg)
+    # A no-GC 524K request remains native unless this experiment is explicit.
+    assert physical_config(cfg) is cfg
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', method)
+    monkeypatch.setenv('KVMEM_PRESSURE_QUERY_WINDOW', '128')
+    bounded = physical_config(cfg)
+    assert bounded is not cfg and bounded.model_config is not cfg.model_config
+    assert bounded.model_config.max_model_len == 53248
+    assert cfg.model_config == before.model_config
+    assert cfg.kv_transfer_config == before.kv_transfer_config
+    assert bounded.kv_transfer_config is cfg.kv_transfer_config
+    assert bounded.model_config.original_max_model_len == 524288
+
+
+def test_recall_actual_native_geometry_fits_4090_pool_and_still_checks_capacity(tmp_path, monkeypatch):
+    from vllm.v1.core.kv_cache_utils import get_kv_cache_configs
+    cfg = recall_config(tmp_path)
+    original_specs = specs()
+    # The real 4090 startup has 2.97 GiB available after model allocations.
+    available = [int(2.97 * 2**30)]
+    with pytest.raises(ValueError, match='KV cache is needed'):
+        get_kv_cache_configs(cfg, specs(), available)
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', 'exact_mass')
+    monkeypatch.setenv('KVMEM_RUNNER_PROBE_DIR', str(tmp_path / 'capture'))
+    bounded = physical_config(cfg)
+    expected = get_kv_cache_configs(bounded, specs(), available)
+    planner = wrap_planner(get_kv_cache_configs)
+    result = planner(cfg, original_specs, available)
+    assert result == expected
+    assert original_specs == specs()
+    assert cfg.model_config.max_model_len == 524288
+    per_owner = sum(g.kv_cache_spec.max_num_blocks_per_req(bounded, 53248)
+                    for g in result[0].kv_cache_groups)
+    assert result[0].num_blocks >= per_owner + 1
+    import json
+    audit = json.loads((tmp_path / 'capture/logical-kv-capacity.json').read_text())
+    assert audit['logical_limit'] == 524288 and audit['physical_frame'] == 53248
+    assert audit['workers'][0]['concurrent_owners'] == 1
+    assert audit['workers'][0]['required_pages'] == per_owner + 1
+    with pytest.raises(ValueError, match='KV cache is needed'):
+        planner(cfg, specs(), [128 * 2**20])
+
+
+@pytest.mark.parametrize('owners', [2, 4, 8])
+def test_explicit_parallel_recall_retains_per_request_frame_and_all_owner_capacity_check(tmp_path, monkeypatch, owners):
+    from vllm.v1.core.kv_cache_utils import get_kv_cache_configs
+    cfg = recall_config(tmp_path)
+    cfg.scheduler_config.max_num_seqs = owners
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', 'block_value_norm')
+    # Merely raising max_num_seqs still fails unless the launch declares it.
+    with pytest.raises(ValueError, match='Unqualified recall'):
+        physical_config(cfg)
+    monkeypatch.setenv('KVMEM_RECALL_CONCURRENT_OWNERS', str(owners))
+    bounded = physical_config(cfg)
+    assert bounded.model_config.max_model_len == 36864+16384
+    assert cfg.model_config.max_model_len == 524288
+    per_owner = None
+    result = wrap_planner(get_kv_cache_configs)(cfg, specs(), [40*2**30])
+    for cache in result:
+        per_owner = sum(group.kv_cache_spec.max_num_blocks_per_req(bounded, 53248)
+                        for group in cache.kv_cache_groups)
+        assert cache.num_blocks >= owners*per_owner+1
+    with pytest.raises(ValueError, match='cannot fit '+str(owners)):
+        wrap_planner(get_kv_cache_configs)(cfg, specs(), [int(2.97*2**30)])
+
+
+@pytest.mark.parametrize('change', [
+    'logical', 'owners', 'gc', 'block', 'select', 'gen', 'async_refresh',
+    'scheduler', 'connector', 'planning', 'rolling', 'cpu_history', 'cpu_reserve',
+    'sessions', 'mtp', 'async', 'apc', 'mamba', 'override', 'unbounded', 'tp',
+])
+def test_recall_exception_keeps_strict_runtime_guards(tmp_path, monkeypatch, change):
+    cfg = recall_config(tmp_path)
+    opts = cfg.kv_transfer_config.kv_connector_extra_config['kvmem']
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', 'mean_k')
+    if change == 'logical': cfg.model_config.max_model_len = 1048576
+    if change == 'owners': cfg.scheduler_config.max_num_seqs = 2
+    if change == 'gc':
+        from scripts.queue_deepswe_lru_10m import lru
+        opts['historical_gc'] = deepcopy(lru.LRU)
+    if change == 'block': opts['block_tokens'] = 64
+    if change == 'select': opts['select_budget'] = 18432
+    if change == 'gen': opts['gen_budget'] = 8192
+    if change == 'async_refresh': opts['async_refresh'] = False
+    if change == 'scheduler': cfg.scheduler_config.scheduler_cls = 'native'
+    if change == 'connector': cfg.kv_transfer_config.kv_connector = 'foreign'
+    if change == 'planning': opts['request_planning'] = False
+    if change == 'rolling': opts['rolling_active_window'] = False
+    if change == 'cpu_history': opts['cpu_history_coordination'] = False
+    if change == 'cpu_reserve': opts['cpu_progress_reserve'] = False
+    if change == 'sessions': opts['session_capacity'] = 0
+    if change == 'mtp': cfg.speculative_config = None
+    if change == 'async': cfg.scheduler_config.async_scheduling = True
+    if change == 'apc': cfg.cache_config.enable_prefix_caching = True
+    if change == 'mamba': cfg.cache_config.mamba_cache_mode = 'all'
+    if change == 'override': cfg.cache_config.num_gpu_blocks_override = 100000
+    if change == 'unbounded': cfg.model_config.original_max_model_len = -1
+    if change == 'tp': cfg.parallel_config.tensor_parallel_size = 2
+    with pytest.raises(ValueError):
+        physical_config(cfg)
+
+
+@pytest.mark.parametrize('method,window', [('unknown', '128'), ('mean_k', '32'), ('exact_mass', '129')])
+def test_recall_opt_in_validates_method_and_fixed_query_window(tmp_path, monkeypatch, method, window):
+    monkeypatch.setenv('KVMEM_RECALL_METHOD', method)
+    monkeypatch.setenv('KVMEM_PRESSURE_QUERY_WINDOW', window)
+    with pytest.raises(ValueError, match='KVMEM_RECALL_METHOD|WINDOW=128'):
+        physical_config(recall_config(tmp_path))
+
+
+def test_long_ordinary_no_gc_configuration_remains_rejected(tmp_path):
+    cfg = config(tmp_path)
+    cfg.kv_transfer_config.kv_connector_extra_config['kvmem']['historical_gc'] = None
+    with pytest.raises(ValueError, match='Unqualified bounded logical KV'):
+        physical_config(cfg)
 
 
 def test_invalid_specs_rejected():

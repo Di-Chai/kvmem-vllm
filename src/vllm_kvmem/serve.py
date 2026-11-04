@@ -27,6 +27,7 @@ DEFAULTS = {
     'draft_method': 'dflash',
     'draft_quantization': None,
     'profiler_config': None,
+    'cudagraph_capture_sizes': None,
     'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
     'long_prefill_token_threshold': 1024, 'gpu_memory_utilization': .72,
     'max_model_len': 262144, 'q8_tensorcore': False,
@@ -35,6 +36,7 @@ DEFAULTS = {
     'reasoning_end_str': None,
     'cuda_allocator_conf': None,
     'recall_experiment': None,
+    'model_adapter': None,
 }
 PATHS = ('model', 'tokenizer', 'hf_config_path', 'draft_model', 'mm_proj')
 # Explicit experiment controls for NVFP4 and FP8 checkpoints.
@@ -105,6 +107,12 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'kvmem', 'multi_user', 'linear_backend_per_quant'}:
         raise ValueError('Serving profile contains unknown fields or is not an object')
     cfg = {**DEFAULTS, **profile}
+    if cfg['model_adapter'] not in (None, 'qwen38_flash_next_b12x'):
+        raise ValueError('Unknown model_adapter')
+    qsa = cfg['model_adapter'] == 'qwen38_flash_next_b12x'
+    if qsa and (cfg['model_format'] != 'safetensors' or cfg['draft_method'] != 'mtp' or
+                cfg['draft_tokens'] not in (1, 2, 3) or cfg['execution_mode'] not in ('eager', 'full_graph')):
+        raise ValueError('Flash Next B12X profile requires safetensors, eager or full_graph MTP with 1–3 draft tokens')
     cfg['cuda_allocator_conf'] = _validate_cuda_allocator_conf(cfg['cuda_allocator_conf'])
     cfg['profiler_config'] = _validate_profiler_config(cfg['profiler_config'], base)
     if cfg['execution_mode'] not in ('eager', 'full_graph', 'compiled_graph'):
@@ -328,9 +336,20 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    if options.flashinfer_gemm_bucket_alignment:
+        seed = os.getenv('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
+        if seed:
+            # Allow only this read-only seed through the KVMEM environment
+            # reset, and record the resolved path in the saved launch plan.
+            source = Path(seed).expanduser().resolve(strict=True)
+            if not source.is_file():
+                raise ValueError('FlashInfer GEMM autotune seed must be a file')
+            env['KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED'] = str(source)
     if cfg['recall_experiment'] is not None:
         from .recall_experiment import launch_environment
         env.update(launch_environment(cfg['recall_experiment'], options))
+        if cfg['recall_experiment'].get('concurrent_owners', 1) != cfg['max_num_seqs']:
+            raise ValueError('Recall concurrent owners must match the explicit engine sequence limit')
         cfg['recall_experiment'] = dict(cfg['recall_experiment'])
     if cfg['cuda_allocator_conf'] is not None:
         settings = 'backend:native,' + ','.join(
@@ -339,6 +358,20 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         # spellings consistently, before native workers import/init CUDA.
         env['PYTORCH_ALLOC_CONF'] = env['PYTORCH_CUDA_ALLOC_CONF'] = settings
     env['KVMEM_BOUNDED_MTP' if cfg['draft_method'] == 'mtp' else 'KVMEM_BOUNDED_DFLASH'] = '1'
+    if cfg['draft_method'] == 'mtp':
+        # The DFlash loader patch is unrelated to native MTP and may not exist
+        # in otherwise compatible vendor builds.
+        env.pop('KVMEM_DRAFT_LOAD_COMPAT', None)
+    if qsa:
+        env['KVMEM_QSA_ADAPTER'] = '1'
+        argv += ['--linear-backend', 'b12x', '--moe-backend', 'b12x',
+                 '--gdn-decode-kernel', 'b12x', '--mamba-cache-mode', 'none']
+        env.update(VLLM_PLE_CPU_OFFLOAD='1', VLLM_QWEN3_8_FLASH_NEXT_OVERLAP='0',
+                   VLLM_B12X_MOE_FP4_FORCE_A16='1', VLLM_SSM_CONV_STATE_LAYOUT='DS')
+        # The vendor runtime rejects VMM for undeclared connector transports.
+        # Preserve an explicit profile allocator policy; clear ambient VMM.
+        for key in ('PYTORCH_ALLOC_CONF', 'PYTORCH_CUDA_ALLOC_CONF'):
+            env.setdefault(key, 'expandable_segments:False')
     if options.graph_mode != 'off':
         # Collection also requires durable namespace ownership even when it
         # accompanies the legacy (unplanned) selector.
@@ -352,7 +385,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         # Only scheduler/session logical coordinates grow beyond the HF limit;
         # do not alter the checkpoint's rotary frequencies or quantization.
         env['VLLM_ALLOW_LONG_MAX_MODEL_LEN'] = '1'
-    if cfg['max_model_len'] > 1048576:
+    if cfg['max_model_len'] > 1048576 or cfg['recall_experiment'] is not None:
         env['KVMEM_LOGICAL_KV_CAPACITY'] = '1'
     if cfg['prefill_chunk_tokens']:
         env['KVMEM_PREFILL_CHUNK_TOKENS'] = str(cfg['prefill_chunk_tokens'])
@@ -364,9 +397,18 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         compilation = ({'mode': 3, 'cudagraph_mode': 'FULL_AND_PIECEWISE'}
                        if cfg['execution_mode'] == 'compiled_graph' else
                        {'mode': 0, 'cudagraph_mode': 'FULL'})
+        sizes = cfg['cudagraph_capture_sizes']
+        if sizes is not None:
+            if (not isinstance(sizes, list) or not sizes or
+                    any(type(n) is not int or not 1 <= n <= cfg['max_num_batched_tokens'] for n in sizes) or
+                    len(set(sizes)) != len(sizes)):
+                raise ValueError('CUDA Graph capture sizes must be unique positive token counts within the batch limit')
+            compilation['cudagraph_capture_sizes'] = sorted(sizes)
         argv += ['--compilation-config', json.dumps(compilation)]
         env['KVMEM_FULL_GRAPH'] = '1'
     else:
+        if cfg['cudagraph_capture_sizes'] is not None:
+            raise ValueError('Explicit CUDA Graph capture sizes require graph execution')
         if options.query_replay_backend == 'compiled':
             raise ValueError('Compiled Query replay requires compiled_graph execution')
         argv += ['--enforce-eager']
@@ -387,7 +429,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if not is_gguf:
         # Native vLLM resolves weight precision and kernels from the checkpoint.
         # Preserve all quantization metadata, including an unquantized config.
-        argv += ['--load-format', 'safetensors']
+        argv += ['--load-format', 'instanttensor' if qsa else 'safetensors']
     if 'linear_backend_per_quant' in cfg:
         argv += ['--kernel-config', json.dumps({
             'linear_backend_per_quant': cfg['linear_backend_per_quant']})]
@@ -439,6 +481,29 @@ def main(argv=None):
         help='Diagnostic: save original Query, archived K and native-cache attention; synchronous and expensive')
     parser.add_argument('--experimental-query-token-scores', choices=('sum',),
         help='Answer experiment only: read archived raw K and sum global token attention by page')
+    parser.add_argument('--value-recall-diagnostics',choices=('query','prefill_pressure','decode_pressure'),
+        help='Frozen-state Value-recall qualification only; records whole-set output errors')
+    parser.add_argument('--value-recall-profile',choices=('query',),
+        help='One real frozen Query comparison of legacy/packed IO; qualification only')
+    parser.add_argument('--layerwise-query-diagnostic', choices=('global', 'sequential'),
+        help='Serial eager one-turn diagnostic: global or causally ordered per-layer Mean-K')
+    parser.add_argument('--layerwise-query-optimized', action='store_true',
+        help='Use bounded pinned layer assembly and omit comparison-only Query diagnostics')
+    parser.add_argument('--layerwise-query-full-diagnostics', action='store_true',
+        help='Retain frozen-Q comparison diagnostics while qualifying optimized assembly')
+    parser.add_argument('--layerwise-query-native-batches', action='store_true',
+        help='Keep configured native batch/graph execution with eager layerwise Query boundaries')
+    parser.add_argument('--layerwise-prefill-pressure', action='store_true',
+        help='Serial experiment: independent accepted prefill attention and blocks per layer')
+    parser.add_argument('--layerwise-pressure-single-assembly', action='store_true')
+    parser.add_argument('--layerwise-pressure-fast-metadata', action='store_true')
+    parser.add_argument('--layerwise-packed-assembly', action='store_true')
+    parser.add_argument('--layerwise-prepared-index', action='store_true')
+    parser.add_argument('--layerwise-batched-reads', action='store_true')
+    parser.add_argument('--layerwise-paired-reads', action='store_true')
+    parser.add_argument('--layerwise-buffered-history', action='store_true')
+    parser.add_argument('--layerwise-original-rope', action='store_true',
+        help='Experiment: original-history Q/K positions with dense cache slots')
     args = parser.parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
     if args.config is None:
@@ -448,6 +513,68 @@ def main(argv=None):
         source = args.config.expanduser().resolve()
         profile, base = json.loads(source.read_text()), source.parent
     plan = build_launch(profile, base, run_dir)
+    if args.layerwise_buffered_history:
+        if not args.layerwise_prefill_pressure:
+            raise ValueError('Buffered layer histories require independent prefill pressure')
+        plan['environment']['KVMEM_LAYERWISE_BUFFERED_HISTORY'] = '1'
+    if args.layerwise_paired_reads:
+        if not args.layerwise_query_optimized:
+            raise ValueError('Paired layer reads require optimized Query execution')
+        plan['environment']['KVMEM_LAYERWISE_PAIRED_READS'] = '1'
+    if args.layerwise_batched_reads:
+        if not args.layerwise_query_optimized:
+            raise ValueError('Batched layer reads require optimized Query execution')
+        plan['environment']['KVMEM_LAYERWISE_BATCHED_READS'] = '1'
+    if args.layerwise_prepared_index:
+        if not args.layerwise_query_optimized:
+            raise ValueError('Prepared layer index requires optimized Query execution')
+        plan['environment']['KVMEM_LAYERWISE_PREPARED_INDEX'] = '1'
+    if args.layerwise_packed_assembly:
+        if not args.layerwise_query_optimized or args.layerwise_original_rope:
+            raise ValueError('Packed layer assembly requires optimized compact-position execution')
+        plan['environment']['KVMEM_LAYERWISE_PACKED_ASSEMBLY'] = '1'
+    if args.layerwise_original_rope:
+        if (args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_prefill_pressure or
+                not args.layerwise_query_optimized or profile.get('execution_mode') != 'eager'):
+            raise ValueError('Original RoPE requires eager optimized per-layer pressure and Query')
+        if any(profile.get('kvmem', {}).get(k) for k in (
+                'prefill_deferred_validation','prefill_physical_coalescing','offline_prefill_coalescing',
+                'gpu_raw_k_cache_bytes','reuse_resident_v')):
+            raise ValueError('Original RoPE experiment has an unqualified execution path')
+        plan['environment']['KVMEM_LAYERWISE_ORIGINAL_ROPE'] = '1'
+    if args.layerwise_prefill_pressure:
+        if args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_query_optimized:
+            raise ValueError('Layerwise pressure requires optimized sequential Query')
+        plan['environment']['KVMEM_LAYERWISE_PREFILL_PRESSURE'] = '1'
+    for enabled, name in ((args.layerwise_pressure_single_assembly, 'SINGLE_ASSEMBLY'),
+                          (args.layerwise_pressure_fast_metadata, 'FAST_METADATA')):
+        if enabled:
+            if not args.layerwise_prefill_pressure:
+                raise ValueError('Pressure execution optimization requires per-layer pressure')
+            plan['environment']['KVMEM_LAYERWISE_PRESSURE_' + name] = '1'
+    if args.layerwise_query_diagnostic:
+        if (not args.layerwise_query_native_batches and
+                (profile.get('execution_mode') != 'eager' or profile.get('max_num_seqs') != 1)):
+            raise ValueError('Layerwise diagnostic requires serial eager execution')
+        plan['environment']['KVMEM_LAYERWISE_QUERY_MODE'] = args.layerwise_query_diagnostic
+        if args.layerwise_query_native_batches:
+            if not args.layerwise_query_optimized:
+                raise ValueError('Native layerwise batches require the bounded optimized assembler')
+            plan['environment']['KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES'] = '1'
+    if args.layerwise_query_optimized or args.layerwise_query_full_diagnostics:
+        if not args.layerwise_query_diagnostic:
+            raise ValueError('Layerwise optimization flags require the explicit layerwise mode')
+        plan['environment']['KVMEM_LAYERWISE_QUERY_OPTIMIZED'] = '1'
+        if args.layerwise_query_full_diagnostics:
+            plan['environment']['KVMEM_LAYERWISE_QUERY_DIAGNOSTICS'] = '1'
+    if args.value_recall_diagnostics:
+        if not profile.get('recall_experiment',{}).get('include_mandatory_in_softmax'):
+            raise ValueError('Value diagnostics require mandatory-inclusive normalization')
+        plan['environment']['KVMEM_VALUE_RECALL_DIAGNOSTICS']=args.value_recall_diagnostics
+    if args.value_recall_profile:
+        if profile.get('recall_experiment',{}).get('value_backend') not in ('streaming_packed','streaming_region'):
+            raise ValueError('Value Query profiling requires the packed scoring backend')
+        plan['environment']['KVMEM_VALUE_RECALL_PROFILE']=args.value_recall_profile
     if args.retrieval_diagnostics:
         if profile.get('kvmem', {}).get('guided_query_tokens', 0):
             raise ValueError('Retrieval diagnostics require guided generation off')
@@ -490,8 +617,12 @@ def main(argv=None):
         # The tenant middleware owns authentication; an inherited shared key
         # would reject valid tenant keys again inside the native API stack.
         os.environ.pop('VLLM_API_KEY', None)
-    from .compat import enable_draft_load_config_fix
-    enable_draft_load_config_fix()
+    if plan['profile']['model_adapter'] == 'qwen38_flash_next_b12x':
+        from .qsa_config_compat import enable
+        enable()
+    if plan['profile']['draft_method'] == 'dflash':
+        from .compat import enable_draft_load_config_fix
+        enable_draft_load_config_fix()
     from vllm.entrypoints.cli.main import main as vllm_main
     sys.argv = ['vllm', *plan['vllm_argv']]
     vllm_main()

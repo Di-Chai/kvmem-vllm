@@ -286,6 +286,31 @@ def test_exact_continuation_keeps_old_query_and_mandatory_pins():
     assert plan.mandatory == ((0, 4, 'root'), (8, 15, 'query'))
     assert entry.query == (8, 15)
     assert events[-1] == ('prepare', ('next', 16, 12))
+    control.allocated(req, 16)
+    bound = control.take_commands().bindings[0]
+    assert bound.query_span is None and bound.question_span == (8, 15)
+
+
+@pytest.mark.parametrize('query,mode,identity', [
+    ((8, 15), 'auto', 'stable-task'), ((20, 24), 'auto', 'new-question'),
+    (None, 'auto', 'stable-task'), (None, 'off', 'stable-task')])
+def test_feature_question_preserves_explicit_source_without_reviving_replay(query, mode, identity):
+    from vllm_kvmem.request_plan import request_plan
+    control, _, _, entry = planned_idle_session()
+    entry.query_id = 'stable-task'
+    req = request('question-source', tokens=list(range(25))+[999])
+    req.num_prompt_tokens = len(req.prompt_token_ids)
+    fields = dict(kvmem_reselect=mode, kvmem_query_id=identity, kvmem_query_mode='agent')
+    if query is not None:
+        fields['kvmem_query_span'] = list(query)
+    req.kv_transfer_params = {'kvmem_request_plan': fields}
+    assert control.lookup(req, 0) == 16
+    effective = request_plan(req, 4, 32)
+    control.allocated(req, 16)
+    bound = control.take_commands().bindings[0]
+    assert bound.question_span == query
+    assert bound.question_id == (identity if query is not None else None)
+    assert bound.query_span == effective.query == (query if query == (20, 24) else None)
 
 
 @pytest.mark.parametrize('cancel_before_allocation', [False, True])

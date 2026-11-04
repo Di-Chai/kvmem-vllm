@@ -3,6 +3,27 @@ import hashlib
 import json
 
 
+def prepare_with_query_provenance(planner, payload, state, body, *, required=False):
+    """Resolve the verified source before validating the final replay budget.
+
+    Terminal feedback can be larger than G while the actual task Question is
+    small. It must not be temporarily validated as the legacy last-user Query.
+    No unvalidated plan escapes: Planner.prepare always performs full public
+    validation after this internal callback, including the resolved Query size.
+    """
+    if body.get('kvmem_query_provenance') is None:
+        if required:
+            raise ValueError('DSH Query source metadata is required for this route')
+        return planner.prepare(payload, state), {'status': 'legacy-role-query'}
+    source = {}
+
+    def finalize(prepared):
+        source.update(apply_query_provenance(body, prepared, required=True))
+
+    prepared = planner.prepare(payload, state, finalize_plan=finalize)
+    return prepared, source
+
+
 def apply_query_provenance(body, prepared, *, required=False):
     proof = body.get('kvmem_query_provenance')
     if proof is None:

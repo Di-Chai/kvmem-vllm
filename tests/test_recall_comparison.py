@@ -45,6 +45,158 @@ def test_three_entrance_coverage_and_common_window(protocol):
         protocol.audit_events(events[:1], 'fps4', profile(), required_types=protocol.EVENT_TYPES)
 
 
+def test_two_worker_dispatch_keeps_request_ownership_and_bounded_parallelism(controller):
+    from threading import Barrier, Lock
+    together, lock = Barrier(2), Lock()
+    active = peak = 0
+    seen = []
+    def infer(owner):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            seen.append(owner)
+        together.wait(timeout=3)
+        with lock:
+            active -= 1
+        return dict(owner=owner, response='answer-'+owner)
+    results = list(controller.map_requests(['a', 'b', 'c', 'd'], infer, 2))
+    assert peak == 2 and active == 0
+    assert sorted(seen) == ['a', 'b', 'c', 'd']
+    assert {r['owner']: r['response'] for r in results} == {k:'answer-'+k for k in seen}
+
+
+def test_eight_workers_refill_a_finished_slot_while_seven_requests_are_pending(controller):
+    from threading import Barrier, Event, Lock, Thread
+    together, release, refill, lock = Barrier(8), Event(), Event(), Lock()
+    active = peak = 0
+    started, results, errors = [], [], []
+    def infer(owner):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            started.append(owner)
+        try:
+            if owner < 8:
+                together.wait(timeout=5)
+            if owner in range(1, 8):
+                assert release.wait(timeout=5)
+            if owner == 8:
+                refill.set()
+            return owner
+        finally:
+            with lock:
+                active -= 1
+    def run():
+        try:
+            results.extend(controller.map_requests(range(10), infer, 8))
+        except BaseException as error:
+            errors.append(error)
+    driver = Thread(target=run)
+    driver.start()
+    try:
+        assert refill.wait(timeout=5), 'A free slot must refill before the other seven finish'
+        with lock:
+            assert active >= 7 and peak == 8
+    finally:
+        release.set()
+        driver.join(timeout=6)
+    assert not driver.is_alive() and not errors
+    assert sorted(started) == sorted(results) == list(range(10))
+    assert active == 0
+
+
+def test_technical_failure_stops_refill_without_waiting_for_other_http_request(controller):
+    from threading import Barrier, Event
+    together, release, finished = Barrier(2), Event(), Event()
+    started = []
+    def infer(owner):
+        started.append(owner)
+        together.wait(timeout=3)
+        if owner == 0:
+            raise RuntimeError('technical HTTP failure')
+        try:
+            assert release.wait(timeout=3)
+            return owner
+        finally:
+            finished.set()
+    try:
+        with pytest.raises(RuntimeError, match='technical HTTP failure'):
+            list(controller.map_requests(range(20), infer, 2))
+        assert sorted(started) == [0, 1]
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(timeout=3)
+
+
+@pytest.mark.parametrize('owners', [2, 4, 8])
+def test_parallel_profile_must_be_explicit_and_does_not_change_budgets(protocol, owners):
+    configured = profile()
+    configured['max_num_seqs'] = owners
+    configured['recall_experiment'] = dict(concurrent_owners=owners)
+    before = deepcopy(configured['kvmem'])
+    assert protocol.validate_profile(configured) is configured
+    assert configured['kvmem'] == before
+    configured['max_num_seqs'] = 3
+    with pytest.raises(ValueError, match='explicitly frozen'):
+        protocol.validate_profile(configured)
+
+
+def test_official_generation_limits_and_sampling_are_frozen(protocol):
+    expected = {**{task:128 for task in ('niah_single_1','niah_single_2','niah_single_3',
+        'niah_multikey_1','niah_multikey_2','niah_multikey_3','niah_multivalue','niah_multiquery')},
+        'vt':30,'cwe':120,'fwe':50,'qa_1':32,'qa_2':32}
+    assert protocol.official_task_limits() == expected
+    fixture = dict(starts_in_thinking=False, generation_limit_policy='ruler_v1_official_per_task',
+        task_max_tokens=expected, sampling=dict(max_tokens=128, thinking_token_budget=None,
+            temperature=1.0, top_p=.95, top_k=20))
+    original = deepcopy(fixture)
+    for task, maximum in expected.items():
+        for seed in (42, 61):
+            actual = protocol.case_sampling(fixture, dict(task=task, seed=seed))
+            assert actual == dict(fixture['sampling'], max_tokens=maximum, seed=seed)
+    assert fixture == original
+
+
+def test_official_limits_match_local_pinned_upstream_snapshot_when_available(protocol):
+    import ast
+    source = Path(__file__).resolve().parents[1] / 'artifacts/ruler-v1-256k-20261021-r1/upstream' / (
+        'RULER-'+protocol.ruler.UPSTREAM_COMMIT) / 'scripts/data/synthetic/constants.py'
+    if not source.exists():pytest.skip('Optional local frozen upstream source is not packaged with unit tests')
+    tree = ast.parse(source.read_text())
+    tasks = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == 'TASKS' for t in node.targets))
+    assert protocol.official_task_limits() == {
+        task: tasks[family]['tokens_to_generate'] for task, family in protocol.ruler.TASK_FAMILIES.items()}
+
+
+@pytest.mark.parametrize('change', ['thinking', 'missing-task', 'changed-cap', 'uniform-max', 'undeclared'])
+def test_short_output_protocol_rejects_silent_or_mixed_controls(protocol, change):
+    fixture = dict(starts_in_thinking=False, generation_limit_policy='ruler_v1_official_per_task',
+        task_max_tokens=protocol.official_task_limits(), sampling=dict(max_tokens=128, thinking_token_budget=None))
+    if change == 'thinking':fixture['starts_in_thinking'] = True
+    if change == 'missing-task':fixture['task_max_tokens'].pop('qa_2')
+    if change == 'changed-cap':fixture['task_max_tokens']['cwe'] = 8192
+    if change == 'uniform-max':fixture['sampling']['max_tokens'] = 8192
+    if change == 'undeclared':fixture.pop('generation_limit_policy')
+    with pytest.raises(ValueError):protocol.case_sampling(fixture, dict(task='qa_1', seed=42))
+
+
+def test_legacy_uniform_sampling_and_functional_pressure_controls_remain_valid(protocol, monkeypatch):
+    fixture = dict(starts_in_thinking=False,sampling=dict(max_tokens=8192,temperature=1.0,
+        top_p=.95,top_k=20,thinking_token_budget=None))
+    assert protocol.case_sampling(fixture,dict(task='qa_1',seed=42)) == dict(fixture['sampling'],seed=42)
+    qualifier = importlib.import_module('qualify_recall_entrypoints')
+    configured = profile();configured['kvmem'].update(gen_budget=16384,rolling_active_window=True)
+    short = deepcopy(fixture);short.update(task_max_tokens=protocol.official_task_limits(),
+        generation_limit_policy='ruler_v1_official_per_task');short['sampling']['max_tokens']=128
+    assert qualifier.functional_sampling(short,configured) == qualifier.functional_sampling(fixture,configured)
+    assert qualifier.functional_sampling(short,configured,followup=True) == qualifier.functional_sampling(fixture,configured,followup=True)
+    assert configured['kvmem']['select_budget']==1024 and configured['kvmem']['gen_budget']==16384
+
+
 def test_public_query_processed_boundary_is_distinct_from_accepted_kv(protocol):
     query = event(kind='query')
     query.update(query_begin=250, query_end=260, accepted_through=250,
@@ -159,8 +311,9 @@ def test_final_answer_only_and_unrounded_official_mass(protocol):
     assert not result['full_reference_recall']
 
 
+@pytest.mark.parametrize('official_caps', [False, True])
 def test_client_resumes_saved_response_after_audit_failure_without_model_retry(controller, protocol,
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, official_caps):
     root, capture = tmp_path, tmp_path / 'server/capture'
     capture.mkdir(parents=True)
     token_directory = root / 'tokenizer'
@@ -175,6 +328,9 @@ def test_client_resumes_saved_response_after_audit_failure_without_model_retry(c
     fixture = dict(rows=[row], sampling=dict(max_tokens=8192), qualification_ids=['case'],
         tokenizer_sha256=protocol.sha(token_directory / 'tokenizer.json'), upstream_path='upstream',
         starts_in_thinking=False, request_timeout_seconds=10)
+    if official_caps:
+        fixture.update(generation_limit_policy='ruler_v1_official_per_task',task_max_tokens=protocol.official_task_limits())
+        fixture['sampling']['max_tokens'] = 128
     protocol.save(root / 'fixture.json', fixture)
     monkeypatch.setattr(controller, 'verify', lambda *args: (fixture, settings))
     monkeypatch.setattr(controller, 'launch_audit', lambda *args: dict(passed=True))
@@ -196,6 +352,7 @@ def test_client_resumes_saved_response_after_audit_failure_without_model_retry(c
                  query_processed_through=110, public_input_end=128)
     log = capture / 'recall_events.jsonl'
     def stream(*args):
+        assert args[4]['max_tokens'] == (32 if official_caps else 8192)
         calls.append(args)
         log.write_text(json.dumps(pressure) + '\n')
         return response
@@ -259,7 +416,7 @@ def test_functional_qualification_reuses_the_ten_case_model_process(controller, 
     runtime.mkdir()
     settings = profile()
     protocol.save(tmp_path / 'profiles/fps4.json', settings)
-    fixture = dict(runtime_source=str(runtime))
+    fixture = dict(runtime_source=str(runtime), methods=list(protocol.METHODS))
     monkeypatch.setattr(controller, 'verify', lambda *args: (fixture, settings))
     monkeypatch.setattr(controller, 'gpu_lock', lambda *args: nullcontext())
     monkeypatch.setattr(controller, 'termination_guard', lambda: nullcontext())

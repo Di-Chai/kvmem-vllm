@@ -515,10 +515,31 @@ class AsyncArchive:
         fallback slab is charged separately; only the requested field is copied
         to the caller. Namespace, generation, readiness and leases stay mandatory.
         """
-        if (not leases or type(offset) is not int or type(length) is not int or
-                offset < 0 or length <= 0 or offset + length > self.record_bytes):
+        return self._read_regions(namespace, leases, ((offset, length),),
+                                  destination=destination, _sources=_sources)
+
+    def read_regions(self, namespace, leases, regions, *, destination=None, _sources=None):
+        """One admitted read of paired fields, packed field-major then record-major.
+
+        All generation checks, immutable source leases and I/O admission cover
+        both fields. A cache miss reads its complete record only once. The
+        existing gather backend and its failure-draining rules are unchanged.
+        """
+        regions = tuple(regions)
+        if len(regions) != 2:
+            raise ValueError('Paired archive read requires exactly two regions')
+        return self._read_regions(namespace, leases, regions,
+                                  destination=destination, _sources=_sources)
+
+    def _read_regions(self, namespace, leases, regions, *, destination=None, _sources=None):
+        regions = tuple(tuple(region) for region in regions)
+        if (not leases or not regions or any(len(region) != 2 for region in regions) or
+                any(type(offset) is not int or type(length) is not int or
+                    offset < 0 or length <= 0 or offset + length > self.record_bytes
+                    for offset, length in regions)):
             raise ValueError('Invalid archive record region')
-        size = len(leases) * length
+        row_bytes = sum(length for _, length in regions)
+        size = len(leases) * row_bytes
         destination = read_destination(destination, size)
         keys = [self.key(namespace, lease) for lease in leases]
         with self._lock:
@@ -551,17 +572,25 @@ class AsyncArchive:
                 view = memoryview(fallback)
                 for j, i in enumerate(misses):
                     sources[i] = view[j*self.record_bytes:(j+1)*self.record_bytes]
-                tasks = self._gather_region(memoryview(data), sources, offset, length)
+                tasks, cursor = 0, 0
+                for offset, length in regions:
+                    end = cursor + len(sources) * length
+                    tasks += self._gather_region(memoryview(data)[cursor:end], sources, offset, length)
+                    cursor = end
                 copied_at = time.perf_counter()
                 if misses:
                     with self._lock:
                         for i in misses:
                             self._cache_write([keys[i]], bytes(sources[i]))
-                stats.update(logical_bytes=size, cache_hit_bytes=(len(keys)-len(misses))*length,
-                    region_offset=offset, region_bytes=length, cache_gather_tasks=tasks,
+                stats.update(logical_bytes=size, cache_hit_bytes=(len(keys)-len(misses))*row_bytes,
+                    cache_gather_tasks=tasks,
                     read_queue_wait_seconds=started-submitted_at,
                     native_read_call_seconds=read_at-started, cache_copy_seconds=copied_at-read_at,
                     cache_fill_seconds=time.perf_counter()-copied_at)
+                if len(regions) == 1:
+                    stats.update(region_offset=regions[0][0], region_bytes=regions[0][1])
+                else:
+                    stats.update(regions=regions, region_bytes=row_bytes, region_read_count=len(regions))
                 return data, stats
             finally:
                 sources.clear()

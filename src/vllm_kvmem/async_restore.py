@@ -122,6 +122,8 @@ def _step_restore(manager, job, *, timing=None):
             if (job.checkpoint is None or
                     (job.checkpoint.window.window_tokens != binding.window and not pressure)):
                 raise ValueError('Checkpoint restore lost its original active view')
+            from .layerwise_checkpoints import require_supported_restore
+            require_supported_restore(worker, rid, job.checkpoint, asynchronous=True)
             if command.resident and pressure:
                 raise ValueError('Pressure restore cannot reuse a resident page frame')
             if command.resident and (job.checkpoint.kind != 'M' or job.checkpoint.position != command.history_end):

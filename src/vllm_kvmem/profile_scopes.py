@@ -33,6 +33,8 @@ def _owned_stages():
     # Import only in an explicitly enabled profiler worker, after model loading.
     from .authority import RequestAuthority
     from . import authority as authority_module
+    from . import recall_experiment
+    from .pressure_query_capture import PressureQueryWindow
     from .capture_runtime import CaptureRuntime
     from .action_attention import ActionRuntime
     from .cached_storage import CachedArchive
@@ -75,6 +77,9 @@ def _owned_stages():
         (_native, 'scatter_history_batch', 'append.scatter'),
         (CaptureRuntime, 'submit', 'capture.submit'),
         (CaptureRuntime, '_capture_payload', 'capture.pack_fp8'),
+        (CaptureRuntime, '_capture_pressure_queries', 'capture.pressure_queries'),
+        (CaptureRuntime, '_accept_pressure_queries', 'capture.accept_pressure_queries'),
+        (PressureQueryWindow, 'accept', 'capture.pressure_query_commit'),
         (CaptureRuntime, 'ensure_download_slot', 'capture.download_slot'),
         (CaptureRuntime, 'advance_publication', 'capture.advance_publication'),
         (CaptureRuntime, 'drain', 'capture.drain'),
@@ -94,6 +99,9 @@ def _owned_stages():
         (RequestAuthority, '_commit_prepared_append', 'authority.commit_append'),
         (RequestAuthority, 'flush', 'authority.flush'),
         (RequestAuthority, 'select_for_queries', 'authority.select'),
+        (RequestAuthority, 'read_score_keys', 'recall.read_keys'),
+        (recall_experiment, '_features', 'recall.features'),
+        (recall_experiment, 'score_records', 'recall.scores'),
         (WindowBatchAdapter, 'prepare', 'window.prepare'),
         (NativeWindowAssembler, 'assemble', 'window.assemble'),
         (NativeRecurrentState, 'borrow', 'recurrent.borrow'),

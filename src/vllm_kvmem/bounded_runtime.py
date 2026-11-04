@@ -363,6 +363,12 @@ def install_bounded_target(runner):
         if needs_state:
             state_adapter.validate(bundle)
             checkpoints.restore(before, bundle.tensors)
+            if getattr(runner, '_kvmem_qsa_layers', None) and options.verify_archive_on_finish:
+                from .guided_query import verify_guided_rollback
+                audit = verify_guided_rollback(before, bundle.tensors, [])
+                for row in reports:
+                    row.update(qsa_recurrent_rollback_byte_equal=audit['recurrent_byte_equal'],
+                               qsa_recurrent_tensors=audit['recurrent_tensors'])
             if audit_guided and any(row['guided_query_tokens'] for row in reports):
                 from .guided_query import verify_guided_rollback
                 audit = verify_guided_rollback(before,bundle.tensors,guided_draft)
@@ -374,6 +380,8 @@ def install_bounded_target(runner):
             guided_draft.clear()
         for audit_job, audit in rolling_audits.values():
             audit.verify(audit_job)
+        from .qsa_adapter import finish_qsa_refresh
+        finish_qsa_refresh(runner)
         from vllm.forward_context import get_forward_context
         from vllm.v1.worker.gpu.attn_utils import build_slot_mappings_by_layer
         context = get_forward_context()

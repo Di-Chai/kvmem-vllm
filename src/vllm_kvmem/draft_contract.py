@@ -31,7 +31,14 @@ class DraftContract:
             text = spec.draft_model_config.hf_text_config
             layers = getattr(text, 'mtp_num_hidden_layers', 1)
             query = spec.num_speculative_tokens + 1
-            if (getattr(text, 'model_type', None) != 'qwen3_5_text' or layers != 1 or
+            model_type = getattr(text, 'model_type', None)
+            if model_type == 'qwen4_exp_text':
+                from .qsa_adapter import validate_qsa_config
+                from .options import RuntimeOptions
+                validate_qsa_config(config, RuntimeOptions.from_vllm(config))
+                if query > 4:
+                    raise ValueError('Flash Next QSA currently qualifies at most three MTP draft tokens')
+            if (model_type not in ('qwen3_5_text', 'qwen4_exp_text') or layers != 1 or
                     not 1 < query <= 8 or spec.kv_cache_dtype is not None or
                     config.cache_config.cache_dtype != 'fp8_e4m3' or
                     config.max_concurrent_batches != 1 or config.scheduler_config.async_scheduling or

@@ -7,6 +7,7 @@ published to the immutable archive; repeated decode appends extend it in memory.
 from dataclasses import dataclass, field
 from contextlib import contextmanager, nullcontext
 import hashlib
+import math
 import time
 
 import torch
@@ -161,8 +162,8 @@ class RequestAuthority:
         self._pending_cache_retire = []
         self.gc = None
         self.redundancy_history = None
-        from .pressure_query_capture import configured_method, PressureQueryWindow
-        self.pressure_query_window = PressureQueryWindow() if configured_method() is not None else None
+        from .pressure_query_capture import pressure_query_required, PressureQueryWindow
+        self.pressure_query_window = PressureQueryWindow() if pressure_query_required() else None
         if getattr(archive, '_history_worker', None) is not None:
             if gc_config is not None:
                 raise ValueError('Historical KV management and legacy repository GC cannot share an authority')
@@ -233,6 +234,9 @@ class RequestAuthority:
     def poll(self):
         if self.gc is not None:
             self._drain_gc()
+        thinking = getattr(self, 'thinking_history', None)
+        if thinking is not None:
+            thinking.retry(self.memory.repository)
         remaining = []
         newly_archived = []
         completed = 0
@@ -256,6 +260,9 @@ class RequestAuthority:
                 redundancy = getattr(self, 'redundancy_history', None)
                 if redundancy is not None:
                     redundancy.publish_key(record, self.memory.repository)
+                thinking = getattr(self, 'thinking_history', None)
+                if thinking is not None:
+                    thinking.publish(record, self.memory.repository)
                 # Publish only after durable write completion, never on CPU
                 # cache admission or asynchronous I/O submission.
                 flags = _native.GC_RAW_BACKED | _native.GC_VALUE_BACKED | _native.GC_INDEXED
@@ -489,6 +496,9 @@ class RequestAuthority:
                 self._unsubmitted[key] = record
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
+        thinking = getattr(self, 'thinking_history', None)
+        if thinking is not None:
+            thinking.note_append(self.history_end-count, count, rows)
         boundaries = getattr(self, 'query_boundaries', None)
         if boundaries is not None:
             boundaries.advance(self.history_end-count, self.history_end)
@@ -642,6 +652,83 @@ class RequestAuthority:
                 for name in ('read_queue_wait_seconds', 'cache_copy_seconds', 'cache_hit_bytes'):
                     stats[name] = stats.get(name, 0)+counters.get(name, 0)
                 cursor = stop
+            return result, stats
+        finally:
+            for lease, _ in admitted:
+                lease.reset()
+
+    def read_score_kv(self, handles, *, destination=None):
+        """Gather target-layer K/V straight into owned block-major score slabs.
+
+        Region reads skip draft layers and keep their native leases until both
+        operands finish. A caller may supply contiguous CPU slabs to avoid a
+        second packed copy; no returned view aliases the archive or a live tail.
+        """
+        self._require_open()
+        if not handles or len(handles) > 32:
+            raise ValueError('Scoring K/V reads require one to 32 records')
+        keys = [record_key(handle) for handle in handles]
+        if len(set(keys)) != len(keys):
+            raise ValueError('Duplicate scoring K/V read handle')
+        self.poll()
+        records = [self.records[key] for key in keys]
+        shape = (len(records), self.scoring_layers, *self.shape[1:])
+        elements = math.prod(shape[1:])
+        if len(records)*elements*(self.raw_element_bytes+1) > 64*1024**2:
+            raise MemoryError('Scoring K/V read scratch exceeds 64 MiB')
+        if destination is None:
+            result = (torch.empty(shape, dtype=self.raw_dtype),
+                      torch.empty(shape, dtype=torch.uint8))
+        else:
+            if (not isinstance(destination, tuple) or len(destination) != 2 or
+                    any(not isinstance(t, torch.Tensor) or t.device.type != 'cpu' or
+                        tuple(t.shape) != shape or not t.is_contiguous() for t in destination) or
+                    destination[0].dtype != self.raw_dtype or destination[1].dtype != torch.uint8):
+                raise ValueError('Scoring K/V destination must be contiguous CPU raw-K/uint8-V slabs')
+            result = destination
+        stats = dict(key_read_bytes=0, value_read_bytes=0, draft_key_read_bytes=0,
+                     draft_value_read_bytes=0, kv_region_batches=0, kv_resident_bytes=0)
+        admitted = []
+        try:
+            for handle in handles:
+                admitted.append(self.memory.admitted_read(handle))
+            if not all(entry[0] for entry in admitted):
+                raise ValueError('Stale authority scoring K/V handle')
+            archived = [i for i, record in enumerate(records) if record.raw is None]
+            if any(not records[i].archived for i in archived):
+                raise BlockingIOError('Immutable scoring K/V write is still in flight')
+            for i, record in enumerate(records):
+                if record.raw is not None:
+                    result[0][i, :, :record.count].copy_(record.raw[:self.scoring_layers, :record.count])
+                    result[1][i, :, :record.count].copy_(record.values[:self.scoring_layers, :record.count])
+                    stats['kv_resident_bytes'] += (self.scoring_layers*record.count*
+                        math.prod(self.shape[2:])*(self.raw_element_bytes+1))
+            cursor = 0
+            while cursor < len(archived):
+                stop = cursor+1
+                while stop < len(archived) and archived[stop] == archived[stop-1]+1:
+                    stop += 1
+                indices = archived[cursor:stop]
+                sources = [admitted[i][1] for i in indices]
+                kwargs = {'_sources': sources} if sources and all(sources) else {}
+                for target, offset, amount, counter in (
+                        (result[0], 0, elements*self.raw_element_bytes, 'key_read_bytes'),
+                        (result[1], self.raw_record_bytes, elements, 'value_read_bytes')):
+                    output = target[indices[0]:indices[-1]+1].view(torch.uint8).numpy().reshape(-1)
+                    job = self.archive.read_region(self.memory.request_id,
+                        [admitted[i][0] for i in indices], offset, amount, destination=output, **kwargs)
+                    if job is None:
+                        raise BlockingIOError('Archive scoring K/V read queue is full')
+                    _, counters = job.result()
+                    stats[counter] += len(indices)*amount
+                    stats['kv_region_batches'] += 1
+                    for name in ('read_queue_wait_seconds', 'cache_copy_seconds', 'cache_hit_bytes'):
+                        stats[name] = stats.get(name, 0)+counters.get(name, 0)
+                cursor = stop
+            for i, record in enumerate(records):
+                if record.count < self.shape[1]:
+                    for target in result:
+                        target[i, :, record.count:].zero_()
             return result, stats
         finally:
             for lease, _ in admitted:
@@ -822,6 +909,9 @@ class RequestAuthority:
             # leaves rejected or deferred rewinds untouched.
             redundancy.invalidate()
         spans = self.memory.begin_rewind(checkpoint)
+        thinking = getattr(self, 'thinking_history', None)
+        if thinking is not None:
+            thinking.rewind(checkpoint.position)
         recall_cache = getattr(self, '_recall_feature_cache', None)
         if recall_cache is not None:
             recall_cache.clear()
@@ -890,6 +980,9 @@ class RequestAuthority:
         redundancy = getattr(self, 'redundancy_history', None)
         if redundancy is not None:
             redundancy.invalidate()
+        thinking = getattr(self, 'thinking_history', None)
+        if thinking is not None:
+            thinking.close()
         prebuild = getattr(self, 'fps_prebuild', None)
         if prebuild is not None:
             prebuild.cancel(permanent=True)

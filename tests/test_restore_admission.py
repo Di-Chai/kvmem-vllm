@@ -40,29 +40,63 @@ def test_cold_waiters_do_not_own_native_slots_and_quota_lasts_through_cancel():
     assert not gate.permits
 
 
-def test_resident_pipeline_keeps_each_lease_until_its_own_ack():
-    from test_active_residency import setup, save
-    resident, manager, pool, _ = setup()
-    views = [save(resident, manager, rid=f'old-{i}', namespace=('user', str(i))) for i in range(2)]
-    gate = RestoreAdmission(residency=resident, resident_slots=2)
-    hot = [request(f'hot-{i}') for i in range(2)]
-    for r, view in zip(hot, views):
+@pytest.mark.parametrize('resident_slots', [2, 8])
+def test_resident_pipeline_keeps_each_lease_until_its_own_ack(resident_slots):
+    from test_active_residency import save
+    from test_window_manager import (
+        BlockPool, FullAttentionManager, FullAttentionSpec, WorkingSetManager, torch)
+    from vllm_kvmem.active_residency import ActiveResidency
+
+    # Keep an additional real resident view waiting behind the occupied lane.
+    # Size the native page pool for every independent view, including that waiter.
+    pool = BlockPool(4*(resident_slots+1)+1, False, 16)
+    spec = FullAttentionSpec(block_size=16, num_kv_heads=2, head_size=64, dtype=torch.uint8)
+    manager = WorkingSetManager(FullAttentionManager(spec, pool, False, 0, 16), 32, 32)
+    resident = ActiveResidency({0: manager}, pool, 1000, 1., clock=lambda: 10.)
+    views = [save(resident, manager, rid=f'old-{i}', namespace=('user', str(i)))
+             for i in range(resident_slots+1)]
+    assert all(view is not None for view in views)
+    assert len({block.block_id for view in views for block in view.blocks}) == 3*len(views)
+    gate = RestoreAdmission(residency=resident, resident_slots=resident_slots)
+    hot = [request(f'hot-{i}') for i in range(resident_slots)]
+    for number, (r, view) in enumerate(zip(hot, views), 1):
         manager.prepare_import(r.request_id, 64, 48)
         assert gate.lookup(r, entry(r.request_id, view.namespace))
+        gate.before_allocate(r, 64)
         gate.allocated(r)
-        gate.dispatch(command(gate.permits[r.request_id]))
-    assert gate.snapshot()['occupied']['resident'] == 2
+        gate.dispatch(command(gate.permits[r.request_id], number))
+    waiter = request('waiter')
+    manager.prepare_import(waiter.request_id, 64, 48)
+    waiter_entry = entry(waiter.request_id, views[-1].namespace)
+    assert not gate.lookup(waiter, waiter_entry)
+    assert gate.snapshot()['occupied']['resident'] == resident_slots
     cold = request('cold')
     assert gate.lookup(cold, entry('cold'))  # Cold scratch remains independent.
     gate.cancel(hot[0])
     gate.end_step()
-    assert gate.snapshot()['occupied'] == {'resident': 2, 'assembly': 0}
-    gate.complete('hot-1', 1)  # Out-of-order completion never releases its peer.
-    assert set(gate.permits) == {'hot-0'}
+    assert gate.snapshot()['occupied'] == {'resident': resident_slots, 'assembly': 0}
+    assert not gate.lookup(waiter, waiter_entry)  # Cancellation is not a completed fence.
+    assert resident.entries[views[-1].namespace] is views[-1]
+    assert all(block.ref_cnt == 1 for view in views for block in view.blocks)
     with pytest.raises(ValueError, match='Stale'):
-        gate.complete('hot-0', 2)
+        gate.complete('hot-0', resident_slots)
+    assert len(gate.permits) == resident_slots
+
+    # A later request can finish first. Only its own permit becomes reusable.
+    gate.complete(hot[-1].request_id, resident_slots)
+    assert 'hot-0' in gate.permits and gate.permits['hot-0'].cancelled
+    assert gate.lookup(waiter, waiter_entry)
+    gate.before_allocate(waiter, 64)
+    gate.allocated(waiter)
+    gate.dispatch(command(gate.permits[waiter.request_id], 100))
+    assert gate.snapshot()['occupied']['resident'] == resident_slots
+    for number in range(resident_slots-1, 1, -1):
+        gate.complete(hot[number-1].request_id, number)
+    assert set(gate.permits) == {'hot-0', 'waiter'}
+    gate.complete(waiter.request_id, 100)
+    assert set(gate.permits) == {'hot-0'}
     gate.complete('hot-0', 1)
-    assert not gate.permits and gate.snapshot()['peak_occupied']['resident'] == 2
+    assert not gate.permits and gate.snapshot()['peak_occupied']['resident'] == resident_slots
 
 
 def test_existing_query_assembly_blocks_only_cold_and_ack_allows_next_waiter():

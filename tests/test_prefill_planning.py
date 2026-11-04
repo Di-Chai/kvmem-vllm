@@ -1,5 +1,6 @@
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
 
 from vllm_kvmem.action_attention import ActionHistory, ActionRuntime, window_segments
@@ -257,7 +258,9 @@ def test_real_prepare_capture_and_delayed_accept_match_serial_packets(tmp_path, 
         authority = action.runtime.authorities['a']
         memory = authority.memory = RequestMemory('a', action.options.memory)
         action.runtime.output = tmp_path
-        action.runner.block_tables = NS(block_tables=[NS(gpu=torch.tensor([[0, 1, 2, 3, 4, 5]]))])
+        action.runner.block_tables = NS(
+            block_tables=[NS(gpu=torch.tensor([[0, 1, 2, 3, 4, 5]]))],
+            num_blocks=NS(np=np.array([[6]])), kernel_block_sizes=[4])
         action.layers = [(i, NS(attn=NS(layer_name=f'L{i}', kv_cache=None,
             _k_scale=None, _q_scale=None, impl=NS(scale=.5)), num_kv_heads=1,
             head_dim=4, rotary_emb=NS(cos_sin_cache=None))) for i in range(3)]

@@ -10,7 +10,7 @@ from vllm_kvmem import _native
 from vllm_kvmem.config import KVMemConfig
 from vllm_kvmem.memory import Phase, RequestMemory
 from vllm_kvmem import recall_experiment as experiment
-from vllm_kvmem.recall_scoring import build_block_features, block_logits
+from vllm_kvmem.recall_scoring import METHODS as KEY_METHODS, build_block_features, block_logits
 from test_core import append, Event
 
 
@@ -64,7 +64,7 @@ def frozen_environment(monkeypatch):
     monkeypatch.delenv('KVMEM_RECALL_SAMPLE_ID', raising=False)
 
 
-@pytest.mark.parametrize('method', experiment.METHODS)
+@pytest.mark.parametrize('method', KEY_METHODS)
 @pytest.mark.parametrize('query_batch,block_batch', [(1, 1), (3, 2), (16, 128)])
 def test_score_records_full_domain_matches_unbatched_reference(method, query_batch, block_batch, monkeypatch):
     generator = torch.Generator().manual_seed(431)
@@ -101,7 +101,7 @@ def test_mean_k_uses_published_mean_instead_of_recomputing_from_archived_k():
     assert not authority.reads
 
 
-@pytest.mark.parametrize('method', experiment.METHODS)
+@pytest.mark.parametrize('method', KEY_METHODS)
 def test_all_masked_domain_is_zero_mass_without_reading_index_or_falling_back(method):
     authority = ScoringAuthority(torch.zeros(1, 2, 32, 1, 2), [32, 32])
     scores, stats = experiment.score_records(authority, list(authority.records.values()),
@@ -111,7 +111,7 @@ def test_all_masked_domain_is_zero_mass_without_reading_index_or_falling_back(me
     assert not authority.reads
 
 
-@pytest.mark.parametrize('method', experiment.METHODS)
+@pytest.mark.parametrize('method', KEY_METHODS)
 def test_qw3_query_half_precision_is_identical_for_all_methods(method):
     # This cancellation makes missing Q half-rounding visible in final scores.
     keys = torch.zeros(1, 2, 32, 1, 2)
@@ -161,6 +161,41 @@ def test_prototype_cache_reuses_immutable_records_and_invalidates_changed_identi
     assert authority._recall_feature_cache['method'] == other
 
 
+@pytest.mark.parametrize('method', ['fixed4', 'fps4', 'min_max', 'exact_mass'])
+def test_features_use_owned_key_only_slab_without_reading_values_or_draft_layers(method):
+    keys = torch.randn(3, 3, 32, 2, 5, generator=torch.Generator().manual_seed(211))
+    authority = ScoringAuthority(keys, [32, 32, 7])
+    authority.scoring_layers = 2
+    rows = list(authority.records.values())
+    reads = []
+
+    def key_only(handles):
+        reads.append(handles)
+        slab = torch.full((len(handles), 2, 32, 2, 5), torch.nan)
+        for i, handle in enumerate(handles):
+            record = authority.records[(handle.slot, handle.generation)]
+            slab[i, :, :record.count] = record.raw[:2]
+        return slab, dict(key_read_bytes=slab.numel()*slab.element_size(),
+                          value_read_bytes=0, draft_key_read_bytes=0)
+
+    def forbidden(_):
+        pytest.fail('Full raw K/V reads are unnecessary for scoring')
+
+    authority.read_score_keys = key_only
+    authority.read_records = forbidden
+    actual = experiment._features(authority, rows, method)
+    expected = build_block_features(keys[:2], [32, 32, 7], method)
+    from vllm_kvmem.recall_scoring import concat_block_features
+    combined = concat_block_features(actual)
+    assert torch.equal(combined.values, expected.values)
+    assert torch.equal(combined.valid, expected.valid)
+    assert len(reads) == 1
+    assert authority._recall_feature_last_stats['value_read_bytes'] == 0
+    assert authority._recall_feature_last_stats['draft_key_read_bytes'] == 0
+    experiment._features(authority, rows, method)
+    assert len(reads) == 1
+
+
 def native_authority(*, count=233, budget=128, sink=1, recent=0):
     memory = RequestMemory('recall-test', KVMemConfig(block_tokens=32, select_budget=budget,
         gen_budget=256, repository_blocks=24, sink_blocks=sink, recent_blocks=recent, action_fraction=0))
@@ -185,7 +220,7 @@ def metadata(authority, *, rows=128):
 
 
 @pytest.mark.parametrize('event_type', ['prefill_pressure', 'decode_pressure'])
-@pytest.mark.parametrize('method', experiment.METHODS)
+@pytest.mark.parametrize('method', KEY_METHODS)
 def test_pressure_native_picker_stays_in_working_domain_and_charges_budget(
         tmp_path, monkeypatch, event_type, method):
     monkeypatch.setenv('KVMEM_RECALL_METHOD', method)
@@ -220,7 +255,7 @@ def test_pressure_native_picker_stays_in_working_domain_and_charges_budget(
         assert memory.close()
 
 
-@pytest.mark.parametrize('method', experiment.METHODS)
+@pytest.mark.parametrize('method', KEY_METHODS)
 def test_query_preserves_native_frame_mask_pins_runtime_budget_and_can_recall_archived_block(
         tmp_path, monkeypatch, method):
     from vllm_kvmem.authority import query_score_frame
@@ -366,7 +401,44 @@ def test_invalid_method_window_and_scratch_configuration_fail(monkeypatch):
     options = NS(request_planning=True, async_refresh=True,
                  memory=NS(block_tokens=32), graph_mode='off', graph_alpha=0., query_score_mode='mean_k')
     config = dict(method='fps4', pressure_query_window=128)
-    for change in ({'query_batch': 17}, {'block_batch': 129}, {'device': 'mps'},
+    for change in ({'query_batch': 129}, {'block_batch': 129}, {'device': 'mps'},
                    {'pressure_query_window': 32}, {'method': 'fallback'}):
         with pytest.raises(ValueError):
             experiment.launch_environment(dict(config, **change), options)
+
+
+@pytest.mark.parametrize('row_batch', [1, 7, 256])
+def test_host_row_tiling_preserves_full_candidate_softmax(row_batch):
+    logits = torch.randn(2, 137, 4, 9, generator=torch.Generator().manual_seed(992))
+    mask = torch.tensor([True, False, True, True, False, True, True, True, True])
+    expected = logits.masked_fill(~mask, -torch.inf).softmax(-1).sum((0, 1, 2), dtype=torch.float64)
+    actual = experiment._host_block_mass(logits.clone(), mask, row_batch=row_batch)
+    torch.testing.assert_close(actual, expected, rtol=1e-13, atol=1e-12)
+
+
+@pytest.mark.parametrize('method', KEY_METHODS)
+def test_full_pressure_query_uses_one_feature_pass_and_keeps_selection(method, monkeypatch):
+    generator = torch.Generator().manual_seed(5093)
+    keys = torch.randn(2, 35, 32, 2, 8, generator=generator)
+    query = torch.randn(2, 128, 4, 8, generator=generator)
+    authority = ScoringAuthority(keys, [32] * 34 + [7], backend='qw3_cuda')
+    records = list(authority.records.values())
+    mask = [True] * 35
+    mask[2] = False
+    monkeypatch.setenv('KVMEM_RECALL_BLOCK_BATCH', '16')
+    monkeypatch.setenv('KVMEM_RECALL_QUERY_BATCH', '4')
+    reference, _ = experiment.score_records(authority, records, query, mask, method)
+    monkeypatch.setenv('KVMEM_RECALL_QUERY_BATCH', '128')
+    actual, stats = experiment.score_records(authority, records, query, mask, method)
+    torch.testing.assert_close(torch.tensor(actual), torch.tensor(reference), rtol=1e-6, atol=1e-6)
+    assert torch.tensor(actual).topk(12).indices.tolist() == torch.tensor(reference).topk(12).indices.tolist()
+    assert stats['feature_passes'] == 1 and stats['score_tiles'] == 3
+    assert stats['normalization_device'] == 'cpu'
+
+
+def test_internal_validation_skip_still_rejects_nonfinite_published_means():
+    authority = ScoringAuthority(torch.zeros(1, 2, 32, 1, 2), [32, 32])
+    records = list(authority.records.values())
+    records[0].mean_key[0, 0, 0] = float('nan')
+    with pytest.raises(ValueError, match='published MeanK'):
+        experiment.score_records(authority, records, torch.ones(1, 128, 1, 2), [True, True], 'mean_k')

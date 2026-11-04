@@ -58,16 +58,18 @@ def rebuilt_digest(worker, request_id, authority):
             if identity not in cache:cache[identity]=table[:extent].cpu()
             trigs.append(cache[identity])
         scales=[layer.key_scale.cpu() for layer in assembler.layers]
-        for start in range(0,len(records),32):
-            chunk=records[start:start+32]
-            payloads=authority.read_records([authority.records[(s,g)].handle for s,g,*_ in chunk])
-            for (_,_,_,count,position),(raw,value) in zip(chunk,payloads):
-                positions=torch.arange(position,position+count)
-                for i,layer in enumerate(assembler.layers):
-                    trig=trigs[i][positions];half=trig.shape[-1]//2
-                    rotated=neox_rope(raw[i],trig[:,:half],trig[:,half:])
-                    key=(rotated.float()/scales[i]).clamp(-448,448).to(torch.float8_e4m3fn)
-                    update(keys[i],key);update(values[i],value[i])
+        from .layerwise_checkpoints import oracle_record_groups
+        for frame, indices in oracle_record_groups(worker, request_id, authority):
+            for start in range(0,len(frame),32):
+                chunk=frame[start:start+32]
+                payloads=authority.read_records([authority.records[(s,g)].handle for s,g,*_ in chunk])
+                for (_,_,_,count,position),(raw,value) in zip(chunk,payloads):
+                    positions=torch.arange(position,position+count)
+                    for i in indices:
+                        trig=trigs[i][positions];half=trig.shape[-1]//2
+                        rotated=neox_rope(raw[i],trig[:,:half],trig[:,half:])
+                        key=(rotated.float()/scales[i]).clamp(-448,448).to(torch.float8_e4m3fn)
+                        update(keys[i],key);update(values[i],value[i])
         return finish(keys,values,sum(r[3] for r in records),worker.runtime.names,worker.runtime.heads*worker.runtime.dim)
     finally:assembler.close()
 

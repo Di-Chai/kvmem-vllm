@@ -98,6 +98,10 @@ class RequestPlan:
     query_id: str | None = None
     evidence_changed: bool = False
     pressure_probe_tokens: int = 0
+    # A one-turn layerwise view cannot be compacted through the shared block
+    # mapping after its layers diverge. Reserve the complete template suffix
+    # and unchanged output limit at its final Query selection instead.
+    reserve_query_output: bool = False
 
     @property
     def output_reserve(self):
@@ -124,7 +128,10 @@ class RequestPlan:
         budget = capacity - self.gen_budget
         if history == 0 and prompt_tokens + self.output_reserve <= capacity - self.block_tokens:
             return budget  # Dense cold Query needs no selected historical prefix.
-        if self.output_reserve and history == self.generation_checkpoint(prompt_tokens):
+        query_reserve = (self.reserve_query_output and self.query is not None and
+                         history == self.replay_begin)
+        if self.output_reserve and (query_reserve or
+                                   history == self.generation_checkpoint(prompt_tokens)):
             budget = min(budget, (capacity - self.output_reserve - (prompt_tokens - history)
                                  - self.block_tokens) // self.block_tokens * self.block_tokens)
         if budget <= 0:
@@ -411,4 +418,6 @@ def request_plan(request, block_tokens, gen_budget):
                              0 if pressure_reserve else reserve)
     from .session_control import SessionLedger
     return replace(plan, output_tokens=SessionLedger.output_tokens(request),
-                   rolling_active_window=rolling, pressure_probe_tokens=pressure_reserve)
+                   rolling_active_window=rolling, pressure_probe_tokens=pressure_reserve,
+                   reserve_query_output=(os.getenv('KVMEM_LAYERWISE_QUERY_MODE') in ('global', 'sequential')
+                       and os.getenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES') == '1'))

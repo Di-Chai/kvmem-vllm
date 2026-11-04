@@ -1028,7 +1028,10 @@ class ActionRuntime:
         else:
             # The capture runtime is constructed after the first forward.
             # Standalone diagnostic callers also use this exact fallback.
-            metadata = action_metadata(batch, captured[0].positions, self.options.prefill_attention, trace,
+            from .original_rope import enabled as original_rope
+            window = getattr(self.runner, '_kvmem_window_batch', None)
+            local = window.positions if original_rope() and window is not None else captured[0].positions
+            metadata = action_metadata(batch, local, self.options.prefill_attention, trace,
                 pool=getattr(self,'download_pool',None))
             self.metadata_fallback_batches = getattr(self, 'metadata_fallback_batches', 0) + 1
         waited = time.perf_counter()
@@ -1138,8 +1141,10 @@ class ActionRuntime:
             if owner:
                 owner = owner.child(active_tokens=local_begin+count, sample_rows=len(rows), segments=len(starts))
             native = getattr(self, 'native', None)
+            layerwise = getattr(self.runner, '_kvmem_layerwise_pressure', None) if prefill else None
+            scoring_layers = layerwise.scoring_layers(self) if layerwise is not None else self.layers
             native_masses = [native.score(module.attn.layer_name,request_id,prefill,defer_validation=True)
-                             if native else None for _,module in self.layers]
+                             if native else None for _,module in scoring_layers]
             needs_reference = native is None or native.mode == 'verify' or any(mass is None for mass in native_masses)
             upload = getattr(self, 'metadata_upload', None)
             staging = (upload.lease(starts,counts,rows,begin,local_begin,device,profile=owner)
@@ -1160,9 +1165,17 @@ class ActionRuntime:
                         positions=torch.tensor([local_begin+r for r in rows],device=device,dtype=torch.int64)
                 elif lease is not None:
                     starts_gpu,counts_gpu,row_ids,positions=lease.views
+                from .original_rope import enabled as original_rope
+                rope_kwargs = {}
+                if original_rope():
+                    if plan.get('logical_group') is not None:
+                        raise RuntimeError('Original RoPE does not support coalesced logical scoring')
+                    rope_kwargs['rope_positions'] = torch.tensor(
+                        [history_begin+r for r in rows], device=device, dtype=torch.int64)
                 native_index=self.runner.req_states.req_id_to_index[request_id]
                 total=None
-                for (index,module),mass in zip(self.layers,native_masses):
+                separate = []
+                for (index,module),mass in zip(scoring_layers,native_masses):
                     layer = owner.child(layer=module.attn.layer_name) if owner else None
                     with layer.stage('score.layer_total', gpu=True) if layer else nullcontext():
                         if mass is None or native.mode == 'verify':
@@ -1185,6 +1198,7 @@ class ActionRuntime:
                                     module.rotary_emb.cos_sin_cache,module.attn._k_scale,starts_gpu,counts_gpu,
                                     local_begin+count,scale=module.attn.impl.scale,
                                     q_dtype=(self.prefill_q_dtypes if prefill else self.q_dtypes)[module.attn.layer_name],q_scale=module.attn._q_scale,
+                                    **rope_kwargs,
                                     block_tokens=self.runtime.config.block_tokens, **({'profile': layer} if layer else {}),
                                     **(dict(fused=True,complete_partition=True)
                                        if getattr(self.options,'action_fused_scoring',False) else {}))
@@ -1195,9 +1209,12 @@ class ActionRuntime:
                                 native.compare(mass,reference)
                             mass=reference
                     with layer.stage('score.layer_add', gpu=True) if layer else nullcontext():
-                        total=mass if total is None else total+mass
+                        if layerwise is not None:
+                            separate.append(mass)
+                        else:
+                            total=mass if total is None else total+mass
                 with owner.stage('score.layer_mean', gpu=True) if owner else nullcontext():
-                    total=total/len(self.layers)
+                    total = torch.stack(separate) if layerwise is not None else total/len(self.layers)
                 pool=getattr(self,'download_pool',None)
                 if pool is not None:
                     host,event=pool.copy(total)
@@ -1214,8 +1231,10 @@ class ActionRuntime:
                     # the H2D. The runtime owns staging even if publication fails.
                     lease.complete(event)
                 metadata=(history_begin+count,count,starts,local_begin) if prefill else None
-                pending=ActionPacket(state,rows,history,host,event,metadata,
+                pending=ActionPacket(state,rows,history,host[0] if layerwise is not None else host,event,metadata,
                     sources,history_begin,count)
+                if layerwise is not None:
+                    layerwise.attach_packet(pending, request_id, authority, starts, counts, host)
                 packets=self._logical_packet_views(packets,request_id,plan,pending)
                 self.candidate_samples+=len(rows)
         self.packets+=len(packets)

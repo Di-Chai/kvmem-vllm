@@ -9,6 +9,9 @@ def register_plugin() -> None:
     global _registered
     if _registered:
         return
+    if os.getenv('KVMEM_QSA_ADAPTER') == '1':
+        from .qsa_config_compat import enable
+        enable()
     if os.getenv('KVMEM_SERVING') == '1':
         from .compat import enable_label_logprobs
         enable_label_logprobs()

@@ -1,0 +1,5 @@
+node_modules/
+chat/node_modules/
+chat/.svelte-kit/
+chat/dist/
+test-results/

@@ -10,7 +10,9 @@ from threading import RLock
 import torch
 
 
-METHODS = ('mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass')
+from .recall_value_scoring import VALUE_METHODS
+
+METHODS = ('mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass', *VALUE_METHODS)
 PRESSURE_QUERY_WINDOW = 128
 
 
@@ -23,6 +25,37 @@ def configured_method():
     if os.getenv('KVMEM_PRESSURE_QUERY_WINDOW', '128') != '128':
         raise ValueError('This recall experiment fixes KVMEM_PRESSURE_QUERY_WINDOW=128')
     return method
+
+
+def pressure_query_required():
+    """Cumulative attention at both pressure entrances consumes no tail-Q.
+
+    Retain continuous accepted Q for either mixed policy: decode may need the
+    prefill tail before it has accepted 128 generated tokens of its own.
+    Public user-Query capture/replay is independent of this pressure cache.
+    """
+    if configured_method() is None:
+        return False
+    stages = [os.getenv('KVMEM_' + stage + '_PRESSURE_METHOD', 'same_method')
+              for stage in ('PREFILL', 'DECODE')]
+    if any(stage not in ('same_method', 'accumulated_attention') for stage in stages):
+        raise ValueError('Unknown pressure method; no fallback is allowed')
+    return any(stage == 'same_method' for stage in stages)
+
+
+def validate_capture_options(options):
+    """Keep Q in completion-owned packets, including one-chunk publication.
+
+    The publication pipeline retains both DMA slots until FIFO commit. Each Q
+    descriptor owns its scheduled extent and epoch, and acceptance clones its
+    retained rows before a slot can be reused. Early release and coalescing
+    have different source/receipt lifetimes and remain unqualified.
+    """
+    unsupported = ('offline_prefill_coalescing', 'prefill_physical_coalescing',
+                   'early_capture_slot_release', 'prefill_capture_ahead')
+    active = [key for key in unsupported if getattr(options, key, False)]
+    if active:
+        raise ValueError('Recall pressure Q capture requires disabled options: ' + ', '.join(active))
 
 
 class PressureQueryWindow:

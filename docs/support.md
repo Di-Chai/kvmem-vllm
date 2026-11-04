@@ -23,6 +23,12 @@ See [vLLM compatibility](vllm-compatibility.md) for exact checks, source revisio
 SystemOne restrictions and actual-model results. Neither plugin registration nor
 a passing interface check establishes that a particular model fits in memory.
 
+Qwen3.8 Flash Next FP4-Local uses a separate, explicit
+[B12X QSA adapter](qwen38-flash-next.md) and pinned vendor image. Its profile
+uses single-GPU text-only eager execution, FP8 E4M3 KV, synchronous scheduling
+and MTP3. The dense 27B graph, session and performance qualifications do not
+transfer to this architecture; see that guide for its validation evidence.
+
 ## What KVMem changes
 
 vLLM continues to own native execution, scheduling, attention kernels and

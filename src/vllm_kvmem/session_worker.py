@@ -109,6 +109,7 @@ class SessionWorker:
         self.completed = []
         self.model_adapter = None
         self.terminal_captures = {}
+        self.prepared_terminal_windows = {}
         self.restore_oracles = {}
         self.checkpoint_deferrals = 0
         self.restored_tokens = 0
@@ -171,7 +172,7 @@ class SessionWorker:
             if authority.history_end != command.position:
                 raise ValueError('Prompt capture differs from accepted archive history')
             try:
-                self.pool.capture(binding.namespace, request_id, authority,
+                checkpoint = self.pool.capture(binding.namespace, request_id, authority,
                     command.tokens or binding.tokens, self.model_adapter,
                     replace=getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt)
             except BufferError:
@@ -181,6 +182,10 @@ class SessionWorker:
                     self.completed.append(SessionNotice('capture_deferred', binding.namespace,
                         binding.generation, request_id, command.position))
             else:
+                if checkpoint.layerwise_pressure is not None:
+                    self.runner._kvmem_layerwise_pressure.query.emit('pressure_prefix_captured',
+                        request_id=request_id, actual_method='accumulated_attention_per_layer',
+                        fallback_reason=None, **checkpoint.layerwise_pressure.evidence())
                 if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
                     self.completed.append(SessionNotice('captured', binding.namespace,
                         binding.generation, request_id, command.position))
@@ -227,6 +232,8 @@ class SessionWorker:
             raise ValueError('Worker cannot restore the advertised exact prompt prefix')
         if request_id in self.runtime.authorities:
             raise ValueError('Native import already owns a different authority')
+        from .layerwise_checkpoints import require_supported_restore, restore_sync
+        require_supported_restore(self, request_id, checkpoint)
         authority = checkpoint.authority
         cfg = self.options.memory
         assembler = NativeWindowAssembler.from_runner(self.runner, request_id, self.runtime.names,
@@ -246,6 +253,7 @@ class SessionWorker:
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
             assert authority.memory.commit_selection()
+            restore_sync(self, request_id, checkpoint)
             event = self.model_adapter.restore(checkpoint.model, request_id)
             if event is not None:
                 event.synchronize()
@@ -280,20 +288,22 @@ class SessionWorker:
             keys, values = [[] for _ in assembler.layers], [[] for _ in assembler.layers]
             trigs = [layer.cos_sin.cpu() for layer in assembler.layers]
             scales = [layer.key_scale.cpu() for layer in assembler.layers]
-            for start in range(0, len(records), 32):
-                chunk = records[start:start+32]
-                handles = [authority.records[(slot, generation)].handle
-                           for slot, generation, *_ in chunk]
-                payloads = authority.read_records(handles)
-                for (_, _, _, count, position), (raw, value) in zip(chunk, payloads):
-                    positions = torch.arange(position, position+count)
-                    for index, layer in enumerate(assembler.layers):
-                        trig = trigs[index][positions]
-                        half = trig.shape[-1]//2
-                        rotated = neox_rope(raw[index], trig[:, :half], trig[:, half:])
-                        key = (rotated.float()/scales[index]).clamp(-448,448).to(torch.float8_e4m3fn)
-                        keys[index].append(key.view(torch.uint8).flatten())
-                        values[index].append(value[index].flatten())
+            from .layerwise_checkpoints import oracle_record_groups
+            for frame, indices in oracle_record_groups(self, request_id, authority):
+                for start in range(0, len(frame), 32):
+                    chunk = frame[start:start+32]
+                    handles = [authority.records[(slot, generation)].handle
+                               for slot, generation, *_ in chunk]
+                    payloads = authority.read_records(handles)
+                    for (_, _, _, count, position), (raw, value) in zip(chunk, payloads):
+                        positions = torch.arange(position, position+count)
+                        for index in indices:
+                            trig = trigs[index][positions]
+                            half = trig.shape[-1]//2
+                            rotated = neox_rope(raw[index], trig[:, :half], trig[:, half:])
+                            key = (rotated.float()/scales[index]).clamp(-448,448).to(torch.float8_e4m3fn)
+                            keys[index].append(key.view(torch.uint8).flatten())
+                            values[index].append(value[index].flatten())
             return torch.cat([tensor for k,v in zip(keys,values)
                               for tensor in (torch.cat(k),torch.cat(v))])
         finally:
@@ -404,6 +414,30 @@ class SessionWorker:
         self.completed.append(SessionNotice('restored', binding.namespace, binding.generation,
                                             request_id, binding.history, binding.window, retained=retained))
 
+    def prepare_terminal_checkpoint(self, request_id, command):
+        """Try once; the capture runtime retries busy gates on later steps."""
+        authority = self.runtime.authorities.get(request_id)
+        if authority is None or not getattr(authority.memory._store, 'protect_current_window', False):
+            return True
+        binding = self.bindings.get(request_id)
+        if binding is None or binding.generation != command.generation:
+            raise ValueError('Terminal checkpoint preparation has a stale session identity')
+        if command.position != authority.history_end:
+            raise ValueError('Terminal checkpoint preparation precedes accepted history')
+        prepared = self.prepared_terminal_windows.get(request_id)
+        if prepared is not None:
+            if prepared.position != command.position:
+                raise ValueError('Prepared terminal checkpoint changed position')
+            return True
+        try:
+            window = authority.memory.checkpoint_window(allow_partial=True,
+                **({'native_validation': True} if self.pool.native_checkpoint_capture else {}))
+        except BufferError:
+            self.checkpoint_deferrals += 1
+            return False
+        self.prepared_terminal_windows[request_id] = window
+        return True
+
     def detach(self, request_id, authority, report):
         binding = self.bindings.get(request_id)
         if binding is None:
@@ -414,6 +448,7 @@ class SessionWorker:
             # or its GPU Q tensor in an idle CPU-only checkpoint.
             history.abort()
         command = getattr(self, 'terminal_captures', {}).pop(request_id, None)
+        prepared = getattr(self, 'prepared_terminal_windows', {}).pop(request_id, None)
         if command is not None:
             if command.position != authority.history_end:
                 raise ValueError('Terminal checkpoint differs from the accepted history')
@@ -421,7 +456,8 @@ class SessionWorker:
                 self.model_adapter = PromptStateAdapter(self.runner)
             try:
                 self.pool.capture(binding.namespace, request_id, authority, command.tokens,
-                                  self.model_adapter, replace=True, terminal=True)
+                                  self.model_adapter, replace=True, terminal=True,
+                                  **({'prepared_window': prepared} if prepared is not None else {}))
             except BufferError:
                 self.checkpoint_deferrals += 1
                 kind = 'capture_deferred'
@@ -598,6 +634,9 @@ class SessionWorker:
 
     def close(self):
         from .prompt_checkpoints import CheckpointPhase
+        # Prepared frames belong to still-live owners, never to an idle pool
+        # entry. Drop them before eviction can wait for their repository pins.
+        getattr(self, 'prepared_terminal_windows', {}).clear()
         for checkpoint in list(self.pool.entries.values()):
             if checkpoint.phase is CheckpointPhase.LIVE:
                 self.pool.drop_live(checkpoint)  # Runtime still owns active authority.

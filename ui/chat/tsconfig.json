@@ -1,0 +1,15 @@
+{
+  "extends": "./.svelte-kit/tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "moduleResolution": "bundler"
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte", ".svelte-kit/ambient.d.ts"],
+  "exclude": ["src/lib/services/sandbox-worker.js", "src/lib/vendors/**"]
+}

@@ -44,3 +44,25 @@ def test_full_prefill_window_includes_admission_after_earlier_decode(monkeypatch
     assert result['executed_tokens'] == 800
     assert result['seconds'] == 30
     assert result['tokens_per_second'] == 800 / 30
+
+
+def test_final_query_includes_later_layer_selection_without_double_counting(profile):
+    refresh=[dict(request_id='r',phase='query',start=10.,end=13.,seconds=3.)]
+    events=[dict(event='armed',request_id='r',layers=2,at=100.,monotonic_at=12.),
+        dict(event='layer_selected',request_id='r',layer=0,at=103.,monotonic_at=15.,
+             scoring_seconds=.1,assembly_host_seconds=.2),
+        dict(event='layer_selected',request_id='r',layer=1,at=104.,monotonic_at=16.,
+             scoring_seconds=.2,assembly_host_seconds=.3),
+        dict(event='completed',request_id='r',at=105.,monotonic_at=17.)]
+    result=profile.layerwise_query_intervals(events,refresh)['owners'][0]
+    assert result['initial_refresh_seconds']==3
+    assert result['selection_chain_seconds']==5
+    assert result['refresh_to_last_layer_assembly_seconds']==7
+    assert result['scoring_host_seconds']==pytest.approx(.3)
+    assert result['assembly_submit_host_seconds']==.5
+    old=[{k:v for k,v in e.items() if k!='monotonic_at'} for e in events]
+    legacy=profile.layerwise_query_intervals(old,refresh)['owners'][0]
+    assert legacy['selection_chain_seconds']==5
+    assert legacy['refresh_to_last_layer_assembly_seconds'] is None
+    with pytest.raises(ValueError,match='Incomplete'):
+        profile.layerwise_query_intervals(events[:-1],refresh)

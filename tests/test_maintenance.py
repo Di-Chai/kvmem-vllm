@@ -116,25 +116,31 @@ def test_checkpoint_restore_reserves_full_active_view_and_model_payload():
     assert p.inflight_bytes == 0
 
 
-def test_resident_pipeline_enforces_slots_bytes_and_individual_completion():
-    p = policy(async_restore=True, resident_restore_slots=2, session_checkpoint_bytes=256,
+@pytest.mark.parametrize('resident_slots', [2, 8])
+def test_resident_pipeline_enforces_slots_bytes_and_individual_completion(resident_slots):
+    p = policy(async_restore=True, resident_restore_slots=resident_slots, session_checkpoint_bytes=256,
         memory=SimpleNamespace(select_budget=32, gen_budget=16, block_tokens=4))
-    a, b, c = [job(rid) for rid in ('a', 'b', 'c')]
-    for j in (a, b, c):
+    active = [job(f'active-{i}') for i in range(resident_slots)]
+    waiter = job('waiter')
+    for j in (*active, waiter):
         j.command.resident = True
         j.model_bytes = 200
-    assert p.acquire(a) and p.acquire(b) and not p.acquire(c)
-    assert p.resident_inflight_bytes == 400 and p.resident_capacity == 512
+    assert all(p.acquire(j) for j in active) and not p.acquire(waiter)
+    assert p.resident_inflight_bytes == resident_slots*200
+    assert p.resident_capacity == resident_slots*256
     with pytest.raises(ValueError, match='Duplicate'):
-        p.acquire(a)
-    b.cancelled = True
-    assert not p.acquire(c)
-    p.release(a)
-    assert p.acquire(c) and p.resident_inflight_bytes == 400
-    p.release(c)
-    assert p.resident_owners == {'b': 200}
-    p.release(b)
-    assert p.resident_inflight_bytes == 0 and p.resident_peak_inflight == 2
+        p.acquire(active[0])
+    active[0].cancelled = True
+    assert not p.acquire(waiter)
+    p.release(active[-1])  # The later completion cannot release the cancelled owner.
+    assert p.acquire(waiter) and p.resident_inflight_bytes == resident_slots*200
+    p.release(waiter)
+    for j in reversed(active[1:-1]):
+        p.release(j)
+    assert p.resident_owners == {active[0].command.request_id: 200}
+    assert p.resident_inflight_bytes == 200
+    p.release(active[0])
+    assert p.resident_inflight_bytes == 0 and p.resident_peak_inflight == resident_slots
 
 
 def test_resident_credit_is_independent_bounded_and_does_not_distort_cold_cost():
@@ -184,8 +190,13 @@ def test_maintenance_waits_for_native_cache_allocation_during_model_load(monkeyp
             return 'native-result'
     wrapper = make_probe_runner(Base)()
     wrapper._kvmem_async_refresh = refresh
+    wrapper.vllm_config = object()
     monkeypatch.setattr('vllm_kvmem.profile_scopes.install_profile_scopes', lambda _:None)
     monkeypatch.setattr('vllm_kvmem.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw:None)
+    # This fixture checks cache-allocation ordering, independently of optional
+    # checkpoint-payload prewarming in the same initialization hook.
+    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _:opts)
+    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads', lambda *a:None)
     assert wrapper.initialize_kv_cache() == 'native-result'
     assert calls == ['allocated-geometry'] and refresh.maintenance == ('budget',opts,123)
     refresh.initialize_cache()

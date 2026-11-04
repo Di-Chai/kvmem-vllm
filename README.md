@@ -21,6 +21,8 @@ Long agent histories consume GPU memory even between turns. KVMem separates reta
 
 Selection changes the model's active attention context. This is not a guarantee of identical outputs or task quality relative to native full-context attention. The current integration is experimental and focused on a single NVIDIA GPU, text-only Qwen3.5-family hybrid models and FP8 KV; see the [support matrix](docs/support.md).
 
+Qwen3.8 Flash Next FP4-Local has a separate [B12X QSA adapter and profile](docs/qwen38-flash-next.md), with eager execution, FP8 KV and MTP3. Its runtime and validation boundaries are documented separately from the dense 27B path.
+
 ## Real DeepSWE agent throughput
 
 On one **RTX 5090 32 GB**, a measured 15-minute window with **16 queued tasks and four real agents** reached **239.25 generated tokens/s with KVMem**, compared with **71.84 tokens/s for the best measured native vLLM admission setting**. Agents executed actual tools and model turns respected EOS; output was not extended to a fixed token quota.
@@ -126,6 +128,20 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 ```
 
 This is a short chat smoke check. Explicit query selection and the rolling long-context profile use token-ID `/v1/completions` requests; see [serving and session usage](docs/serving.md).
+
+## Local web console
+
+The Linux web console provides model configuration and start/stop controls,
+streaming text chat, monitoring and searchable logs:
+
+```sh
+.venv/bin/vllm-kvmem ui --config local-profile.json
+```
+
+Open `http://127.0.0.1:18400/`, check the configuration and start the service.
+The console uses a separate port from the inference API and keeps browser-local
+chat history. See the [console guide](docs/webui.md) for long-context behavior,
+building the UI, process ownership and current limits.
 
 ## Choose a configuration
 

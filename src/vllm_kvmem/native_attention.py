@@ -25,6 +25,26 @@ import triton.language as tl
 from .native_attention_build import UnsupportedNativeStats, source_overlay, prefill_module, xqa_module
 
 
+def statistic_layer_names(runner, options):
+    """Capture every pressure layer without changing decode's selected layers.
+
+    Layerwise pressure consumes physical segment masses separately and maps them
+    back through each layer's own history. It must not inherit spread3's producer
+    scope merely because decode still uses that policy.
+    """
+    from . import _native
+    names = tuple(runner._kvmem_layers)
+    ids = [int(re.search(r'layers\.(\d+)\.', name).group(1)) for name in names]
+    selected = set(_native.resolve_action_layers(options.action_layers, ids))
+    decode = tuple(name for name, number in zip(names, ids) if number in selected)
+    pressure = getattr(runner, '_kvmem_layerwise_pressure', None)
+    if pressure is None:
+        return decode, decode
+    if tuple(pressure.names) != names:
+        raise RuntimeError('Native pressure statistics must cover the ordered target layers, excluding MTP')
+    return names, decode
+
+
 def piece_layout(starts, counts, length):
     """Dense sixteen-token pieces split at every KVMem logical-segment boundary."""
     cursor = pieces = 0
@@ -314,10 +334,10 @@ class NativeAttentionStats:
         self.rows = None
         self.disarm()
         modules = dict(runner.model.named_modules())
-        ids = [int(re.search(r'layers\.(\d+)\.', name).group(1)) for name in runner._kvmem_layers]
-        selected = _native.resolve_action_layers(options.action_layers, ids)
-        layers = [modules[name] for name, number in zip(runner._kvmem_layers, ids) if number in selected]
+        producer_names, decode_names = statistic_layer_names(runner, options)
+        layers = [modules[name] for name in producer_names]
         self.names = [layer.attn.layer_name for layer in layers]
+        self.decode_names = {modules[name].attn.layer_name for name in decode_names}
         if torch.cuda.get_device_capability()[0] != 12:
             self.disabled = 'unsupported_architecture_requires_sm12x'
             return
@@ -652,6 +672,10 @@ class NativeAttentionStats:
                         self.reasons[name, 'prefill'] = None
                     except (UnsupportedNativeStats, RuntimeError) as error:
                         self.reasons[name, 'prefill'] = 'prefill_build:' + str(error).splitlines()[0][:160]
+            # The bank normalizes all sampled owners together. Mixed batches
+            # therefore need producers on every instrumented layer, including
+            # decode rows; missing unused rows would invalidate the whole bank.
+            # ActionRuntime still consumes only the original decode layer set.
             token = _active.set((self, name))
             try:
                 result = original(layer, query, key, value, kv_cache, attn_metadata, output, *args, **kwargs)
@@ -888,6 +912,8 @@ class NativeAttentionStats:
         with self.report_lock:
             temporary = self.output.with_suffix('.tmp')
             temporary.write_text(json.dumps({'requested_mode': self.mode, 'allocated_bytes': self.allocated_bytes,
+                'producer_layers': self.names,
+                'decode_score_layers': sorted(getattr(self, 'decode_names', self.names)),
                 'persistent_gpu_bytes': self.gpu_bytes, 'persistent_pinned_host_bytes': self.host_bytes,
                 'disabled_reason': self.disabled, 'layer_phase_counts': dict(self.counts),
                 'source_fingerprint': self.source_fingerprint, 'verification': self.verification,

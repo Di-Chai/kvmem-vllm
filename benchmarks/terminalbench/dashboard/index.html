@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Terminal Bench · 实时评测</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f6fa; --surface:#fff; --surface-2:#f7f9fc; --text:#17233b; --muted:#69758a; --faint:#929bad; --border:#e2e7ef; --grid:#edf0f6; --teal:#007f78; --teal-bg:#e8f7f3; --blue:#4768db; --blue-bg:#edf0ff; --red:#c74a64; --red-bg:#ffedf1; --amber:#a56a13; --amber-bg:#fff5df; --shadow:0 4px 22px #25395d05; }
+    :root[data-theme="dark"] { color-scheme:dark; --bg:#0c121e; --surface:#131c2b; --surface-2:#182334; --text:#e6edf8; --muted:#9aa9c0; --faint:#74849b; --border:#263348; --grid:#233046; --teal:#54d3b9; --teal-bg:#163b36; --blue:#96a9ff; --blue-bg:#252f50; --red:#fa91a5; --red-bg:#482936; --amber:#e9bd70; --amber-bg:#3c3324; --shadow:0 4px 22px #0000000a; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; color:var(--text); background:var(--bg); font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+    button,input { font:inherit; }
+    button { cursor:pointer; }
+    button:focus-visible,input:focus-visible { outline:3px solid var(--blue); outline-offset:3px; }
+    button { color:inherit; }
+    .shell { max-width:1440px; margin:auto; padding:0 36px 32px; }
+    .topbar { height:76px; display:flex; align-items:center; justify-content:space-between; gap:16px; border-bottom:1px solid var(--border); }
+    .brand { display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:-.3px; }
+    .brand-mark { display:grid; place-items:center; height:34px; width:34px; border-radius:9px; color:var(--teal); background:var(--teal-bg); font:700 18px ui-monospace,monospace; }
+    .brand small { font-size:12px; font-weight:400; color:var(--muted); margin-left:10px; }
+    .top-actions { display:flex; align-items:center; gap:16px; }
+    .connection { color:var(--muted); font-size:12px; display:flex; gap:7px; align-items:center; }
+    .status-dot { width:7px; height:7px; flex:none; border-radius:50%; background:var(--faint); }
+    .connection.live .status-dot { background:var(--teal); box-shadow:0 0 0 3px var(--teal-bg); }
+    .connection.offline .status-dot { background:var(--red); }
+    .theme-button { display:grid; place-items:center; background:var(--surface); border:1px solid var(--border); border-radius:9px; width:34px; height:34px; font-size:17px; }
+    .hero { display:flex; justify-content:space-between; align-items:flex-end; padding:29px 0 22px; gap:24px; }
+    .eyebrow { color:var(--teal); font-size:11px; letter-spacing:1.8px; font-weight:700; text-transform:uppercase; }
+    h1 { font-size:26px; line-height:1.35; font-weight:700; letter-spacing:-.7px; margin:7px 0 8px; }
+    .subtitle { margin:0; color:var(--muted); font-size:13px; }
+    .campaign-progress { text-align:right; flex:none; }
+    .campaign-progress strong { font-size:24px; font-weight:650; font-variant-numeric:tabular-nums; }
+    .campaign-progress span { color:var(--muted); font-size:13px; }
+    .campaign-progress p { font-size:12px; color:var(--muted); margin:3px 0 0; }
+    .budgets { display:flex; flex-wrap:wrap; gap:9px; padding-bottom:22px; }
+    .budget { border:1px solid var(--border); background:var(--surface); padding:5px 11px; border-radius:6px; color:var(--muted); font-size:12px; }
+    .budget b { color:var(--text); font-weight:600; margin-left:6px; font-variant-numeric:tabular-nums; }
+    .notice { border:1px solid var(--border); background:var(--surface); color:var(--muted); padding:12px 16px; border-radius:10px; margin-bottom:18px; font-size:13px; }
+    .notice.warning { border-color:var(--amber); color:var(--amber); background:var(--amber-bg); }
+    .notice[hidden] { display:none; }
+    .arm-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .arm-card { border:1px solid var(--border); background:var(--surface); border-radius:13px; box-shadow:var(--shadow); padding:22px 24px 17px; overflow:hidden; position:relative; }
+    .arm-card::before { content:""; position:absolute; top:0; left:24px; width:38px; height:3px; background:var(--teal); border-radius:0 0 3px 3px; }
+    .arm-card.baseline::before { background:var(--blue); }
+    .arm-header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .arm-title { font-size:16px; font-weight:650; margin:0; }
+    .arm-description { font-size:12px; color:var(--muted); margin:3px 0 0; }
+    .pill { font-size:11px; border-radius:5px; padding:3px 8px; font-weight:500; white-space:nowrap; color:var(--muted); background:var(--surface-2); }
+    .pill.live,.pill.passed { color:var(--teal); background:var(--teal-bg); }
+    .pill.agent,.pill.verifying,.pill.setup { color:var(--blue); background:var(--blue-bg); }
+    .pill.failed,.pill.error,.pill.timeout { color:var(--red); background:var(--red-bg); }
+    .arm-progress { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; padding-top:22px; }
+    .progress-number { font-size:34px; font-weight:650; line-height:1; letter-spacing:-1.1px; font-variant-numeric:tabular-nums; }
+    .progress-number .denominator { color:var(--muted); font-size:17px; font-weight:400; letter-spacing:0; margin-left:6px; }
+    .progress-label { font-size:11px; margin-top:6px; color:var(--muted); }
+    .pass-rate { text-align:right; color:var(--muted); font-size:11px; }
+    .pass-rate strong { color:var(--text); font-size:22px; font-weight:600; display:block; font-variant-numeric:tabular-nums; }
+    .progress-track { height:5px; width:100%; background:var(--grid); border-radius:3px; overflow:hidden; margin:13px 0 13px; }
+    .progress-fill { width:0; height:100%; background:var(--teal); border-radius:3px; transition:width .4s; }
+    .baseline .progress-fill { background:var(--blue); }
+    .count-row { display:flex; flex-wrap:wrap; gap:6px 17px; color:var(--muted); font-size:12px; }
+    .count-row b { color:var(--text); font-weight:600; margin-left:5px; font-variant-numeric:tabular-nums; }
+    .count-row .pass b { color:var(--teal); }
+    .count-row .fail b { color:var(--red); }
+    .metric-grid { display:grid; grid-template-columns:1.15fr 1fr 1fr; gap:13px; margin-top:20px; padding-top:17px; border-top:1px solid var(--border); }
+    .metric-label { color:var(--muted); font-size:11px; }
+    .metric-value { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.4px; margin-top:3px; }
+    .metric-value small { font-size:11px; font-weight:400; color:var(--muted); margin-left:4px; letter-spacing:0; }
+    .metric-caption { font-size:11px; color:var(--faint); margin-top:2px; min-height:17px; }
+    .arm-footer { display:flex; justify-content:space-between; gap:12px; padding-top:16px; color:var(--muted); font-size:11px; }
+    .scope-note { color:var(--muted); font-size:11px; margin:10px 2px 21px; }
+    .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .panel { background:var(--surface); border:1px solid var(--border); border-radius:13px; box-shadow:var(--shadow); overflow:hidden; }
+    .panel-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:19px 23px 0; }
+    .panel h2 { margin:0; font-size:14px; font-weight:650; }
+    .panel-description { margin:3px 0 0; font-size:11px; color:var(--muted); }
+    .chart-legend { display:flex; gap:12px; font-size:10px; color:var(--muted); padding-top:3px; }
+    .legend-item { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+    .legend-mark { width:13px; height:3px; border-radius:2px; background:var(--teal); }
+    .legend-mark.baseline { background:var(--blue); }
+    .chart { position:relative; height:208px; margin:5px 13px 7px; }
+    .chart svg { width:100%; height:100%; overflow:visible; display:block; }
+    .chart-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; color:var(--faint); }
+    .chart-empty span { width:20px; height:12px; border-bottom:1px dashed var(--faint); }
+    .tasks-panel { margin-top:22px; }
+    .tasks-heading { align-items:center; padding-bottom:17px; }
+    .arm-tabs { display:flex; padding:3px; gap:3px; border:1px solid var(--border); border-radius:8px; background:var(--surface-2); }
+    .arm-tab { border:0; padding:5px 12px; background:transparent; color:var(--muted); font-size:12px; border-radius:5px; }
+    .arm-tab[aria-selected="true"] { background:var(--surface); color:var(--text); box-shadow:0 1px 4px #17233b12; font-weight:600; }
+    .task-toolbar { padding:0 23px 13px; display:flex; justify-content:space-between; gap:15px; align-items:center; }
+    .filters { display:flex; gap:5px; }
+    .filter { padding:4px 10px; border:1px solid transparent; background:transparent; color:var(--muted); font-size:12px; border-radius:6px; }
+    .filter[aria-pressed="true"] { border-color:var(--border); color:var(--text); background:var(--surface-2); }
+    .filter small { font-size:10px; color:var(--faint); margin-left:5px; }
+    .search { padding:7px 10px; width:220px; color:var(--text); border:1px solid var(--border); background:var(--surface); border-radius:7px; font-size:12px; }
+    .search::placeholder { color:var(--faint); }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; text-align:left; white-space:nowrap; }
+    th { padding:10px 15px; font-size:10px; font-weight:500; color:var(--muted); background:var(--surface-2); border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+    td { padding:13px 15px; font-size:12px; border-bottom:1px solid var(--border); font-variant-numeric:tabular-nums; }
+    th:first-child,td:first-child { padding-left:23px; }
+    th:last-child,td:last-child { padding-right:23px; }
+    tr:last-child td { border-bottom:0; }
+    tbody tr:hover { background:var(--surface-2); }
+    .task-name { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; font-weight:500; max-width:390px; overflow:hidden; text-overflow:ellipsis; }
+    .numeric { text-align:right; }
+    .task-detail { max-width:220px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; }
+    .table-empty { text-align:center; padding:38px 20px; color:var(--faint); font-size:13px; }
+    .task-footer { display:flex; justify-content:space-between; gap:12px; padding:12px 23px; border-top:1px solid var(--border); color:var(--faint); font-size:11px; }
+    .page-footer { display:flex; justify-content:space-between; gap:18px; color:var(--faint); font-size:11px; padding-top:20px; }
+    @media(prefers-reduced-motion:reduce) { .progress-fill { transition:none; } }
+    @media(max-width:1050px) { .shell { padding:0 24px 24px; } .arm-card { padding:19px 20px 16px; } .metric-value { font-size:21px; } .panel-header { padding:17px 18px 0; } .chart-legend { gap:8px; } }
+    @media(max-width:760px) { .shell { padding:0 16px 22px; } .topbar { height:62px; } .brand small { display:none; } .top-actions { gap:10px; } h1 { font-size:23px; } .hero { padding-top:24px; gap:14px; } .campaign-progress strong { font-size:21px; } .campaign-progress span { font-size:11px; } .campaign-progress p { max-width:100px; } .arm-grid,.chart-grid { grid-template-columns:1fr; gap:15px; } .budgets { gap:6px; padding-bottom:18px; } .budget { padding:4px 8px; font-size:11px; } .arm-card { padding:20px; } .arm-progress { padding-top:17px; } .chart { height:190px; } .tasks-heading { flex-wrap:wrap; gap:12px; padding-bottom:14px; } .task-toolbar { padding-left:18px; padding-right:18px; flex-wrap:wrap; } .search { width:100%; } .task-footer,.page-footer { flex-wrap:wrap; gap:5px; } .scope-note { margin-bottom:17px; } }
+    @media(max-width:400px) { .connection { font-size:10px; } .hero { align-items:flex-start; } .campaign-progress { padding-top:18px; } .campaign-progress strong { font-size:18px; } .campaign-progress span { display:block; } .metric-grid { gap:8px; } .metric-value { font-size:20px; } .chart-legend { gap:6px; font-size:9px; } .arm-tab { padding:5px 9px; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">&gt;_</span><span>Terminal Bench<small>评测观测台</small></span></div>
+      <div class="top-actions"><div id="connection" class="connection" role="status"><i class="status-dot" aria-hidden="true"></i><span id="connection-label">正在连接</span></div><button class="theme-button" id="theme-button" title="切换明暗主题" aria-label="切换明暗主题">◐</button></div>
+    </header>
+    <section class="hero">
+      <div><div class="eyebrow">LIVE BENCHMARK</div><h1>回收策略 · 实时对照</h1><p class="subtitle" id="campaign-subtitle">优先回收冗余 thinking，与纯 LRU 使用相同预算。</p></div>
+      <div class="campaign-progress"><strong id="campaign-count">—</strong> <span>总任务完成</span><p id="campaign-phase">等待评测数据</p></div>
+    </section>
+    <div class="budgets" aria-label="实验配置"><span class="budget">K<b id="budget-k">36K</b></span><span class="budget">G<b id="budget-g">16K</b></span><span class="budget">CPU 历史 / 会话<b id="budget-cpu">256K</b></span><span class="budget">任务并发<b id="budget-concurrency">—</b></span><span class="budget">模型并发上限<b id="budget-model-concurrency">—</b></span><span class="budget">逻辑上下文<b id="budget-logical">10M tokens</b></span><span class="budget" id="budget-time-pill" hidden>解题时限<b id="budget-time">—</b></span></div>
+    <div class="notice" id="notice" role="status">正在读取真实实验进度，数据每 3 秒刷新。</div>
+    <section class="arm-grid" id="arms" aria-label="策略对照"></section>
+    <p class="scope-note" id="scope-note">任务成功率以已结束尝试为分母，包含未评分异常；模型解题正确率将在两组共同获得有效评分的任务上单独比较。吞吐仅统计正式评测中模型实际接受的输出，含每次会话释放的 1-token 控制请求；采样不足 60 秒时标注实际窗口。</p>
+    <section class="chart-grid" aria-label="实时趋势">
+      <article class="panel"><div class="panel-header"><div><h2>生成吞吐</h2><p class="panel-description">最近 15 分钟 · tokens / 秒</p></div><div class="chart-legend"><span class="legend-item"><i class="legend-mark"></i>新策略</span><span class="legend-item"><i class="legend-mark baseline"></i>纯 LRU</span></div></div><div class="chart" id="throughput-chart" role="img" aria-label="两组生成吞吐时序图"></div></article>
+      <article class="panel"><div class="panel-header"><div><h2>GPU 利用率</h2><p class="panel-description">最近 15 分钟 · %</p></div><div class="chart-legend"><span class="legend-item"><i class="legend-mark"></i>新策略</span><span class="legend-item"><i class="legend-mark baseline"></i>纯 LRU</span></div></div><div class="chart" id="gpu-chart" role="img" aria-label="两组 GPU 利用率时序图"></div></article>
+    </section>
+    <section class="panel tasks-panel" aria-label="任务明细">
+      <div class="panel-header tasks-heading"><div><h2>任务明细</h2><p class="panel-description" id="tasks-description">查看每道题的执行状态与结果</p></div><div class="arm-tabs" id="arm-tabs" role="tablist" aria-label="选择策略"></div></div>
+      <div class="task-toolbar"><div class="filters" role="group" aria-label="筛选任务"><button class="filter" data-filter="current" aria-pressed="true">当前运行<small id="filter-current">—</small></button><button class="filter" data-filter="completed" aria-pressed="false">已完成<small id="filter-completed">—</small></button><button class="filter" data-filter="all" aria-pressed="false">全部<small id="filter-all">—</small></button></div><input class="search" id="task-search" type="search" placeholder="搜索任务名称" aria-label="搜索任务名称"></div>
+      <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th class="numeric">耗时</th><th class="numeric">输出 tokens</th><th class="numeric">回收块数</th><th>详情</th></tr></thead><tbody id="task-body"></tbody></table></div>
+      <div class="task-footer"><span id="task-count">任务数据未就绪</span><span>回收块数仅计策略删除；任务结束后的清理不计入。</span></div>
+    </section>
+    <footer class="page-footer"><span>只读实时观测 · 不影响正在进行的实验</span><span id="updated-at">尚未收到数据</span></footer>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const $ = id => document.getElementById(id);
+      const finite = value => typeof value === 'number' && Number.isFinite(value);
+      const number = (value, digits = 0) => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:digits, minimumFractionDigits:digits}) : '—';
+      const percent = value => finite(value) ? `${number(value, 1)}%` : '—';
+      const epoch = value => { const parsed = typeof value === 'string' ? Date.parse(value) / 1000 : value; return finite(parsed) ? parsed : null; };
+      const clock = value => { const at = epoch(value); return at === null ? '—' : new Date(at * 1000).toLocaleTimeString('zh-CN', {hour12:false}); };
+      const duration = value => {
+        if (!finite(value)) return '—';
+        const s = Math.max(0, Math.floor(value));
+        if (s >= 3600) return `${Math.floor(s / 3600)} 小时 ${Math.floor(s % 3600 / 60)} 分`;
+        if (s >= 60) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+        return `${s} 秒`;
+      };
+      const element = (tag, className, content) => { const node = document.createElement(tag); if (className) node.className = className; if (content !== undefined) node.textContent = content; return node; };
+      const phaseNames = {prepared:'待运行',preparing_images:'准备任务环境',waiting_for_gpu:'等待 GPU',starting_model:'加载模型',thinking_gc_preflight:'多轮回收预检',smoke:'连通性检查',formal:'正式评测中',needs_final_review:'等待结果核对',completed:'已完成',failed:'运行异常',running:'运行中',queued:'待运行',waiting_memory:'等待内存名额',setup:'准备环境',agent:'解题中',verifying:'验证结果',passed:'已通过',error:'执行异常',timeout:'超时',efficiency_optimization:'效率优化中 · 该轮已停止',stopped:'该轮已停止',not_started:'旧轮未开始',interrupted:'主动中止'};
+      const phaseText = value => phaseNames[value] || (value ? String(value) : '数据未就绪');
+      const donePhases = new Set(['passed','failed','error','timeout','interrupted']);
+      const activePhases = new Set(['waiting_memory','setup','agent','verifying']);
+      const pendingPhases = new Set(['prepared','queued']);
+      let latest = null, chosenArm = null, chosenFilter = 'current', search = '', lastSuccess = null, disconnected = false;
+      const placeholderArms = [{id:'thinking',label:'Thinking 去重 + LRU',phase:null},{id:'lru',label:'纯 LRU',phase:null}];
+      const isBaseline = (arm, index) => arm.id === 'lru' || index === 1;
+      const safeArms = () => Array.isArray(latest?.arms) && latest.arms.length ? latest.arms : placeholderArms;
+      function setTheme(theme) { document.documentElement.dataset.theme = theme; $('theme-button').textContent = theme === 'dark' ? '☀' : '◐'; $('theme-button').setAttribute('aria-label', theme === 'dark' ? '切换为浅色主题' : '切换为深色主题'); }
+      let savedTheme = null;
+      try { savedTheme = localStorage.getItem('terminalbench-theme'); } catch (_) { /* Private browsing may disable storage. */ }
+      setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+      $('theme-button').addEventListener('click', () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; setTheme(next); try { localStorage.setItem('terminalbench-theme', next); } catch (_) {} });
+      function metric(label, value, unit, caption) {
+        const node = element('div');
+        node.append(element('div','metric-label',label));
+        const v = element('div','metric-value',value);
+        if (unit && value !== '—') v.append(element('small','',unit));
+        node.append(v,element('div','metric-caption',caption));
+        return node;
+      }
+      function renderArms() {
+        const nodes = safeArms().map((arm,index) => {
+          const baseline = isBaseline(arm,index), c = arm.counts || {}, t = arm.throughput || {}, gpu = arm.gpu || {}, gc = arm.gc || {}, engine = arm.engine || {};
+          const halted = ['stopped','not_started'].includes(arm.phase);
+          const pending = pendingPhases.has(arm.phase), stale = t.stale || disconnected, ended = halted || arm.phase === 'completed' || arm.phase === 'needs_final_review';
+          const card = element('article',`arm-card${baseline ? ' baseline' : ''}`);
+          const header = element('div','arm-header'), title = element('div');
+          title.append(element('h2','arm-title',baseline ? '纯 LRU' : 'Thinking 去重 + LRU'),element('p','arm-description',baseline ? '基线策略 · 按最近使用时间回收' : '新策略 · 先保留代表去重，再以 LRU 兜底'));
+          const pill = element('span',`pill ${arm.phase === 'formal' ? 'live' : arm.phase === 'failed' ? 'error' : ''}`,phaseText(arm.phase));
+          header.append(title,pill);
+          const progress = element('div','arm-progress'), amount = element('div');
+          const value = element('div','progress-number',number(c.completed));
+          value.append(element('span','denominator',`/ ${number(c.expected)}`));
+          amount.append(value,element('div','progress-label',halted?'旧轮已完成 · 仅留档':'已完成任务'));
+          const rate = element('div','pass-rate');
+          rate.append(element('strong','',finite(c.completed) && c.completed > 0 && finite(c.passed) ? percent(100 * c.passed / c.completed) : '—'),element('span','',c.completed > 0 ? `${halted?'旧轮任务成功率':'任务成功率（含异常）'} · ${number(c.passed)}/${number(c.completed)}` : '尚无已完成任务'));
+          progress.append(amount,rate);
+          const track = element('div','progress-track'), fill = element('div','progress-fill');
+          const completion = finite(c.completed) && finite(c.expected) && c.expected > 0 ? Math.max(0,Math.min(100,100*c.completed/c.expected)) : 0;
+          fill.style.width = `${completion}%`; track.append(fill); track.setAttribute('role','progressbar'); track.setAttribute('aria-label',`${baseline ? '纯 LRU' : '新策略'}任务完成进度`); track.setAttribute('aria-valuemin','0'); track.setAttribute('aria-valuemax',String(c.expected || 100));
+          if (finite(c.completed)) track.setAttribute('aria-valuenow',String(c.completed));
+          const counts = element('div','count-row');
+          const countItems=[['通过',c.passed,'pass'],['评分未通过',c.failed,'fail'],['未评分异常',c.errors,'fail'],['实际执行中',c.executing ?? c.active,''],['等内存名额',c.waiting_memory,''],[halted?'未开始':'待运行',c.queued,''],['模型请求',!engine.stale&&!disconnected?engine.running:null,'']];
+          if(halted || c.interrupted > 0) countItems.push(['主动结束',c.interrupted,'']);
+          countItems.forEach(([label,count,css]) => { const item = element('span',css,label); item.append(element('b','',number(count))); counts.append(item); });
+          const metrics = element('div','metric-grid');
+          const throughput = !pending && !stale ? t.generation_tps_60s : null;
+          const utilization = !pending && !gpu.stale && !disconnected ? gpu.utilization_percent_60s : null;
+          const prefill = t.prefill_stale ? null : t.prefill_tps_60s;
+          const sampleCaption = halted ? '旧轮已停止采样' : pending ? '等待本组开始' : ended ? '本组已结束' : stale ? '等待新采样' : !finite(throughput) ? '等待足够采样' : `输入 ${number(prefill,1)} tokens/s`;
+          const memory = finite(gpu.memory_used_mib) && !pending && !gpu.stale && !disconnected ? `显存 ${number(gpu.memory_used_mib/1024,1)} GiB` : pending ? '等待本组开始' : ended ? '本组已结束' : '利用率 · 最近 60 秒';
+          const sampleWindow = finite(t.sample_window_seconds) && t.sample_window_seconds > 0 && t.sample_window_seconds < 59 ? `采样 ${number(t.sample_window_seconds)} 秒` : '最近 60 秒';
+          metrics.append(metric(`生成吞吐 · ${sampleWindow}`,number(throughput,1),'tok/s',sampleCaption),metric('GPU 利用率',percent(utilization),'',memory),metric('策略回收',number(gc.retired),'块',baseline ? '按 LRU 删除' : `去重 ${number(gc.redundancy_retired)} · 兜底 ${number(gc.lru_fallback_retired)}`));
+          const footer = element('div','arm-footer');
+          const engineReady=!engine.stale&&!disconnected;
+          const engineWindow=finite(engine.sample_window_seconds)&&engine.sample_window_seconds<59?`近 ${number(engine.sample_window_seconds)} 秒`:'近 60 秒';
+          const detail = halted ? '主动中止不计入通过率；旧轮结果仅留档' : `准备环境 ${number(c.setup)} · 解题中 ${number(c.agents)} · 验证中 ${number(c.verifying)} · 模型排队 ${number(engineReady?engine.waiting:null)}`;
+          const modelDetail=element('div','metric-caption',halted?'本轮记录保留，后续新轮重新计分':`${engineWindow}模型平均并发 ${number(engineReady?engine.running_mean_60s:null,1)} · 任务并发包含工具执行`);
+          footer.append(element('span','',detail),element('span','',`累计耗时 ${duration(arm.elapsed_seconds)}`));
+          card.append(header,progress,track,counts,metrics,footer,modelDetail);
+          return card;
+        });
+        $('arms').replaceChildren(...nodes);
+      }
+      const svgNS = 'http://www.w3.org/2000/svg';
+      function svgNode(tag, attrs, content) { const n = document.createElementNS(svgNS,tag); for (const [key,value] of Object.entries(attrs)) n.setAttribute(key,String(value)); if (content !== undefined) n.textContent=content; return n; }
+      function chart(id, key, fixedMax) {
+        const container = $(id), arms = safeArms(), W=620, H=208, left=47, right=15, top=23, bottom=32;
+        const allTimes = arms.flatMap(a => (Array.isArray(a.series) ? a.series : []).map(s => epoch(s.at)).filter(finite));
+        const end = allTimes.length ? Math.max(...allTimes) : (epoch(latest?.generated_at) ?? Date.now()/1000), start=end-900;
+        const datasets = arms.map((a,index) => ({baseline:isBaseline(a,index),points:(Array.isArray(a.series) ? a.series : []).map(p => ({at:epoch(p.at),value:p[key]})).filter(p => finite(p.at) && p.at >= start && p.at <= end).sort((a,b)=>a.at-b.at)}));
+        const values = datasets.flatMap(s => s.points.filter(p=>finite(p.value)).map(p=>p.value));
+        if (!values.length) { const empty = element('div','chart-empty'); empty.append(element('span'),document.createTextNode(disconnected ? '连接中断，等待恢复' : '等待真实采样')); container.replaceChildren(empty); return; }
+        let maximum = fixedMax || Math.max(1,...values)*1.18;
+        if (!fixedMax) { const magnitude=Math.pow(10,Math.floor(Math.log10(maximum))); maximum=Math.ceil(maximum/magnitude*2)/2*magnitude; }
+        const x=at=>left+(at-start)/900*(W-left-right), y=value=>H-bottom-Math.max(0,Math.min(maximum,value))/maximum*(H-top-bottom);
+        const svg=svgNode('svg',{viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none','aria-hidden':'true'});
+        for (let i=0;i<=4;i++) { const value=maximum*i/4, yy=y(value); svg.append(svgNode('line',{x1:left,y1:yy,x2:W-right,y2:yy,stroke:'var(--grid)','stroke-width':1}),svgNode('text',{x:left-9,y:yy+3,'text-anchor':'end',fill:'var(--faint)','font-size':10},number(value,value<10&&value%1!==0?1:0))); }
+        for (let i=0;i<=3;i++) { const at=start+i*300; svg.append(svgNode('text',{x:x(at),y:H-9,'text-anchor':i===0?'start':i===3?'end':'middle',fill:'var(--faint)','font-size':10},new Date(at*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false}))); }
+        for (const dataset of datasets) {
+          const color=dataset.baseline?'var(--blue)':'var(--teal)';
+          let segment=[]; const segments=[];
+          for(const p of dataset.points) { if(!finite(p.value)) { if(segment.length) segments.push(segment); segment=[]; continue; } if(segment.length&&p.at-segment[segment.length-1].at>90) { segments.push(segment); segment=[]; } segment.push(p); }
+          if(segment.length) segments.push(segment);
+          for(const part of segments) { const line=part.map((p,i)=>`${i?'L':'M'}${x(p.at).toFixed(2)},${y(p.value).toFixed(2)}`).join(' '); if(part.length>1) { const area=`${line} L${x(part[part.length-1].at)},${H-bottom} L${x(part[0].at)},${H-bottom} Z`; svg.append(svgNode('path',{d:area,fill:color,opacity:.055}),svgNode('path',{d:line,fill:'none',stroke:color,'stroke-width':2.2,'stroke-linejoin':'round','stroke-linecap':'round'})); } const last=part[part.length-1]; svg.append(svgNode('circle',{cx:x(last.at),cy:y(last.value),r:3,fill:color})); }
+        }
+        container.replaceChildren(svg);
+      }
+      function renderTabs() {
+        const arms = safeArms();
+        if (!arms.some(a => a.id === chosenArm)) chosenArm = latest?.campaign?.active_arm || arms[0]?.id;
+        const existing=[...$('arm-tabs').children];
+        if(existing.length===arms.length&&existing.every((button,index)=>button.dataset.armId===arms[index].id)) {existing.forEach(button=>button.setAttribute('aria-selected',String(button.dataset.armId===chosenArm)));return;}
+        const tabs=arms.map((arm,index)=>{ const button=element('button','arm-tab',isBaseline(arm,index)?'纯 LRU':'Thinking 去重 + LRU'); button.dataset.armId=arm.id; button.setAttribute('role','tab'); button.setAttribute('aria-selected',String(arm.id===chosenArm)); button.addEventListener('click',()=>{chosenArm=arm.id; renderTabs();renderTasks();});return button;});
+        $('arm-tabs').replaceChildren(...tabs);
+      }
+      function renderTasks() {
+        const arm=safeArms().find(a=>a.id===chosenArm), tasks=Array.isArray(arm?.tasks)?arm.tasks:[];
+        const current=tasks.filter(t=>activePhases.has(t.phase)), completed=tasks.filter(t=>donePhases.has(t.phase));
+        $('filter-current').textContent=arm?.tasks?number(current.length):'—'; $('filter-completed').textContent=arm?.tasks?number(completed.length):'—'; $('filter-all').textContent=arm?.tasks?number(tasks.length):'—';
+        const filtered=(chosenFilter==='current'?current:chosenFilter==='completed'?completed:tasks).filter(t=>String(t.name||'').toLowerCase().includes(search));
+        const ordered=[...filtered].sort((a,b)=>{const rank=p=>activePhases.has(p)?0:donePhases.has(p)?1:2;return rank(a.phase)-rank(b.phase)||String(a.name).localeCompare(String(b.name));});
+        const rows=ordered.map(task=>{
+          const tr=element('tr'), name=element('td','task-name',task.name||'未命名任务'); name.title=task.name||'';
+          const status=element('td');status.append(element('span',`pill ${task.phase||''}`,task.phase==='failed'?'未通过':phaseText(task.phase)));
+          const memoryWait=task.memory_wait || {};
+          const detail=task.phase==='interrupted'?(task.interruption_reason==='user_requested_switch_to_lru'?'用户主动结束并切换 LRU；保留未评分结果，整轮成功率仍计入分母':'为效率优化主动中止，不计入通过率'):task.exception?typeof task.exception==='string'?task.exception:JSON.stringify(task.exception):task.phase==='waiting_memory'?`等待调度器分配内存名额 · 所需 ${number(memoryWait.requested/2**30,1)} GiB · 已预留 ${number(memoryWait.reserved/2**30,1)} GiB · 主机可用 ${number(memoryWait.available/2**30,1)} GiB`:task.phase==='verifying'?'正在运行任务验证器':task.phase==='agent'?'正在推理与操作终端':task.phase==='passed'?'验证通过':task.phase==='failed'?'验证未通过':task.phase==='queued'?(arm?.results_scope==='stopped_run_partial_results'?'旧轮未开始':'等待调度'):'—';
+          const detailCell=element('td','task-detail',detail);detailCell.title=detail;
+          tr.append(name,status,element('td','numeric',duration(task.elapsed_seconds)),element('td','numeric',number(task.output_tokens)),element('td','numeric',number(task.gc_retired)),detailCell);return tr;
+        });
+        if (!rows.length) { const row=element('tr'),cell=element('td','table-empty',search?'没有匹配的任务':!arm?.tasks?'任务数据未就绪':pendingPhases.has(arm.phase)?(arm.id==='lru'?'本组尚未开始，等待前一组完成':'本组尚未开始，等待测试启动'):chosenFilter==='current'?(arm.phase==='completed'?'本组任务已全部结束':'当前没有正在执行的任务'):chosenFilter==='completed'?'尚无已完成任务':'暂无任务数据');cell.colSpan=6;row.append(cell);rows.push(row); }
+        $('task-body').replaceChildren(...rows);
+        $('task-count').textContent=arm?.tasks?`显示 ${number(filtered.length)} / ${number(tasks.length)} 个任务`:'任务数据未就绪';
+        $('tasks-description').textContent=arm?`${phaseText(arm.phase)} · 通过、未通过与执行异常分别展示`:'查看每道题的执行状态与结果';
+      }
+      function render() {
+        const campaign=latest?.campaign||{},config=campaign.config||{};
+        if(latest) {
+          const arms=safeArms(),expected=arms.map(a=>a.counts?.expected),total=expected.every(finite)?expected.reduce((a,b)=>a+b,0):null;
+          $('campaign-count').textContent=`${number(campaign.completed)} / ${number(total)}`;
+          const active=arms.find(a=>a.id===campaign.active_arm);
+          $('campaign-phase').textContent=active?`${isBaseline(active,arms.indexOf(active))?'纯 LRU':'新策略'} · ${phaseText(active.phase)}`:phaseText(campaign.status);
+          const perArm=expected[0];
+          const worker=campaign.remote_worker;
+          $('campaign-subtitle').textContent=worker?`LRU：保留原 ${number(worker.preserved)} 题，剩余 ${number(worker.remote_total)} 题由 ${worker.host} 执行（${number(worker.restarted)} 题经授权重跑）。当前吞吐对应远端任务。`:campaign.status==='efficiency_optimization'?'正在优化执行效率；该轮已停止，以下历史结果仅留档，不混入后续新轮。':`每组 ${number(perArm)} 道真实任务，相同预算对照；两组依次运行。`;
+          for(const [id,value] of [['budget-k',config.k],['budget-g',config.g],['budget-cpu',config.cpu_history_per_session]]) { if(finite(value)) $(id).textContent=value%1024===0?`${value/1024}K`:number(value); }
+          $('budget-concurrency').textContent=number(config.task_concurrency??config.max_concurrency??campaign.max_concurrency);
+          $('budget-model-concurrency').textContent=number(config.model_concurrency);
+          if(finite(config.logical_max_tokens)) { $('budget-logical').textContent=config.logical_max_tokens>=1e6&&config.logical_max_tokens%1e6===0?`${config.logical_max_tokens/1e6}M tokens`:`${number(config.logical_max_tokens)} tokens`; $('budget-logical').title=`逻辑上限 ${number(config.logical_max_tokens)} tokens`; }
+          const limit=config.agent_time_limit;
+          $('budget-time-pill').hidden=!['none','unlimited','official'].includes(limit)&&!finite(limit);
+          $('budget-time').textContent=['none','unlimited'].includes(limit)?'不限时':limit==='official'?'各题官方时限':duration(limit);
+          $('updated-at').textContent=`数据更新于 ${clock(latest.generated_at)} · 每 3 秒刷新`;
+        }
+        renderArms();chart('throughput-chart','generation_tps');chart('gpu-chart','gpu_percent',100);renderTabs();renderTasks();
+      }
+      function connectionState(ok,error) {
+        disconnected=!ok;
+        $('connection').className=`connection ${ok?'live':'offline'}`;
+        $('connection-label').textContent=ok?'实时更新 · 3s':'连接中断';
+        const notice=$('notice');
+        if(!ok) {notice.hidden=false;notice.className='notice warning';notice.textContent=lastSuccess?`暂时无法读取最新数据，保留 ${clock(lastSuccess)} 的结果；正在自动重连。`:'暂时无法连接评测服务，正在自动重连。尚未展示任何实验结果。';notice.title=error||'';}
+        else {notice.className='notice';notice.title='';const active=safeArms().find(a=>a.id===latest?.campaign?.active_arm);if(latest?.campaign?.status==='efficiency_optimization'){notice.hidden=false;notice.textContent=`效率优化中：该轮已于 ${clock(latest.campaign.stopped_at)} 主动停止。中止任务不算失败，也不进入通过率分母；后续新轮独立计分。`;}else if(active&&active.phase!=='formal'&&active.phase!=='completed'&&active.phase!=='needs_final_review'){notice.hidden=false;notice.textContent=`当前阶段：${phaseText(active.phase)}。此阶段的采样不代表正式评测吞吐，任务通过率待正式结果产生后更新。`;}else{notice.hidden=true;}}
+      }
+      document.querySelectorAll('.filter').forEach(button=>button.addEventListener('click',()=>{chosenFilter=button.dataset.filter;document.querySelectorAll('.filter').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));renderTasks();}));
+      $('task-search').addEventListener('input',event=>{search=event.target.value.trim().toLowerCase();renderTasks();});
+      async function refresh() {
+        const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),7000);
+        try {const response=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();if(!data||typeof data!=='object'||!Array.isArray(data.arms))throw new Error('状态数据格式不完整');latest=data;lastSuccess=epoch(data.generated_at)??Date.now()/1000;connectionState(!data.stale,data.stale?'状态采样已过期':undefined);render();}
+        catch(error) {connectionState(false,String(error.message||error));render();}
+        finally {clearTimeout(timeout);setTimeout(refresh,3000);}
+      }
+      render();refresh();
+    })();
+  </script>
+</body>
+</html>

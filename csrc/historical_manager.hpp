@@ -18,7 +18,7 @@ struct HistoricalScopeState;
 
 enum class HistoricalGcMode { Off, Shadow, Delete };
 enum HistoricalBlockFlag : uint32_t {
-    HistoricalSealed = 1, HistoricalMandatory = 2, HistoricalGpu = 4
+    HistoricalSealed = 1, HistoricalMandatory = 2, HistoricalGpu = 4, HistoricalCurrentWindow = 8
 };
 
 struct HistoricalGcStats {
@@ -28,6 +28,7 @@ struct HistoricalGcStats {
     uint64_t retries = 0, stale = 0, policy_failures = 0, shadow_decisions = 0;
     uint64_t admission_attempts = 0, admission_retries = 0;
     uint64_t redundancy_retired = 0, lossy_retired = 0;
+    uint64_t lru_fallback_retired = 0, lru_representative_retired = 0, thinking_classified = 0, thinking_pure = 0;
     uint64_t rejected_ineligible = 0, cancelled_decisions = 0;
 };
 
@@ -51,8 +52,9 @@ public:
     HistoricalFrameHold &operator=(const HistoricalFrameHold &) = delete;
 private:
     friend class HistoricalGcScope;
-    explicit HistoricalFrameHold(std::shared_ptr<HistoricalScopeState>);
+    explicit HistoricalFrameHold(std::shared_ptr<HistoricalScopeState>, bool current = false);
     std::shared_ptr<HistoricalScopeState> state_;
+    bool current_ = false;
     std::vector<qw3::KvMemRepository::Lease> leases_;
 };
 
@@ -69,15 +71,18 @@ public:
     bool update(const qw3::KvMemRepository::Lease &, uint32_t flags, uint64_t use_seq = 0);
     // Sole engine publisher; one O(1) use stamp per public model iteration.
     void used(uint64_t sequence);
-    void observe(const qw3::KvMemRepository::Lease &, bool sealed, bool gpu, bool mandatory) override;
+    void observe(const qw3::KvMemRepository::Lease &, bool sealed, bool gpu, bool mandatory,
+                 bool current_window = false) override;
     void history_changed(uint64_t end, uint64_t recent_begin) override;
     void begin_step() override;
     bool observes(const std::shared_ptr<qw3::KvMemRepository> &) const override;
     qw3::KvMemExecutionAdmission admit(qw3::KvMemBlockHandle) override;
     std::shared_ptr<HistoricalFrameHold> protect(const std::vector<qw3::KvMemBlockHandle> &);
+    std::shared_ptr<void> protect_selection(const std::vector<qw3::KvMemBlockHandle> &) override;
     bool configure_features(uint32_t layers, uint32_t kv_heads, uint32_t q_heads, uint32_t dimension);
     std::array<size_t, 4> feature_geometry() const;
     bool publish_features(const qw3::KvMemRepository::Lease &, const float *, size_t elements);
+    bool publish_thinking(const qw3::KvMemRepository::Lease &, uint32_t thinking_tokens, uint32_t known_tokens);
     uint64_t begin_question(uint64_t expected_tokens);
     bool append_question(uint64_t epoch, uint64_t offset, const float *, size_t elements, uint32_t tokens);
     bool observe_query(uint64_t epoch, const float *, size_t elements, uint32_t tokens);
@@ -95,6 +100,7 @@ public:
     bool close();
 private:
     friend class HistoricalGcWorker;
+    std::shared_ptr<HistoricalFrameHold> protect_impl(const std::vector<qw3::KvMemBlockHandle> &, bool current);
     HistoricalGcScope(std::shared_ptr<HistoricalManagerState>,
                       std::shared_ptr<HistoricalScopeState>, qw3::KvMemRepository::Lease);
     std::shared_ptr<HistoricalManagerState> owner_;

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "console_source": {
+    "repository": "https://github.com/kvmem/kvmem",
+    "commit": "7440af4d85f8405d08ba1e385ee3e9ef6d87f23c",
+    "paths": ["ui/monitor", "ui/lightweight"],
+    "modifications": "vLLM profile editor, vLLM telemetry, namespaced conversation sessions, capability-aware chat settings"
+  },
+  "shared_chat_components": {
+    "repository": "https://github.com/ggml-org/llama.cpp",
+    "commit": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+    "paths": ["tools/ui/src/lib", "tools/ui/src/app.css", "tools/ui/src/app.d.ts", "tools/ui/src/virtual-nerdamer.d.ts", "tools/ui/scripts/vite-plugin-nerdamer.ts"],
+    "license": "MIT",
+    "license_file": "llama.cpp-LICENSE",
+    "notes": "Shared component sources are vendored; no llama.cpp inference checkout or executable is required. Upstream full-app routes, tests, stories and PWA lifecycle are not initialized."
+  },
+  "design_notices": ["monitor/Strata-LICENSE.txt", "monitor/Outfit-OFL.txt"],
+  "build": {
+    "command": "python3 scripts/build_webui.py",
+    "dependency_lock": "ui/chat/package-lock.json",
+    "output": "src/vllm_kvmem/webui/static",
+    "node_minimum_major": 22,
+    "source_maps": false,
+    "dependency_notices": ["DEPENDENCIES.json", "THIRD_PARTY_NOTICES.txt"]
+  }
+}

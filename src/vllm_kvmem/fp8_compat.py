@@ -1,4 +1,4 @@
-"""Byte-preserving E4M3FN access on CUDA devices without native FP8 casts."""
+"""Byte-preserving E4M3FN access and correctly rounded FP32 conversion."""
 from functools import lru_cache
 
 import torch
@@ -7,13 +7,17 @@ import triton.language as tl
 
 
 @lru_cache(maxsize=None)
-def software_fp8(device):
-    return device.type == 'cuda' and torch.cuda.get_device_capability(device) < (8, 9)
+def software_fp8(device, *, for_write=False):
+    # On Ada, Triton's FP32 -> E4M3FN lowering first truncates to FP16.
+    # Values just above an FP8 midpoint can therefore round to the wrong byte.
+    # Native FP8 reads are exact; only writes need the software encoder there.
+    return device.type == 'cuda' and torch.cuda.get_device_capability(device) < (
+        (9, 0) if for_write else (8, 9))
 
 
-def fp8_storage(tensor):
+def fp8_storage(tensor, *, for_write=False):
     """Keep the same address, shape and strides while avoiding an FP8 pointer."""
-    packed = tensor.dtype == torch.float8_e4m3fn and software_fp8(tensor.device)
+    packed = tensor.dtype == torch.float8_e4m3fn and software_fp8(tensor.device, for_write=for_write)
     return (tensor.view(torch.uint8) if packed else tensor), packed
 
 

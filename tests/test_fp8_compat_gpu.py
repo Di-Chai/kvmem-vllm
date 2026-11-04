@@ -1,4 +1,4 @@
-"""Independent Torch byte oracles for software E4M3FN on pre-FP8 GPUs."""
+"""Independent Torch byte oracles for exact E4M3FN conversion."""
 import os
 
 import pytest
@@ -54,11 +54,12 @@ def test_encoding_matches_cpu_torch_for_all_bf16_patterns_and_fp32_midpoints():
     assert torch.equal(actual.cpu(), expected)
 
 
-def test_fp8_storage_keeps_address_and_strided_cache_geometry():
+@pytest.mark.parametrize('for_write', [False, True])
+def test_fp8_storage_keeps_address_and_strided_cache_geometry(for_write):
     original = torch.empty((5, 2, 16, 128), dtype=torch.float8_e4m3fn, device='cuda')
     key = original.transpose(1, 2)[..., :64]
-    converted, software = fp8_storage(key)
-    assert software == (torch.cuda.get_device_capability(key.device) < (8, 9))
+    converted, software = fp8_storage(key, for_write=for_write)
+    assert software == (torch.cuda.get_device_capability(key.device) < ((9, 0) if for_write else (8, 9)))
     assert converted.data_ptr() == key.data_ptr()
     assert converted.shape == key.shape and converted.stride() == key.stride()
     assert converted.dtype == (torch.uint8 if software else key.dtype)

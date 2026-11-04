@@ -1,11 +1,14 @@
 """Run the pinned, unmodified Harbor Terminus agent with local lifecycle hooks.
 
-Hooks only account resources, persist evidence, and release finished KV owners.
-They never change a task, prompt, verifier, reward, or agent response. The frozen
-task copy may explicitly omit Agent deadlines under agent-time-policy.json.
+Hooks account resources, persist evidence, release finished KV owners, and may
+stage a qualified public package cache before the original verifier timer.
+They never change a prompt, verifier, reward, or agent response. The frozen
+task copy may use audited relaxed or disabled Agent deadlines. Relaxed runs
+exclude explicitly journaled pause intervals from the Agent timer.
 """
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +21,71 @@ try:
     from .terminalbench_network import reclaim_trial_networks, assert_direct_docker, DIRECT_CONTAINER_ENV
 except ImportError:
     from terminalbench_network import reclaim_trial_networks, assert_direct_docker, DIRECT_CONTAINER_ENV
+
+
+GIB = 1024**3
+DEFAULT_CONTAINER_MEMORY_BYTES = 48 * GIB
+HOST_MEMORY_RESERVE_BYTES = 12 * GIB
+
+
+def validate_memory_budget(value, *, total=None):
+    if type(value) is not int or value <= 0:
+        raise ValueError('Container memory budget must be a positive integer number of bytes')
+    if total is not None and value > total-HOST_MEMORY_RESERVE_BYTES:
+        raise ValueError('Container memory budget must leave the 12-GiB host reserve')
+    return value
+
+
+class MemoryAdmission:
+    """Change only task admission; each official container limit is untouched."""
+    def __init__(self, root, manifest, log):
+        self.path = root/'memory-admission-control.json'
+        self.total = psutil.virtual_memory().total
+        self.base = validate_memory_budget(manifest.get('container_memory_admission_bytes',
+            DEFAULT_CONTAINER_MEMORY_BYTES), total=self.total)
+        self.budget = self.base
+        self.log, self.bad_digest, self.history = log, None, []
+        self._record('manifest', None)
+
+    def _record(self, source, previous):
+        row = dict(event='memory_admission_policy', source=source, previous_budget_bytes=previous,
+                   budget_bytes=self.budget, host_reserve_bytes=HOST_MEMORY_RESERVE_BYTES)
+        self.history.append(dict(at=time.time(), **row))
+        self.log(row)
+
+    def refresh(self):
+        raw = b''
+        try:
+            try:
+                with self.path.open('rb') as stream:
+                    raw = stream.read(4097)
+            except FileNotFoundError:
+                value = self.base
+            else:
+                if len(raw)>4096:
+                    raise ValueError('Memory admission control exceeds 4096 bytes')
+                control = json.loads(raw)
+                if (not isinstance(control,dict) or set(control)!={'schema_version','budget_bytes'} or
+                        type(control['schema_version']) is not int or control['schema_version']!=1):
+                    raise ValueError('Invalid memory admission control schema')
+                value = validate_memory_budget(control['budget_bytes'],total=self.total)
+        except (OSError,ValueError,TypeError) as error:
+            # A partial/invalid control update must not cancel any Agent or
+            # verifier. Retain the last validated policy and report it once.
+            digest = hashlib.sha256(raw+str(error).encode()).hexdigest()
+            if digest!=self.bad_digest:
+                self.log(dict(event='memory_admission_control_rejected',error=str(error),
+                              retained_budget_bytes=self.budget))
+                self.bad_digest=digest
+            return
+        self.bad_digest=None
+        if value!=self.budget:
+            previous,self.budget=self.budget,value
+            self._record('control' if raw else 'manifest',previous)
+
+    def admits(self, reserved, requested, available):
+        self.refresh()
+        return reserved+requested<=self.budget and available>=requested+HOST_MEMORY_RESERVE_BYTES
 
 
 def save(path, value):
@@ -55,6 +123,22 @@ async def run(root, config_path):
     if config.n_attempts != 1 or config.retry.max_retries != 0:
         raise ValueError('Exactly one attempt per task, no task retries')
     manifest = json.loads((root/'manifest.json').read_text())
+    if manifest.get('agent_time_limit') == 'relaxed' and not config_path.name.startswith('smoke'):
+        try:
+            from .terminalbench_deadline import install as install_deadline, validate_job_deadlines
+        except ImportError:
+            from terminalbench_deadline import install as install_deadline, validate_job_deadlines
+        validate_job_deadlines(root, config)
+        install_deadline(root, config.job_name)
+    if manifest.get('length_finish_repair'):
+        from terminalbench_length_finish import install as install_length_finish
+        install_length_finish(root/(config.job_name+'-length-finish-repair.json'),
+                              manifest['length_finish_repair']['upstream_sources'])
+    if manifest.get('query_provenance'):
+        from terminalbench_query import install as install_query
+        sources = {str(root / path): value for path, value in manifest['query_provenance']['tasks'].items()}
+        install_query(sources, root/(config.job_name+'-query-sources.jsonl'),
+                      manifest['query_provenance']['upstream_sources'])
     if manifest.get('harness_repair'):
         from terminalbench_harness import install
         bundles = {task: root / relative for task, relative in manifest.get('terminal_tool_bundles', {}).items()}
@@ -74,12 +158,16 @@ async def run(root, config_path):
     released = set()
     release_errors = []
     network_errors = []
+    verifier_cache_errors = []
+    verifier_cache_installed = set()
     changed = asyncio.Condition()
     bridge = json.loads((root / 'connection.json').read_text())
     async with httpx.AsyncClient(trust_env=False, timeout=300) as client:
         def log(value):
             with (output / 'events.jsonl').open('a') as f:
                 f.write(json.dumps(dict(at=time.time(), **value), ensure_ascii=False) + '\n')
+
+        admission = MemoryAdmission(root, manifest, log)
 
         async def lifecycle(event):
             name = event.trial_name
@@ -88,13 +176,14 @@ async def run(root, config_path):
             if event.event == TrialEvent.START:
                 task = tomllib.loads((event.config.task.path / 'task.toml').read_text())
                 memory = task['environment'].get('memory_mb', 2048) * 1024**2
-                # Preserve each official resource allocation. Admit fewer than
-                # eight only if large tasks would exceed this host reserve.
+                # Preserve official per-task limits while independently
+                # controlling their aggregate admission budget.
                 async with changed:
-                    while (sum(reservations.values()) + memory > 24 * 1024**3 or
-                           psutil.virtual_memory().available < memory + 12 * 1024**3):
+                    while not admission.admits(sum(reservations.values()), memory,
+                                               psutil.virtual_memory().available):
                         log(dict(event='waiting_for_memory', trial=name, requested=memory,
                                  reserved=sum(reservations.values()),
+                                 budget_bytes=admission.budget,
                                  available=psutil.virtual_memory().available))
                         try:
                             await asyncio.wait_for(changed.wait(), 10)
@@ -117,6 +206,24 @@ async def run(root, config_path):
                 except Exception as error:
                     release_errors.append(dict(trial=name, error=repr(error)))
                     log(dict(event='release_failed', trial=name, error=repr(error)))
+            if event.event == TrialEvent.VERIFICATION_START and name not in verifier_cache_installed:
+                task_name = event.config.task.path.name
+                entry = manifest.get('verifier_dependency_caches', {}).get(task_name)
+                if entry:
+                    from terminalbench_verifier_cache import install_for_verification, set_trial_cache_environment
+                    if event.config.verifier.env.get('UV_CACHE_DIR'):
+                        raise ValueError('Do not replace an explicit verifier cache directory')
+                    try:
+                        cache_env = await asyncio.to_thread(install_for_verification,
+                            root, entry, task_name, name, event.config.task.path,
+                            output/(name+'-verifier-cache.json'))
+                        set_trial_cache_environment(event.config, cache_env)
+                        verifier_cache_installed.add(name)
+                        log(dict(event='verifier_cache_ready', trial=name, task=task_name, **cache_env))
+                    except Exception as error:
+                        verifier_cache_errors.append(dict(trial=name, error=repr(error)))
+                        log(dict(event='verifier_cache_failed', trial=name, error=repr(error)))
+                        raise
             if event.event == TrialEvent.END:
                 result = event.result.model_dump(mode='json')
                 completed[name] = classify(result)
@@ -138,20 +245,23 @@ async def run(root, config_path):
                 completed=len(completed), passed=sum(r['passed'] for r in completed.values()),
                 active=list(reservations), released=len(released),
                 release_errors=release_errors, network_errors=network_errors,
+                verifier_cache_errors=verifier_cache_errors,
                 outcomes=list(completed.values())))
 
         for event in TrialEvent:
             job.add_hook(event, lifecycle)
         result = await job.run()
         save(output / 'harbor-result.json', result.model_dump(mode='json'))
-        if len(completed) != expected or release_errors or network_errors or len(released) != expected:
+        if (len(completed) != expected or release_errors or network_errors or verifier_cache_errors
+                or len(released) != expected):
             raise RuntimeError('Incomplete task classification or KV cleanup; preserve all attempts')
         rows = list(completed.values())
         save(output / 'summary.json', dict(expected=expected, outcomes=rows,
             scored=sum(r['status'] == 'scored' for r in rows), passed=sum(r['passed'] for r in rows),
             task_timeouts=sum(r['status'] == 'agent_timeout' for r in rows),
-            errors=sum(r['status'] == 'error' for r in rows), retries=0))
-        if expected == 1 and not rows[0]['passed']:
+            errors=sum(r['status'] == 'error' for r in rows), retries=0,
+            memory_admission_history=admission.history))
+        if config_path.name.startswith('smoke') and not rows[0]['passed']:
             raise RuntimeError('Terminus smoke did not pass; formal tasks have not started')
 
 

@@ -7,6 +7,7 @@
 #include "qw3/kvmem_repository_gc.hpp"
 #include "historical_payload.hpp"
 #include "historical_manager.hpp"
+#include "thinking_bindings.hpp"
 #include "private_record_pack.hpp"
 #include "kvmem_request_plan.hpp"
 #include "kvmem_prefix_reuse_policy.hpp"
@@ -295,6 +296,7 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
 }
 
 PYBIND11_MODULE(_native, m) {
+    bind_historical_thinking(m);
     m.def("checkpoint_token_bytes", [](py::object tokens, Py_ssize_t count) {
         // Match token_bytes' exact builtin-int and uint32 validation. Do not
         // accept bool, int subclasses, truncating casts, or hash-only matches.
@@ -1050,6 +1052,8 @@ PYBIND11_MODULE(_native, m) {
         .def("publish", &HistoryScope::publish, py::arg("lease"), py::arg("cpu"),
              py::arg("flags"), py::arg("use_seq") = 0)
         .def("update", &HistoryScope::update, py::arg("lease"), py::arg("flags"), py::arg("use_seq") = 0)
+        .def("publish_thinking", &HistoryScope::publish_thinking, py::arg("lease"),
+             py::arg("thinking_tokens"), py::arg("known_tokens"))
         .def("configure_features", &HistoryScope::configure_features,
              py::arg("layers"), py::arg("kv_heads"), py::arg("q_heads"), py::arg("dim"))
         .def("publish_features", [](HistoryScope &scope, const KvMemRepository::Lease &lease, py::buffer buffer) {
@@ -1094,6 +1098,8 @@ PYBIND11_MODULE(_native, m) {
             HSTAT(retries); HSTAT(stale); HSTAT(policy_failures); HSTAT(shadow_decisions);
             HSTAT(admission_attempts); HSTAT(admission_retries);
             HSTAT(redundancy_retired); HSTAT(lossy_retired); HSTAT(rejected_ineligible); HSTAT(cancelled_decisions);
+            HSTAT(lru_fallback_retired); HSTAT(lru_representative_retired);
+            HSTAT(thinking_classified); HSTAT(thinking_pure);
 #undef HSTAT
             return result;
         });
@@ -1193,6 +1199,8 @@ PYBIND11_MODULE(_native, m) {
             store.set_block_tier(handle.slot, resident ? KvTier::GPU : KvTier::SSD,
                                  -1, -1, handle.generation);
         })
+        .def("set_protect_current_window", &KvMemStore::set_protect_current_window)
+        .def_property_readonly("protect_current_window", &KvMemStore::protect_current_window)
         .def("prepare_append", &KvMemStore::prepare_repository_append, py::keep_alive<0, 1>())
         .def("checkpoint", &KvMemStore::repository_checkpoint,
              py::arg("position"), py::arg("pin_working_set") = true)
@@ -1308,6 +1316,8 @@ PYBIND11_MODULE(_native, m) {
         }, py::arg("mandatory"), py::arg("scores"), py::arg("budget") = 0)
         .def("select", &KvMemStore::set_repository_selection,
              py::arg("handles"), py::arg("force_raw_refresh") = false)
+        .def("restore_selection", &KvMemStore::restore_repository_selection,
+             py::arg("handles"))
         // Experimental host adapter; serving continues to use RequestMemory's
         // original Python restore path until separately qualified and enabled.
         .def("restore_frame", &kvmem_restore::restore_frame,

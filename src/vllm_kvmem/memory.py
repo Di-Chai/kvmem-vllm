@@ -385,13 +385,11 @@ class RequestMemory:
                 raise ValueError('Rewind authority before restoring its checkpoint window')
             with timing.stage('saved_handles') if timing is not None else nullcontext():
                 saved = [_native.Handle(slot, generation) for slot, generation, *_ in checkpoint.records]
-            with timing.stage('current_handles') if timing is not None else nullcontext():
-                current = [_native.Handle(slot, generation) for slot, generation, *_ in self._store.working_records()]
-            with timing.stage('residency_reset') if timing is not None else nullcontext():
-                for handle in current + saved:
-                    self._store.working_resident(handle, False)
             with timing.stage('native_select') if timing is not None else nullcontext():
-                plan = self._store.select(saved, True)
+                # Native selection owns the residency reset: first admit the
+                # saved frame, then hand existing (possibly retired) GPU leases
+                # to the plan until the assembly completion fence has passed.
+                plan = self._store.restore_selection(saved)
         self._plan = plan
         self.phase = Phase.ASSEMBLING
         self._submitted = False

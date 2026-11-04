@@ -29,10 +29,11 @@ def save(path, value):
     temporary.replace(path)
 
 
-def render_case(tokenizer, task, input_text):
+def render_case(tokenizer, task, input_text, *, reasoning_effort=None):
     public = protocol.public_query(task, input_text)
+    template_options = {} if reasoning_effort is None else {'reasoning_effort': reasoning_effort}
     rendered = tokenizer.apply_chat_template([{'role': 'user', 'content': input_text}],
-        tokenize=False, add_generation_prompt=True, enable_thinking=True)
+        tokenize=False, add_generation_prompt=True, enable_thinking=True, **template_options)
     if not rendered.endswith('<think>\n'):
         raise ValueError('Expected the qualified Qwen open-thinking chat template')
     offset = rendered.find(input_text)

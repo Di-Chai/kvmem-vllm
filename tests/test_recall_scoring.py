@@ -1,11 +1,12 @@
 """Independent scalar oracles for the five fixed-policy recall scorers."""
 import math
+from dataclasses import replace
 
 import pytest
 import torch
 
 from vllm_kvmem.recall_scoring import (
-    METHODS, build_block_features, block_logits, concat_block_features,
+    METHODS, build_block_features, block_logits, concat_block_features, prepare_queries,
 )
 
 
@@ -49,11 +50,11 @@ def scalar_fps4(vectors):
     return [vectors[i] for i in chosen]
 
 
-def scalar_logits(keys, counts, queries, method):
+def scalar_logits(keys, counts, queries, method, *, result_dtype=torch.float32):
     k, q = keys.double().tolist(), queries.double().tolist()
     layers, blocks, _, kvheads, dim = keys.shape
     rows, heads = queries.shape[1:3]
-    result = torch.full((layers, rows, heads, blocks), -torch.inf)
+    result = torch.full((layers, rows, heads, blocks), -torch.inf, dtype=result_dtype)
     for layer in range(layers):
         for row in range(rows):
             for head in range(heads):
@@ -79,6 +80,37 @@ def scalar_logits(keys, counts, queries, method):
                     result[layer, row, head, block] = (top + math.log(sum(math.exp(x - top) for x in scores))
                                                        if method == 'exact_mass' else top)
     return result
+
+
+def frozen_v2_slot_logits(queries, features):
+    """Independent math from the frozen runtime-v2 before batched matmul.
+
+    Retain its per-slot einsum and sequential logaddexp, so new packing,
+    representative reduction and summation-order errors cannot self-confirm.
+    """
+    values = features.values
+    layers, rows, heads, dim = queries.shape
+    blocks, representatives, kvheads = values.shape[1:4]
+    groups = heads // kvheads
+    q = queries.float().reshape(layers, rows, kvheads, groups, dim)
+    scale = dim ** -.5
+
+    def dot(query, key):
+        return torch.einsum('lqkgd,lbkd->lqkgb', query, key).reshape(layers, rows, heads, blocks)
+
+    def mask(slot):
+        valid = features.valid[:, :, slot, :].permute(0, 2, 1)
+        return valid[:, None, :, None, :].expand(layers, rows, kvheads, groups, blocks).reshape(
+            layers, rows, heads, blocks)
+
+    if features.method == 'min_max':
+        return ((dot(q.clamp_min(0), values[:, :, 1])
+                 + dot(q.clamp_max(0), values[:, :, 0])) * scale).masked_fill(~mask(0), -torch.inf)
+    logits = torch.full((layers, rows, heads, blocks), -torch.inf, dtype=torch.float32)
+    for slot in range(representatives):
+        score = (dot(q, values[:, :, slot]) * scale).masked_fill(~mask(slot), -torch.inf)
+        logits = torch.logaddexp(logits, score) if features.method == 'exact_mass' else torch.maximum(logits, score)
+    return logits
 
 
 @pytest.mark.parametrize('method', METHODS)
@@ -237,3 +269,113 @@ def test_zero_query_has_uniform_block_mass_except_exact_mass_counts(method):
     probabilities = block_logits(torch.zeros(1, 1, 1, 2), features).softmax(-1).flatten()
     expected = torch.tensor([.8, .2, 0.]) if method == 'exact_mass' else torch.tensor([.5, .5, 0.])
     torch.testing.assert_close(probabilities, expected)
+
+
+@pytest.mark.parametrize('method', METHODS)
+@pytest.mark.parametrize('groups', [1, 2, 6])
+def test_vectorized_scores_match_frozen_v2_with_fp8_keys_fp16_queries_and_gqa(method, groups):
+    rng = torch.Generator().manual_seed(130032)
+    keys = torch.randn(2, 5, 32, 2, 13, generator=rng).to(torch.float8_e4m3fn).float()
+    # This conversion is the experiment's unchanged BF16 capture -> FP16 Q.
+    queries = torch.randn(2, 9, 2 * groups, 13, generator=rng).bfloat16().half()
+    counts = [32, 19, 3, 1, 0]
+    for block, count in enumerate(counts):
+        keys[:, block, count:] = torch.nan
+    features = build_block_features(keys, counts, method)
+    expected = frozen_v2_slot_logits(queries, features)
+    actual = block_logits(queries, features)
+    prepared = prepare_queries(queries, 2, split_sign=method == 'min_max')
+    reused = torch.cat([block_logits(prepared, features.select_blocks([0, 1]), validate=False),
+                        block_logits(prepared, features.select_blocks([2, 3, 4]), validate=False)], -1)
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=1e-5)
+    torch.testing.assert_close(reused, expected, atol=2e-5, rtol=1e-5)
+    expected_mass = expected.softmax(-1).sum((0, 1, 2), dtype=torch.float64) / (2 * 2 * groups)
+    actual_mass = reused.softmax(-1).sum((0, 1, 2), dtype=torch.float64) / (2 * 2 * groups)
+    torch.testing.assert_close(actual_mass, expected_mass, atol=2e-6, rtol=1e-5)
+    torch.testing.assert_close(actual_mass.sum(), torch.tensor(9., dtype=torch.float64), atol=2e-6, rtol=0)
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_vectorized_small_example_matches_independent_fp64_scalar_oracle(method):
+    rng = torch.Generator().manual_seed(9821)
+    keys = torch.randn(1, 4, 7, 2, 5, generator=rng)
+    queries = torch.randn(1, 3, 6, 5, generator=rng)
+    counts = [7, 3, 1, 0]
+    actual = block_logits(prepare_queries(queries, 2, split_sign=True),
+                          build_block_features(keys, counts, method))
+    expected = scalar_logits(keys, counts, queries, method, result_dtype=torch.float64)
+    torch.testing.assert_close(actual.double(), expected, atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_prepared_full_128_query_window_has_no_scalar_reads_or_dynamic_gathers(method):
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class NoHostRead(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            assert func is not torch.ops.aten._local_scalar_dense.default, 'Scoring read a device scalar'
+            assert func is not torch.ops.aten.index.Tensor, 'Scoring used a dynamic gather'
+            return func(*args, **(kwargs or {}))
+
+    rng = torch.Generator().manual_seed(128)
+    keys = torch.randn(1, 3, 32, 2, 8, generator=rng)
+    queries = torch.randn(1, 128, 12, 8, generator=rng)
+    features = build_block_features(keys, [32, 9, 0], method)
+    expected = frozen_v2_slot_logits(queries, features)
+    with NoHostRead():
+        prepared = prepare_queries(queries, 2, split_sign=method == 'min_max', validate=False)
+        actual = block_logits(prepared, features, validate=False)
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_vectorized_ties_preserve_equal_block_scores_and_first_argmax(method):
+    key = torch.tensor([1., -2., 0., 3.]).view(1, 1, 1, 1, 4)
+    keys = key.expand(2, 3, 32, 2, 4).clone()
+    features = build_block_features(keys, [32, 32, 32], method)
+    queries = torch.tensor([1., -1., 2., -2.]).view(1, 1, 1, 4).expand(2, 5, 6, 4)
+    actual = block_logits(prepare_queries(queries, 2, split_sign=True), features)
+    expected = frozen_v2_slot_logits(queries, features)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-6)
+    assert torch.equal(actual[..., 0], actual[..., 1])
+    assert torch.equal(actual[..., 0], actual[..., 2])
+    assert not actual.argmax(-1).any()
+
+
+def test_minmax_prepared_signs_and_lazy_signs_have_identical_scores():
+    rng = torch.Generator().manual_seed(412)
+    queries = torch.randn(2, 5, 6, 8, generator=rng)
+    keys = torch.randn(2, 3, 32, 2, 8, generator=rng)
+    features = build_block_features(keys, [32, 11, 1], 'min_max')
+    lazy = prepare_queries(queries, 2)
+    signs = prepare_queries(queries, 2, split_sign=True)
+    assert lazy.positive is lazy.negative is None
+    torch.testing.assert_close(signs.values, signs.positive + signs.negative, rtol=0, atol=0)
+    torch.testing.assert_close(block_logits(lazy, features), block_logits(signs, features), rtol=0, atol=0)
+
+
+def test_prepared_query_default_validation_and_geometry_stay_strict():
+    features = build_block_features(torch.zeros(1, 1, 32, 2, 4), [32], 'mean_k')
+    unchecked = prepare_queries(torch.full((1, 3, 4, 4), torch.inf), 2, validate=False)
+    with pytest.raises(ValueError, match='Nonfinite Query'):
+        block_logits(unchecked, features)
+    prepared = prepare_queries(torch.ones(1, 3, 4, 4), 2)
+    for invalid in (replace(prepared, shape=(1, 4, 4, 4)),
+                    replace(prepared, kv_heads=1),
+                    replace(prepared, values=prepared.values.double()),
+                    replace(prepared, positive=torch.ones(1))):
+        with pytest.raises(ValueError, match='geometry'):
+            block_logits(invalid, features, validate=False)
+    with pytest.raises(ValueError, match='geometry'):
+        prepare_queries(torch.ones(1, 3, 5, 4), 2, validate=False)
+
+
+@pytest.mark.parametrize('method', METHODS)
+def test_vectorized_default_validation_rejects_finite_input_logit_overflow(method):
+    features = build_block_features(torch.ones(1, 1, 32, 1, 4), [32], method)
+    # Construct finite features whose QK overflow FP32, independently of the
+    # feature builder's own overflow checks during clustering/FPS.
+    features = replace(features, values=features.values * 1e30)
+    queries = torch.full((1, 1, 2, 4), 1e30)
+    with pytest.raises(ValueError, match='logit overflow'):
+        block_logits(queries, features)

@@ -46,11 +46,13 @@ struct KvMemExecutionAdmission {
 class KvMemHistoryObserver {
 public:
     virtual ~KvMemHistoryObserver() = default;
-    virtual void observe(const KvMemRepository::Lease &, bool sealed, bool gpu, bool mandatory) = 0;
+    virtual void observe(const KvMemRepository::Lease &, bool sealed, bool gpu, bool mandatory,
+                         bool current_window = false) = 0;
     virtual void history_changed(uint64_t end, uint64_t recent_begin) = 0;
     virtual void begin_step() = 0;
     virtual bool observes(const std::shared_ptr<KvMemRepository> &) const = 0;
     virtual KvMemExecutionAdmission admit(KvMemBlockHandle) = 0;
+    virtual std::shared_ptr<void> protect_selection(const std::vector<KvMemBlockHandle> &) = 0;
 };
 
 class KvMemAdmissionRetry : public std::runtime_error {
@@ -93,6 +95,9 @@ struct KvMemBlock {
     uint32_t remap_count = 0;       // number of non-noop in-place re-RoPE moves
     uint64_t remap_abs_delta = 0;   // sum(abs(to_base-from_base)) since raw rebuild
     bool     in_working_set = false;
+    // Logical frame eligible for a session checkpoint; differs from stale GPU
+    // residency and includes accepted append pages before the first selection.
+    bool     in_current_frame = false;
 
     // Cumulative attention quality (built-in top-k selection signal, #40).
     double   attn_score = 0.0;
@@ -456,6 +461,8 @@ public:
     const std::shared_ptr<KvMemRepository> &repository() const { return repository_; }
     void attach_repository_gc(std::shared_ptr<KvMemRepositoryGc>);
     void attach_history_observer(std::shared_ptr<KvMemHistoryObserver>);
+    void set_protect_current_window(bool);
+    bool protect_current_window() const { return protect_current_window_; }
     // Executor publishes these only after all configured main/MTP raw-K/V and
     // index components have actually become authoritative for this generation.
     void set_repository_gc_flags(KvMemBlockHandle, uint32_t mask, uint32_t values);
@@ -577,6 +584,10 @@ public:
                                     const std::vector<double> &);
     KvMemPlan set_repository_selection(const std::vector<KvMemBlockHandle> &,
                                        bool force_raw_refresh = false);
+    // Restore into fresh GPU pages. Admit the target before mutating residency,
+    // then transfer the previous window's existing leases to the returned plan.
+    // Retirement forbids new admission, not completion of that previous window.
+    KvMemPlan restore_repository_selection(const std::vector<KvMemBlockHandle> &);
 
     // Drop trailing blocks so the store holds exactly `token_pos` tokens (the
     // inverse of register_append). Used by the kvmem prefix cache to rewind the
@@ -727,9 +738,12 @@ private:
     bool earlier(uint32_t a, uint32_t b) const;
     bool sink_block(uint32_t id) const;
     KvMemPlan set_selection_impl(std::vector<uint32_t>, bool);
+    KvMemPlan set_repository_selection_impl(const std::vector<KvMemBlockHandle> &,
+                                            bool force_raw_refresh, bool reset_residency);
     std::shared_ptr<KvMemRepository> repository_;
     std::shared_ptr<KvMemRepositoryGc> repository_gc_;
     std::shared_ptr<KvMemHistoryObserver> history_observer_;
+    bool protect_current_window_ = false;
     std::vector<uint32_t> repository_gc_flags_;
     std::vector<KvMemBlockHandle> repository_score_handles_;
     uint64_t repository_score_sequence_ = 0;

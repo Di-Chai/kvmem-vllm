@@ -152,6 +152,8 @@ class Trajectory:
     locality_provenance: tuple = ()
     rendered_prefix: bytes | None = None
     identity_keys: tuple = ()
+    output_truncated: bool = False
+    pending_assistant_begin: int | None = None
 
 
 class Prepared(tuple):
@@ -222,11 +224,16 @@ class Planner:
         self.optimized_handoff = optimized_handoff
         self.gen_budget = gen_budget
         self.end = tokenizer.convert_tokens_to_ids('<|im_end|>')
+        # Qwen can stop with either terminator. Keep the actual accepted EOS
+        # instead of re-rendering a completed endoftext answer on the next turn.
+        vocabulary = tokenizer.get_vocab() if hasattr(tokenizer, 'get_vocab') else {}
+        self.complete_ends = frozenset([self.end] +
+            ([vocabulary['<|endoftext|>']] if '<|endoftext|>' in vocabulary else []))
 
     def encode(self, text):
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def prepare(self, payload, state):
+    def prepare(self, payload, state, *, finalize_plan=None):
         rendered = self.protocol(request=payload)
         text = rendered['prompt'].encode()
         optimized = getattr(self, 'optimized_handoff', False)
@@ -237,9 +244,18 @@ class Planner:
                     for i, m in enumerate(rendered['messages'])]
         control = canonical({'prefix':text[:rendered['control_end']].decode(), 'tools':rendered['tools']})
         n = len(state.messages)
+        # A verified length-limited response has accepted tokens even without
+        # a generated EOS. The next request may close that unchanged message
+        # with the renderer's delimiter as NEW INPUT, preserving its KV prefix.
+        close_truncated = bool(state.output and state.output_truncated and
+            state.pending_assistant_begin is not None and state.output[-1] not in self.complete_ends)
+        assistant_span = next((s for s in rendered['spans'] if s['index'] == n), None)
+        close_truncated = bool(close_truncated and assistant_span and
+            text[assistant_span['begin']:assistant_span['end']].endswith(b'<|im_end|>\n') and
+            self.encode('<|im_end|>') == [self.end])
         reused = bool(state.output and control == state.control and len(messages) > n+1
                       and messages[:n] == state.messages and messages[n] == state.assistant
-                      and state.output[-1] == self.end)
+                      and (state.output[-1] in self.complete_ends or close_truncated))
         if reused and state.rendered_prefix is not None:
             historical_end = max((s['end'] for s in rendered['spans'] if s['index'] < n),
                                  default=rendered['control_end'])
@@ -255,14 +271,17 @@ class Planner:
             first = next(s for s in rendered['spans'] if s['index'] == n+1)
             boundary = first['begin']
             prefix = state.tokens + state.output
-            # The next message begins after the prior EOS and its newline.
-            suffix = '\n' + text[boundary:].decode()
+            # The closure is prompt input, never added to accepted output or
+            # charged as generated tokens. Ordinary EOS replies add only '\n'.
+            separator = '<|im_end|>\n' if close_truncated else '\n'
+            separator_bytes = len(separator.encode())
+            suffix = separator + text[boundary:].decode()
             encoded = PrefixTokens(self.tokenizer, suffix)
             tokens = prefix + encoded.ids
             def coordinate(point):
                 if point < boundary:
                     return locations[location(point)]
-                value=len(prefix) + encoded.count(1+point-boundary)
+                value=len(prefix) + encoded.count(separator_bytes+point-boundary)
                 locations[location(point)]=value
                 return value
         else:
@@ -295,7 +314,7 @@ class Planner:
         from vllm_kvmem.prompt_spans import map_prompt_spans, span_payload, normalize_provenance
         # Renderer byte ranges cover each real message/tool result. The new
         # suffix uses its actual encoding and exactly one history offset.
-        shift = 1 - boundary if reused else 0
+        shift = separator_bytes - boundary if reused else 0
         local_text = suffix if reused else text.decode()
         local_spans = []
         for span in rendered['spans']:
@@ -319,12 +338,20 @@ class Planner:
             template=getattr(self.protocol, 'template', 'qw3_claude_code'),
             token_offset=len(prefix) if reused else 0)
         inherited = state.locality_spans if reused else ()
+        if reused and close_truncated:
+            inherited += ((state.pending_assistant_begin,
+                           len(prefix) + encoded.count(len('<|im_end|>')), 'assistant'),)
         spans = inherited + mapped.spans
         provenance = dict(mapped.provenance)
         provenance.update(exact_spans=len(spans), encoding_scope='append_suffix' if reused else 'prompt',
                           history='actual_accepted_ids' if reused else 'canonical_full_render')
         if reused:
             previous_provenance = dict(state.locality_provenance)
+            if close_truncated:
+                previous_provenance['unknown_spans'] = max(0, previous_provenance.get('unknown_spans', 0)-1)
+                if not previous_provenance['unknown_spans']:
+                    previous_provenance['reason'] = '; '.join(r for r in previous_provenance.get('reason', '').split('; ')
+                        if r != 'Accepted assistant interval lacks a proven complete message boundary')
             provenance['unknown_spans'] += previous_provenance.get('unknown_spans', 0)
             reasons = set(previous_provenance.get('reason', '').split('; ')) | set(provenance['reason'].split('; '))
             provenance['reason'] = '; '.join(sorted(reasons - {''}))
@@ -344,12 +371,18 @@ class Planner:
                 tokenizer=self.tokenizer, token_offset=len(prefix) if reused else 0)
             if pending.spans:
                 assistant_begin = pending.spans[0][0]
-        # Validate against the public API before launching model work.
-        from vllm_kvmem.request_plan import RequestPlan
-        RequestPlan.parse(plan, len(tokens), 32, self.gen_budget)
         result = Prepared((tokens, plan, rendered, messages, control, reused, locations),
                           assistant_begin=assistant_begin)
+        result.coordinate = coordinate
         result.identity_keys = keys
+        result.input_closure_tokens = encoded.count(len('<|im_end|>')) if reused and close_truncated else 0
+        # An internal adapter may resolve an authoritative Question source
+        # after exact token coordinates exist. The final plan always passes the
+        # same complete public validation; payload fields cannot disable it.
+        if finalize_plan is not None:
+            finalize_plan(result)
+        from vllm_kvmem.request_plan import RequestPlan
+        RequestPlan.parse(plan, len(tokens), 32, self.gen_budget)
         return result
 
     def response(self, raw, tools, model, usage, finish):
@@ -381,6 +414,7 @@ class Planner:
         state.messages, state.control, state.tokens = messages, control, tokens
         state.identity_keys = getattr(prepared, 'identity_keys', ())
         state.plan, state.output = plan, output
+        state.output_truncated = response.get('stop_reason') == 'max_tokens'
         state.locations = locations
         historical_end = max((s['end'] for s in rendered['spans']), default=rendered['control_end'])
         state.rendered_prefix = rendered['prompt'].encode()[:historical_end]
@@ -388,12 +422,13 @@ class Planner:
         state.locality_spans = normalize_spans(plan.get('kvmem_locality_spans', []), len(tokens))
         state.locality_provenance = normalize_provenance(plan.get('kvmem_locality_provenance'))
         assistant_begin = getattr(prepared, 'assistant_begin', None)
-        if assistant_begin is not None and output and output[-1] == self.end:
+        state.pending_assistant_begin = assistant_begin
+        if assistant_begin is not None and output and output[-1] in self.complete_ends:
             state.locality_spans += ((assistant_begin, len(tokens) + len(output), 'assistant'),)
         accepted_provenance = dict(state.locality_provenance)
         if accepted_provenance:
             accepted_provenance.update(exact_spans=len(state.locality_spans), history='actual_accepted_ids')
-            if output and (assistant_begin is None or output[-1] != self.end):
+            if output and (assistant_begin is None or output[-1] not in self.complete_ends):
                 accepted_provenance['unknown_spans'] = accepted_provenance.get('unknown_spans', 0) + 1
                 accepted_provenance['status'] = 'partial' if state.locality_spans else 'unknown'
                 reasons = set(accepted_provenance.get('reason', '').split('; '))
@@ -424,6 +459,48 @@ def response_events(response):
         yield event('content_block_stop',index=index)
     yield event('message_delta',delta={'stop_reason':response['stop_reason'],'stop_sequence':None},usage=response['usage'])
     yield event('message_stop')
+
+
+def bounded_task_query(payload, instruction, replay_budget):
+    """Use a verified task instruction only when CLI context exceeds Q capacity.
+
+    All prompt tokens and original mandatory pins remain unchanged. The source
+    must be an exact standalone text block from the frozen task, never an
+    arbitrary shortened suffix or a substring guessed from generated history.
+    """
+    source = instruction.removesuffix('\n')
+    if not source or type(replay_budget) is not int or replay_budget <= 0:
+        raise ValueError('A complete task instruction and positive replay budget are required')
+    def finalize(prepared):
+        _, plan, rendered, _, _, reused, _ = prepared
+        old = plan.get('kvmem_query_span')
+        if old is None or old[1] - old[0] // 32 * 32 <= replay_budget:
+            return  # Preserve the original experiment policy for supported Queries.
+        matches = [i for i, message in enumerate(payload['messages']) if message.get('role') == 'user'
+            and isinstance(message.get('content'), list)
+            and any(b.get('type') == 'text' and b.get('text') == source
+                    for b in message['content'] if isinstance(b, dict))]
+        if matches != [0]:
+            raise ValueError('Oversized Query lacks a unique exact frozen task instruction in the initial user message')
+        span = next((s for s in rendered['spans'] if s['index'] == rendered['query_index']), None)
+        first_user = next((s for s in rendered['spans'] if s['role'] == 'user'), None)
+        if span is None or span != first_user:
+            raise ValueError('Task instruction is not the renderer-owned initial Query')
+        raw = rendered['prompt'].encode(); needle = source.encode()
+        content = raw[span['content_begin']:span['content_end']]
+        if content.count(needle) != 1:
+            raise ValueError('Frozen task instruction is ambiguous in the rendered Query')
+        begin = span['content_begin'] + content.index(needle)
+        selected = [prepared.coordinate(begin), prepared.coordinate(begin + len(needle))]
+        if selected[1] - selected[0] // 32 * 32 > replay_budget:
+            raise ValueError('Complete frozen task instruction exceeds Query replay capacity; no clipping allowed')
+        plan['kvmem_query_span'] = selected
+        plan['kvmem_query_id'] = 'deepswe-task-instruction:' + hashlib.sha256(needle).hexdigest()
+        prepared.query_source_audit = dict(mode='oversized_cli_context_fallback',
+            original_query_span=old, task_query_span=selected, replay_budget=replay_budget,
+            instruction_sha256=hashlib.sha256(needle).hexdigest(),
+            prompt_unchanged=True, mandatory_pins_unchanged=True, exact_prefix_reused=reused)
+    return finalize
 
 
 def create_app(args, tokenizer):
@@ -542,7 +619,13 @@ def create_app(args, tokenizer):
             nonlocal inflight
             async with locks[task]:
                 state = states[task]
-                started=time.time(); prepared=await asyncio.to_thread(planner.prepare,payload,state)
+                started=time.time()
+                query_root = getattr(args, 'task_instructions_root', None)
+                options = {}
+                if query_root is not None and task != 'preflight':
+                    instruction = (Path(query_root)/task/'instruction.md').read_text()
+                    options['finalize_plan'] = bounded_task_query(payload, instruction, args.query_replay_budget)
+                prepared=await asyncio.to_thread(planner.prepare,payload,state,**options)
                 tokens, plan, rendered, _, _, reused, _=prepared
                 directory=args.output/task/f'{state.turns+1:05d}'
                 directory.mkdir(parents=True,exist_ok=True)
@@ -565,7 +648,8 @@ def create_app(args, tokenizer):
                 cpu_queue_seconds=await reserve(task,amount)
                 (directory/'plan.json').write_text(json.dumps({k:v for k,v in data.items() if k!='prompt'}|
                     {'prompt_tokens':len(tokens),'exact_output_prefix_reused':reused,
-                     'token_sha256':hashlib.sha256(canonical(tokens).encode()).hexdigest()}))
+                     'token_sha256':hashlib.sha256(canonical(tokens).encode()).hexdigest(),
+                     'task_query_source':getattr(prepared, 'query_source_audit', None)}))
                 inflight+=1
                 admitted=time.time()
                 log({'event':'start','task':task,'turn':state.turns+1,'at':admitted,
@@ -595,7 +679,9 @@ def create_app(args, tokenizer):
                     return response
                 except BaseException as error:
                     log({'event':'cancelled' if isinstance(error,asyncio.CancelledError) else 'error',
-                         'error_type':type(error).__name__,'task':task,'turn':state.turns+1,'at':time.time(),'error':str(error)})
+                         'error_type':type(error).__name__,'task':task,'turn':state.turns+1,'at':time.time(),'error':str(error),
+                         **({'backend_status':error.response.status_code,'backend_error':error.response.text[:2048]}
+                            if isinstance(error,httpx.HTTPStatusError) else {})})
                     raise
                 finally:inflight-=1
         if not payload.get('stream'):
@@ -637,6 +723,9 @@ if __name__=='__main__':
     p.add_argument('--cpu-admission-bytes',type=int)
     p.add_argument('--cpu-admission-policy',choices=('legacy','engine'),default='legacy')
     p.add_argument('--cache-geometry',type=Path)
+    p.add_argument('--task-instructions-root',type=Path,
+                   help='Opt in to exact frozen task Queries when CLI-added context exceeds replay capacity; prompt and mandatory pins are retained')
+    p.add_argument('--query-replay-budget',type=int,default=4096)
     p.add_argument('--optimized-handoff',action='store_true',
                    help='Reuse exact message identities and local spans across tool turns')
     args=p.parse_args()

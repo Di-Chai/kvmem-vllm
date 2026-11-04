@@ -129,6 +129,13 @@ void KvMemStore::attach_history_observer(std::shared_ptr<KvMemHistoryObserver> o
         for (uint32_t i = 0; i < block_count(); ++i) repository_sync_gc(i);
 }
 
+void KvMemStore::set_protect_current_window(bool enabled) {
+    require_no_repository_append();
+    if (!repository_ || (enabled != protect_current_window_ && total_tokens_))
+        throw std::logic_error("Current-window protection must be configured before the first append");
+    protect_current_window_ = enabled;
+}
+
 void KvMemStore::set_repository_gc_flags(KvMemBlockHandle h, uint32_t mask, uint32_t values) {
     auto lease = validate_repository_mutation(h.slot, h.generation);
     if (!lease) throw std::logic_error("KVMem repository GC flags require bounded mode");
@@ -149,7 +156,8 @@ void KvMemStore::repository_sync_gc(uint32_t slot, bool used) {
         auto lease = repository_resident_leases_[slot] ? repository_resident_leases_[slot].clone() :
                                                        repository_->try_pin(repository_handle(slot));
         if (lease) history_observer_->observe(lease, b.n_tokens == cfg_.block_tokens,
-                                              b.tier == KvTier::GPU || b.in_working_set, sink_block(slot));
+                                              b.tier == KvTier::GPU || b.in_working_set, sink_block(slot),
+                                              protect_current_window_ && b.in_current_frame);
     }
     if (!repository_gc_) return;
     auto lease = repository_->try_pin(repository_handle(slot));
@@ -241,6 +249,7 @@ void KvMemStore::install_repository_block(KvMemRepository::Lease lease, uint32_t
     b.repository_generation = r.handle.generation;
     b.logical_id = r.logical_id;
     b.history_pos_start = r.token_begin;
+    b.in_current_frame = protect_current_window_;
     blocks_[slot] = b;
     repository_gc_flags_[slot] = 0; // never inherit backing/index validity from the old generation
     total_tokens_ = std::max(total_tokens_, r.token_begin + valid_tokens);
@@ -436,6 +445,13 @@ void KvMemStore::RepositoryAppend::commit(uint32_t accepted) {
         const auto &span = spans_[index++];
         if (span.history_begin >= end) continue;
         const uint32_t valid = static_cast<uint32_t>(std::min<uint64_t>(span.token_count, end - span.history_begin));
+        if (s.protect_current_window_ && s.history_observer_) {
+            // CPU backing can already be published for this Writing slot.
+            // Publish protection before commit makes it Live, so the worker
+            // cannot retire it between Live publication and Store install.
+            auto writing = r.lease();
+            s.history_observer_->observe(writing, false, true, false, true);
+        }
         s.install_repository_block(r.commit(),
             baked_begin_ + static_cast<uint32_t>(span.history_begin - begin_), valid);
     }
@@ -629,6 +645,7 @@ void KvMemStore::RepositoryRewind::commit() {
             s.repository_resident_leases_[b.block_id].reset();
             b.n_tokens = 0;
             b.in_working_set = false;
+            b.in_current_frame = false;
             s.repository_gc_flags_[b.block_id] = 0;
         }
     }
@@ -1605,8 +1622,24 @@ KvMemPlan KvMemStore::set_selection(std::vector<uint32_t> selected_ids,
 
 KvMemPlan KvMemStore::set_repository_selection(
         const std::vector<KvMemBlockHandle> &handles, bool force_raw_refresh) {
+    return set_repository_selection_impl(handles, force_raw_refresh, false);
+}
+
+KvMemPlan KvMemStore::restore_repository_selection(
+        const std::vector<KvMemBlockHandle> &handles) {
+    return set_repository_selection_impl(handles, true, true);
+}
+
+KvMemPlan KvMemStore::set_repository_selection_impl(
+        const std::vector<KvMemBlockHandle> &handles, bool force_raw_refresh,
+        bool reset_residency) {
     require_no_repository_append();
     if (!repository_) throw std::logic_error("KVMem repository selection requires bounded mode");
+    std::shared_ptr<void> next_protection;
+    if (protect_current_window_ && history_observer_ && !handles.empty()) {
+        next_protection = history_observer_->protect_selection(handles);
+        if (!next_protection) throw KvMemAdmissionRetry();
+    }
     std::vector<KvMemRepository::Lease> next;
     std::vector<std::shared_ptr<KvMemCpuReadOwner>> cpu_sources;
     next.reserve(handles.size());
@@ -1631,6 +1664,29 @@ KvMemPlan KvMemStore::set_repository_selection(
     // stage-out; cloning these rights does not admit them to the next window.
     auto old = std::make_shared<std::vector<KvMemRepository::Lease>>();
     for (const auto &lease : repository_resident_leases_) if (lease) old->push_back(lease.clone());
+    if (reset_residency) {
+        // A retired current window still owns its admitted execution rights.
+        // Validate those identities without trying to admit a new reader. In
+        // particular, a GPU-only page may lose its Store lease on demotion;
+        // `old` must keep it alive until the caller fences the returned plan.
+        for (const auto &b : blocks_) {
+            if (!b.repository_generation || !b.n_tokens ||
+                    (!b.in_working_set && b.tier != KvTier::GPU)) continue;
+            const auto &lease = repository_resident_leases_[b.block_id];
+            if (!lease || lease.handle() != repository_handle(b.block_id) ||
+                    !repository_->owns(lease))
+                throw std::runtime_error("KVMem current window has no matching admitted lease");
+        }
+        // Target admission above already acquired the required repository and
+        // CPU owners. Use those rights even if retirement races this reset;
+        // never rescue or freshly pin a retired generation during handoff.
+        for (const auto &lease : next)
+            repository_resident_leases_[lease.handle().slot] = lease.clone();
+        for (const auto &b : blocks_) {
+            if (repository_resident_leases_[b.block_id])
+                set_block_tier(b.block_id, KvTier::SSD, -1, -1, b.repository_generation);
+        }
+    }
     auto plan = set_selection_impl(std::move(ids), force_raw_refresh);
     plan.repository_previous_window = std::move(old);
     plan.cpu_sources = std::move(cpu_sources);
@@ -1704,6 +1760,7 @@ KvMemPlan KvMemStore::set_selection_impl(std::vector<uint32_t> selected_ids,
     // unchanged); a future re-selection will de-rotate from there.
     for (auto &b : blocks_) {
         if (repository_ && !repository_resident_leases_[b.block_id] && !is_live(b.block_id)) continue;
+        if (repository_) b.in_current_frame = protect_current_window_ && now_selected[b.block_id];
         if (repository_ && !now_selected[b.block_id]) b.in_working_set = false;
         if (b.tier == KvTier::GPU &&
             (!now_selected[b.block_id] || force_full_reload)) {
@@ -1803,6 +1860,7 @@ void KvMemStore::clear_working_set() {
     require_no_repository_append();
     for (auto &b : blocks_) {
         b.in_working_set = false;
+        b.in_current_frame = false;
         if (repository_ && b.tier != KvTier::GPU)
             repository_resident_leases_[b.block_id].reset();
         repository_sync_gc(b.block_id);

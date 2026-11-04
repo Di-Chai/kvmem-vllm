@@ -32,30 +32,35 @@ def test_reusing_download_requires_exact_image_identity():
 
 @pytest.mark.parametrize('bad_seed',[False,True])
 @pytest.mark.parametrize('namespace',['','terminal-bench/'])
-@pytest.mark.parametrize('agent_time_limit',['official','none'])
-def test_final_review_checks_actual_seed_and_preserves_failed_task_results(tmp_path,monkeypatch,bad_seed,namespace,agent_time_limit):
+@pytest.mark.parametrize('agent_time_limit',['official','none','relaxed'])
+@pytest.mark.parametrize('task_count',[4,89])
+def test_final_review_checks_actual_seed_and_preserves_failed_task_results(tmp_path,monkeypatch,bad_seed,namespace,agent_time_limit,task_count):
     from scripts import finalize_terminalbench as final
     def save(name,value):
         p=tmp_path/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(value))
     def lines(name,values):
         p=tmp_path/name;p.parent.mkdir(parents=True,exist_ok=True)
         p.write_text(''.join(json.dumps(v)+'\n' for v in values))
-    names=['task-'+str(i) for i in range(89)]
+    names=['task-'+str(i) for i in range(task_count)]
     outcomes=[dict(task=namespace+n,trial=n+'-trial',status='scored',passed=False,
                    rewards={'reward':0},exception=None) for n in names]
     save('config-proof.json',dict(seed=1000))
+    save('profile.json',dict(max_model_len=1000000,kvmem=dict(select_budget=8192,gen_budget=4096,
+        historical_gc=dict(policy='redundancy',mode='delete'))))
     save('runtime/source-proof.json',dict(source='frozen'))
     save('manifest.json',dict(frozen={'runtime':{'source-proof.json':final.sha(tmp_path/'runtime/source-proof.json')}},
         files={'config-proof.json':final.sha(tmp_path/'config-proof.json')},agent_time_limit=agent_time_limit))
     save('tasks.json',[dict(name=n) for n in names])
-    if agent_time_limit=='none':
+    if agent_time_limit in ('none','relaxed'):
         from scripts.terminalbench_policy import configure_task_deadlines
         for name in names:
             p=tmp_path/'dataset/tasks'/name/'task.toml';p.parent.mkdir(parents=True)
             p.write_text('[agent]\ntimeout_sec = 900\n[verifier]\ntimeout_sec = 30\n')
-        save('agent-time-policy.json',configure_task_deadlines(tmp_path/'dataset/tasks','none'))
+        save('agent-time-policy.json',configure_task_deadlines(tmp_path/'dataset/tasks',agent_time_limit))
         save('job.json',dict(agents=[dict(name='terminus-2')]))
-    save('formal-events/summary.json',dict(outcomes=outcomes,passed=0,scored=89,task_timeouts=0,errors=0))
+        if agent_time_limit=='relaxed':
+            save('formal-deadline-hook.json',dict(agent_time_limit='relaxed',original_phase_sha256='test'))
+    save('formal-events/summary.json',dict(outcomes=outcomes,passed=0,scored=task_count,task_timeouts=0,errors=0))
     save('cleanup.json',dict(remaining_processes=[],remaining_owned_gpu_pids=[]))
     for o in outcomes:save('formal-events/'+o['trial']+'.json',dict(agent_execution={},agent_result={}))
     lines('formal-events/events.jsonl',[
@@ -71,7 +76,10 @@ def test_final_review_checks_actual_seed_and_preserves_failed_task_results(tmp_p
     save('bridge/owner/00001/response.json',dict(usage=dict(completion_tokens=2)))
     # Failed/incomplete requests remain visible without inventing accepted output.
     save('bridge/owner/00002/plan.json',plan)
-    save('model/server/capture/archive.json',dict(historical_gc=dict(policy_failures=0)))
+    save('formal-boundary.json',dict(capture=dict(archive=dict(historical_gc=dict(
+        retired=194,redundancy_retired=133,lru_fallback_retired=61,cpu_released=200)))))
+    save('model/server/capture/archive.json',dict(historical_gc=dict(policy_failures=0,
+        retired=244,redundancy_retired=163,lru_fallback_retired=81,cpu_released=300)))
     lines('resources.jsonl',[dict(memory_available=100,gpu_memory_mib=80)])
     monkeypatch.setattr(final.subprocess,'check_output',lambda *args,**kwargs:'')
     if bad_seed:
@@ -80,14 +88,25 @@ def test_final_review_checks_actual_seed_and_preserves_failed_task_results(tmp_p
     else:
         final.review(tmp_path)
         audit=json.loads((tmp_path/'execution-audit.json').read_text())
-        assert audit['tasks']==89 and audit['attempts']==89
-        assert json.loads((tmp_path/'final-review.json').read_text())['expected']==89
+        assert audit['tasks']==task_count and audit['attempts']==task_count
+        assert json.loads((tmp_path/'final-review.json').read_text())['expected']==task_count
         assert audit['accepted_completed_response_tokens']==2
         assert audit['accepted_completed_response_tokens_per_wall_second']==.2
         assert audit['incomplete_native_requests']==['bridge/owner/00002']
         assert audit['agent_time_limit']==agent_time_limit
         assert audit['official_timing_comparable']==(agent_time_limit=='official')
-        assert ('custom local evaluation' in (tmp_path/'report.txt').read_text())==(agent_time_limit=='none')
+        assert audit['gc_formal_delta']['retired']==50
+        assert audit['gc_formal_delta']['redundancy_retired']==30
+        assert audit['gc_formal_delta']['lru_fallback_retired']==20
+        assert audit['gc_formal_delta']['cpu_released']==100
+        assert 'normal task-end cleanup' in audit['gc_release_scope']
+        assert audit['efficiency']['gpu']['agent']['status']=='unavailable'
+        assert audit['efficiency']['active_agent_concurrency']['agent']['status']=='unavailable'
+        assert audit['formal_window_seconds'] is None
+        assert ('custom local evaluation' in (tmp_path/'report.txt').read_text())==(agent_time_limit!='official')
+        report=(tmp_path/'report.txt').read_text()
+        assert 'K8192/G4096' in report and 'history GC redundancy / delete' in report
+        assert ('not a full 89-task benchmark score' in report)==(task_count!=89)
         assert json.loads((tmp_path/'final-review.json').read_text())['passed']==0
 
 

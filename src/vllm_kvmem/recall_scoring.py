@@ -187,52 +187,112 @@ def build_block_features(keys, counts, method):
     return BlockFeatures(method, values.contiguous(), feature_valid.contiguous(), counts)
 
 
-def block_logits(queries, features):
+@dataclass(frozen=True)
+class PreparedQueries:
+    """One reusable GQA packing of a Query tile; no original-Q reference.
+
+    ``values`` is FP32 [layer * KV head, Query row * GQA group, dim].
+    Optional sign parts avoid repeating Min-Max's splits for every block tile.
+    The caller may release the unpacked GPU Query after preparing this object.
+    """
+    values: torch.Tensor
+    shape: tuple[int, int, int, int]
+    kv_heads: int
+    positive: torch.Tensor | None = None
+    negative: torch.Tensor | None = None
+
+
+def prepare_queries(queries, kv_heads, *, split_sign=False, validate=True):
+    """Pack Q once for all block tiles, preserving FP32 scoring precision.
+
+    Internal callers may skip finite-value checks after checking the original
+    CPU Query. Geometry checks always run and never read a device scalar.
+    """
+    if (not isinstance(queries, torch.Tensor) or queries.ndim != 4
+            or not queries.is_floating_point() or any(n <= 0 for n in queries.shape)
+            or type(kv_heads) is not int or kv_heads <= 0 or queries.shape[2] % kv_heads):
+        raise ValueError('Invalid Query GQA geometry')
+    q = queries.float()
+    if validate and not bool(torch.isfinite(q).all()):
+        raise ValueError('Nonfinite Query in recall scoring')
+    layers, rows, heads, dim = q.shape
+    packed = q.reshape(layers, rows, kv_heads, heads // kv_heads, dim).permute(
+        0, 2, 1, 3, 4).reshape(layers * kv_heads, rows * (heads // kv_heads), dim).contiguous()
+    return PreparedQueries(packed, tuple(q.shape), kv_heads,
+                           packed.clamp_min(0) if split_sign else None,
+                           packed.clamp_max(0) if split_sign else None)
+
+
+def block_logits(queries, features, *, validate=True):
     """Return scaled [layer,Query row,Query head,block] FP32 logits.
 
-    Tile Query rows at the caller. Each representative/token is evaluated
-    separately to avoid a temporary multiplied by the number of original
-    tokens. No softmax is applied here: tile-local normalization is incorrect.
+    One GQA batched matmul evaluates all representatives in a bounded block
+    tile. ExactMass reduces its token dimension with logsumexp; the other
+    representative methods use max. Normalization still belongs to the caller
+    over the complete eligible block domain. ``validate=False`` is reserved
+    for internally checked inputs and performs no GPU-to-host scalar reads.
     """
     values = features.values
     if (features.method not in METHODS or values.ndim != 5 or values.dtype != torch.float32
+            or any(n <= 0 for n in values.shape)
             or features.valid.shape != values.shape[:-1] or features.valid.dtype != torch.bool
-            or features.valid.device != values.device or features.counts.shape != (values.shape[1],)):
+            or features.valid.device != values.device or features.counts.shape != (values.shape[1],)
+            or features.method == 'min_max' and values.shape[2] != 2):
         raise ValueError('Invalid block-feature geometry')
-    if (not isinstance(queries, torch.Tensor) or queries.ndim != 4
-            or not queries.is_floating_point() or any(n <= 0 for n in queries.shape)
-            or queries.shape[0] != values.shape[0] or queries.shape[-1] != values.shape[-1]
-            or queries.shape[2] % values.shape[3] or queries.device != values.device):
-        raise ValueError('Query and block-feature geometry/device disagree')
-    q = queries.float()
-    if not bool(torch.isfinite(q).all()):
-        raise ValueError('Nonfinite Query in recall scoring')
-    layers, rows, heads, dim = q.shape
-    blocks, representatives, kvheads = values.shape[1:4]
+    layers, blocks, representatives, kvheads, dim = values.shape
+    if isinstance(queries, PreparedQueries):
+        prepared = queries
+        shape = prepared.shape
+        if (len(shape) != 4 or any(n <= 0 for n in shape) or shape[2] % kvheads
+                or prepared.kv_heads != kvheads or shape[0] != layers or shape[3] != dim
+                or prepared.values.shape != (layers * kvheads, shape[1] * (shape[2] // kvheads), dim)
+                or prepared.values.dtype != torch.float32 or prepared.values.device != values.device
+                or any(part is not None and (part.shape != prepared.values.shape
+                    or part.dtype != torch.float32 or part.device != values.device)
+                    for part in (prepared.positive, prepared.negative))):
+            raise ValueError('Prepared Query and block-feature geometry/device disagree')
+        if validate and not bool(torch.isfinite(prepared.values).all()):
+            raise ValueError('Nonfinite Query in recall scoring')
+    else:
+        if (not isinstance(queries, torch.Tensor) or queries.ndim != 4
+                or queries.shape[0] != layers or queries.shape[-1] != dim
+                or queries.device != values.device):
+            raise ValueError('Query and block-feature geometry/device disagree')
+        prepared = prepare_queries(queries, kvheads, split_sign=features.method == 'min_max',
+                                   validate=validate)
+    _, rows, heads, _ = prepared.shape
     groups = heads // kvheads
-    q = q.reshape(layers, rows, kvheads, groups, dim)
     scale = dim ** -.5
 
-    def dot(query, key):
-        return torch.einsum('lqkgd,lbkd->lqkgb', query, key).reshape(layers, rows, heads, blocks)
-
-    def mask(slot):
-        valid = features.valid[:, :, slot, :].permute(0, 2, 1)
-        return valid[:, None, :, None, :].expand(layers, rows, kvheads, groups, blocks).reshape(
-            layers, rows, heads, blocks)
-
     if features.method == 'min_max':
-        logits = (dot(q.clamp_min(0), values[:, :, 1])
-                  + dot(q.clamp_max(0), values[:, :, 0])) * scale
-        logits = logits.masked_fill(~mask(0), -torch.inf)
+        positive = prepared.positive if prepared.positive is not None else prepared.values.clamp_min(0)
+        negative = prepared.negative if prepared.negative is not None else prepared.values.clamp_max(0)
+
+        def bound(query, slot):
+            key = values[:, :, slot].permute(0, 2, 3, 1).reshape(layers * kvheads, dim, blocks)
+            return torch.bmm(query, key)
+
+        logits = bound(positive, 1)
+        logits.add_(bound(negative, 0)).mul_(scale)
+        valid = features.valid[:, :, 0].permute(0, 2, 1).reshape(layers * kvheads, 1, blocks)
+        logits.masked_fill_(~valid, -torch.inf)
     else:
-        logits = torch.full((layers, rows, heads, blocks), -torch.inf,
-                            dtype=torch.float32, device=q.device)
-        for slot in range(representatives):
-            score = (dot(q, values[:, :, slot]) * scale).masked_fill(~mask(slot), -torch.inf)
-            logits = torch.logaddexp(logits, score) if features.method == 'exact_mass' else torch.maximum(logits, score)
-    live_blocks = features.valid.any(2).permute(0, 2, 1)
-    live = live_blocks[:, None, :, None, :].expand(layers, rows, kvheads, groups, blocks).reshape_as(logits)
-    if not bool(torch.isfinite(logits[live]).all()):
-        raise ValueError('FP32 recall logit overflow')
+        # KV heads remain separate matmul batches: never repeat their Keys for
+        # each Query head. Q128/B16/R32 at the qualified geometry uses 96 MiB
+        # for scores; in-place scaling/masking avoid another same-sized copy.
+        key = values.permute(0, 3, 4, 1, 2).reshape(layers * kvheads, dim, blocks * representatives)
+        scores = torch.bmm(prepared.values, key)
+        del key  # Drop a possible packing copy before logsumexp's scratch.
+        scores.mul_(scale)
+        valid = features.valid.permute(0, 3, 1, 2).reshape(layers * kvheads, 1, blocks * representatives)
+        scores.masked_fill_(~valid, -torch.inf)
+        scores = scores.view(layers * kvheads, rows * groups, blocks, representatives)
+        logits = (scores.logsumexp(-1) if features.method == 'exact_mass' else scores.amax(-1))
+    logits = logits.view(layers, kvheads, rows, groups, blocks).permute(0, 2, 1, 3, 4).reshape(
+        layers, rows, heads, blocks)
+    if validate:
+        live = features.valid.any(2).permute(0, 2, 1)[:, None, :, None, :]
+        finite = torch.isfinite(logits.view(layers, rows, kvheads, groups, blocks))
+        if not bool((finite | ~live).all()):
+            raise ValueError('FP32 recall logit overflow')
     return logits

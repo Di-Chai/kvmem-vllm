@@ -1,8 +1,9 @@
-"""Borrow exact native Qwen GDN state pages for fenced query replay.
+"""Borrow exact native Qwen recurrent state pages for fenced query replay.
 
 No reconstructed or approximated recurrent state: both convolution and SSM
 tensors, every allocated speculation row, and the native acceptance counter are
-included. Prefix-cached/aligned and context-parallel layouts need separate adapters.
+included. The explicit B12X QSA path also borrows PLE convolution and selector
+state. Prefix-cached/aligned and context-parallel layouts need separate adapters.
 """
 from dataclasses import dataclass
 from functools import lru_cache
@@ -61,12 +62,16 @@ class NativeRecurrentState:
             layers = {}
             for name in group.layer_names:
                 module = modules[name]
-                if not isinstance(module, QwenGatedDeltaNetAttention):
+                ple = (bool(getattr(runner, '_kvmem_qsa_layers', None)) and
+                       type(module).__module__ == 'vllm.models.qwen4_exp.nvidia.ple_layer' and
+                       type(module).__name__ == 'Qwen4ExpPLELayer' and
+                       getattr(module, '_use_b12x', False))
+                if not isinstance(module, QwenGatedDeltaNetAttention) and not ple:
                     raise ValueError(f"Unqualified recurrent-state layer: {name}")
-                if not isinstance(module.kv_cache, (tuple, list)) or len(module.kv_cache) != 2:
+                if not isinstance(module.kv_cache, (tuple, list)) or len(module.kv_cache) != (1 if ple else 2):
                     raise ValueError("Expected native convolution and recurrent cache tensors")
                 layers[name] = module.kv_cache
-                self.conv_widths[name] = module.conv1d.weight.shape[-1]
+                self.conv_widths[name] = module.conv_state_len + 1 if ple else module.conv1d.weight.shape[-1]
             if stored_expansions(runner.block_tables)[group_id] != 1:
                 raise ValueError("Recurrent state rows must not use attention page expansion")
             self.groups[group_id] = layers
@@ -116,6 +121,8 @@ class NativeRecurrentState:
                             tensors[f"{request_id}/{layer_name}/{kind}/{row}"] = cache[row]
             counters = self.runner.model_state.num_accepted_tokens_gpu
             tensors[f"{request_id}/num_accepted"] = counters[index:index+1]
+            from .qsa_adapter import borrow_qsa_state
+            tensors.update(borrow_qsa_state(self.runner, request_id, index))
         return StateBundle(tensors, indices, generations, pages)
 
     def validate(self, bundle):
@@ -149,7 +156,8 @@ class NativeRecurrentState:
             if speculative and query_tokens > len(rows):
                 raise ValueError('Speculative query exceeds allocated recurrent rows')
             offset = retained_tokens - 1 if speculative else 0
-            for name, (conv, ssm) in layers.items():
+            for name, caches in layers.items():
+                conv = caches[0]
                 width = self.conv_widths[name] - 1
                 base_conv = conv[rows[0]]
                 # Normalize both native SD and DS representations to [time, dim].
@@ -158,7 +166,9 @@ class NativeRecurrentState:
                     raise ValueError('Native convolution state cannot represent retained prefix')
                 if offset:
                     copies.append((temporal[:width], temporal[offset:offset+width]))
-                    copies.append((ssm[rows[0]], ssm[rows[offset]]))
+                    if len(caches) == 2:
+                        ssm = caches[1]
+                        copies.append((ssm[rows[0]], ssm[rows[offset]]))
         # Validate every group before modifying any state. Cloning handles
         # overlapping convolution windows; scratch is bounded to one copy.
         self.validate(bundle)
@@ -188,6 +198,9 @@ def initialize_cold_single_token_state(runner, batch):
     bundle=adapter.borrow(ids)
     adapter.validate(bundle)
     for name,tensor in bundle.tensors.items():
+        if '/qsa/' in name or '/qsa_control/' in name:
+            # QSA owns its fresh-slot reset, including -1 logical tags.
+            continue
         if name.endswith('/num_accepted'):
             tensor.fill_(1)
         else:

@@ -8,10 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock, local
 from collections import Counter
 import hashlib
+import json
 import time
 
 from . import _native
 from .storage import AsyncArchive
+
+CPU_REGION_GATHER_PARALLEL_MIN_BYTES = 32 * 1024**2
 
 
 class SplitHistoricalIndexOwner:
@@ -283,6 +286,13 @@ class MemoryArchive(AsyncArchive):
         self._history_mode = None
         self._history_policy = None
         self._history_policy_params = {}
+        # Optional terminal-only audit. Context is bounded by active scopes;
+        # completed rows are written once and never retained in memory.
+        self.history_scope_metrics_path = None
+        self._history_scope_context = {}
+        self._history_scope_metrics_records = 0
+        self._history_scope_metrics_errors = 0
+        self._history_scope_metrics_last_error = None
         self.cpu_direct_record_seal = cpu_direct_record_seal
         self.cpu_seal_hash_workers = cpu_seal_hash_workers
         self.cpu_seal_pack_workers = cpu_seal_pack_workers
@@ -306,6 +316,8 @@ class MemoryArchive(AsyncArchive):
         self._gather_shutdown_started = False
         self._gather_shutdown_done = Event()
         self._gather_worker = local()
+        self._region_gather_counts = dict(inline_calls=0, parallel_calls=0,
+                                         inline_bytes=0, parallel_bytes=0)
         self.tier.gather = self._gather
 
     def _seal_views(self, keys, entries, spans, views):
@@ -516,7 +528,12 @@ class MemoryArchive(AsyncArchive):
         if getattr(self._gather_worker, 'active', False):
             raise RuntimeError('CPU gather worker cannot recursively gather')
         workers = min(self.gather_workers, len(sources))
-        parallel = workers > 1 and len(sources)*length >= 8*1024**2
+        region = length != self.record_bytes
+        # A layer's 256-record K or V region is only 8 MiB. Reuse the native
+        # inline copy below 32 MiB instead of submitting eight 1-MiB jobs.
+        # Full-record reads retain their existing parallel threshold.
+        threshold = CPU_REGION_GATHER_PARALLEL_MIN_BYTES if region else 8*1024**2
+        parallel = workers > 1 and len(sources)*length >= threshold
         jobs, error = [], None
         with self._gather_control:
             # Reject all subsequent reads, including the inline small-copy
@@ -541,6 +558,10 @@ class MemoryArchive(AsyncArchive):
             return 0
         if not parallel:
             gather_records_native(destination, sources, self.record_bytes, offset, length, 0, len(sources))
+            if region:
+                with self._gather_control:
+                    self._region_gather_counts['inline_calls'] += 1
+                    self._region_gather_counts['inline_bytes'] += len(sources)*length
             return 1
         # No destination, immutable source reference or archive lease may be
         # released while another worker is still copying, including on failure.
@@ -552,6 +573,10 @@ class MemoryArchive(AsyncArchive):
                     error = failure
         if error is not None:
             raise error
+        if region:
+            with self._gather_control:
+                self._region_gather_counts['parallel_calls'] += 1
+                self._region_gather_counts['parallel_bytes'] += len(sources)*length
         return len(jobs)
 
     def _gather_region(self, destination, sources, offset, length):
@@ -620,8 +645,33 @@ class MemoryArchive(AsyncArchive):
     def unregister_history_scope(self, namespace, scope):
         with self._lock:
             if self._history_scopes.get(namespace) is scope:
-                self._history_totals.update(scope.stats)
+                stats = dict(scope.stats)
+                self._history_totals.update(stats)
                 del self._history_scopes[namespace]
+                context = self._history_scope_context.pop(namespace, {})
+                if self.history_scope_metrics_path is not None:
+                    # close() has retained native final_stats_ before returning
+                    # its metadata to the pool. Policy retirement counters do
+                    # not include shutdown-only CPU/slot release. The identity
+                    # guard above makes repeated unregister calls a no-op.
+                    row = dict(event='history_scope_closed', at=time.time(), namespace=namespace,
+                        mode=self._history_mode, policy=self._history_policy, stats=stats, **context)
+                    try:
+                        with self.history_scope_metrics_path.open('a') as stream:
+                            stream.write(json.dumps(row, ensure_ascii=False)+'\n')
+                        self._history_scope_metrics_records += 1
+                    except Exception as error:
+                        # Observability must not strand a closed authority. A
+                        # bounded error status makes a missing audit explicit.
+                        self._history_scope_metrics_errors += 1
+                        self._history_scope_metrics_last_error = repr(error)
+
+    def set_history_scope_context(self, namespace, session_namespace, generation):
+        """Bind a stable session to the original native request, for auditing."""
+        with self._lock:
+            if self.history_scope_metrics_path is not None and namespace in self._history_scopes:
+                self._history_scope_context[namespace] = dict(
+                    session_namespace=list(session_namespace), session_generation=generation)
 
     def history_stats(self):
         if self._history_worker is None:
@@ -634,12 +684,18 @@ class MemoryArchive(AsyncArchive):
                 if self._history_policy == 'redundancy':
                     features.update(scope.feature_stats)
             scopes = len(self._history_scopes)
+            metrics = (dict(path=str(self.history_scope_metrics_path),
+                records=self._history_scope_metrics_records, errors=self._history_scope_metrics_errors,
+                last_error=self._history_scope_metrics_last_error)
+                if self.history_scope_metrics_path is not None else None)
         result = dict(mode=self._history_mode, policy=self._history_policy,
                     policy_params=dict(self._history_policy_params), active_scopes=scopes, **dict(totals),
                     metadata=self._history_worker.storage_stats)
         if self._history_policy == 'redundancy':
             result['active_features'] = dict(features)
             result['feature_reserved_bytes'] = getattr(self, '_historical_feature_reserved_bytes', 0)
+        if metrics is not None:
+            result['scope_metrics'] = metrics
         return result
 
     def allocate_index(self, shape, *, mean, split_sums=False):
@@ -709,9 +765,12 @@ class MemoryArchive(AsyncArchive):
                 cpu_seal_pack_workers=self.cpu_seal_pack_workers,
                 seal_pack_parallel_batches_completed=self._seal_pack_parallel_batches_completed,
                 seal_pack_parallel_shards_completed=self._seal_pack_parallel_shards_completed)
+        with self._gather_control:
+            gather_usage = dict(cpu_region_gather_parallel_min_bytes=CPU_REGION_GATHER_PARALLEL_MIN_BYTES,
+                **{'cpu_region_gather_'+key:value for key,value in self._region_gather_counts.items()})
         native = self._native_payload_arena.stats if self._native_payload_arena is not None else None
         return {**super().io_usage(), 'archive_backend':'cpu', 'disk_read_bytes':0,
-                'disk_write_bytes':0, **hash_usage,
+                'disk_write_bytes':0, **hash_usage, **gather_usage,
                 'cpu_authority_bytes':native['used_bytes'] if native else self.tier.used_slots*self.record_bytes,
                 **({'cpu_native_payloads': True, 'cpu_payload_readers': native['readers'],
                     'cpu_payload_released_bytes': native['released_bytes'],

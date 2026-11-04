@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 
-def archive_bytes_per_token(kv_cache_config):
-    """Unit-scale FP8 raw K + FP8 V, including native MTP attention."""
+def archive_bytes_per_token(kv_cache_config, model_config=None):
+    """FP8 raw K/V, native MTP and any paired QSA auxiliary archive planes."""
     from vllm.v1.kv_cache_interface import FullAttentionSpec, UniformTypeKVCacheSpecs
     rows = []
     for group in kv_cache_config.kv_cache_groups:
@@ -18,7 +18,12 @@ def archive_bytes_per_token(kv_cache_config):
                 rows.append((item.num_kv_heads, item.head_size))
     if not rows or len(set(rows)) != 1:
         raise ValueError('CPU history admission requires uniform full-attention layers')
-    return sum(heads * dim * 2 for heads, dim in rows)
+    size = sum(heads * dim * 2 for heads, dim in rows)
+    if getattr(getattr(model_config, 'hf_text_config', None), 'model_type', None) == 'qwen4_exp_text':
+        # One paired, padded BF16 selector-projection plane per target/MTP
+        # layer. Include the entire atomic record in scheduler CPU credits.
+        size *= 2
+    return size
 
 
 def write_mean_k_geometry(config, kv_cache_config, directory):
@@ -45,16 +50,19 @@ def write_mean_k_geometry(config, kv_cache_config, directory):
             'payload_page_bytes': page_bytes,
             'layers': list(group.layer_names), 'recurrent': isinstance(representative, MambaSpec),
             'speculative_blocks': getattr(representative, 'num_speculative_blocks', 0)})
+    qsa = getattr(getattr(config.model_config, 'hf_text_config', None), 'model_type', None) == 'qwen4_exp_text'
     manifest = {'schema': 2, 'groups': groups,
-        'archive_codec': 'raw_fp8_e4m3fn_v_fp8_e4m3fn_v1',
+        'archive_codec': ('raw_fp8_e4m3fn_v_fp8_e4m3fn_qsa_bf16_aux_v1' if qsa
+                          else 'raw_fp8_e4m3fn_v_fp8_e4m3fn_v1'),
         'raw_k_scale': 1.0,
         'capacity_bytes': capacity_bytes,
         'native_blocks': kv_cache_config.num_blocks,
         'cpu_offload_bytes': options.cpu_read_cache_bytes,
-        'cpu_archive_bytes_per_token': archive_bytes_per_token(kv_cache_config),
+        'cpu_archive_bytes_per_token': archive_bytes_per_token(kv_cache_config, config.model_config),
         'cpu_history_coordination': options.cpu_history_coordination,
         'cpu_progress_reserve': options.cpu_progress_reserve,
-        'semantic_mode': 'original_mean_k_raw_key_dense_rope',
+        'semantic_mode': ('original_mean_k_raw_key_dense_rope_qsa_recompressed' if qsa
+                          else 'original_mean_k_raw_key_dense_rope'),
         'select_budget': options.memory.select_budget, 'gen_budget': options.memory.gen_budget,
         'historical_tokens': options.memory.repository_blocks * options.memory.block_tokens,
         'graph_mode': str(config.compilation_config.cudagraph_mode)}
