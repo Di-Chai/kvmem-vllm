@@ -88,7 +88,9 @@ class LayerwiseQuery:
 
     def prepare(self, refresh, job, queries):
         rid = job.command.request_id
-        if rid in self.finished:
+        rolling_pressure = (self.pressure is not None and self.pressure.rolling_decode and
+                            job.command.selection == 'pressure' and job.command.pressure_stage == 'decode')
+        if rid in self.finished and not rolling_pressure:
             raise RuntimeError('Layerwise one-turn diagnostic prohibits another refresh')
         if job.command.selection != 'query':
             if self.pressure is not None:
@@ -233,6 +235,9 @@ class LayerwiseQuery:
             raise RuntimeError('Layer-specific selection changed the native causal length')
         scoring_seconds = time.perf_counter() - started
         actual = selected if self.mode == 'sequential' else state['global_slots']
+        if self.pressure is not None and self.pressure.rolling_decode:
+            from .layerwise_decode import record_map
+            state.setdefault('rolling_maps', []).append(record_map(chosen))
         assembly_started = time.perf_counter()
         assembly_stats = {}
         if self.mode == 'sequential':
@@ -261,6 +266,8 @@ class LayerwiseQuery:
                   **diagnostic, **position_evidence)
         state['next_layer'] += 1
         if state['next_layer'] == len(self.names):
+            if self.pressure is not None and self.pressure.rolling_decode:
+                self.pressure.maps[state['request_id']] = state['history'], tuple(state['rolling_maps'])
             if self.optimized:
                 # One final fence also makes the phase timing comparable to
                 # the original synchronized path; queued last-layer DMA must

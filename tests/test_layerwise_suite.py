@@ -267,14 +267,46 @@ def test_formal_memory_requires_completed_matching_model_qualification(monkeypat
         assert proof['files'][str(case/'response.json')]==p.sha(case/'response.json')
 
 
-def test_full_lme_output_cap_and_query_tail_fit_without_post_query_pressure():
+@pytest.mark.parametrize('active_budget',[36864,24576,16384])
+def test_full_lme_output_cap_and_query_tail_fit_without_post_query_pressure(active_budget):
     from run_layerwise_memory import memory_generation_capacity_audit
-    kv=dict(select_budget=36864,gen_budget=16384,block_tokens=32)
+    kv=dict(select_budget=active_budget,gen_budget=16384,block_tokens=32)
     query=dict(history_begin=200000)
-    result=memory_generation_capacity_audit(query,[dict(charged_tokens=36704)]*16,200113,16384,kv)
+    result=memory_generation_capacity_audit(query,[dict(charged_tokens=active_budget-160)]*16,200113,16384,kv)
     assert result['speculation_headroom_tokens']==47
     assert result['max_output_tokens']==16384 and result['no_post_query_pressure_needed']
     # The shorter-output RULER path's full history allowance is not enough to
     # reserve the original LME cap plus its complete replay suffix.
     with pytest.raises(ValueError):
-        memory_generation_capacity_audit(query,[dict(charged_tokens=36864)]*16,200113,16384,kv)
+        memory_generation_capacity_audit(query,[dict(charged_tokens=active_budget)]*16,200113,16384,kv)
+
+
+@pytest.mark.parametrize('budget',[24576,16384])
+def test_lme_budget_sweep_preserves_every_other_model_control(budget):
+    from copy import deepcopy
+    from run_layerwise_memory import budget_variant_profile
+    original=dict(model='frozen-nvfp4',max_num_seqs=8,query_replay_budget=16384,
+        kvmem=dict(select_budget=36864,gen_budget=16384,sink_blocks=41,recent_blocks=0))
+    before=deepcopy(original)
+    result=budget_variant_profile(original,budget)
+    assert result['kvmem']['select_budget']==budget
+    result['kvmem']['select_budget']=36864
+    assert result==before and original==before
+    original['kvmem']['gen_budget']=8192
+    with pytest.raises(ValueError):budget_variant_profile(original,budget)
+
+
+@pytest.mark.parametrize('budget',[24576,16384])
+def test_pressure_audit_enforces_the_smaller_active_budget(budget):
+    from run_layerwise_memory import memory_pressure_audit
+    starts=list(range(0,1312,32))
+    layer=dict(charged_tokens=budget,selected_tokens=budget,accepted_score_end=100000,
+        candidate_starts=starts,selected_starts=starts)
+    event=dict(event='pressure_selected',event_type='prefill_pressure',fallback_reason=None,
+        actual_method='accumulated_attention_per_layer',selected_tokens=budget,accepted_history=100000,
+        layers=[dict(layer,layer=i) for i in range(16)])
+    refresh=[dict(selection='pressure')]
+    assert memory_pressure_audit([event],refresh,True,select_budget=budget)==refresh
+    # An overflow that the old 36K-only upper bound would miss must fail.
+    event['layers'][5]['charged_tokens']+=32
+    with pytest.raises(ValueError):memory_pressure_audit([event],refresh,True,select_budget=budget)

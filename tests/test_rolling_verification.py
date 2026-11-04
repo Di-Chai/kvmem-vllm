@@ -111,3 +111,26 @@ def test_dflash_rolling_oracle_checks_draft_bytes_before_public_verification(mon
     assert row['draft_byte_equal'] and row['draft_layers']==1 and row['mtp_attention_layers']==0
     cache[1].add_(1)
     with pytest.raises(RuntimeError,match='committed draft KV'):oracle.verify(job)
+
+
+def test_layerwise_decode_oracle_uses_independent_frames_and_no_shared_skip(monkeypatch, tmp_path):
+    runner, job, _, actual, _ = oracle_fixture(monkeypatch, tmp_path)
+    runner._kvmem_capture_runtime.names = ['layer0', 'layer1', 'mtp']
+    old = torch.full((6*64,), 201, dtype=torch.uint8)
+    expected = torch.arange(6*32, dtype=torch.uint8)
+    actual = expected.clone()
+    seen = []
+    def rebuild(rid, authority, *, record_groups):
+        seen.append(record_groups)
+        return expected.clone()
+    runner._kvmem_sessions._target_bytes = lambda rid, n: old if n == 64 else actual
+    runner._kvmem_sessions._rebuilt_target_bytes = rebuild
+    def record(slot, begin): return NS(handle=NS(slot=slot, generation=1), history_begin=begin, count=32)
+    job.layerwise_pressure_plan = ([[record(1, 0)], [record(2, 32)]], [])
+    job.command.pressure_stage = 'decode'
+    job.result[2].remaps = [NS(block_id=1, skip=True)]
+    oracle = RollingPressureOracle(runner, job)
+    oracle.verify(job)
+    assert [frame[0][2] for frame, indices in seen[0]] == [0, 32, 0]
+    row = json.loads((tmp_path/'verified_rolling_pressure.jsonl').read_text())
+    assert row['native_stable_tokens'] == 0 and row['target_kv_byte_equal']

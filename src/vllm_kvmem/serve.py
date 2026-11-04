@@ -33,6 +33,7 @@ DEFAULTS = {
     'max_model_len': 262144, 'q8_tensorcore': False,
     'prefill_chunk_tokens': 0,
     'query_replay_budget': None,
+    'request_planning_batch_tokens': None,
     'reasoning_end_str': None,
     'cuda_allocator_conf': None,
     'recall_experiment': None,
@@ -279,7 +280,17 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         # Generation is incremental. A large G does not require a single
         # equally large prefill batch; enforce this separate atomic Query cap
         # at the HTTP boundary before admitting work to the shared scheduler.
-        cfg['max_num_batched_tokens'] = replay + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)
+        minimum_batch = replay + cfg['max_num_seqs'] * (cfg['draft_tokens'] + 1)
+        planned_batch = cfg['request_planning_batch_tokens']
+        if planned_batch is not None and (type(planned_batch) is not int or planned_batch < minimum_batch):
+            raise ValueError('Request-planning batch tokens must fit atomic Query replay plus decode peers')
+        if planned_batch is not None:
+            from .admission import validate_target_batch_budget
+            validate_target_batch_budget(options.memory.block_tokens, options.memory.gen_budget,
+                planned_batch, cfg['max_num_seqs'], cfg['draft_tokens']+1, request_planning=True)
+        # An explicitly fixed native batch ceiling can be retained when G is
+        # reduced. The per-request atomic Query cap still remains bounded by G.
+        cfg['max_num_batched_tokens'] = minimum_batch if planned_batch is None else planned_batch
     if options.offline_prefill_coalescing:
         baseline = cfg['prefill_chunk_tokens']
         maximum = options.offline_prefill_max_tokens
@@ -502,6 +513,8 @@ def main(argv=None):
     parser.add_argument('--layerwise-batched-reads', action='store_true')
     parser.add_argument('--layerwise-paired-reads', action='store_true')
     parser.add_argument('--layerwise-buffered-history', action='store_true')
+    parser.add_argument('--layerwise-rolling-decode', action='store_true',
+        help='Refresh each layer during one continuous response using accepted output attention, including thinking')
     parser.add_argument('--layerwise-original-rope', action='store_true',
         help='Experiment: original-history Q/K positions with dense cache slots')
     args = parser.parse_args(argv)
@@ -513,6 +526,15 @@ def main(argv=None):
         source = args.config.expanduser().resolve()
         profile, base = json.loads(source.read_text()), source.parent
     plan = build_launch(profile, base, run_dir)
+    if args.layerwise_rolling_decode:
+        from .layerwise_decode import validate_configuration
+        validate_configuration(profile, query_mode=args.layerwise_query_diagnostic,
+            optimized=args.layerwise_query_optimized, pressure=args.layerwise_prefill_pressure,
+            single_assembly=args.layerwise_pressure_single_assembly,
+            original_rope=getattr(args, 'layerwise_original_rope', False))
+        plan['environment']['KVMEM_LAYERWISE_ROLLING_DECODE'] = '1'
+    elif args.layerwise_query_diagnostic and profile.get('kvmem', {}).get('rolling_active_window'):
+        raise ValueError('Layerwise rolling requires the explicit --layerwise-rolling-decode implementation')
     if args.layerwise_buffered_history:
         if not args.layerwise_prefill_pressure:
             raise ValueError('Buffered layer histories require independent prefill pressure')

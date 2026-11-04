@@ -3,6 +3,21 @@ import pytest
 from vllm_kvmem.admission import QueryPolicy
 
 
+def test_planned_batch_can_span_multiple_g_windows_without_growing_any_owner():
+    from vllm_kvmem.admission import validate_target_batch_budget
+    from vllm_kvmem.request_plan import RequestPlan
+    validate_target_batch_budget(32,4096,16424,8,5,request_planning=True)
+    with pytest.raises(ValueError):validate_target_batch_budget(32,4096,16424,8,5)
+    with pytest.raises(ValueError):validate_target_batch_budget(32,4096,32809,8,5,request_planning=True)
+    plan=RequestPlan(None,block_tokens=32,gen_budget=4096,output_tokens=16384,rolling_active_window=True)
+    admitted=[]
+    for history in (16384,17408,18432,19456,20000,20128,20256,20416):
+        n=plan.admit(history,16424,110000,0,20480)
+        assert 0<n<=4096 and history+n<=20480
+        admitted.append(n)
+    assert sum(admitted)>4096  # Aggregate progress is not a per-owner allowance.
+
+
 def test_mainline_prefill_stops_at_k_and_each_query_has_a_block_checkpoint():
     policy = QueryPolicy(128, 131072, 65536)
     assert policy.admit(130944, 1024, 197110, 0) == 128

@@ -766,6 +766,10 @@ class ActionRuntime:
             self.begin_response(state, request_id)
             mask = state.parser.prepare(tokens)
             rows = [r for r in range(count) if (mask >> r) & 1]
+            pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+            if pressure is not None and pressure.rolling_decode:
+                from .layerwise_decode import sample_rows
+                rows = sorted(set(rows) | set(sample_rows(history_begin, count, self.options.action_interval)))
         sources = (tuple(int(global_positions[r]) for r in rows)
                    if getattr(authority, 'block_graph', None) is not None else ())
         return dict(authority=authority, state=state, history_begin=history_begin,
@@ -1141,7 +1145,9 @@ class ActionRuntime:
             if owner:
                 owner = owner.child(active_tokens=local_begin+count, sample_rows=len(rows), segments=len(starts))
             native = getattr(self, 'native', None)
-            layerwise = getattr(self.runner, '_kvmem_layerwise_pressure', None) if prefill else None
+            layerwise = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+            if not prefill and not getattr(layerwise, 'rolling_decode', False):
+                layerwise = None
             scoring_layers = layerwise.scoring_layers(self) if layerwise is not None else self.layers
             native_masses = [native.score(module.attn.layer_name,request_id,prefill,defer_validation=True)
                              if native else None for _,module in scoring_layers]

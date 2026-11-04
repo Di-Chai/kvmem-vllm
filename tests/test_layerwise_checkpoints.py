@@ -145,6 +145,44 @@ def test_unsupported_restore_is_rejected_before_assembly(fault):
         require_supported_restore(worker, 'fresh', checkpoint, asynchronous=fault == 'async')
 
 
+@pytest.mark.parametrize('foreground_busy',[False,True])
+def test_sync_prefix_restore_does_not_claim_a_background_pressure_producers_scratch(monkeypatch,foreground_busy):
+    import torch
+    from vllm_kvmem.window_assembly import _AssemblyStaging
+    c,a=prefix();snapshot=capture(c,'old',a,288)
+    worker=NS(runner=NS(_kvmem_layerwise_pressure=c,device='cpu'),
+        options=options(),bindings={'fresh':NS(pressure_restore=False)})
+    worker.options.session_freeze_prompt=True
+    checkpoint=NS(kind='P',authority=a,layerwise_pressure=snapshot)
+    pools={name:_AssemblyStaging(256,'cpu') for name in ('pressure','layerwise')}
+    pressure_owner,foreground_owner=object(),object()
+    pools['pressure'].claim(pressure_owner)
+    if foreground_busy:pools['layerwise'].claim(foreground_owner)
+    copies=[]
+    def assemble(state,layer,records):
+        staging=pools[state['assembly_arena']];owner=object()
+        staging.claim(owner)
+        try:copies.append((layer,[r.history_begin for r in records]))
+        finally:staging.release(owner)
+    c.query.assemble_layer_pinned=assemble
+    c.query.emit=lambda *args,**kwargs:None
+    monkeypatch.setattr(torch.cuda,'current_stream',lambda _:NS(synchronize=lambda:None))
+    try:
+        if foreground_busy:
+            with pytest.raises(RuntimeError,match='already has a CPU producer'):
+                restore_sync(worker,'fresh',checkpoint)
+            assert 'fresh' not in c.maps and 'fresh' not in c.histories
+        else:
+            restore_sync(worker,'fresh',checkpoint)
+            assert copies==[(1,[0,128,256])]
+            assert c.maps['fresh']==(288,snapshot.maps)
+            assert c.histories['fresh'][1].snapshot()==c.histories['old'][1].snapshot()
+        assert pools['pressure'].owner is pressure_owner
+    finally:
+        pools['pressure'].release(pressure_owner)
+        if foreground_busy:pools['layerwise'].release(foreground_owner)
+
+
 def test_restore_oracle_uses_own_target_frames_and_shared_draft_frame():
     c, a = prefix(); snapshot = capture(c, 'old', a, 288)
     c.maps['fresh'] = (288, snapshot.maps)

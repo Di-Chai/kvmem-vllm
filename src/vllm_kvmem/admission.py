@@ -2,6 +2,16 @@
 from dataclasses import dataclass
 
 
+def validate_target_batch_budget(block_tokens, gen_budget, batch_tokens, owners, query_tokens,
+                                 *, request_planning=False):
+    # With explicit request planning, each owner is separately clipped by
+    # RequestPlan.admit / QueryPolicy.admit before allocation. The native batch
+    # can contain several owners' G windows; it is not one owner's KV extent.
+    headroom = gen_budget * (owners if request_planning else 1) + owners * query_tokens
+    if not block_tokens <= batch_tokens <= headroom:
+        raise ValueError('Bounded target batch budget must fit an aligned block and admitted G headroom')
+
+
 @dataclass(frozen=True)
 class QueryPolicy:
     block_tokens: int

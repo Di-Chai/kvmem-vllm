@@ -109,9 +109,12 @@ class KVMemScheduler(Scheduler):
             from .speculative_admission import SpeculativeQueryPolicy
             self.query_policy = SpeculativeQueryPolicy(config.block_tokens, config.select_budget,
                                                        config.gen_budget, self.draft_contract.query_tokens)
-        if self._bounded_target and not config.block_tokens <= self.scheduler_config.max_num_batched_tokens <= (
-                config.gen_budget + self.scheduler_config.max_num_seqs * (self.draft_contract.query_tokens if self.draft_contract else 1)):
-            raise ValueError("Bounded target batch budget must fit an aligned block and G headroom")
+        if self._bounded_target:
+            from .admission import validate_target_batch_budget
+            validate_target_batch_budget(config.block_tokens, config.gen_budget,
+                self.scheduler_config.max_num_batched_tokens, self.scheduler_config.max_num_seqs,
+                self.draft_contract.query_tokens if self.draft_contract else 1,
+                request_planning=self.request_planning)
         coordinator = self.kv_cache_manager.coordinator
         managers = list(coordinator.single_type_managers)
         self.window_managers = {}

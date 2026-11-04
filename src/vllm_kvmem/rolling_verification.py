@@ -51,7 +51,15 @@ class RollingPressureOracle:
             session = self.runner._kvmem_sessions
             if session is None or job.authority.raw_dtype != torch.float8_e4m3fn:
                 raise RuntimeError('Rolling pressure byte oracle requires FP8 CPU history sessions')
-            expected = session._rebuilt_target_bytes(job.command.request_id, job.authority)
+            layered = getattr(job, 'layerwise_pressure_plan', None)
+            groups = None
+            if layered is not None:
+                from .layerwise_decode import record_map
+                maps = [record_map(records) for records in layered[0]]
+                maps += [maps[0]] * (len(self.runner._kvmem_capture_runtime.names) - len(maps))
+                groups = tuple((frame, (index,)) for index, frame in enumerate(maps))
+            expected = session._rebuilt_target_bytes(job.command.request_id, job.authority,
+                **(dict(record_groups=groups) if groups is not None else {}))
             # Original forward K was rotated before its FP8 cache conversion.
             # Unmoved rows can retain those bytes; rerotating archived FP8 raw K
             # is intentionally lossy. Compare stable rows to their independent
@@ -61,6 +69,8 @@ class RollingPressureOracle:
             old = self.old_native.reshape(rebuilt.shape[0], self.old_tokens, self.width)
             plan = job.result[2]
             for remap in plan.remaps:
+                if layered is not None and job.command.pressure_stage == 'decode':
+                    continue  # Rolling layered assembly rebuilds every layer.
                 if not remap.skip:
                     continue
                 record = self.old_records.get(remap.block_id)
@@ -70,7 +80,13 @@ class RollingPressureOracle:
                         remap.from_base+remap.n_tokens > self.old_tokens):
                     raise RuntimeError('Rolling oracle found an invalid stable native KV remap')
                 begin,end = remap.to_base,remap.to_base+remap.n_tokens
-                rebuilt[:,begin:end].copy_(old[:,begin:end])
+                if layered is not None:
+                    # Prefill single assembly skips only layer zero and MTP.
+                    n = len(layered[0])
+                    rebuilt[:2,begin:end].copy_(old[:2,begin:end])
+                    rebuilt[2*n:,begin:end].copy_(old[2*n:,begin:end])
+                else:
+                    rebuilt[:,begin:end].copy_(old[:,begin:end])
                 stable_tokens += remap.n_tokens
             actual = session._target_bytes(job.command.request_id, job.selected_tokens)
             if not torch.equal(actual, expected):
@@ -87,6 +103,9 @@ class RollingPressureOracle:
             draft_byte_equal=True, draft_layers=len(self.draft),
             mtp_attention_layers=len(getattr(self.runner, '_kvmem_mtp_modules', {})),
             previous_accepted_step=self.last_step, private_forward_steps=job.steps)
+        if getattr(job, 'layerwise_pressure_plan', None) is not None:
+            row['layerwise_selected_starts'] = [[r.history_begin for r in records]
+                                               for records in job.layerwise_pressure_plan[0]]
         with (self.runner._kvmem_probe_output/'verified_rolling_pressure.jsonl').open('a') as stream:
             stream.write(json.dumps(row)+'\n')
 

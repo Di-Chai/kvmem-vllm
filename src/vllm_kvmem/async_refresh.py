@@ -393,7 +393,13 @@ class AsyncRefresh:
             mandatory=[r.handle for r in authority.records.values() if r.history_begin//cfg.block_tokens in required]
             if {authority.records[(h.slot,h.generation)].history_begin//cfg.block_tokens for h in mandatory}!=required:
                 raise ValueError('Missing required historical evidence')
-            if configured_method() and job.history > cfg.select_budget:
+            if hasattr(job, 'layerwise_decode_selection'):
+                slots = job.layerwise_decode_selection
+                plan = authority.memory.select({}, tuple(h.slot for h in mandatory), action=False,
+                    pressure_scores=[(slot, 1.) for slot in slots], max_tokens=cfg.select_budget)
+                if {r.block_id for r in plan.remaps} != set(slots):
+                    raise RuntimeError('Rolling layer-zero admission differs from its frozen selection')
+            elif configured_method() and job.history > cfg.select_budget:
                 if job.guided_pressure or job.guided_rows:
                     raise ValueError('Recall comparison prohibits guided selection')
                 if job.command.selection == 'pressure':

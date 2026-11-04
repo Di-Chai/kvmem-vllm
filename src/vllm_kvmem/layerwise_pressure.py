@@ -64,6 +64,8 @@ class LayerwisePrefillPressure:
             raise ValueError('Compiled batches require the native layerwise Query dispatcher')
         self.maps = {}
         self.histories = {}
+        self.rolling_decode = os.getenv('KVMEM_LAYERWISE_ROLLING_DECODE') == '1'
+        self.decode_histories = {}
         self.options = None
         self.single_assembly = os.getenv('KVMEM_LAYERWISE_PRESSURE_SINGLE_ASSEMBLY') == '1'
         self.fast_metadata = os.getenv('KVMEM_LAYERWISE_PRESSURE_FAST_METADATA') == '1'
@@ -120,6 +122,11 @@ class LayerwisePrefillPressure:
         if len(masses.shape) != 3 or masses.shape[0] != len(self.names):
             raise RuntimeError('Missing independent prefill scores for a full-attention layer')
         self._history(rid, pending.state.options)
+        if pending.prefill is None:
+            if not self.rolling_decode:
+                raise RuntimeError('Decode feedback requires explicit layerwise rolling mode')
+            from .layerwise_decode import attach_packet
+            return attach_packet(self, pending, rid, authority, starts, counts, masses)
         if self.fast_metadata and rid in self.maps:
             from .layerwise_pressure_efficiency import packet_histories
             histories = packet_histories(self.maps.get(rid), pending, starts, counts)
@@ -144,6 +151,9 @@ class LayerwisePrefillPressure:
         pending.layerwise_pressure = (self, rid, histories, masses)
 
     def prepare_accept(self, pending, accepted):
+        if getattr(pending, 'layerwise_decode', None) is not None:
+            from .layerwise_decode import prepare_accept
+            return prepare_accept(self, pending, accepted)
         marker = getattr(pending, 'layerwise_pressure', None)
         if marker is None:
             return None
@@ -161,13 +171,15 @@ class LayerwisePrefillPressure:
 
     def commit_accept(self, prepared):
         if prepared is not None:
-            rid, histories = prepared
-            self.histories[rid] = histories
+            rid, histories = prepared[:2]
+            target = self.decode_histories if len(prepared) == 3 else self.histories
+            target[rid] = histories
 
     def prepare(self, refresh, job):
         from .request_plan import RequestPlan, selection_config
         rid, authority = job.command.request_id, job.authority
-        if job.command.pressure_stage != 'prefill':
+        decode = job.command.pressure_stage == 'decode' and self.rolling_decode
+        if job.command.pressure_stage != 'prefill' and not decode:
             raise RuntimeError('This short-output experiment cannot reinterpret decode pressure')
         authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
         cfg = selection_config(refresh.options.memory, job.command.groups[0][1].window_tokens,
@@ -181,8 +193,8 @@ class LayerwisePrefillPressure:
         if {by_begin[r.history_begin].history_begin//32 for r in records if r.handle.slot in mandatory} != required:
             raise RuntimeError('Missing original mandatory pressure blocks')
         global_history = authority.action_history.prefill
-        histories = self.histories.get(rid)
-        if histories is None or global_history.snapshot() != histories[0].snapshot():
+        histories = (self.decode_histories if decode else self.histories).get(rid)
+        if histories is None or (not decode and global_history.snapshot() != histories[0].snapshot()):
             raise RuntimeError('Accepted layer-zero attention differs from the shared control state')
         current = list(authority.memory._store.working_records())
         local = sum(r[3] for r in current)
@@ -214,12 +226,23 @@ class LayerwisePrefillPressure:
                 charged_tokens=32*len(picked), accepted_score_end=history.end,
                 query_samples=history.samples, sampled_chunks=history.chunks,
                 actual_method='accumulated_attention_per_layer', fallback_reason=None,
-                **self.history_execution(history)))
+                **(dict(attention_state_backend='native_decode',
+                        score_scope='all_accepted_including_thinking') if decode else
+                   self.history_execution(history))))
         lengths = {sum(r.count for r in group) for group in chosen}
         partial = [{(r.history_begin,r.count) for r in group if r.count != 32} for group in chosen]
         if len(lengths) != 1 or any(p != partial[0] for p in partial):
             raise RuntimeError('Layer pressure cannot change native causal length or partial-block geometry')
         job.layerwise_pressure_plan = chosen, evidence
+        if decode:
+            if any(history.end > job.history for history in histories):
+                raise RuntimeError('Rolling pressure contains future or rejected Query feedback')
+            parser = getattr(authority.action_history, 'parser', None)
+            job.layerwise_decode_thinking = bool(parser.state[0]) if parser is not None else None
+            # The final Query can select a new layer-zero set while the native
+            # host frame still describes its global preselection. Admit exactly
+            # the independent preview; never rank stale shared-frame identities.
+            job.layerwise_decode_selection = tuple(r.handle.slot for r in chosen[0])
 
     def committed(self, job):
         rid, authority = job.command.request_id, job.authority
@@ -246,8 +269,11 @@ class LayerwisePrefillPressure:
             torch.cuda.current_stream(self.runner.device).synchronize()
         self.maps[rid] = job.history, tuple(maps)
         self.query.emit('pressure_selected', request_id=rid, accepted_history=job.history,
-            actual_method='accumulated_attention_per_layer', event_type='prefill_pressure',
-            configured_method='accumulated_attention_per_layer', query_source='accepted_public_prefill',
+            actual_method='accumulated_attention_per_layer', event_type=job.command.pressure_stage+'_pressure',
+            configured_method='accumulated_attention_per_layer',
+            query_source=('accepted_output_including_thinking' if job.command.pressure_stage == 'decode'
+                          else 'accepted_public_prefill'),
+            thinking_at_refresh=getattr(job, 'layerwise_decode_thinking', None),
             selected_tokens=job.selected_tokens, layers=evidence, fallback_reason=None)
         if original_rope():
             self.query.emit('pressure_rope', request_id=rid, accepted_history=job.history,
@@ -264,7 +290,8 @@ class LayerwisePrefillPressure:
             pending = packet.action_inputs.get(rid)
             controller = getattr(runtime.runner, '_kvmem_layerwise_pressure', None)
             prepared = None
-            if controller is not None and getattr(pending, 'layerwise_pressure', None) is not None:
+            if controller is not None and (getattr(pending, 'layerwise_pressure', None) is not None or
+                                           getattr(pending, 'layerwise_decode', None) is not None):
                 runtime._wait_packet(pending)
                 prepared = controller.prepare_accept(pending, accepted)
             result = original(runtime, packet, rid, accepted)
@@ -275,7 +302,8 @@ class LayerwisePrefillPressure:
             pending = packet.action_inputs.get(rid)
             controller = getattr(getattr(runtime, 'runner', None), '_kvmem_layerwise_pressure', None)
             staged = None
-            if controller is not None and getattr(pending, 'layerwise_pressure', None) is not None:
+            if controller is not None and (getattr(pending, 'layerwise_pressure', None) is not None or
+                                           getattr(pending, 'layerwise_decode', None) is not None):
                 runtime._wait_packet(pending)
                 staged = controller.prepare_accept(pending, accepted)
             transaction = graph_prepare(runtime, packet, rid, accepted, **kwargs)
@@ -287,6 +315,7 @@ class LayerwisePrefillPressure:
             if controller is not None:
                 controller.maps.pop(rid, None)
                 controller.histories.pop(rid, None)
+                controller.decode_histories.pop(rid, None)
             return result
         ActionRuntime.accept, ActionRuntime.finish = accept, finished
         ActionRuntime.prepare_accept = prepare_graph

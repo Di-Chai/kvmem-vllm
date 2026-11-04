@@ -120,7 +120,8 @@ def install_single_assembly(assembler, controller, job, runtime_names):
     names = tuple(runtime_names)
     if names[:len(controller.names)] != tuple(controller.names):
         raise ValueError('Single pressure assembly changed archive layer order')
-    if job.command.pressure_stage != 'prefill':
+    rolling = job.command.pressure_stage == 'decode' and getattr(controller, 'rolling_decode', False)
+    if job.command.pressure_stage != 'prefill' and not rolling:
         raise ValueError('Single pressure assembly is only qualified for prefill')
 
     def assemble(self, authority, plan):
@@ -140,7 +141,10 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                 any(r.to_base != positions[r.block_id] for r in remaps)):
             raise ValueError('Layer-zero selection differs from the native assembly plan')
         _validate_destinations(remaps, by_slot, self.layers)
-        skip = {by_slot[r.block_id].history_begin for r in remaps if r.skip}
+        # Query may have changed layer zero without changing the shared host
+        # frame. In rolling mode rebuild every target and draft layer from its
+        # immutable records, so native shared-map skip hints cannot leak in.
+        skip = set() if rolling else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
         state = dict(authority=authority, request_id=job.command.request_id,
                      selected_tokens=plan.total_window_tokens, assembly_arena='pressure')
         started = time.perf_counter(); uploaded = chunks = packed_chunks = paired_chunks = 0
@@ -153,8 +157,8 @@ def install_single_assembly(assembler, controller, job, runtime_names):
             paired_chunks += stats.get('paired_read_chunks',0)
         done = torch.cuda.Event(); done.record(torch.cuda.current_stream(controller.runner.device))
         job.layerwise_single_assembly_done = True
-        rebuilt = sum(r.n_tokens for r in remaps if not r.skip)
-        skipped = sum(r.n_tokens for r in remaps if r.skip)
+        rebuilt = sum(r.n_tokens for r in remaps if rolling or not r.skip)
+        skipped = 0 if rolling else sum(r.n_tokens for r in remaps if r.skip)
         return AssemblyResult(done, (self, plan, authority), rebuilt, skipped, chunks,
             time.perf_counter()-started, uploaded,
             dict(layerwise_single_assembly=True, layerwise_assembled_layers=len(names),

@@ -151,8 +151,11 @@ def restore_sync(worker, request_id, checkpoint):
         raise ValueError('Layerwise restore requires the original frozen P window')
     chosen, frame, histories = prepare_restore(controller, request_id,
         checkpoint.authority, snapshot, worker.options)
+    # Synchronous restore and causal Query both run on the model thread.
+    # Reuse their one-layer arena; background pressure assembly can overlap
+    # this restore and must retain its separate scratch/DMA ownership.
     state = dict(authority=checkpoint.authority, request_id=request_id,
-        selected_tokens=sum(r.count for r in chosen[0]), assembly_arena='pressure')
+        selected_tokens=sum(r.count for r in chosen[0]), assembly_arena='layerwise')
     for layer, records in enumerate(chosen[1:], 1):
         controller.query.assemble_layer_pinned(state, layer, records)
     import torch

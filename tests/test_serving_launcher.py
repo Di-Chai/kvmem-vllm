@@ -214,6 +214,21 @@ def test_large_generation_budget_does_not_require_large_atomic_batch(tmp_path):
         build_launch(cfg, tmp_path, tmp_path/'invalid-replay')
 
 
+def test_small_rolling_budget_can_preserve_the_native_batch_ceiling(tmp_path):
+    cfg=nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp',draft_tokens=4,max_num_seqs=8,
+               query_replay_budget=4096,request_planning_batch_tokens=16424)
+    cfg['kvmem'].update(block_tokens=32,select_budget=16384,gen_budget=4096,
+        request_planning=True,session_checkpoint_policy='pm',session_capture_terminal=True)
+    plan=build_launch(cfg,tmp_path,tmp_path/'fixed-batch')
+    assert plan['profile']['max_num_batched_tokens']==16424
+    limits=json.loads(plan['environment']['KVMEM_REQUEST_PLAN_CONFIG'])
+    assert limits['gen_budget']==limits['query_replay_budget']==4096
+    cfg['request_planning_batch_tokens']=4135
+    with pytest.raises(ValueError,match='atomic Query'):
+        build_launch(cfg,tmp_path,tmp_path/'too-small-batch')
+
+
 def test_frozen_independent_questions_allow_p_only_explicit_sessions(tmp_path):
     cfg=nvfp4_profile(tmp_path)
     cfg.update(draft_method='mtp',draft_tokens=4,max_model_len=1048576)

@@ -42,7 +42,7 @@ def statistic_layer_names(runner, options):
         return decode, decode
     if tuple(pressure.names) != names:
         raise RuntimeError('Native pressure statistics must cover the ordered target layers, excluding MTP')
-    return names, decode
+    return names, names if getattr(pressure, 'rolling_decode', False) else decode
 
 
 def piece_layout(starts, counts, length):

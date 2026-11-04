@@ -271,7 +271,7 @@ class SessionWorker:
             assembler.close()
         self.publish_restore(request_id, authority)
 
-    def _rebuilt_target_bytes(self, request_id, authority):
+    def _rebuilt_target_bytes(self, request_id, authority, *, record_groups=None):
         """Verification-only CPU oracle from immutable FP8 source records.
 
         Do not compare a cold FP8-raw rebuild to the original unquantized
@@ -289,7 +289,9 @@ class SessionWorker:
             trigs = [layer.cos_sin.cpu() for layer in assembler.layers]
             scales = [layer.key_scale.cpu() for layer in assembler.layers]
             from .layerwise_checkpoints import oracle_record_groups
-            for frame, indices in oracle_record_groups(self, request_id, authority):
+            groups = (oracle_record_groups(self, request_id, authority)
+                      if record_groups is None else record_groups)
+            for frame, indices in groups:
                 for start in range(0, len(frame), 32):
                     chunk = frame[start:start+32]
                     handles = [authority.records[(slot, generation)].handle

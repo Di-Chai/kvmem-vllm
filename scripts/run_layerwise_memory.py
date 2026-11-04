@@ -29,7 +29,7 @@ EXECUTION_KV_KEYS={'action_native_scores', 'action_native_max_rows', 'action_nat
 EXECUTION_FLAGS=('layerwise_prefill_pressure','layerwise_pressure_single_assembly',
     'layerwise_pressure_fast_metadata','layerwise_packed_assembly',
     'layerwise_prepared_index','layerwise_batched_reads','layerwise_paired_reads',
-    'layerwise_buffered_history')
+    'layerwise_buffered_history','layerwise_rolling_decode')
 
 
 def inherited_execution(origin):
@@ -88,7 +88,7 @@ def supplemental_qualification(previous, rows):
         resampled_previous_answers=0,scope='Additional diagnostic pair only; previous answers remain immutable.')
 
 
-def memory_pressure_audit(events, refresh, independent, buffered=False):
+def memory_pressure_audit(events, refresh, independent, buffered=False, select_budget=36864, rolling=False):
     if buffered and not independent:raise ValueError('Buffered state requires independent pressure')
     pressures=[e for e in refresh if e['selection']=='pressure']
     actual=[e for e in events if e['event']=='pressure_selected']
@@ -97,15 +97,20 @@ def memory_pressure_audit(events, refresh, independent, buffered=False):
         raise ValueError('Pressure scoring silently changed')
     if independent:
         for event in actual:
-            if event.get('fallback_reason') is not None or event['event_type']!='prefill_pressure':
+            decode=rolling and event['event_type']=='decode_pressure'
+            if event.get('fallback_reason') is not None or (event['event_type']!='prefill_pressure' and not decode):
                 raise ValueError('Unexpected pressure entry or fallback')
             if [e['layer'] for e in event['layers']]!=list(range(16)):
                 raise ValueError('Missing independent pressure layer')
             for layer in event['layers']:
-                if buffered and (layer.get('attention_state_backend')!='native_buffered' or
+                if decode and (layer.get('attention_state_backend')!='native_decode' or
+                               layer.get('score_scope')!='all_accepted_including_thinking' or
+                               layer.get('query_samples',0)<=0):
+                    raise ValueError('Decode pressure lacks accepted per-layer output attention')
+                if buffered and not decode and (layer.get('attention_state_backend')!='native_buffered' or
                                  layer.get('buffered_commits',0)+layer.get('buffered_restores',0)<=0):
                     raise ValueError('Pressure did not use the configured buffered history')
-                if (layer['charged_tokens']>36864 or layer['selected_tokens']!=event['selected_tokens'] or
+                if (layer['charged_tokens']>select_budget or layer['selected_tokens']!=event['selected_tokens'] or
                     layer['accepted_score_end']>event['accepted_history'] or
                     not set(layer['selected_starts'])<=set(layer['candidate_starts']) or
                     not set(range(0,1312,32))<=set(layer['selected_starts'])):
@@ -153,6 +158,13 @@ def memory_generation_capacity_audit(query, layers, prompt_tokens, max_output, k
     selected=max(layer['charged_tokens'] for layer in layers)
     replay=prompt_tokens-query['history_begin']
     capacity=kv['select_budget']+kv['gen_budget']
+    if kv.get('rolling_active_window'):
+        headroom=capacity-selected-replay
+        if selected>kv['select_budget'] or replay<0 or headroom<kv['block_tokens']:
+            raise ValueError('Rolling final Query leaves no valid generation window')
+        return dict(selected_history_tokens=selected,replay_tokens=replay,max_output_tokens=max_output,
+            physical_capacity_tokens=capacity,initial_generation_headroom_tokens=headroom,
+            no_post_query_pressure_needed=False,rolling_active_window=True)
     headroom=capacity-selected-replay-max_output
     if (selected>kv['select_budget'] or replay<0 or headroom<kv['block_tokens']):
         raise ValueError('Actual final Query did not reserve the complete original output limit')
@@ -420,12 +432,71 @@ def prepare(root,suite,qualification=False,recovery=None,pressure_runtime=None,q
     print(json.dumps(dict(root=str(root),suite=suite,cases=len(selected),qualification=qualification)),flush=True)
 
 
+def budget_variant_profile(original, select_budget):
+    """The budget sweep changes exactly one control of a completed LME run."""
+    if type(select_budget) is not int or select_budget not in (24576,16384):
+        raise ValueError('This sweep only authorizes 24K and 16K Active KV')
+    if (original['kvmem']['select_budget'],original['kvmem']['gen_budget'])!=(36864,16384):
+        raise ValueError('Budget reference must use the completed 36K/16K controls')
+    result=deepcopy(original)
+    result['kvmem']['select_budget']=select_budget
+    return result
+
+
+def prepare_budget_variant(root, source_root, select_budget):
+    if root.exists():raise ValueError('Budget variants require a fresh directory')
+    if (source_root/'budget-variant.json').exists():raise ValueError('Use the original completed 36K reference')
+    fixture,original=verify(source_root)
+    audit=p.read(source_root/'execution-audit.json');cleanup=p.read(source_root/'run/cleanup.json')
+    if (fixture['suite']!='longmemeval_s' or fixture['qualification'] or fixture['cases']!=102 or
+            p.read(source_root/'status.json')['status']!='completed' or audit['status']!='passed' or
+            audit['cases']!=102 or cleanup['gpu_processes'] or cleanup['remaining_owned_groups']):
+        raise ValueError('Budget sweep requires the completed, released LME102 reference')
+    profile=budget_variant_profile(original,select_budget)
+    root.mkdir(parents=True)
+    shutil.copytree(source_root/'runtime-v1',root/'runtime-v1',
+        ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+    # Only the experiment driver changes; the entire inference engine remains
+    # byte-identical to the completed reference, including its checkpoint code.
+    driver='scripts/run_layerwise_memory.py'
+    shutil.copy2(__file__,root/'runtime-v1'/driver)
+    old_proof=p.read(source_root/'prepared-proof.json')
+    for name in old_proof:
+        if name not in ('profile.json','runtime-proof.json'):
+            shutil.copy2(source_root/name,root/name)
+    p.save(root/'profile.json',profile)
+    runtime=root/'runtime-v1'
+    proof={str(f.relative_to(runtime)):p.sha(f) for f in runtime.rglob('*')
+           if f.is_file() and '__pycache__' not in f.parts}
+    source_proof=p.read(source_root/'runtime-proof.json')
+    if set(proof)!=set(source_proof) or any(proof[n]!=source_proof[n] for n in proof if n!=driver):
+        raise ValueError('Budget sweep changed the reference inference engine')
+    p.save(root/'runtime-proof.json',proof)
+    source_names=set(old_proof)|{'prepared-proof.json','status.json','execution-audit.json','run/cleanup.json'}
+    p.save(root/'budget-variant.json',dict(source=str(source_root),select_budget=select_budget,
+        gen_budget=16384,reference_select_budget=36864,
+        source_files={name:p.sha(source_root/name) for name in source_names},
+        changed_runtime_files=[driver],fresh_answers=True,
+        authorization='User requested Active KV 24K and 16K, Gen KV 16K, all other controls unchanged.'))
+    p.save(root/'prepared-proof.json',{name:p.sha(root/name) for name in set(old_proof)|{'budget-variant.json'}})
+    p.save(root/'control-parity.json',dict(reference=str(source_root),
+        differences={'kvmem.select_budget':dict(before=36864,after=select_budget)},
+        original_samples_and_sampling_equal=True,inference_engine_byte_identical=True,
+        all_other_profile_parameters_equal=True,gen_budget=16384))
+    p.save(root/'status.json',dict(status='prepared',suite='longmemeval_s',expected=102,at=time.time()))
+    verify(root)
+
+
 def verify(root):
     for name,digest in p.read(root/'prepared-proof.json').items():
         if p.sha(root/name)!=digest:raise ValueError('Frozen campaign controls changed: '+name)
     for name,digest in p.read(root/'runtime-proof.json').items():
         if p.sha(root/'runtime-v1'/name)!=digest:raise ValueError('Frozen memory runtime changed: '+name)
     fixture=p.read(root/'fixture.json');profile=p.read(root/'profile.json')
+    if (root/'rolling-variant.json').exists():
+        from run_layerwise_rolling_memory import verify_variant
+        verify_variant(root,fixture,profile)
+        return fixture,profile
     if fixture.get('restore_digest_qualification'):
         if (not fixture['qualification'] or fixture['suite']!='memoryagentbench' or
                 p.read(root/'verification-profile.json')!=restore_verification_profile(profile)):
@@ -447,6 +518,21 @@ def verify(root):
     expected=deepcopy(original['kvmem']);overrides=fixture.get('execution_kvmem_overrides',{})
     if not set(overrides)<=EXECUTION_KV_KEYS:raise ValueError('Unknown memory control override')
     expected.update(overrides)
+    if (root/'budget-variant.json').exists():
+        variant=p.read(root/'budget-variant.json');source_root=Path(variant['source'])
+        if source_root.resolve()==root.resolve() or (source_root/'budget-variant.json').exists():
+            raise ValueError('Budget reference must be the original completed campaign')
+        for name,digest in variant['source_files'].items():
+            if p.sha(source_root/name)!=digest:raise ValueError('Frozen budget reference changed: '+name)
+        source_fixture,source_profile=verify(source_root)
+        if (fixture!=source_fixture or profile!=budget_variant_profile(source_profile,variant['select_budget']) or
+                variant['gen_budget']!=16384 or not variant['fresh_answers']):
+            raise ValueError('Budget sweep changed more than Active KV')
+        source_proof=p.read(source_root/'runtime-proof.json');proof=p.read(root/'runtime-proof.json')
+        if (set(proof)!=set(source_proof) or
+                any(proof[n]!=source_proof[n] for n in proof if n!='scripts/run_layerwise_memory.py')):
+            raise ValueError('Budget sweep inference engine differs from the reference')
+        expected['select_budget']=variant['select_budget']
     if profile['kvmem']!=expected:raise ValueError('Original KVMem controls changed')
     for name in ('source_profile','source_fixture'):
         if p.sha(Path(fixture[name]))!=fixture[name+'_sha256']:raise ValueError('Original controls changed')
@@ -496,7 +582,10 @@ def infer(root,capture):
         pending=[row for row in items if row['id'] not in results]
         if not pending:return
         prefix=min(r['query_begin'] for r in items)//1024*1024 if suite=='memoryagentbench' else 0
-        extent=max(r['input_tokens'] for r in items)+2*kv['gen_budget']
+        # Rolling changes GPU window capacity, not the possible archived output.
+        # Preserve the reference CPU reservation and eight-owner admission.
+        reserve=max(kv['gen_budget'],max(bindings[r['id']]['max_tokens'] for r in items)) if kv.get('rolling_active_window') else kv['gen_budget']
+        extent=max(r['input_tokens'] for r in items)+2*reserve
         amount=((extent+31)//32)*32*17*4*256*2
         credits.acquire(group,amount);session='layerwise-memory-'+uuid.uuid4().hex;done=0;prefix_state=None
         try:
@@ -533,12 +622,13 @@ def infer(root,capture):
                     raise ValueError('Original Query range changed')
                 events=[e for e in offset.read(capture/'layerwise_query.jsonl') if e.get('request_id','').startswith(rid+'-')]
                 layers=[e for e in events if e['event']=='layer_selected']
-                if [e['layer'] for e in layers]!=list(range(16)) or any(e['charged_tokens']>36864 for e in layers):
+                if [e['layer'] for e in layers]!=list(range(16)) or any(e['charged_tokens']>kv['select_budget'] for e in layers):
                     raise ValueError('Actual sequential layerwise selection or budgets not proven')
                 capacity_audit=memory_generation_capacity_audit(query[0],layers,len(tokens),payload['max_tokens'],kv)
                 independent=fixture.get('execution_flags',{}).get('layerwise_prefill_pressure',False)
                 pressures=memory_pressure_audit(events,refresh,independent,
-                    fixture.get('execution_flags',{}).get('layerwise_buffered_history',False))
+                    fixture.get('execution_flags',{}).get('layerwise_buffered_history',False),kv['select_budget'],
+                    rolling=fixture.get('execution_flags',{}).get('layerwise_rolling_decode',False))
                 if suite=='memoryagentbench':
                     if terminal.get('checkpoint_kind')!='P' or terminal.get('checkpoint_tokens')!=prefix:
                         raise ValueError('Original frozen prefix was not retained')
@@ -599,7 +689,10 @@ def infer(root,capture):
         verify_files(out,{k:v for k,v in proof['recovered_files'].items() if k.startswith('cases/')})
     p.save(root/'execution-audit.json',dict(status='passed',suite=suite,cases=len(results),
         qualification=fixture['qualification'],actual_method='mean_k_sequential_layerwise',
-        original_inputs_and_sampling_unchanged=True,original_kvmem_budget_and_score_sampling_unchanged=True,
+        original_inputs_and_sampling_unchanged=True,
+        original_kvmem_budget_and_score_sampling_unchanged=not any((root/name).exists() for name in ('budget-variant.json','rolling-variant.json')),
+        authorized_active_budget_variant=p.read(root/'budget-variant.json') if (root/'budget-variant.json').exists() else None,
+        authorized_rolling_variant=p.read(root/'rolling-variant.json') if (root/'rolling-variant.json').exists() else None,
         execution_kvmem_overrides=fixture.get('execution_kvmem_overrides',{}),
         pressure_method='accumulated_attention_per_layer' if fixture.get('execution_flags',{}).get('layerwise_prefill_pressure') else 'accumulated_attention',
         inherited_answers=len(list(recovered.iterdir())) if recovered.exists() else 0,
@@ -632,6 +725,9 @@ def run(root):
                     stderr=subprocess.STDOUT,start_new_session=True)
             p.save(root/'process.json',dict(pid=os.getpid(),server_pid=server.pid,command=command,at=time.time()))
             wait_health(server,profile)
+            if (root/'rolling-variant.json').exists():
+                from run_layerwise_rolling_memory import verify_effective_controls
+                verify_effective_controls(root,p.read(root/'run/server/launch.json'))
             if fixture.get('restore_digest_qualification'):
                 launch=p.read(root/'run/server/launch.json')
                 if any(launch['environment'].get(k)!='1' for k in (
@@ -674,7 +770,7 @@ def run(root):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('prepare','run'))
+    parser.add_argument('action',choices=('prepare','prepare-budget','run'))
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--suite',choices=('longmemeval_s','memoryagentbench'))
     parser.add_argument('--qualification',action='store_true')
@@ -684,10 +780,15 @@ if __name__=='__main__':
     parser.add_argument('--qualification-after',type=Path)
     parser.add_argument('--efficiency-source',type=Path)
     parser.add_argument('--efficiency-authorization',type=Path)
+    parser.add_argument('--budget-source',type=Path)
+    parser.add_argument('--select-budget',type=int,choices=(24576,16384))
     args=parser.parse_args()
     if args.action=='prepare':prepare(args.root.resolve(),args.suite,args.qualification,args.recover_from,args.pressure_runtime,
                                      args.qualification_source.resolve() if args.qualification_source else None,
                                      args.efficiency_source.resolve() if args.efficiency_source else None,
                                      args.efficiency_authorization.resolve() if args.efficiency_authorization else None,
                                      args.qualification_after.resolve() if args.qualification_after else None)
+    elif args.action=='prepare-budget':
+        if args.budget_source is None or args.select_budget is None:parser.error('Budget source and select budget are required')
+        prepare_budget_variant(args.root.resolve(),args.budget_source.resolve(),args.select_budget)
     else:run(args.root.resolve())
