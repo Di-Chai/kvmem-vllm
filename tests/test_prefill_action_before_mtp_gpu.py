@@ -50,7 +50,8 @@ def fixture(tmp_path, *, mode='native'):
     action.options, action.native, action.ids = options, bank, [10, 11, 12, 13, 14]
     action.runtime = NS(config=options.memory, output=tmp_path, _raise_publication_error=lambda: None)
     action.runner = NS(_kvmem_layers=[name], req_states=NS(req_id_to_index={'r': 0},
-        prompt_len=NS(np=np.array([1024]))), block_tables=NS(block_tables=[NS(gpu=table)]))
+        prompt_len=NS(np=np.array([1024]))), block_tables=NS(block_tables=[NS(gpu=table)],
+            num_blocks=NS(np=np.array([[table.shape[1]]])),kernel_block_sizes=[16]))
     action.layers, action.groups = [(0, module)], {name: 0}
     action.q_dtypes = action.prefill_q_dtypes = {name: q.dtype}
     action.native_cache = {}

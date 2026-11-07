@@ -57,6 +57,7 @@ class ReservedKVCacheManager:
         self._step_remaining = None
         self._step_total = 0
         self.rejections = 0
+        self.native_allocation_rejections = 0
         self.active_residency = None
         self.resident_entry = None
         self.resident_restores = set()
@@ -84,6 +85,59 @@ class ReservedKVCacheManager:
         if remaining < 0:
             raise RuntimeError("Native request allocation exceeds its admitted lifetime bound")
         return remaining
+
+    def snapshot(self):
+        """Explain physical ownership separately from future growth credits.
+
+        Call on the scheduler thread between allocator mutations. Counts use
+        native pool pages, not archive blocks or inferred KV bytes. The pool
+        contains one unavailable null page. Idle/request overlap during fenced
+        ownership transfer is counted once; detached frees and other owners
+        appear in the residual, which is not advertised as available capacity.
+        This observation neither expires idle views nor changes admission.
+        """
+        requests, group_rows, all_owned, reserved_owned, staged = {}, [], set(), set(), set()
+        for index, manager in enumerate(self.groups):
+            group_owned = set()
+            for request_id, blocks in manager.req_to_blocks.items():
+                pages = {block.block_id for block in blocks if not block.is_null}
+                group_owned.update(pages)
+                all_owned.update(pages)
+                if request_id in self.reservations:
+                    reserved_owned.update(pages)
+            for blocks in getattr(manager, 'resident_imports', {}).values():
+                staged.update(block.block_id for block in blocks if not block.is_null)
+            group_rows.append(dict(group=index, block_tokens=manager.block_size,
+                owned_pages=len(group_owned),
+                kind='attention' if isinstance(manager, WorkingSetManager) else type(manager).__name__,
+                static_pages_per_request=self.static_blocks.get(index, 0)))
+        for request_id, (_, quota) in self.reservations.items():
+            owned = self._owned(request_id)
+            requests[request_id] = dict(owned_pages=owned, lifetime_quota_pages=quota,
+                                       future_reserved_pages=quota-owned)
+        residency = getattr(self, 'active_residency', None)
+        idle = {block.block_id for view in residency.entries.values()
+                for block in view.blocks if not block.is_null} if residency is not None else set()
+        idle_only = idle - all_owned
+        staged_only = staged - all_owned - idle
+        pool = self.native.block_pool
+        total = pool.num_gpu_blocks - 1
+        free = pool.get_num_free_blocks()
+        allocated = total - free
+        future = sum(row['future_reserved_pages'] for row in requests.values())
+        return dict(mode='lifetime', unit='native_pages', null_pages=1,
+            physical_total_pages=total, physical_free_pages=free,
+            physical_allocated_pages=allocated, request_owned_pages=len(all_owned),
+            reserved_request_owned_pages=len(reserved_owned),
+            idle_resident_pages=len(idle_only), idle_request_overlap_pages=len(idle & all_owned),
+            staged_import_pages=len(staged_only),
+            deferred_or_other_pages=allocated-len(all_owned)-len(idle_only)-len(staged_only),
+            lifetime_quota_pages=sum(row['lifetime_quota_pages'] for row in requests.values()),
+            future_reserved_pages=future, free_after_growth_reserve_pages=free-future,
+            requests=requests, groups=group_rows,
+            rejections=dict(lifetime_budget=self.rejections-self.authority_rejections,
+                retirement_or_active_limit=self.authority_rejections,
+                native_allocation=self.native_allocation_rejections))
 
     def begin_step(self):
         """Reconcile trims/imports once, before native synchronous scheduling.
@@ -195,6 +249,54 @@ class ReservedKVCacheManager:
                 gate.allocated(request)
         return result
 
+    def _guided_allocation_options(self, request, num_new_tokens, kwargs):
+        request_id = request.request_id
+        if getattr(self,'guided_reserve',0):
+            from .request_plan import request_plan
+            # The public scheduler still advances only its original token count.
+            # Extra lookahead pages belong to this synchronous private probe.
+            manager = next(m for m in self.groups if isinstance(m,WorkingSetManager))
+            plan = request_plan(request, self.guided_block_tokens,manager.capacity-manager.select_budget)
+            at = request.num_computed_tokens + kwargs.get('num_external_computed_tokens',0)
+            local_end = at-manager.offsets.get(request_id,0)+num_new_tokens
+            control = getattr(self, 'guided_refresh_control', None)
+            guided = control(request, at, manager.offsets.get(request_id, 0)) if control else None
+            pressure_private = (plan is not None and plan.pressure_probe_tokens and
+                at < request.num_prompt_tokens and plan.action(at, request.num_prompt_tokens,
+                    manager.offsets.get(request_id, 0), manager.capacity) == 'pressure')
+            if (plan is not None and (plan.query is not None and at == plan.replay_begin or
+                    guided is not None and guided[2] or pressure_private)
+                    and local_end+self.guided_reserve<=manager.capacity):
+                kwargs = {**kwargs,'num_lookahead_tokens':max(kwargs.get('num_lookahead_tokens',0),self.guided_reserve)}
+        return kwargs
+
+    def _prefill_allocation_options(self, request, num_new_tokens, args, kwargs, existing):
+        request_id = request.request_id
+        control = None
+        lookahead = kwargs.get('num_lookahead_tokens', 0)
+        if (existing is not None and lookahead and not args and
+                not kwargs.get('num_new_computed_tokens', 0) and
+                not kwargs.get('num_external_computed_tokens', 0) and
+                not kwargs.get('new_computed_blocks') and
+                self.prefill_refresh_control is not None):
+            extents = [(request.num_computed_tokens - m.offsets.get(request_id, 0) + num_new_tokens,
+                        m.capacity) for m in self.groups if isinstance(m, WorkingSetManager)]
+            if (extents and all(0 <= end <= cap for end, cap in extents) and
+                    any(end + lookahead > cap for end, cap in extents) and
+                    self.prefill_refresh_control(request, num_new_tokens)):
+                # Native allocation precedes connector metadata construction.
+                # This exact pressure step is removed from the public batch;
+                # its complete input is replayed privately after selecting K.
+                # Reserve the replay frame, not draft rows that never execute.
+                # Lifetime credits remain unchanged; the next public forward
+                # allocates ordinary MTP lookahead against the compacted view.
+                kwargs = {**kwargs, 'num_lookahead_tokens': 0}
+                control = (request, request.num_computed_tokens, num_new_tokens)
+        return kwargs, control
+
+    def _native_allocate_slots(self, request, num_new_tokens, *args, **kwargs):
+        return self.native.allocate_slots(request, num_new_tokens, *args, **kwargs)
+
     def _allocate_slots(self, request, num_new_tokens, *args, **kwargs):
         request_id = request.request_id
         existing = self.reservations.get(request_id)
@@ -235,47 +337,13 @@ class ReservedKVCacheManager:
         if existing is None and needed > self.block_pool.get_num_free_blocks():
             self.rejections += 1
             return None
-        if getattr(self,'guided_reserve',0):
-            from .request_plan import request_plan
-            # The public scheduler still advances only its original token count.
-            # Extra lookahead pages belong to this synchronous private probe.
-            manager = next(m for m in self.groups if isinstance(m,WorkingSetManager))
-            plan = request_plan(request, self.guided_block_tokens,manager.capacity-manager.select_budget)
-            at = request.num_computed_tokens + kwargs.get('num_external_computed_tokens',0)
-            local_end = at-manager.offsets.get(request_id,0)+num_new_tokens
-            control = getattr(self, 'guided_refresh_control', None)
-            guided = control(request, at, manager.offsets.get(request_id, 0)) if control else None
-            pressure_private = (plan is not None and plan.pressure_probe_tokens and
-                at < request.num_prompt_tokens and plan.action(at, request.num_prompt_tokens,
-                    manager.offsets.get(request_id, 0), manager.capacity) == 'pressure')
-            if (plan is not None and (plan.query is not None and at == plan.replay_begin or
-                    guided is not None and guided[2] or pressure_private)
-                    and local_end+self.guided_reserve<=manager.capacity):
-                kwargs = {**kwargs,'num_lookahead_tokens':max(kwargs.get('num_lookahead_tokens',0),self.guided_reserve)}
+        kwargs = self._guided_allocation_options(request, num_new_tokens, kwargs)
         if view is not None and permit is None:
             residency.claim(view, request_id)
-        control = None
-        lookahead = kwargs.get('num_lookahead_tokens', 0)
-        if (existing is not None and lookahead and not args and
-                not kwargs.get('num_new_computed_tokens', 0) and
-                not kwargs.get('num_external_computed_tokens', 0) and
-                not kwargs.get('new_computed_blocks') and
-                self.prefill_refresh_control is not None):
-            extents = [(request.num_computed_tokens - m.offsets.get(request_id, 0) + num_new_tokens,
-                        m.capacity) for m in self.groups if isinstance(m, WorkingSetManager)]
-            if (extents and all(0 <= end <= cap for end, cap in extents) and
-                    any(end + lookahead > cap for end, cap in extents) and
-                    self.prefill_refresh_control(request, num_new_tokens)):
-                # Native allocation precedes connector metadata construction.
-                # This exact pressure step is removed from the public batch;
-                # its complete input is replayed privately after selecting K.
-                # Reserve the replay frame, not draft rows that never execute.
-                # Lifetime credits remain unchanged; the next public forward
-                # allocates ordinary MTP lookahead against the compacted view.
-                kwargs = {**kwargs, 'num_lookahead_tokens': 0}
-                control = (request, request.num_computed_tokens, num_new_tokens)
+        kwargs, control = self._prefill_allocation_options(
+            request, num_new_tokens, args, kwargs, existing)
         try:
-            result = self.native.allocate_slots(request, num_new_tokens, *args,
+            result = self._native_allocate_slots(request, num_new_tokens, *args,
                                                  **{**kwargs, "reserved_blocks": reserved})
         except Exception:
             # Unexpected partial native allocation is fatal; never publish a
@@ -283,6 +351,8 @@ class ReservedKVCacheManager:
             if view is not None and permit is None and not any(m.req_to_blocks.get(request_id) for m in self.groups):
                 residency.rollback(view, request_id)
             raise
+        if result is None:
+            self.native_allocation_rejections += 1
         if view is not None:
             if result is None:
                 if permit is None:

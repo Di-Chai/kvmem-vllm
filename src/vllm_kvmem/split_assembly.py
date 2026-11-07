@@ -119,13 +119,40 @@ def _gather_v(source, bases, pages, output,
     tl.store(output+dst,value,mask=d<DIM)
 
 
-def gather_resident_values(layers, from_bases, block_tokens,destination=None):
+@triton.jit
+def _gather_v_tiled(source, bases, pages, output,
+                    S0:tl.constexpr, S1:tl.constexpr, S2:tl.constexpr,
+                    PAGE:tl.constexpr, TOKENS:tl.constexpr, LAYERS:tl.constexpr,
+                    LAYER:tl.constexpr, HEADS:tl.constexpr, DIM:tl.constexpr,
+                    BLOCK:tl.constexpr):
+    # Copy byte tiles instead of launching a CTA for each token/head. A block
+    # can straddle a native page (e.g. page1616), so translate every token.
+    record = tl.program_id(0).to(tl.int64)
+    x = tl.program_id(1)*BLOCK + tl.arange(0, BLOCK)
+    valid = x < TOKENS*HEADS*DIM
+    token = x//(HEADS*DIM)
+    head = (x//DIM)%HEADS
+    d = x%DIM
+    position = tl.load(bases+record).to(tl.int64) + token
+    page = tl.load(pages+position//PAGE, mask=valid, other=0).to(tl.int64)
+    value = tl.load(source+page*S0+(position%PAGE)*S1+head*S2+d, mask=valid, other=0)
+    dst = (record*LAYERS+LAYER)*TOKENS*HEADS*DIM+x
+    tl.store(output+dst, value, mask=valid)
+
+
+def gather_resident_values(layers, from_bases, block_tokens,destination=None, *, tiled=False):
     first=layers[0]
     heads,dim=first.value.shape[-2:]
     shape=(from_bases.numel(),len(layers),block_tokens,heads,dim)
     output=(torch.empty(shape,dtype=torch.uint8,device=first.value.device) if destination is None
             else destination.view(shape))
     for i,layer in enumerate(layers):
+        if tiled:
+            _gather_v_tiled[(from_bases.numel(),triton.cdiv(block_tokens*heads*dim,4096))](
+                layer.value.view(torch.uint8),from_bases,layer.kernel_page_table,output,
+                *layer.value.stride()[:3],layer.value.shape[1],block_tokens,len(layers),i,
+                heads,dim,4096,num_warps=4)
+            continue
         _gather_v[(from_bases.numel()*block_tokens,heads)](
             layer.value.view(torch.uint8),from_bases,layer.kernel_page_table,output,
             *layer.value.stride()[:3],layer.value.shape[1],block_tokens,len(layers),i,

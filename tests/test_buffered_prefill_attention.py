@@ -143,3 +143,40 @@ def test_frozen_prefix_restore_keeps_the_buffered_backend():
     assert all(c.history_execution(h)==dict(attention_state_backend='native_buffered',
         buffered_commits=0,buffered_restores=1) for h in restored)
     assert [r.history_begin for r in chosen[0]]==[0,32]
+
+
+def test_direct_native_score_export_preserves_order_and_float_bits(monkeypatch):
+    from vllm_kvmem._prefill_state_native import State
+    if not hasattr(State,'scores'):
+        pytest.skip('Rebuild the native prefill extension for direct-score qualification')
+    monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT','1')
+    old,new=histories()
+    rng=np.random.default_rng(3421)
+    # Include tiny/subnormal inputs, signed zero and excluded zero/negative
+    # exposure. Exact score ties must not change native picker's tie-breaking.
+    values={int(k):[float(m),float(e)] for k,m,e in zip(rng.permutation(2048),
+        rng.random(2048),rng.random(2048))}
+    values.update({3000:[-0.,1.],3001:[1e-320,1e-310],3002:[1.,0.],3003:[1.,-1.]})
+    old.values=values;new.values=values
+    expected,actual=old.scores(),new.scores()
+    assert list(actual)==list(expected)
+    assert b''.join(struct.pack('<d',v) for v in actual.values())==b''.join(
+        struct.pack('<d',v) for v in expected.values())
+    # Shallow staging/checkpoints may share State, but exported dictionaries
+    # must remain detached from it.
+    actual[3000]=123.
+    assert struct.pack('<d',new.scores()[3000])==struct.pack('<d',-0.)
+
+
+def test_older_extension_score_fallback_remains_exact():
+    _,history=histories()
+    history._buffered_state=NS(values=lambda:{64:[.5,2.],0:[1.,0.]})
+    assert history.scores()=={64:.25}
+
+
+def test_native_score_capability_does_not_enable_unqualified_export_by_itself(monkeypatch):
+    monkeypatch.delenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT',raising=False)
+    _,history=histories()
+    history._buffered_state=NS(values=lambda:{64:[.5,2.]},
+        scores=lambda:pytest.fail('Direct score export was not enabled'))
+    assert not history.native_score_export and history.scores()=={64:.25}

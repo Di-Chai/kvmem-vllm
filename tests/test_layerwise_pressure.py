@@ -144,3 +144,49 @@ def test_missing_layer_feedback_fails_without_a_silent_recency_fallback():
     try:
         with pytest.raises(RuntimeError,match='no accepted attention'):c.prepare(NS(options=o),job)
     finally:assert a.memory.close()
+
+
+@pytest.mark.parametrize('stage', ['prefill', 'decode'])
+@pytest.mark.parametrize('seed', [0, 1, 7, 20260722])
+def test_slot_cache_preserves_native_preview_inputs_and_reads_each_archive_slot_once(stage, seed):
+    import random
+    from collections import Counter
+    c=controller();c.names=tuple(f'layer{i}' for i in range(16));c.rolling_decode=True
+    a=native_authority(count=256,budget=96,sink=1)
+    a.publish_sealed=lambda wait:None
+    o=options(a.memory.config);hs=c._history('r',o)
+    rows=list(a.records.values());rng=random.Random(seed)
+    # Include exact score ties; no ranking, candidate or mandatory policy changes.
+    for history in hs:
+        history.values={r.history_begin:[rng.choice([.01,.2,.2,1.]),1.] for r in rows}
+    a.action_history=NS(prefill=hs[0]);c.decode_histories['r']=hs
+    expected=[a.memory.preview_selection({},(rows[0].handle.slot,),action=False,
+        pressure_scores=[(r.handle.slot,h.scores()[r.history_begin]) for r in rows],max_tokens=96)
+        for h in hs]
+    calls=Counter()
+    class Handle:
+        def __init__(self, slot):self._slot=slot
+        @property
+        def slot(self):
+            calls[self._slot]+=1
+            return self._slot
+    records=a.records
+    a.records={key:NS(history_begin=r.history_begin,count=r.count,handle=Handle(r.handle.slot))
+               for key,r in records.items()}
+    job=NS(command=NS(request_id='r',pressure_stage=stage,mandatory_spans=(),
+        groups=((0,NS(window_tokens=96)),)),history=256,authority=a)
+    try:
+        c.prepare(NS(options=o),job)
+        chosen,evidence=job.layerwise_pressure_plan
+        actual=[[r.handle._slot for r in group] for group in chosen]
+        assert [set(group) for group in actual]==[set(group) for group in expected]
+        order={r.handle.slot:i for i,r in enumerate(sorted(rows,key=lambda r:r.history_begin))}
+        assert actual==[sorted(group,key=order.__getitem__) for group in expected]
+        expected_calls=Counter({r.handle.slot:1 for r in rows})
+        if stage=='decode':expected_calls.update(actual[0])
+        assert calls==expected_calls
+        assert all(e['candidate_starts']==[r.history_begin for r in rows] for e in evidence)
+        assert all(e['fallback_reason'] is None and e['charged_tokens']==96 for e in evidence)
+    finally:
+        a.records=records
+        assert a.memory.close()

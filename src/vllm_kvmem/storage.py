@@ -119,14 +119,35 @@ def make_shared_archive(options, directory, record_bytes, max_requests, *, max_q
     if options.archive_io_max_bytes:
         block = options.memory.block_tokens
         # Refuse an impossible serving configuration before opening the arena.
-        # A full window read and one maximal capture flush must each fit intact.
-        largest_batch = max((options.memory.select_budget + options.memory.gen_budget) // block,
-                            max(16, (max_query_tokens + block - 1) // block + 1)) * record_bytes
+        # Region fallback holds its output, a complete-record scratch slab and
+        # immutable cache copies. K/V serving regions are disjoint and cover at
+        # most one record. Even an all-CPU tiered read takes this fallback path.
+        read_records = (options.memory.select_budget + options.memory.gen_budget) // block
+        if options.query_score_mode != 'mean_k':
+            read_records = max(read_records, 32)  # Bounded scoring-Key batches.
+        read_bytes = 3 * read_records * record_bytes
+        capture_bytes = max(16, (max_query_tokens + block - 1) // block + 1) * record_bytes
         if options.async_seal:
-            largest_batch *= 2  # Owned source tensors plus immutable snapshot.
+            capture_bytes *= 2  # Owned source tensors plus immutable snapshot.
+        largest_batch = max(read_bytes, capture_bytes)
         if options.archive_io_max_bytes < largest_batch:
             raise ValueError('Archive I/O byte capacity cannot fit one full serving batch')
     cls, kwargs = AsyncArchive, {}
+    if options.archive_backend == 'tiered':
+        from .archive_limits import tiered_capacity_records
+        from .tiered_storage import TieredArchive
+        capacity = tiered_capacity_records(options, record_bytes, max_requests)
+        archive = TieredArchive(str(directory), record_bytes, capacity,
+            cpu_bytes=history_bytes, ssd_max_bytes=options.nvme_max_bytes,
+            segment_bytes=options.tiered_segment_bytes,
+            cpu_low_watermark=options.tiered_cpu_low_watermark,
+            cpu_high_watermark=options.tiered_cpu_high_watermark,
+            io_max_bytes=options.archive_io_max_bytes)
+        archive.async_seal = options.async_seal
+        archive._query_window_cache_reserved_bytes = query_cache_bytes
+        archive._historical_feature_reserved_bytes = feature_bytes
+        archive._query_window_cache_bytes = 0
+        return archive
     if options.cpu_read_cache_bytes:
         from .cached_storage import CachedArchive
         cls = CachedArchive
@@ -320,8 +341,11 @@ class AsyncArchive:
                     self._release(key)
                 self._complete(admitted_bytes)
                 raise
-        spans = [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
-                 for i, e in enumerate(entries)]
+        # Direct CPU seals publish owned allocations without using I/O spans.
+        # Let the generic seal path construct them only when it needs them.
+        spans = (None if deferred else
+                 [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
+                  for i, e in enumerate(entries)])
 
         def work():
             nonlocal views, backing_context
@@ -375,6 +399,9 @@ class AsyncArchive:
         snapshot = byte_view = None
         records = []
         try:
+            if spans is None:
+                spans = [self.span(e.allocation.slot, i * self.record_bytes, self.record_bytes)
+                         for i, e in enumerate(entries)]
             started = time.perf_counter()
             snapshot = _native.pack_record_views(views)
             packed = time.perf_counter()
@@ -508,7 +535,7 @@ class AsyncArchive:
                                      offset, length, 0, len(sources))
         return 1
 
-    def read_region(self, namespace, leases, offset, length, *, destination=None, _sources=None):
+    def read_region(self, namespace, leases, offset, length, *, destination=None, _sources=None, inline=False):
         """Read only raw K or V from immutable CPU records.
 
         The unchanged NVMe tier reads whole records on a cache miss. Its bounded
@@ -516,9 +543,10 @@ class AsyncArchive:
         to the caller. Namespace, generation, readiness and leases stay mandatory.
         """
         return self._read_regions(namespace, leases, ((offset, length),),
-                                  destination=destination, _sources=_sources)
+                                  destination=destination, _sources=_sources, inline=inline)
 
-    def read_regions(self, namespace, leases, regions, *, destination=None, _sources=None):
+    def read_regions(self, namespace, leases, regions, *, destination=None, _sources=None, inline=False,
+                     paired_native=False):
         """One admitted read of paired fields, packed field-major then record-major.
 
         All generation checks, immutable source leases and I/O admission cover
@@ -529,10 +557,23 @@ class AsyncArchive:
         if len(regions) != 2:
             raise ValueError('Paired archive read requires exactly two regions')
         return self._read_regions(namespace, leases, regions,
-                                  destination=destination, _sources=_sources)
+                                  destination=destination, _sources=_sources, inline=inline,
+                                  paired_native=paired_native)
 
-    def _read_regions(self, namespace, leases, regions, *, destination=None, _sources=None):
+    def _read_regions(self, namespace, leases, regions, *, destination=None, _sources=None, inline=False,
+                      paired_native=False):
+        # Only a synchronous CPU-archive consumer may remove the executor
+        # round trip. Admission, generation leases, gather and failure draining
+        # are identical; asynchronous/pre-read and disk callers keep the pool.
+        if type(inline) is not bool or inline and (not self.memory_only or destination is None):
+            raise ValueError('Inline region reads require CPU authority and an owned destination')
+        completed = ArchiveJob(Future()) if inline else None
         regions = tuple(tuple(region) for region in regions)
+        if type(paired_native) is not bool or paired_native and (
+                not self.memory_only or destination is None or len(regions) != 2):
+            raise ValueError('Native paired gather requires CPU authority, paired regions and owned staging')
+        if paired_native and not callable(getattr(_native, 'gather_record_regions', None)):
+            raise RuntimeError('Native paired gather requires the updated native extension')
         if (not leases or not regions or any(len(region) != 2 for region in regions) or
                 any(type(offset) is not int or type(length) is not int or
                     offset < 0 or length <= 0 or offset + length > self.record_bytes
@@ -572,11 +613,16 @@ class AsyncArchive:
                 view = memoryview(fallback)
                 for j, i in enumerate(misses):
                     sources[i] = view[j*self.record_bytes:(j+1)*self.record_bytes]
-                tasks, cursor = 0, 0
-                for offset, length in regions:
-                    end = cursor + len(sources) * length
-                    tasks += self._gather_region(memoryview(data)[cursor:end], sources, offset, length)
-                    cursor = end
+                gather_stats = None
+                if paired_native:
+                    gather_stats = self._gather_regions_paired(memoryview(data), sources, regions)
+                    tasks = 1
+                else:
+                    tasks, cursor = 0, 0
+                    for offset, length in regions:
+                        end = cursor + len(sources) * length
+                        tasks += self._gather_region(memoryview(data)[cursor:end], sources, offset, length)
+                        cursor = end
                 copied_at = time.perf_counter()
                 if misses:
                     with self._lock:
@@ -591,6 +637,11 @@ class AsyncArchive:
                     stats.update(region_offset=regions[0][0], region_bytes=regions[0][1])
                 else:
                     stats.update(regions=regions, region_bytes=row_bytes, region_read_count=len(regions))
+                if inline:
+                    stats['inline_cpu_region_read'] = True
+                if gather_stats is not None:
+                    stats['paired_native_gather'] = True
+                    stats.update({'paired_native_'+key: value for key,value in gather_stats.items()})
                 return data, stats
             finally:
                 sources.clear()
@@ -598,6 +649,17 @@ class AsyncArchive:
                 with self._lock:
                     self._complete(admitted_bytes)
 
+        if inline:
+            # Do not hold the archive lock while copying or joining gather
+            # tasks. The caller already waits for this read before its DMA;
+            # the native gather releases the GIL and retains the same sources.
+            try:
+                result = work()
+            except BaseException as error:
+                completed._future.set_exception(error)
+            else:
+                completed._future.set_result(result)
+            return completed
         with self._lock:
             try:
                 return _submit_archive_job(self.executor, work)
@@ -619,7 +681,7 @@ class AsyncArchive:
 
     def close(self) -> bool:
         with self._lock:
-            if self._pending:
+            if self._pending or getattr(self, '_prepared_region_readers', 0):
                 return False
             if self._closed:
                 return True

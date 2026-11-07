@@ -15,6 +15,7 @@ from .window_manager import RefreshTicket
 from .terminal import TerminalPrefix
 from .archive_admission import ArchiveCapacity
 from .session_control import SessionCommands
+from .request_swap_worker import SwapCommand
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class RefreshCommand:
 
 @dataclass
 class ControlMetadata(KVConnectorMetadata):
-    commands: list[RefreshCommand | RestoreCommand] = field(default_factory=list)
+    commands: list[RefreshCommand | RestoreCommand | SwapCommand] = field(default_factory=list)
     cancelled: set[str] = field(default_factory=set)
     terminal_prefixes: dict[str, TerminalPrefix] = field(default_factory=dict)
     sessions: SessionCommands = field(default_factory=SessionCommands)
@@ -59,6 +60,7 @@ class ControlMetadata(KVConnectorMetadata):
     cost_classification: dict[str, dict] = field(default_factory=dict)
     logical_prefill_groups: dict = field(default_factory=dict)
     logical_prefill_step: int | None = None
+    systemone_pool: dict | None = None
     # Full rows after a fenced refresh, on engines without a native row-update field.
     block_table_updates: dict[str, tuple[list[int], ...]] = field(default_factory=dict)
 
@@ -76,6 +78,8 @@ class ControlCompletions(KVConnectorWorkerMetadata):
     publication_sequence: int | None = None
     publication_blocked: set[str] = field(default_factory=set)
 
+    systemone_notices: list = field(default_factory=list)
+
     def aggregate(self, other):
         raise RuntimeError("Working-set control currently requires a single worker rank")
 
@@ -85,6 +89,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         super().__init__(vllm_config, role, kv_cache_config)
         if vllm_config.parallel_config.tensor_parallel_size != 1:
             raise ValueError("Working-set control currently qualifies TP=1")
+        self.systemone_pool = None
+        self.systemone_worker = None
         self.commands = []
         self.pending = {}
         self.cancelled = set()
@@ -95,15 +101,19 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.worker_completions = []
         self.worker_selected_windows = {}
         self.runtime = None
+        self.swap_worker = None
+        self.request_swap_pending = None
         self.scheduler_completion = None
         options = vllm_config.kv_transfer_config.kv_connector_extra_config.get('kvmem', {})
+        self.gpu_memory_admission = options.get('gpu_memory_admission', 'static')
         self.async_retirement = options.get('async_archive_retirement', False)
+        self.physical_retirement = options.get('archive_backend') == 'tiered'
         repository_gc = options.get('repository_gc', False)
         if type(self.async_retirement) is not bool or type(repository_gc) is not bool:
             raise ValueError('Retirement and repository GC options must be boolean')
         if (self.async_retirement or repository_gc) and os.getenv('KVMEM_BOUNDED_TARGET') != '1':
             raise ValueError('Retirement/GC requires bounded authority admission')
-        if self.async_retirement or repository_gc:
+        if self.async_retirement or repository_gc or self.physical_retirement:
             from .engine_api import require_contract
             require_contract('retirement')
         self.retirement_done = None
@@ -121,6 +131,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.scheduler_step_feedback = None
         self.restore_timings = None
         self.restore_completion_poll = None
+        self.pressure_completion_poll = None
+        self.query_completion_poll = None
         self.scheduler_restore_feedback = None
         self.active_residency = None
         self.tool_grace_allows = None
@@ -142,6 +154,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
 
     def build_connector_meta(self, scheduler_output):
         result = ControlMetadata(self.commands, self.cancel_updates, self.terminal_prefixes)
+        if self.systemone_pool is not None:
+            result.systemone_pool = self.systemone_pool.metadata()
         self.commands, self.cancel_updates = [], set()
         self.terminal_prefixes = {}
         if self.sessions is not None:
@@ -158,15 +172,25 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                 raise RuntimeError('Session eviction received without its worker')
             self.session_worker.evict(metadata.sessions.evictions)
         for command in metadata.commands:
-            if self.runtime is None:
-                raise RuntimeError("Working-set command received without a worker runtime")
             if command.request_id in self.worker_jobs:
                 raise RuntimeError("Duplicate worker transaction")
-            self.worker_jobs[command.request_id] = (command, self.runtime(command))
+            if isinstance(command, SwapCommand):
+                if self.swap_worker is None:
+                    raise RuntimeError('Request swap command received without its worker')
+                job = self.swap_worker.execute(command)
+            else:
+                if self.runtime is None:
+                    raise RuntimeError("Working-set command received without a worker runtime")
+                job = self.runtime(command)
+            self.worker_jobs[command.request_id] = (command, job)
 
     def get_finished(self, finished_req_ids):
         if self.restore_completion_poll is not None:
             self.restore_completion_poll()
+        if self.pressure_completion_poll is not None:
+            self.pressure_completion_poll()
+        if self.query_completion_poll is not None:
+            self.query_completion_poll()
         for request_id, (command, job) in list(self.worker_jobs.items()):
             if job.query():
                 self.worker_completions.append((request_id, command.command_id))
@@ -177,11 +201,13 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         for request_id in self.cancelled:
             if request_id in self.worker_jobs:
                 continue
-            if self.async_retirement:
-                if self.retirement_done is None:
-                    raise RuntimeError('Missing authority retirement completion handler')
+            if self.swap_worker is not None and request_id in self.swap_worker.checkpoints:
+                continue  # Snapshot ownership ends only after an explicit drop.
+            if self.retirement_done is not None:
                 if not self.retirement_done(request_id):
                     continue
+            elif self.async_retirement or self.physical_retirement:
+                raise RuntimeError('Missing authority retirement completion handler')
             done.add(request_id)
         self.cancelled.difference_update(done)
         return done or None, None
@@ -195,9 +221,11 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         if publication is not None:
             self.publication_sequence += 1
             self.publication_blocked = set(publication)
-        if not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None:
+        fork_notices = self.systemone_worker.take_notices() if self.systemone_worker is not None else []
+        if not fork_notices and not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
+        result.systemone_notices = fork_notices
         result.sessions = notices
         result.step_timings = timings
         result.restore_timings = restores
@@ -289,7 +317,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             if request.request_id in self.terminal_prefixes:
                 raise RuntimeError('Duplicate terminal request boundary')
             self.terminal_prefixes[request.request_id] = TerminalPrefix.from_request(request)
-        if request.request_id not in self.pending and not self.async_retirement:
+        if request.request_id not in self.pending and not (self.async_retirement or self.physical_retirement):
             return False, None
         self.cancelled.add(request.request_id)
         self.cancel_updates.add(request.request_id)
@@ -309,6 +337,16 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             return None, False
 
     def _get_matched_tokens(self, request, num_computed_tokens):
+        incremental_session = (self.gpu_memory_admission == 'incremental' and
+                               bool(getattr(request, 'session_id', None)))
+        if incremental_session:
+            from .request_plan import RequestCapacityError
+            from .session_control import SessionLedger
+            from .session_swap import owned_session_admission
+            if not isinstance(self.sessions, SessionLedger):
+                raise RequestCapacityError('Incremental session requests require an owned session ledger')
+            if not owned_session_admission(self.sessions, request):
+                return None, False
         if self.tool_grace_allows is not None and not self.tool_grace_allows(request):
             return None, False
         matched = getattr(self.history_admission, 'matched_admission', False)
@@ -357,4 +395,5 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
 
     def has_pending_push_work(self):
         return bool(self.pending or self.cancelled or self.publication_blocked or
+                    (self.request_swap_pending is not None and self.request_swap_pending()) or
                     (self.sessions is not None and self.sessions.has_pending_work()))

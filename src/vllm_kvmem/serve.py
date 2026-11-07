@@ -22,6 +22,7 @@ DEFAULTS = {
     'execution_mode': 'eager',
     'verify_session_restore': False,
     'verify_session_restore_digest': False,
+    'verify_request_swap': False,
     'experimental_dflash_query_planning': False,
     'draft_tokens': 7,
     'draft_method': 'dflash',
@@ -30,6 +31,7 @@ DEFAULTS = {
     'cudagraph_capture_sizes': None,
     'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
     'long_prefill_token_threshold': 1024, 'gpu_memory_utilization': .72,
+    'kv_cache_memory_bytes': None,
     'max_model_len': 262144, 'q8_tensorcore': False,
     'prefill_chunk_tokens': 0,
     'query_replay_budget': None,
@@ -38,6 +40,7 @@ DEFAULTS = {
     'cuda_allocator_conf': None,
     'recall_experiment': None,
     'model_adapter': None,
+    'full_history_benchmark': False,
 }
 PATHS = ('model', 'tokenizer', 'hf_config_path', 'draft_model', 'mm_proj')
 # Explicit experiment controls for NVFP4 and FP8 checkpoints.
@@ -120,6 +123,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         raise ValueError('execution_mode must be eager, full_graph or compiled_graph')
     if type(cfg['verify_session_restore']) is not bool:
         raise ValueError('verify_session_restore must be boolean')
+    if type(cfg['verify_request_swap']) is not bool:
+        raise ValueError('verify_request_swap must be boolean')
     if (type(cfg['verify_session_restore_digest']) is not bool or
             (cfg['verify_session_restore_digest'] and not cfg['verify_session_restore'])):
         raise ValueError('Digest verification requires enabled session restore verification')
@@ -206,7 +211,20 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
-    if cfg['max_model_len'] > 1048576:
+    if (cfg['kv_cache_memory_bytes'] is not None and
+            (type(cfg['kv_cache_memory_bytes']) is not int or cfg['kv_cache_memory_bytes'] <= 0)):
+        raise ValueError('kv_cache_memory_bytes must be a positive integer or null')
+    incremental_modes = ('eager', 'compiled_graph') if options.request_swap_layerwise else ('eager',)
+    if options.gpu_memory_admission == 'incremental' and (
+            cfg['draft_method'] != 'mtp' or cfg['execution_mode'] not in incremental_modes or
+            cfg['recall_experiment'] is not None or cfg['full_history_benchmark']):
+        raise ValueError('Incremental serving currently requires eager native MTP without recall experiments')
+    if type(cfg['full_history_benchmark']) is not bool:
+        raise ValueError('full_history_benchmark must be boolean')
+    if cfg['full_history_benchmark']:
+        from .full_history_benchmark import validate_full_history
+        validate_full_history(cfg, options)
+    if cfg['max_model_len'] > 1048576 and not cfg['full_history_benchmark']:
         gc = options.historical_gc
         if (cfg['draft_method'] != 'mtp' or gc is None or gc.mode != 'delete' or
                 not options.request_planning or not options.rolling_active_window or
@@ -298,12 +316,13 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
                 not baseline < maximum <= 2 * baseline or maximum > cfg['max_num_batched_tokens']):
             raise ValueError('Offline prefill coalescing requires an aligned baseline and at most a twofold native-fit maximum')
     if options.prefill_physical_coalescing:
-        physical = 2048*options.prefill_physical_max_chunks
-        sample_rows = 64*options.prefill_physical_max_chunks
-        if (cfg['draft_method'] != 'mtp' or cfg['prefill_chunk_tokens'] != 2048 or
+        logical = options.prefill_physical_logical_tokens
+        physical = logical*options.prefill_physical_max_chunks
+        sample_rows = (logical//32)*options.prefill_physical_max_chunks
+        if (cfg['draft_method'] != 'mtp' or cfg['prefill_chunk_tokens'] != logical or
                 cfg['max_num_batched_tokens'] < physical or options.memory.gen_budget < physical):
             raise ValueError('Physical prefill coalescing requires native MTP, an unchanged '
-                             '2048-token logical chunk and capacity for its maximum physical forward')
+                             'configured logical chunk and capacity for its maximum physical forward')
         # Match the existing native score-bank upper bound. Two original
         # physical leases can coexist, each retaining coordinates and masses.
         context = options.memory.select_budget+options.memory.gen_budget+cfg['max_num_batched_tokens']
@@ -347,6 +366,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    if cfg['kv_cache_memory_bytes'] is not None:
+        argv.extend(['--kv-cache-memory-bytes', str(cfg['kv_cache_memory_bytes'])])
     if options.flashinfer_gemm_bucket_alignment:
         seed = os.getenv('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
         if seed:
@@ -396,8 +417,11 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         # Only scheduler/session logical coordinates grow beyond the HF limit;
         # do not alter the checkpoint's rotary frequencies or quantization.
         env['VLLM_ALLOW_LONG_MAX_MODEL_LEN'] = '1'
-    if cfg['max_model_len'] > 1048576 or cfg['recall_experiment'] is not None:
+    if (cfg['max_model_len'] > 1048576 or cfg['recall_experiment'] is not None or
+            options.gpu_memory_admission == 'incremental'):
         env['KVMEM_LOGICAL_KV_CAPACITY'] = '1'
+    if cfg['full_history_benchmark']:
+        env['KVMEM_FULL_HISTORY_BENCHMARK'] = '1'
     if cfg['prefill_chunk_tokens']:
         env['KVMEM_PREFILL_CHUNK_TOKENS'] = str(cfg['prefill_chunk_tokens'])
     if cfg['reasoning_end_str'] is not None:
@@ -437,6 +461,10 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         env['KVMEM_VERIFY_SESSION_RESTORE'] = '1'
         if cfg['verify_session_restore_digest']:
             env['KVMEM_VERIFY_SESSION_RESTORE_DIGEST'] = '1'
+    if cfg['verify_request_swap']:
+        if options.gpu_memory_admission != 'incremental':
+            raise ValueError('verify_request_swap requires incremental GPU admission')
+        env['KVMEM_VERIFY_REQUEST_SWAP'] = '1'
     if not is_gguf:
         # Native vLLM resolves weight precision and kernels from the checkpoint.
         # Preserve all quantization metadata, including an unquantized config.
@@ -486,6 +514,11 @@ def main(argv=None):
         help='Explicit JSON profile; omit for the bundled DFlash2 k7 / GPU .80 agent profile')
     parser.add_argument('--run-dir', type=Path, required=True, help='New owned telemetry/archive directory')
     parser.add_argument('--dry-run', action='store_true', help='Validate local inputs and print the exact launch without importing vLLM')
+    parser.add_argument('--systemone-fork', action='store_true', help='Reserve shared-prefix System One observation branches (eager)')
+    parser.add_argument('--verify-systemone-refresh', action='store_true', help='Byte audit only: trigger a scheduler refresh while a shared observer lease is live')
+    parser.add_argument('--systemone-quantum', type=int, default=16, choices=range(4,65), help='Maximum tokens per observer per foreground target batch')
+    parser.add_argument('--systemone-branches', type=int, choices=(1,2,4), default=1)
+    parser.add_argument('--systemone-token-budget', type=int, help='Total observer tokens per target batch; defaults to branches times quantum')
     parser.add_argument('--verify-guided-pressure', action='store_true',
         help='Diagnostic: verify exact native state restoration after every private pressure Query')
     parser.add_argument('--retrieval-diagnostics', action='store_true',
@@ -500,6 +533,10 @@ def main(argv=None):
         help='Serial eager one-turn diagnostic: global or causally ordered per-layer Mean-K')
     parser.add_argument('--layerwise-query-optimized', action='store_true',
         help='Use bounded pinned layer assembly and omit comparison-only Query diagnostics')
+    parser.add_argument('--layerwise-query-no-probe', action='store_true',
+        help='Experimental: select KV only in the public Query; no private replay or global assembly')
+    parser.add_argument('--layerwise-query-mtp-selection', choices=('global', 'layer0'),
+        help='MTP history source: global by default, layer0 for no-probe and its matched replay control')
     parser.add_argument('--layerwise-query-full-diagnostics', action='store_true',
         help='Retain frozen-Q comparison diagnostics while qualifying optimized assembly')
     parser.add_argument('--layerwise-query-native-batches', action='store_true',
@@ -508,6 +545,20 @@ def main(argv=None):
         help='Serial experiment: independent accepted prefill attention and blocks per layer')
     parser.add_argument('--layerwise-pressure-single-assembly', action='store_true')
     parser.add_argument('--layerwise-pressure-fast-metadata', action='store_true')
+    parser.add_argument('--layerwise-pressure-prepared-reads', action='store_true',
+        help='Experimental per-pressure immutable CPU source reuse; default off')
+    parser.add_argument('--layerwise-pressure-post-forward-reap', action='store_true',
+        help='Experimental ready-only prefill completion in post-forward feedback; default off')
+    parser.add_argument('--layerwise-pressure-submit-on-prepare', action='store_true',
+        help='Submit prepared prefill assembly without another public forward; default off')
+    parser.add_argument('--layerwise-pressure-reuse-layer-views', action='store_true',
+        help='Experimental reuse of transaction-owned validated layer views; default off')
+    parser.add_argument('--layerwise-pressure-resident-values', action='store_true',
+                        help='Reuse native GPU Value bytes only for complete resident prefill blocks')
+    parser.add_argument('--layerwise-pressure-native-score-export', action='store_true',
+        help='Unqualified direct native buffered-score export; requires rebuilt extension; default off')
+    parser.add_argument('--layerwise-pressure-batch-selection', action='store_true',
+        help='Use the original per-layer pressure picker over one native snapshot; default off')
     parser.add_argument('--layerwise-packed-assembly', action='store_true')
     parser.add_argument('--layerwise-prepared-index', action='store_true')
     parser.add_argument('--layerwise-batched-reads', action='store_true')
@@ -526,6 +577,30 @@ def main(argv=None):
         source = args.config.expanduser().resolve()
         profile, base = json.loads(source.read_text()), source.parent
     plan = build_launch(profile, base, run_dir)
+    if args.layerwise_query_diagnostic and not profile.get('kvmem', {}).get('async_refresh', False):
+        raise ValueError('Layerwise Query requires async_refresh; synchronous refresh does not invoke layerwise selection')
+    if plan['profile'].get('kvmem', {}).get('request_swap_layerwise', False):
+        if (args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_query_optimized or
+                not args.layerwise_query_native_batches or not args.layerwise_prefill_pressure or
+                not args.layerwise_pressure_single_assembly or args.layerwise_original_rope or
+                args.layerwise_rolling_decode or args.layerwise_query_no_probe or
+                args.layerwise_query_mtp_selection not in (None, 'global')):
+            raise ValueError('Layerwise request swaps require sequential optimized native Query batches, '
+                             'single pressure assembly and the existing compact-position replay path')
+    if args.verify_systemone_refresh:
+        if not args.systemone_fork or not plan['profile']['verify_session_restore']:
+            raise ValueError('Forced observer refresh requires --systemone-fork and verify_session_restore')
+        plan['environment']['KVMEM_SYSTEMONE_VERIFY_REFRESH'] = '1'
+    if args.systemone_fork:
+        if plan['profile']['execution_mode'] != 'eager' or plan['profile']['max_num_seqs'] != args.systemone_branches + 1 or plan['profile']['draft_method'] not in (None, 'mtp') or plan['profile']['kvmem'].get('async_refresh') or plan['profile']['kvmem'].get('async_restore'):
+            raise ValueError('System One fork requires eager, max_num_seqs=branches+1, optional MTP, synchronous refresh/restore')
+        budget = args.systemone_token_budget if args.systemone_token_budget is not None else args.systemone_branches * args.systemone_quantum
+        if not 4 * args.systemone_branches <= budget <= 64 * args.systemone_branches:
+            raise ValueError('System One total token budget must be 4..64 tokens per reserved branch')
+        plan['environment']['KVMEM_SYSTEMONE_BRANCHES'] = str(args.systemone_branches)
+        plan['environment']['KVMEM_SYSTEMONE_TOKEN_BUDGET'] = str(budget)
+        plan['environment']['KVMEM_SYSTEMONE_FORK'] = '1'
+        plan['environment']['KVMEM_SYSTEMONE_QUANTUM'] = str(args.systemone_quantum)
     if args.layerwise_rolling_decode:
         from .layerwise_decode import validate_configuration
         validate_configuration(profile, query_mode=args.layerwise_query_diagnostic,
@@ -569,10 +644,30 @@ def main(argv=None):
             raise ValueError('Layerwise pressure requires optimized sequential Query')
         plan['environment']['KVMEM_LAYERWISE_PREFILL_PRESSURE'] = '1'
     for enabled, name in ((args.layerwise_pressure_single_assembly, 'SINGLE_ASSEMBLY'),
-                          (args.layerwise_pressure_fast_metadata, 'FAST_METADATA')):
+                          (args.layerwise_pressure_fast_metadata, 'FAST_METADATA'),
+                          (args.layerwise_pressure_prepared_reads, 'PREPARED_READS'),
+                          (args.layerwise_pressure_post_forward_reap, 'POST_FORWARD_REAP'),
+                          (args.layerwise_pressure_submit_on_prepare, 'SUBMIT_ON_PREPARE'),
+                          (args.layerwise_pressure_reuse_layer_views, 'REUSE_LAYER_VIEWS'),
+                          (args.layerwise_pressure_resident_values, 'RESIDENT_VALUES'),
+                          (args.layerwise_pressure_batch_selection, 'BATCH_SELECTION'),
+                          (args.layerwise_pressure_native_score_export, 'NATIVE_SCORE_EXPORT')):
         if enabled:
             if not args.layerwise_prefill_pressure:
                 raise ValueError('Pressure execution optimization requires per-layer pressure')
+            if name in ('PREPARED_READS','POST_FORWARD_REAP','SUBMIT_ON_PREPARE','REUSE_LAYER_VIEWS','RESIDENT_VALUES') and not args.layerwise_pressure_single_assembly:
+                raise ValueError('Prepared reads and completion reaping require single pressure assembly')
+            if name == 'PREPARED_READS' and not args.layerwise_paired_reads:
+                raise ValueError('Prepared pressure reads require paired reads')
+            if name == 'PREPARED_READS':
+                kv = plan['profile']['kvmem']
+                if kv.get('archive_backend') != 'cpu' or kv.get('repository_gc') or kv.get('historical_gc'):
+                    raise ValueError('Prepared pressure reads currently require CPU authority without GC')
+            if name == 'NATIVE_SCORE_EXPORT' and not args.layerwise_buffered_history:
+                raise ValueError('Native pressure score export requires buffered histories')
+            if name == 'RESIDENT_VALUES' and (not args.layerwise_packed_assembly or
+                    not plan['profile']['kvmem'].get('reuse_resident_v') or args.layerwise_original_rope):
+                raise ValueError('Resident pressure V requires packed compact-position assembly and existing V staging')
             plan['environment']['KVMEM_LAYERWISE_PRESSURE_' + name] = '1'
     if args.layerwise_query_diagnostic:
         if (not args.layerwise_query_native_batches and
@@ -589,6 +684,18 @@ def main(argv=None):
         plan['environment']['KVMEM_LAYERWISE_QUERY_OPTIMIZED'] = '1'
         if args.layerwise_query_full_diagnostics:
             plan['environment']['KVMEM_LAYERWISE_QUERY_DIAGNOSTICS'] = '1'
+    if args.layerwise_query_no_probe or args.layerwise_query_mtp_selection is not None:
+        if args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_query_optimized:
+            raise ValueError('No-probe/MTP selection requires optimized sequential Query')
+        if args.layerwise_query_no_probe:
+            from types import SimpleNamespace
+            from .layerwise_no_probe import validate_options
+            validate_options(SimpleNamespace(**plan['profile']['kvmem']))
+            if args.layerwise_query_mtp_selection == 'global':
+                raise ValueError('No-probe Query cannot use a private global MTP selection')
+            plan['environment']['KVMEM_LAYERWISE_QUERY_NO_PROBE'] = '1'
+        plan['environment']['KVMEM_LAYERWISE_QUERY_MTP_SELECTION'] = (
+            args.layerwise_query_mtp_selection or 'layer0')
     if args.value_recall_diagnostics:
         if not profile.get('recall_experiment',{}).get('include_mandatory_in_softmax'):
             raise ValueError('Value diagnostics require mandatory-inclusive normalization')

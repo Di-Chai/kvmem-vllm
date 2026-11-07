@@ -1,7 +1,7 @@
 """CPU publication/ownership qualification for the opt-in one-copy seal path."""
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, get_ident
 import weakref
 
 import numpy as np
@@ -40,6 +40,11 @@ def test_direct_seal_publishes_the_exact_hashed_independent_record_bytes(tmp_pat
                else MemoryArchive(str(tmp_path), 4, 2, **kwargs))
     if mode == 'ssd':
         archive.cpu_direct_record_seal = True  # SSD cannot opt into the CPU hook.
+    span_factory, spans, caller = archive.span, [], get_ident()
+    def observed_span(slot, offset, size):
+        spans.append((slot, offset, size, get_ident()))
+        return span_factory(slot, offset, size)
+    monkeypatch.setattr(archive, 'span', observed_span)
     repo, leases, handles = repository(2)
     pack, copies, packed = _native.pack_record_views, [], []
     copy = memory_storage.copy_record_slices
@@ -54,6 +59,10 @@ def test_direct_seal_publishes_the_exact_hashed_independent_record_bytes(tmp_pat
     monkeypatch.setattr(memory_storage, 'copy_record_slices', observed_copy)
     sources = [bytearray(value) for value in (b'ab', b'cd', b'WX', b'YZ')]
     stats = archive.write_from_views('owner', leases, sources).result(5)
+    expected_spans = ([] if mode == 'direct' else
+        [(entry.allocation.slot, i*4, 4) for i, entry in enumerate(archive._entries.values())])
+    assert [span[:3] for span in spans] == expected_spans
+    assert all(span[3] != caller for span in spans)
     assert stats['record_digests'] == tuple(hashlib.sha256(v).hexdigest() for v in (b'abcd', b'WXYZ'))
     assert [n for n, _ in packed] == ([2, 2] if mode == 'direct' else [4])
     assert len(copies) == (0 if mode in ('direct', 'ssd') else 1)
@@ -76,6 +85,28 @@ def test_direct_seal_publishes_the_exact_hashed_independent_record_bytes(tmp_pat
     assert archive.read('owner', leases).result(5)[0] == b'abcdWXYZ'
     reclaim_all(repo, leases, handles, archive)
     assert archive.tier.used_slots == 0 and archive.close()
+
+
+@pytest.mark.parametrize('ssd', [False, True])
+def test_deferred_span_failure_releases_sources_generations_and_admission(tmp_path, monkeypatch, ssd):
+    archive = (AsyncArchive(str(tmp_path), 4, 2) if ssd else
+               MemoryArchive(str(tmp_path), 4, 2))
+    repo, leases, handles = repository(2)
+    def failed_span(*args):
+        raise MemoryError('injected span failure')
+    monkeypatch.setattr(archive, 'span', failed_span)
+    def submit():
+        sources = [np.array([i, i+1], dtype=np.uint8) for i in range(4)]
+        return archive.write_from_views('owner', leases, sources), [weakref.ref(v) for v in sources]
+    job, refs = submit()
+    with pytest.raises(MemoryError, match='injected span failure'):
+        job.result(5)
+    # Retaining the failed completion must not retain its source exports.
+    assert all(ref() is None for ref in refs)
+    assert archive.io_usage()['archive_io_pending_bytes'] == 0
+    assert not archive._entries and archive.tier.used_slots == 0
+    reclaim_all(repo, leases, handles, archive)
+    assert archive.close()
 
 
 @pytest.mark.parametrize('dtype', [torch.bfloat16, torch.float8_e4m3fn])

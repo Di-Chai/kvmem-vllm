@@ -12,6 +12,11 @@ from .systemone_active import ActiveDecisionError
 
 class SystemOneWorker:
     def kvmem_systemone_active(self, action, operation, reference=None, reads=None):
+        fork = getattr(self.model_runner, '_kvmem_systemone_fork', None)
+        if (reference or {}).get('mode') == 'fork_cobatch' or (fork is not None and operation in fork.pending):
+            if fork is None:
+                return {'error': 'Server has not enabled the reserved System One fork slot'}
+            return fork.rpc(action, operation, reference, reads)
         queue = getattr(self.model_runner, '_kvmem_active_decisions', None)
         if queue is None:
             queue = ActiveDecisionQueue(self.model_runner)

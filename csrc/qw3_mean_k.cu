@@ -6,18 +6,18 @@
 #include "qw3_mean_k_kernel.cuh"
 #include "qw3_mean_k_tiled.cuh"
 
-torch::Tensor score(torch::Tensor q, torch::Tensor k, double scale) {
+static torch::Tensor score_impl(torch::Tensor q, torch::Tensor k, double scale, bool force_tiled) {
     TORCH_CHECK(q.is_cuda() && k.is_cuda() && q.device() == k.device(), "CUDA Q/index must share a device");
     TORCH_CHECK(q.scalar_type() == at::kHalf && k.scalar_type() == at::kHalf, "qw3 MeanK requires FP16 Q/index");
     TORCH_CHECK(q.dim() == 4 && k.dim() == 4 && q.is_contiguous() && k.is_contiguous(), "Expected contiguous LTHD/LBHD");
     const auto L=q.size(0), T=q.size(1), H=q.size(2), D=q.size(3), B=k.size(1), KH=k.size(2);
-    TORCH_CHECK(L>0 && T>0 && H>0 && D>0 && B>0 && B<=32768 && KH>0 && H%KH==0 &&
+    TORCH_CHECK(L>0 && T>0 && H>0 && D>0 && B>0 && B<=65536 && KH>0 && H%KH==0 &&
         k.size(0)==L && k.size(3)==D && std::isfinite(scale) && scale>0, "Invalid bounded MeanK geometry/scale");
     TORCH_CHECK(L*T*H<=UINT32_MAX && D<=UINT32_MAX, "MeanK distribution dimensions exceed native indexing");
     c10::cuda::CUDAGuard guard(q.device());
     auto result=torch::zeros({B},q.options().dtype(at::kFloat));
     const auto stream=at::cuda::getCurrentCUDAStream();
-    if (B<=8192) {
+    if (B<=8192 && !force_tiled) {
         // NVCC 13 / sm_120 emits a 128-bit shared load for the scalar
         // reduction's final 1-3 elements. Reserve its full tail access;
         // n_blocks stays B, so padding never participates in the softmax.
@@ -55,4 +55,18 @@ torch::Tensor score(torch::Tensor q, torch::Tensor k, double scale) {
     return result;
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("score", &score); }
+torch::Tensor score(torch::Tensor q, torch::Tensor k, double scale) {
+    return score_impl(q, k, scale, false);
+}
+
+// Explicit experimental entry: same operands and normalization domain, using
+// the existing bounded tiled kernels even below the legacy page threshold.
+// Reduction rounding differs from the small-index kernel and needs validation.
+torch::Tensor score_tiled(torch::Tensor q, torch::Tensor k, double scale) {
+    return score_impl(q, k, scale, true);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("score", &score);
+    m.def("score_tiled", &score_tiled);
+}

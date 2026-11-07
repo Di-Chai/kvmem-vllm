@@ -33,7 +33,7 @@ def test_step_timing_exposes_existing_refresh_diagnostics_without_extra_work(
         memory=SimpleNamespace(_store=SimpleNamespace(working_records=lambda: ())))
     command = SimpleNamespace(request_id='owner', command_id=1,
         groups=((0, SimpleNamespace(history_end=64, window_tokens=12)),),
-        selection='pressure', mandatory_spans=(), query_span=None, input_tokens=(1,))
+        selection='pressure', guided_reason=None, mandatory_spans=(), query_span=None, input_tokens=(1,))
     job = RefreshJob(command, authority=authority, selected_tokens=12)
     plan = object()
     assembly = SimpleNamespace(host_prepare_seconds=.1, uploaded_bytes=100,

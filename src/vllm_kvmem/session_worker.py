@@ -111,6 +111,7 @@ class SessionWorker:
         self.terminal_captures = {}
         self.prepared_terminal_windows = {}
         self.restore_oracles = {}
+        self._swap_fences = {}
         self.checkpoint_deferrals = 0
         self.restored_tokens = 0
         self.release_requests = set()
@@ -122,7 +123,89 @@ class SessionWorker:
     def runtime(self):
         return self.runner._kvmem_capture_runtime
 
+    def _swap_binding(self, request_id, identity):
+        from .session_swap import SessionSwapIdentity
+        binding = self.bindings.get(request_id)
+        if identity is None:
+            if binding is not None:
+                raise ValueError('Owned session swap omitted its namespace identity')
+            return None
+        if (not isinstance(identity, SessionSwapIdentity) or binding is None or
+                binding.namespace != identity.namespace or binding.generation != identity.generation or
+                self.identities.get(binding.namespace) != identity.generation):
+            raise ValueError('Session swap namespace or generation changed')
+        return binding
+
+    def swap_ready(self, request_id, identity):
+        """Fence existing P/M downloads after accepted-history publication."""
+        binding = self._swap_binding(request_id, identity)
+        if binding is None:
+            return True
+        if (request_id in self.imports or request_id in self.captures or
+                request_id in self.terminal_captures or request_id in self.prepared_terminal_windows or
+                request_id in self.retiring or binding.namespace in self.evictions):
+            return False
+        authority = self.runtime.authorities.get(request_id)
+        if authority is None:
+            return False
+        from .prompt_checkpoints import CheckpointPhase
+        checkpoints = [self.pool.entries.get(binding.namespace), self.pool.prompts.get(binding.namespace)]
+        for checkpoint in checkpoints:
+            if checkpoint is None:
+                continue
+            if (checkpoint.request_id != request_id or checkpoint.authority is not authority or
+                    checkpoint.phase is not CheckpointPhase.LIVE):
+                raise ValueError('Session swap does not own its live P/M checkpoint')
+            if not self.pool.model_ready(checkpoint):
+                return False
+        # A replaced snapshot may still hold a download buffer. Its native
+        # source is independent, but fence that owner's copies conservatively.
+        return all(self.pool.model_ready(checkpoint) for checkpoint in self.pool._discarded_captures
+                   if checkpoint.namespace == binding.namespace)
+
+    def begin_swap(self, request_id, identity):
+        from .session_swap import SessionSwapFence
+        if not self.swap_ready(request_id, identity):
+            raise RuntimeError('Session swap preceded import or checkpoint completion')
+        if identity is None:
+            return
+        if request_id in self._swap_fences:
+            raise ValueError('Duplicate active session swap fence')
+        binding = self.bindings[request_id]
+        self._swap_fences[request_id] = SessionSwapFence(identity, binding,
+            self.runtime.authorities[request_id], self.pool.entries.get(binding.namespace),
+            self.pool.prompts.get(binding.namespace))
+
+    def validate_swap(self, request_id, identity):
+        binding = self._swap_binding(request_id, identity)
+        if identity is None:
+            if request_id in self._swap_fences:
+                raise ValueError('Session swap lost its retained fence')
+            return
+        fence = self._swap_fences.get(request_id)
+        if (fence is None or fence.identity != identity or fence.binding is not binding or
+                self.runtime.authorities.get(request_id) is not fence.authority or
+                self.pool.entries.get(binding.namespace) is not fence.checkpoint or
+                self.pool.prompts.get(binding.namespace) is not fence.prompt or
+                not self.swap_ready(request_id, identity)):
+            raise ValueError('Retained session swap ownership changed')
+
+    def end_swap(self, request_id, identity):
+        """Only after exact restore/drop ACK or drained unpublished failure."""
+        self.validate_swap(request_id, identity)
+        if identity is not None:
+            del self._swap_fences[request_id]
+
+    def _require_not_swapped(self, request_ids):
+        if set(request_ids).intersection(getattr(self, '_swap_fences', ())):
+            raise RuntimeError('Session lifecycle mutation precedes exact request swap release')
+
     def receive(self, commands):
+        self._require_not_swapped(command.request_id for name in ('bindings', 'captures', 'terminals')
+                                 for command in getattr(commands, name, ()))
+        retained_namespaces = {fence.identity.namespace for fence in getattr(self, '_swap_fences', {}).values()}
+        if any(binding.namespace in retained_namespaces for binding in commands.bindings):
+            raise RuntimeError('Namespace reuse precedes exact session swap release')
         self.release_requests.update(getattr(commands, 'release_requests', ()))
         self._receive_history_capacity(getattr(commands, 'history_capacity', ()))
         for binding in commands.bindings:
@@ -149,6 +232,7 @@ class SessionWorker:
             self.terminal_captures[capture.request_id] = capture
 
     def before_attention(self, batch):
+        self._require_not_swapped(batch.req_ids)
         if getattr(self.options, 'async_restore', False) and self.imports.intersection(batch.req_ids):
             raise RuntimeError('Unready checkpoint restore entered a public model batch')
         selected = self.imports.intersection(batch.req_ids) | (self.captures.keys() & set(batch.req_ids))
@@ -209,6 +293,7 @@ class SessionWorker:
             assembler.close()
 
     def selection_committed(self, request_id, history):
+        self._require_not_swapped((request_id,))
         binding = self.bindings.get(request_id)
         checkpoint = self.pool.entries.get(binding.namespace) if binding is not None else None
         if checkpoint is not None and checkpoint.position == history:
@@ -222,6 +307,9 @@ class SessionWorker:
             self.pool.update_live_window(checkpoint)
 
     def _restore(self, request_id):
+        self._require_not_swapped((request_id,))
+        restore_started = time.perf_counter()
+        restore_stages = {}
         from .cache_groups import full_attention_groups
         from .window_assembly import NativeWindowAssembler
         from .window_batch import WindowBatchAdapter
@@ -249,15 +337,32 @@ class SessionWorker:
                     raise ValueError('Pressure restore differs from its reserved window')
             else:
                 plan = self.pool.prepare_claim_window(checkpoint, metadata_binding=binding)
+            stage_started = time.perf_counter()
+            restore_stages['claim_and_prepare'] = stage_started - restore_started
+            from .layerwise_restore_efficiency import install_direct_restore, finish_direct_restore
+            direct_restore = install_direct_restore(self, request_id, checkpoint, assembler, plan)
             assembly = assembler.assemble(authority, plan)
             assembly.event.synchronize()
             authority.memory.attach_completion(assembly)
             assert authority.memory.commit_selection()
-            restore_sync(self, request_id, checkpoint)
+            now = time.perf_counter()
+            restore_stages['shared_kv_restore'] = now - stage_started
+            stage_started = now
+            if direct_restore:
+                finish_direct_restore(self, request_id, checkpoint, assembler)
+            else:
+                restore_sync(self, request_id, checkpoint)
+            now = time.perf_counter()
+            restore_stages['layerwise_kv_restore'] = now - stage_started
+            stage_started = now
             event = self.model_adapter.restore(checkpoint.model, request_id)
             if event is not None:
                 event.synchronize()
+            now = time.perf_counter()
+            restore_stages['recurrent_restore'] = now - stage_started
+            stage_started = now
             self._verify_restored(request_id, checkpoint)
+            restore_stages['verification'] = time.perf_counter() - stage_started
             restored = self.pool.finish_claim(checkpoint, event or _Ready())
             assert restored is authority
         except BaseException:
@@ -270,6 +375,17 @@ class SessionWorker:
         finally:
             assembler.close()
         self.publish_restore(request_id, authority)
+        output = getattr(self.runner, '_kvmem_probe_output', None)
+        if output is not None:
+            import json
+            with (output/'sync_restore_timing.jsonl').open('a') as stream:
+                stream.write(json.dumps(dict(request_id=request_id,
+                    checkpoint_kind=checkpoint.kind, history_tokens=binding.history,
+                    window_tokens=binding.window, namespace=list(binding.namespace),
+                    generation=binding.generation,
+                    started_at=restore_started, finished_at=time.perf_counter(),
+                    host_stages_seconds=restore_stages,
+                    scope='Host wall intervals including existing CUDA waits; not exclusive GPU kernel time.'))+'\n')
 
     def _rebuilt_target_bytes(self, request_id, authority, *, record_groups=None):
         """Verification-only CPU oracle from immutable FP8 source records.
@@ -418,6 +534,7 @@ class SessionWorker:
 
     def prepare_terminal_checkpoint(self, request_id, command):
         """Try once; the capture runtime retries busy gates on later steps."""
+        self._require_not_swapped((request_id,))
         authority = self.runtime.authorities.get(request_id)
         if authority is None or not getattr(authority.memory._store, 'protect_current_window', False):
             return True
@@ -441,6 +558,7 @@ class SessionWorker:
         return True
 
     def detach(self, request_id, authority, report):
+        self._require_not_swapped((request_id,))
         binding = self.bindings.get(request_id)
         if binding is None:
             return False
@@ -500,6 +618,9 @@ class SessionWorker:
         checkpoint, report = pending
         if not self.pool.idle(checkpoint):
             return False
+        ready = getattr(getattr(self.runtime, 'archive', None), 'reclamation_ready', None)
+        if ready is not None and not ready():
+            return False
         binding = self.bindings.pop(request_id)
         prompt = self.pool.prompts.get(binding.namespace)
         historical = getattr(checkpoint.authority.gc, 'native_history', False)
@@ -527,6 +648,7 @@ class SessionWorker:
         return True
 
     def ordinary_retired(self, request_id):
+        self._require_not_swapped((request_id,))
         getattr(self, 'release_requests', set()).discard(request_id)
         binding = self.bindings.pop(request_id, None)
         if binding is not None:
@@ -535,6 +657,8 @@ class SessionWorker:
 
     def evict(self, commands):
         for command in commands:
+            self._require_not_swapped(rid for rid, binding in self.bindings.items()
+                                     if binding.namespace == command.namespace)
             if self.identities.get(command.namespace) != command.generation or command.namespace in self.evictions:
                 raise ValueError('Stale or duplicate session eviction')
             checkpoint = self.pool.entries[command.namespace]
@@ -550,6 +674,9 @@ class SessionWorker:
         for namespace, command in list(self.evictions.items()):
             checkpoint = self.pool.entries.get(namespace)
             if checkpoint is not None and not self.pool.poll_eviction(checkpoint):
+                continue
+            ready = getattr(getattr(self.runtime, 'archive', None), 'reclamation_ready', None)
+            if ready is not None and not ready():
                 continue
             self.completed.append(SessionNotice('evicted', namespace, command.generation, ''))
             del self.evictions[namespace]
@@ -636,6 +763,8 @@ class SessionWorker:
 
     def close(self):
         from .prompt_checkpoints import CheckpointPhase
+        if getattr(self, '_swap_fences', None):
+            return False  # The swap owner must drain and release its exact lease.
         # Prepared frames belong to still-live owners, never to an idle pool
         # entry. Drop them before eviction can wait for their repository pins.
         getattr(self, 'prepared_terminal_windows', {}).clear()
@@ -647,6 +776,9 @@ class SessionWorker:
             else:
                 self.pool.evict(checkpoint, _Ready() if checkpoint.phase is CheckpointPhase.CLAIMED else None)
         if not self.pool.poll_captures() or self.pool.entries:
+            return False
+        ready = getattr(getattr(self.runtime, 'archive', None), 'reclamation_ready', None)
+        if ready is not None and not ready():
             return False
         self.bindings.clear()
         getattr(self, 'release_requests', set()).clear()

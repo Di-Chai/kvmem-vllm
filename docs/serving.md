@@ -69,6 +69,34 @@ portable to another GPU.
 
 ## A first HTTP request
 
+For opt-in CPU/SSD history storage and incremental GPU admission, see
+[dynamic memory implementation](dynamic-memory-implementation-20261106.md) and
+the [dynamic MTP example](../examples/serve-qwen-mtp-dynamic.json). The
+default incremental path accepts eager MTP requests with synchronous session imports and retains native request
+slots while swapping exact KV/state bytes. It preserves K/G and refresh rules;
+the default admission mode and existing profiles remain static. Archive,
+checkpoint and I/O byte limits are separate from process RAM usage.
+The [SSD checkpoint example](../examples/serve-qwen-mtp-dynamic-ssd.json)
+adds a separately bounded CPU staging pool and lazy SSD backing for paused
+requests. Session namespace ownership survives a swap; canceled session requests
+restore their pages before the existing terminal P/M capture and release path.
+See [phase 2 implementation and qualification](dynamic-memory-phase2-20261106.md)
+for the storage bounds, supported combinations, and measured results.
+
+The default-off `kvmem.request_swap_layerwise` integration permits incremental
+admission with CPU archives, asynchronous refresh, physical prefill coalescing,
+and eager or `compiled_graph` MTP execution. It requires the sequential,
+optimized, native-batch layerwise Query flags plus per-layer prefill pressure
+and single assembly. It rejects inactive controllers, rolling decode,
+original-RoPE, and no-probe variants. Keep Active/Gen and recall parameters
+unchanged when comparing allocation modes. Before releasing native pages, the
+worker drains accepted publications and waits for the request's private refresh
+and assembly owners; restore checks retained per-layer maps, histories and
+window generations. This does not remove the existing KV assembly costs.
+`scripts/qualify_layerwise_incremental.py` freezes complete-input serial and
+forced-swap checks; support must be qualified on the chosen execution profile,
+and byte restoration alone does not prove equal final answers or throughput.
+
 The README's `/v1/chat/completions` example is a short smoke check for the starter.
 That profile has rolling disabled, so native chat remains available as a separate
 entry. A chat response does not demonstrate explicit query selection or long
@@ -135,6 +163,45 @@ inside the complete input. Do not mark a 229K history as one atomic query: query
 replay, including its aligned tail, must fit `query_replay_budget` and G.
 Token spans use logical positions in the original input, not character offsets
 or positions within the selected GPU window. Invalid plans fail explicitly.
+
+## Experimental Query selection without a private replay
+
+The optimized sequential path can select historical KV directly from each
+target attention layer's fresh Q during the public Query forward:
+
+```sh
+vllm-kvmem serve --config /path/to/profile.json --run-dir /path/to/run \
+  --layerwise-query-diagnostic sequential --layerwise-query-optimized \
+  --layerwise-query-native-batches --layerwise-query-no-probe
+```
+
+This opt-in mode omits the private Query forward, its state checkpoint/restore,
+and the preliminary global KV selection and assembly. It fixes the window's
+token extent before the public forward, then installs each layer's selection
+before that layer consumes KV. Per-layer history maps remain distinct. The first
+target full-attention layer supplies the shared append frame and MTP's history
+selection; MTP's own archived KV is assembled before drafting begins.
+
+The profile must enable `async_refresh`, retain historical KV (disable
+`repository_gc` and `historical_gc`), and disable `guided_query_tokens` and
+`query_history`. Sessions require `session_freeze_prompt`: restoring that saved
+prefix between requests remains necessary. Explicit Query spans and the existing
+replay/growth budgets still apply. Partial blocks must be mandatory, or the
+entire history must fit; optional partial blocks are rejected because their
+score-dependent token count would change the native window geometry.
+
+Omit `--layerwise-query-no-probe` to retain the existing sequential replay path
+and its global MTP selection. For a comparison that isolates replay removal,
+also pass `--layerwise-query-mtp-selection layer0` to that replay control. Changing
+MTP's history selection can change draft acceptance and sampled outputs, so
+equivalence must be checked on the intended workload. The default remains the
+existing replay path.
+
+`scripts/benchmark_layerwise_no_probe.py` freezes the local runtime and full
+local MAB fixtures, waits for the GPU to become available, and qualifies original
+replay, MTP-matched replay, and no-probe runs. It compares Q fingerprints,
+per-layer selections, output token IDs and frozen-prefix restoration before
+running symmetric performance trials with the diagnostic checks disabled.
 
 ## Continue a session
 

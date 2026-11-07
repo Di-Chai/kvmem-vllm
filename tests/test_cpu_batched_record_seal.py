@@ -44,8 +44,11 @@ def test_batch_seal_retains_sources_until_copy_then_publishes_exact_records(tmp_
         return result
     def no_second_copy(*args):
         raise AssertionError('Batch seal must not allocate/copy another slab')
+    def unused_span(*args):
+        raise AssertionError('Direct record publication must not allocate I/O spans')
     monkeypatch.setattr(_native, 'pack_record_pairs', delayed)
     monkeypatch.setattr(memory_storage, 'copy_record_slices', no_second_copy)
+    monkeypatch.setattr(archive, 'span', unused_span)
     def submit():
         sources = [np.array([i, i+1], dtype=np.uint8) for i in range(4)]
         return archive.write_from_views('owner', leases, sources), [weakref.ref(v) for v in sources]

@@ -16,7 +16,9 @@ class _Array(np.ndarray):
         self._lease = getattr(source, '_lease', None)
 
 
-@dataclass
+# Identity equality: list.remove() during eviction must never compare the
+# pinned backing tensors of two different slots field-by-field.
+@dataclass(eq=False)
 class _Entry:
     backing: object
     event: object

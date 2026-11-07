@@ -26,6 +26,7 @@
 #include <limits>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <sys/stat.h>
 
 namespace py = pybind11;
@@ -492,20 +493,25 @@ PYBIND11_MODULE(_native, m) {
         if (vectorized) return py::int_(vectorized_records);
         return py::none();
     }, py::arg("jobs"), py::arg("vectorized") = false);
-    m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) {
+    m.def("scatter_history_batch", [](const std::vector<py::tuple> &jobs) -> py::object {
         struct Row {
             py::buffer_info raw, values, dst_raw, dst_values, delta, sum;
             ssize_t begin, offset, count;
-            bool copy_only;
+            bool copy_only, finalize_mean;
         };
         std::vector<Row> rows;
         rows.reserve(jobs.size());
         for (const auto &job : jobs) {
-            if (job.size() != 9 && job.size() != 10)
+            if (job.size() != 9 && job.size() != 10 && job.size() != 11)
                 throw std::invalid_argument("Invalid history scatter descriptor");
-            if (job.size() == 10 && !PyBool_Check(job[9].ptr()))
+            if (job.size() >= 10 && !PyBool_Check(job[9].ptr()))
                 throw std::invalid_argument("History copy-only flag must be a bool");
-            const bool copy_only = job.size() == 10 && job[9].cast<bool>();
+            if (job.size() == 11 && !PyBool_Check(job[10].ptr()))
+                throw std::invalid_argument("History finalize-mean flag must be a bool");
+            const bool copy_only = job.size() >= 10 && job[9].cast<bool>();
+            const bool finalize_mean = job.size() == 11 && job[10].cast<bool>();
+            if (finalize_mean && !copy_only)
+                throw std::invalid_argument("Fused mean requires a completed copy-only page");
             if (copy_only && !job[4].is_none())
                 throw std::invalid_argument("History copy-only descriptor cannot contain a reduction");
             Row r{job[0].cast<py::buffer>().request(), job[1].cast<py::buffer>().request(),
@@ -513,7 +519,7 @@ PYBIND11_MODULE(_native, m) {
                   job[4].is_none() ? py::buffer_info{} : job[4].cast<py::buffer>().request(),
                   job[5].cast<py::buffer>().request(),
                   job[6].cast<ssize_t>(), job[7].cast<ssize_t>(), job[8].cast<ssize_t>(),
-                  copy_only};
+                  copy_only, finalize_mean};
             auto byte_rows = [](const py::buffer_info &v, bool writable) {
                 if (v.ndim != 4 || v.itemsize != 1 || (writable && v.readonly)) return false;
                 if (v.shape[0] <= 0 || v.shape[1] <= 0 || v.shape[2] <= 0 || v.shape[3] <= 0) return false;
@@ -562,8 +568,40 @@ PYBIND11_MODULE(_native, m) {
                 throw std::invalid_argument("History copy-only requires a completed byte-codec page");
             rows.push_back(std::move(r));
         }
+        // Moving the final sum before later copies is safe only for disjoint
+        // destinations. Reject aliases before *any* write; retain the original
+        // acceptance/ordering for callers which do not request this fusion.
+        auto overlaps = [](const py::buffer_info &a, const py::buffer_info &b) {
+            if (!a.ptr || !b.ptr) return false;
+            auto extent = [](const py::buffer_info &v) {
+                size_t bytes = v.itemsize;
+                for (ssize_t axis = 0; axis < v.ndim; ++axis)
+                    bytes += (v.shape[axis] - 1) * v.strides[axis];
+                return bytes;
+            };
+            const auto x = reinterpret_cast<uintptr_t>(a.ptr);
+            const auto y = reinterpret_cast<uintptr_t>(b.ptr);
+            return x <= y ? y - x < extent(a) : x - y < extent(b);
+        };
+        for (const auto &r : rows) if (r.finalize_mean) {
+            for (const auto &other : rows) {
+                for (const auto *buffer : {&other.raw, &other.values, &other.dst_raw,
+                                          &other.dst_values, &other.delta})
+                    if (overlaps(r.sum, *buffer))
+                        throw std::invalid_argument("Fused mean sum aliases history buffers");
+                if (&other != &r && (overlaps(r.sum, other.sum) ||
+                        overlaps(r.dst_raw, other.dst_raw) ||
+                        overlaps(r.dst_raw, other.dst_values) ||
+                        overlaps(r.dst_raw, other.sum)))
+                    throw std::invalid_argument("Fused mean page aliases another destination");
+            }
+            if (overlaps(r.dst_raw, r.dst_values))
+                throw std::invalid_argument("Fused mean raw and value pages alias");
+        }
         // Every descriptor is validated before touching any destination. The
         // exported buffers retain the packet and each authority through this call.
+        size_t finalized_records = 0;
+        {
         py::gil_scoped_release no_gil;
         for (const auto &r : rows) {
             for (ssize_t layer = 0; layer < r.raw.shape[0]; ++layer) {
@@ -580,7 +618,30 @@ PYBIND11_MODULE(_native, m) {
                 };
                 copy_rows(r.dst_raw, r.raw);
                 copy_rows(r.dst_values, r.values);
+                if (r.finalize_mean && layer < r.sum.shape[0]) {
+                    // The whole page is now complete, including a previously
+                    // accepted partial prefix. Preserve finalize_mean_batch's
+                    // +0 initialization, token order and FP32 additions. MTP
+                    // layers beyond the scoring prefix are copied, not scored.
+                    auto *out = reinterpret_cast<float*>(
+                        static_cast<char*>(r.sum.ptr) + layer*r.sum.strides[0]);
+                    const ssize_t channels = r.sum.shape[1]*r.sum.shape[2];
+                    const bool fp8 = r.raw.shape[3] == r.values.shape[3];
+                    std::fill(out, out+channels, 0.f);
+                    for (ssize_t token=0; token<r.dst_raw.shape[1]; ++token) {
+                        const char *row = static_cast<const char*>(r.dst_raw.ptr) +
+                            layer*r.dst_raw.strides[0] + token*r.dst_raw.strides[1];
+                        if (fp8) {
+                            for (ssize_t channel=0; channel<channels; ++channel)
+                                out[channel] += fp8_as_float(row+channel);
+                        } else {
+                            for (ssize_t channel=0; channel<channels; ++channel)
+                                out[channel] += bf16_as_float(row+channel*2);
+                        }
+                    }
+                }
             }
+            finalized_records += r.finalize_mean;
             // The caller finalizes this completed page from its immutable raw
             // bytes before committing history. None without this explicit flag
             // retains the original small-decode fused-reduction semantics.
@@ -607,6 +668,12 @@ PYBIND11_MODULE(_native, m) {
                 }
             }
         }
+        }
+        // Old 9/10-field callers keep the original None result. The explicit
+        // fused descriptor reports actual execution, never silent fallback.
+        for (const auto &job : jobs) if (job.size() == 11)
+            return py::int_(finalized_records);
+        return py::none();
     });
 
     m.def("pack_record_views", [](const std::vector<py::buffer> &sources) {
@@ -789,6 +856,83 @@ PYBIND11_MODULE(_native, m) {
         }
         return copied;
     });
+    // Experimental paired Query gather. Keep the original region entry point
+    // untouched: this is selected explicitly by one archive read, never by a
+    // process-wide dispatch change. The owning source vector and buffer exports
+    // outlive both copies, including while the GIL is released.
+    m.def("gather_record_regions", [](py::buffer destination,
+            const std::vector<py::object> &sources, size_t record_bytes,
+            const std::vector<std::pair<size_t, size_t>> &regions,
+            size_t begin, size_t end) {
+        using Clock = std::chrono::steady_clock;
+        const auto started = Clock::now();
+        auto target = destination.request(true);
+        if (!record_bytes || regions.size() != 2 || begin > end || end > sources.size())
+            throw std::invalid_argument("Invalid paired record regions or source range");
+        size_t row_bytes = 0;
+        for (const auto &[offset, length] : regions) {
+            if (!length || offset > record_bytes || length > record_bytes - offset ||
+                    length > static_cast<size_t>(PY_SSIZE_T_MAX) - row_bytes)
+                throw std::invalid_argument("Invalid paired record region extent");
+            row_bytes += length;
+        }
+        if (sources.size() > static_cast<size_t>(PY_SSIZE_T_MAX) / row_bytes ||
+                target.ndim != 1 || target.itemsize != 1 || target.strides[0] != 1 ||
+                static_cast<size_t>(target.size) != sources.size() * row_bytes)
+            throw std::invalid_argument("Invalid paired record destination extent");
+        std::vector<py::buffer_info> exports;
+        std::vector<const char *> pointers;
+        exports.reserve(end - begin);
+        pointers.reserve(end - begin);
+        for (size_t i = begin; i < end; ++i) {
+            if (sources[i].is_none()) {
+                pointers.push_back(nullptr);
+            } else if (PyBytes_CheckExact(sources[i].ptr())) {
+                if (static_cast<size_t>(PyBytes_GET_SIZE(sources[i].ptr())) != record_bytes)
+                    throw std::invalid_argument("Paired gather source must cover one complete record");
+                pointers.push_back(PyBytes_AS_STRING(sources[i].ptr()));
+            } else {
+                auto view = py::reinterpret_borrow<py::buffer>(sources[i]).request();
+                if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1 ||
+                        static_cast<size_t>(view.size) != record_bytes)
+                    throw std::invalid_argument("Paired gather source must cover one complete record");
+                pointers.push_back(static_cast<const char *>(view.ptr));
+                exports.push_back(std::move(view));
+            }
+        }
+        const auto prepared = Clock::now();
+        size_t copied = 0;
+        Clock::time_point copy_started, copy_finished;
+        {
+            py::gil_scoped_release release;
+            copy_started = Clock::now();
+            size_t cursor = 0;
+            for (const auto &[offset, length] : regions) {
+                for (size_t i = begin; i < end; ++i) {
+                    if (const char *source = pointers[i - begin]) {
+                        std::memcpy(static_cast<char *>(target.ptr) + cursor + i * length,
+                                    source + offset, length);
+                        copied += length;
+                    }
+                }
+                cursor += sources.size() * length;
+            }
+            copy_finished = Clock::now();
+        }
+        const auto returned = Clock::now();
+        const auto ns = [](auto duration) {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+        };
+        py::dict result;
+        result["copied_bytes"] = copied;
+        result["source_prepare_ns"] = ns(prepared - started);
+        result["copy_ns"] = ns(copy_finished - copy_started);
+        result["gil_release_ns"] = ns(copy_started - prepared);
+        result["gil_reacquire_ns"] = ns(returned - copy_finished);
+        result["total_ns"] = ns(returned - started);
+        return result;
+    }, py::arg("destination"), py::arg("sources"), py::arg("record_bytes"),
+       py::arg("regions"), py::arg("begin"), py::arg("end"));
     py::class_<KvMemGcConfig>(m, "GcPolicy")
         .def(py::init<>())
 #define GCP(x) .def_readwrite(#x, &KvMemGcConfig::x)
@@ -1314,6 +1458,21 @@ PYBIND11_MODULE(_native, m) {
                                  const KvMemStore::PressureActionScores &scores, uint32_t budget) {
             return s.pick_prefill_pressure_blocks(mandatory, scores, budget);
         }, py::arg("mandatory"), py::arg("scores"), py::arg("budget") = 0)
+        .def("pick_pressure_batch", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory,
+                const std::vector<std::vector<uint32_t>> &layer_slots,
+                const std::vector<std::vector<double>> &layer_scores, uint32_t budget) {
+            if (layer_slots.size() != layer_scores.size())
+                throw std::invalid_argument("Pressure slot and score layer counts differ");
+            std::vector<KvMemStore::PressureActionScores> pairs(layer_slots.size());
+            for (size_t layer = 0; layer < pairs.size(); ++layer) {
+                if (layer_slots[layer].size() != layer_scores[layer].size())
+                    throw std::invalid_argument("Pressure slot and score row counts differ");
+                pairs[layer].reserve(layer_slots[layer].size());
+                for (size_t i = 0; i < layer_slots[layer].size(); ++i)
+                    pairs[layer].emplace_back(layer_slots[layer][i], layer_scores[layer][i]);
+            }
+            return s.pick_prefill_pressure_batch(mandatory, pairs, budget);
+        }, py::arg("mandatory"), py::arg("layer_slots"), py::arg("layer_scores"), py::arg("budget") = 0)
         .def("select", &KvMemStore::set_repository_selection,
              py::arg("handles"), py::arg("force_raw_refresh") = false)
         .def("restore_selection", &KvMemStore::restore_repository_selection,

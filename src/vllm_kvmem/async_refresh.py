@@ -108,6 +108,72 @@ class AsyncRefresh:
             self.runner._kvmem_window_adapter = WindowBatchAdapter(
                 tuple(group for group, _ in command.groups), memory.select_budget+memory.gen_budget)
 
+    # Opt-in prefill-pressure lanes (KVMEM_LAYERWISE_PRESSURE_LANES). Lane 0
+    # is the original executor/stream/staging; other jobs are unchanged. A
+    # worker thread selects its lane's stream through this thread-local index.
+    @property
+    def stream(self):
+        streams = self.__dict__.setdefault('_lane_streams', {})
+        return streams.get(self._current_lane())
+
+    @stream.setter
+    def stream(self, value):
+        self.__dict__.setdefault('_lane_streams', {})[self._current_lane()] = value
+
+    def _current_lane(self):
+        local = self.__dict__.get('_lane_local')
+        return getattr(local, 'index', 0) if local is not None else 0
+
+    def _pressure_lanes(self):
+        return getattr(getattr(self.runner, '_kvmem_layerwise_pressure', None), 'lanes', 1)
+
+    def _multi_lane(self, job):
+        from .connector import RestoreCommand
+        return (self._pressure_lanes() > 1 and not isinstance(job.command, RestoreCommand) and
+                job.command.selection == 'pressure' and
+                getattr(job.command, 'pressure_stage', None) == 'prefill' and
+                not job.guided_pressure)
+
+    def _producers(self):
+        """Jobs whose producer may still own scratch, including dispatched pipelines."""
+        from .async_restore import resident_lane
+        from .pressure_pipeline import pipeline_for
+        busy = {id(job): job for job in self.jobs.values()
+                if job.future is not None and not job.done and not resident_lane(job)}
+        pipeline = pipeline_for(self)
+        if pipeline is not None:
+            busy.update((id(lease.job), lease.job) for lease in pipeline.active.values()
+                        if lease.job is not None)
+        return list(busy.values())
+
+    def _claim_lane(self, job):
+        """Free lane index for a multi-lane pressure job, or None."""
+        lanes = self._pressure_lanes()
+        producers = self._producers()
+        if len(producers) >= lanes or not all(self._multi_lane(other) for other in producers):
+            return None
+        used = {getattr(other, 'lane', 0) for other in producers}
+        return next(i for i in range(lanes) if i not in used)
+
+    def _executor_for(self, lane):
+        if lane == 0:
+            return self.executor
+        executors = self.__dict__.setdefault('_lane_executors', {})
+        if lane not in executors:
+            executors[lane] = ThreadPoolExecutor(max_workers=1,
+                thread_name_prefix=f'kvmem-refresh-lane{lane}')
+        return executors[lane]
+
+    def _assemble_in_lane(self, lane, job, queries, ready):
+        local = self.__dict__.setdefault('_lane_local', threading.local())
+        local.index = lane
+        try:
+            if self.stream is None:
+                self.stream = torch.cuda.Stream(device=self.runner.device, priority=0)
+            return self._assemble(job, queries, ready)
+        finally:
+            local.index = 0
+
     def __init__(self, runner, options):
         self.runner,self.options=runner,options
         self.original=runner.model.forward
@@ -120,6 +186,9 @@ class AsyncRefresh:
         self.resident_stream=None;self.closed=False
         self.stream=None;self.adapter=None;self.tokenizer=None
         self.trace_lock=threading.Lock()
+        # Qualification-only switch: retain the old handoff until matched MAB
+        # measurements establish a benefit with identical selected KV/output.
+        self.query_post_forward_reap = False
         self.maintenance = None
         if getattr(options, 'query_replay_backend', 'eager') == 'compiled' and not getattr(
                 runner, '_kvmem_native_compilation', False):
@@ -136,6 +205,12 @@ class AsyncRefresh:
             from .maintenance import MaintenancePolicy
             from .cache_manifest import archive_bytes_per_token
             self.maintenance = MaintenancePolicy(self.options, archive_bytes_per_token(self.runner.kv_cache_config))
+        from .pressure_pipeline import pipeline_for
+        pipeline = pipeline_for(self)
+        if pipeline is not None:
+            if getattr(self.options, 'gpu_memory_admission', 'static') != 'static':
+                raise ValueError('Pressure pipeline first qualifies unchanged static page allocation')
+            pipeline.install()
 
     @property
     def runtime(self):return self.runner._kvmem_capture_runtime
@@ -186,30 +261,36 @@ class AsyncRefresh:
 
     def defer_terminals(self, output):
         """Do not recycle request indices, authority or page leases during DMA."""
-        from .connector import ControlMetadata
+        from .connector import ControlMetadata, RefreshCommand, RestoreCommand
         control=output.kv_connector_metadata
         if not isinstance(control,ControlMetadata):return output
         if getattr(getattr(self, 'maintenance', None), 'offline', False):
             self.maintenance.readiness_costs = control.maintenance_costs
         finished=set(output.finished_req_ids)
+        from .pressure_pipeline import pipeline_for
+        pipeline = pipeline_for(self)
         prefixes=dict(control.terminal_prefixes)
         # Cancellation can accompany the first dispatch, before start_load_kv
         # has enqueued the job. Keep that request's native state until its ack.
         for command in control.commands:
-            if command.asynchronous and command.request_id in (finished | control.cancelled):
+            if (isinstance(command, (RefreshCommand, RestoreCommand)) and
+                    command.asynchronous and command.request_id in (finished | control.cancelled)):
                 self.jobs.setdefault(command.request_id, RefreshJob(command))
         for rid in control.cancelled:
             if rid in self.jobs:
                 self.jobs[rid].cancelled=True
+            if pipeline is not None and rid in pipeline.active:
+                pipeline.active[rid].job.cancelled = True
         for rid in list(finished):
             job=self.jobs.get(rid)
-            if job is not None and not job.done:
-                job.cancelled=True
+            if (job is not None and not job.done) or (pipeline is not None and rid in pipeline.active):
+                if job is not None:
+                    job.cancelled=True
                 self.deferred[rid]=prefixes.pop(rid,None)
                 finished.remove(rid)
         for rid,prefix in list(self.deferred.items()):
             job=self.jobs.get(rid)
-            if job is None or job.done:
+            if (job is None or job.done) and not (pipeline is not None and rid in pipeline.active):
                 finished.add(rid)
                 if prefix is not None:prefixes[rid]=prefix
                 del self.deferred[rid]
@@ -217,6 +298,10 @@ class AsyncRefresh:
                        kv_connector_metadata=replace(control,terminal_prefixes=prefixes))
 
     def pump(self, ready_requests=()):
+        from .pressure_pipeline import pipeline_for
+        pipeline = pipeline_for(self)
+        if pipeline is not None:
+            pipeline.reap(self)
         if self.options.maintenance_max_steps and self.maintenance is None:
             raise RuntimeError('Maintenance budgets were not initialized after native KV allocation')
         for rid,job in list(self.jobs.items()):
@@ -272,6 +357,68 @@ class AsyncRefresh:
                 self.step(job)
             finally:
                 job.restore_completion_poll = None
+
+    def poll_pressure_completions(self):
+        """Reap ready prefill-only single assemblies in this batch's feedback.
+
+        Ordinarily this only checks completion. The opt-in pipeline handoff
+        also primes one eligible job through the original preparation path.
+        The producer retains every lane/page/transaction lease until both its
+        future and final CUDA fence complete; early ACK permits guarded use.
+        """
+        pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+        pipeline = getattr(pressure, 'pipeline', None)
+        if pipeline is not None:
+            pipeline.reap(self)
+        if (pressure is None or not getattr(pressure, 'single_assembly', False) or
+                not getattr(pressure, 'post_forward_reap', False)):
+            return
+        if pipeline is not None:
+            pipeline.prime_post_forward(self)
+        capture = getattr(self.runner, '_kvmem_capture_runtime', None)
+        if capture is None:
+            return
+        for job in tuple(self.jobs.values()):
+            command = job.command
+            if (job.done or job.cancelled or job.stage != 'assembly' or job.future is None or
+                    getattr(command, 'selection', None) != 'pressure' or
+                    getattr(command, 'pressure_stage', None) != 'prefill' or
+                    (pipeline is None and (not job.future.done() or
+                     not getattr(job, 'layerwise_single_assembly_done', False)))):
+                continue
+            rid = command.request_id
+            if (capture.authorities.get(rid) is not job.authority or
+                    not capture.publication_ready((rid,))):
+                continue
+            self.step(job)
+            if job.done:
+                self.emit(job, 'pressure_completion_reaped', completion_poll='post_forward')
+
+    def poll_query_completions(self):
+        """Publish an already finished Query assembly at post-forward feedback.
+
+        This only commits the original transaction. It cannot run a private
+        Query, acquire another assembly lane, or bypass the CUDA completion
+        fence. Final causal layerwise Query execution still happens normally.
+        """
+        if not getattr(self, 'query_post_forward_reap', False):
+            return
+        capture = getattr(self.runner, '_kvmem_capture_runtime', None)
+        if capture is None:
+            return
+        for job in tuple(self.jobs.values()):
+            command = job.command
+            if (job.done or job.cancelled or job.stage != 'assembly' or
+                    job.future is None or getattr(command, 'selection', None) != 'query' or
+                    not job.future.done()):
+                continue
+            rid = command.request_id
+            if (capture.authorities.get(rid) is not job.authority or
+                    not capture.publication_ready((rid,))):
+                continue
+            self.step(job)
+            if job.done:
+                self.emit(job, 'query_completion_reaped', completion_poll='post_forward')
 
     def _forward(self, job, tokens, begin, *, next_token=False):
         from vllm.config.compilation import CUDAGraphMode
@@ -361,6 +508,17 @@ class AsyncRefresh:
         job.stage='assembly_wait'
         job.assembly_inputs=(query,ready)
         self.emit(job,'assembly_queued')
+        pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+        if (pressure is not None and getattr(pressure, 'submit_on_prepare', False) and
+                getattr(pressure, 'single_assembly', False) and not job.cancelled and
+                job.command.selection == 'pressure' and
+                getattr(job.command, 'pressure_stage', None) == 'prefill' and
+                not job.guided_pressure):
+            # Submit on this prepare quantum instead of waiting for another
+            # public model batch. The existing step still owns lane/byte
+            # admission; CPU selection/copies stay on the original executor.
+            if self.step(job):
+                self.emit(job, 'pressure_assembly_submitted_inline')
 
     def _assemble(self,job,queries,ready):
         from .recall_experiment import (ACCUMULATED_ATTENTION, configured_event_method,
@@ -454,7 +612,8 @@ class AsyncRefresh:
             started=time.perf_counter()
             assembler=NativeWindowAssembler.from_runner(self.runner,job.command.request_id,self.runtime.names,
                 cfg.block_tokens,packed=self.options.packed_assembly,
-                direct_pinned_reads=self.options.direct_pinned_reads,arena='refresh')
+                direct_pinned_reads=self.options.direct_pinned_reads,arena='refresh',
+                **({'staging_lane':self._current_lane()} if self._current_lane() else {}))
             pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
             if (pressure is not None and pressure.single_assembly and
                     job.command.selection == 'pressure'):
@@ -462,7 +621,18 @@ class AsyncRefresh:
                 install_single_assembly(assembler, pressure, job, self.runtime.names)
             if self.maintenance is not None:
                 assembler.bandwidth_limiter = self.maintenance.transfer_budget
-            assembly=assembler.assemble(authority,plan)
+            try:
+                assembly=assembler.assemble(authority,plan)
+            except BaseException as error:
+                lease = getattr(job, 'layerwise_pipeline', None)
+                if lease is not None:
+                    # The layer assembler drains its own failed reads/copies.
+                    # Wake any foreground consumer; never continue with a
+                    # partially rebuilt layer or silently fall back.
+                    fence = torch.cuda.Event()
+                    fence.record(torch.cuda.current_stream(self.runner.device))
+                    lease.fail(error, fence)
+                raise
             self.emit(job,'assembly_submitted',host_seconds=time.perf_counter()-started)
             return assembler,assembly,plan,fit,time.perf_counter()-started
 
@@ -486,17 +656,32 @@ class AsyncRefresh:
             # ready. Keep the sole scratch arena leased until main-thread
             # commit/close, not merely until the producer function returns.
             from .async_restore import lane_busy
-            if lane_busy(self):
-                return False
+            multi = self._multi_lane(job)
+            if multi:
+                lane = self._claim_lane(job)
+                if lane is None:
+                    return False
+            else:
+                lane = 0
+                if lane_busy(self) or (self._pressure_lanes() > 1 and self._producers()):
+                    return False
             policy = getattr(self, 'maintenance', None)
-            if policy is not None and not policy.acquire(job):
+            if policy is not None and not policy.acquire(job, lanes=self._pressure_lanes() if multi else 1):
                 return False
             job.authority._refresh_background=True
             job.stage='assembly'
-            job.future=self.executor.submit(self._assemble,job,*job.assembly_inputs)
+            job.lane=lane
+            if lane == 0:
+                job.future=self.executor.submit(self._assemble,job,*job.assembly_inputs)
+            else:
+                job.future=self._executor_for(lane).submit(self._assemble_in_lane,lane,job,*job.assembly_inputs)
             job.assembly_inputs=None
             return True
         if job.stage=='assembly':
+            from .pressure_pipeline import pipeline_for
+            pipeline = pipeline_for(self)
+            if pipeline is not None and pipeline.dispatch(self, job):
+                return True
             if not job.future.done():return False
             if job.result is None:job.result=job.future.result()
             assembler,assembly,plan,fit,seconds=job.result
@@ -564,6 +749,10 @@ class AsyncRefresh:
             if not job.command.input_tokens and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
                 from .rolling_verification import RollingPressureOracle
                 job.pressure_oracle = RollingPressureOracle(self.runner, job)
+            layerwise = getattr(self.runner, '_kvmem_layerwise_query', None)
+            if (getattr(layerwise, 'no_probe', False) and job.command.selection == 'query'):
+                layerwise.arm_no_probe(self, job)
+                return True
             if ((job.command.selection=='pressure' and not job.guided_pressure) or
                     job.history<=job.command.groups[0][1].window_tokens):
                 self._submit(job);return True
@@ -665,7 +854,9 @@ class AsyncRefresh:
             history_begin=job.history,selected_tokens=job.selected_tokens,query_tokens=len(job.command.input_tokens),
             selection=job.command.selection,query_span=job.command.query_span,mandatory_fit=fit,
             replay_span=[job.history,job.history+len(job.command.input_tokens)],
-            selected_history_ranges=[[r[2],r[3]] for r in authority.memory._store.working_records()],
+            selected_history_ranges=[[r[2],r[3]] for r in (
+                job.pipeline_report_records if hasattr(job, 'pipeline_report_records') else
+                authority.memory._store.working_records())],
             query_score_tokens=sum(q.shape[1] for q in (job.guided_rows or job.query_rows)),
             guided_query_tokens=len(job.generated),guided_seconds=job.guided_seconds,guided_fallback=job.guided_fallback,
             query_history_enabled=getattr(authority,'query_history',None) is not None,
@@ -719,9 +910,16 @@ class AsyncRefresh:
     def shutdown(self):
         self.closed=True
         self.executor.shutdown(wait=True)
+        for executor in self.__dict__.get('_lane_executors', {}).values():
+            executor.shutdown(wait=True)
         self.resident_executor.shutdown(wait=True)
-        if self.stream is not None:self.stream.synchronize()
+        for stream in self.__dict__.get('_lane_streams', {}).values():
+            if stream is not None:stream.synchronize()
         if self.resident_stream is not None:self.resident_stream.synchronize()
+        from .pressure_pipeline import pipeline_for
+        pipeline = pipeline_for(self)
+        if pipeline is not None:
+            pipeline.reap(self)
 
     def retire_namespace(self, namespace):
         # The refresh arena index has the same sole CPU producer as assembly.

@@ -139,6 +139,7 @@ class MemoryTier:
         self.record_bytes, self.capacity = record_bytes, capacity
         self.allocations, self.records = {}, {}
         self.generation = 0
+        self.cpu_peak_bytes = 0
         self.lock = RLock()
         self.gather = None
 
@@ -183,6 +184,8 @@ class MemoryTier:
                     raise ValueError('Cannot overwrite immutable CPU authority')
                 try:
                     self.records.update(pending)
+                    self.cpu_peak_bytes = max(self.cpu_peak_bytes,
+                                              len(self.records) * self.record_bytes)
                 except BaseException:
                     for slot in pending:
                         self.records.pop(slot, None)
@@ -582,6 +585,74 @@ class MemoryArchive(AsyncArchive):
     def _gather_region(self, destination, sources, offset, length):
         return self._gather(destination, sources, offset, length)
 
+    def _paired_copy_range(self, destination, sources, regions, begin, end):
+        """One disjoint destination shard on the existing bounded copy pool."""
+        self._gather_worker.active = True
+        try:
+            return _native.gather_record_regions(destination, sources, self.record_bytes,
+                                                regions, begin, end)
+        finally:
+            destination = sources = regions = None
+            self._gather_worker.active = False
+
+    def _gather_regions_paired(self, destination, sources, regions, *, workers=1):
+        """One explicitly requested native copy; keep pool failure semantics."""
+        if type(workers) is not int or workers not in (1,2) or workers > self.gather_workers:
+            raise ValueError('Paired gather permits one or two existing CPU workers')
+        if getattr(self._gather_worker, 'active', False):
+            raise RuntimeError('CPU gather worker cannot recursively gather')
+        started = time.perf_counter_ns()
+        region_count = len(regions)
+        actual_workers = min(workers, max(1,len(sources)))
+        jobs, parts, error, job = [], [], None, None
+        try:
+            with self._gather_control:
+                if self._gather_unusable is not None:
+                    raise RuntimeError('CPU gather pool unavailable: '+self._gather_unusable)
+                if actual_workers > 1:
+                    try:
+                        for worker in range(actual_workers):
+                            jobs.append(self._gather_executor.submit(self._paired_copy_range,
+                                destination, sources, regions, len(sources)*worker//actual_workers,
+                                len(sources)*(worker+1)//actual_workers))
+                    except BaseException as failure:
+                        error = failure
+                        self._gather_unusable = 'submission failed ('+type(failure).__name__+')'
+            if error is not None:
+                # submit may start work without returning its Future. Join
+                # even that unseen producer before releasing caller storage.
+                self._stop_gather_pool()
+            if actual_workers == 1:
+                stats = _native.gather_record_regions(destination, sources, self.record_bytes,
+                                                     regions, 0, len(sources))
+            else:
+                for job in jobs:
+                    try:
+                        parts.append(job.result())
+                    except BaseException as failure:
+                        if error is None:
+                            error = failure
+                if error is not None:
+                    raise error
+                # These native durations are SUMS of shard work, not elapsed
+                # wall time; the independently recorded gather wall may be
+                # shorter because the two memcpy calls overlap.
+                stats = {key:sum(part[key] for part in parts) for key in
+                    ('copied_bytes','source_prepare_ns','copy_ns','gil_release_ns',
+                     'gil_reacquire_ns','total_ns')}
+            stats.update(worker_count=actual_workers,
+                         gather_wall_ns=time.perf_counter_ns()-started)
+        finally:
+            # All returned Futures and all unseen submissions have drained.
+            # Do not retain their arguments through a saved failure traceback.
+            destination = sources = regions = job = None
+            jobs.clear();parts.clear()
+        with self._gather_control:
+            kind = 'parallel' if actual_workers > 1 else 'inline'
+            self._region_gather_counts[kind+'_calls'] += region_count
+            self._region_gather_counts[kind+'_bytes'] += stats['copied_bytes']
+        return stats
+
     def _region_sources(self, keys):
         # Native region gather reads immutable record buffers directly, avoiding
         # a second cache copy or a full-record fallback slab.
@@ -589,6 +660,37 @@ class MemoryArchive(AsyncArchive):
             return self.tier.borrow_records([self._entries[key].allocation for key in keys])
         with self.tier.lock:
             return [self.tier.records[self._entries[key].allocation.slot] for key in keys]
+
+    def prepare_region_reader(self, namespace, leases):
+        """Pin each immutable no-GC source once for one layerwise pressure plan."""
+        from .prepared_regions import PreparedRegionReader
+        if self._native_payload_arena is not None or not leases:
+            raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
+        keys = [self.key(namespace, lease) for lease in leases]
+        if len(set(keys)) != len(keys):
+            raise ValueError('Prepared CPU source identities must be unique')
+        owned = []
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Archive is closed')
+            entries = [self._entries.get(key) for key in keys]
+            if any(entry is None or not entry.ready for entry in entries):
+                raise KeyError('Prepared CPU record is absent, stale or unpublished')
+            sources = self._region_sources(keys)
+            if any(type(source) is not bytes or len(source) != self.record_bytes for source in sources):
+                raise ValueError('Prepared CPU regions require exact immutable record bytes')
+            try:
+                for lease in leases:
+                    owned.append(lease.clone())
+                    if not owned[-1]:
+                        raise ValueError('Stale prepared CPU source generation')
+                result = PreparedRegionReader(self, namespace, keys, sources, owned)
+            except BaseException:
+                for lease in owned:
+                    lease.reset()
+                raise
+            self._prepared_region_readers = getattr(self, '_prepared_region_readers', 0)+1
+            return result
 
     def _admit_read_sources(self, entries):
         if self._native_payload_arena is not None:
@@ -769,9 +871,19 @@ class MemoryArchive(AsyncArchive):
             gather_usage = dict(cpu_region_gather_parallel_min_bytes=CPU_REGION_GATHER_PARALLEL_MIN_BYTES,
                 **{'cpu_region_gather_'+key:value for key,value in self._region_gather_counts.items()})
         native = self._native_payload_arena.stats if self._native_payload_arena is not None else None
+        with self.tier.lock:
+            resident_bytes = (native['used_bytes'] if native else
+                              len(self.tier.records) * self.record_bytes)
+            # The native arena can reclaim independently; its current ABI has
+            # no exact high-water counter. Do not label a sampled value exact.
+            peak_bytes = None if native else self.tier.cpu_peak_bytes
         return {**super().io_usage(), 'archive_backend':'cpu', 'disk_read_bytes':0,
                 'disk_write_bytes':0, **hash_usage, **gather_usage,
                 'cpu_authority_bytes':native['used_bytes'] if native else self.tier.used_slots*self.record_bytes,
+                'cpu_resident_bytes': resident_bytes,
+                'cpu_peak_bytes': peak_bytes,
+                'cpu_peak_scope': ('unavailable_for_native_payload_arena' if native else
+                                   'lifetime_published_payload_bytes'),
                 **({'cpu_native_payloads': True, 'cpu_payload_readers': native['readers'],
                     'cpu_payload_released_bytes': native['released_bytes'],
                     'cpu_index_owners': native['external_owners'],

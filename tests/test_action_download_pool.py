@@ -111,3 +111,20 @@ def test_pooled_coordinate_download_keeps_int64_bits():
     source=torch.tensor([[2**40,2**40+1],[2**41,2**41+17]],dtype=torch.int64,device='cuda')
     host,event=pool.copy(source);event.synchronize()
     assert host.tolist()==[[2**40,2**40+1],[2**41,2**41+17]] and host.is_pinned()
+
+
+def test_evicting_idle_slot_behind_other_entries_uses_identity_not_tensor_equality():
+    # Regression: list.remove() compared dataclass entries field-by-field,
+    # including pinned backing tensors of different sizes, and crashed the
+    # engine when the evicted idle slot was not first in the pool.
+    backend=Backend();pool=ActionDownloadPool(2048,3,backend=backend)
+    kept=pool.copy(torch.ones(64))            # 256 B slot, stays active
+    first=pool.copy(torch.ones(128))          # 512 B slot
+    second=pool.copy(torch.ones(64))          # 256 B slot
+    first[1].synchronize();second[1].synchronize()
+    del first,second;gc.collect()
+    # 1 KiB: no idle slot fits, so the smallest idle slot (third in the list,
+    # behind an active and a larger idle slot) must be evicted.
+    host,event=pool.copy(torch.ones(256))
+    assert host.numel()==256 and pool.snapshot()['allocated_pinned_bytes']==1792
+    del kept

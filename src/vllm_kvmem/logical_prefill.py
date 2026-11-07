@@ -1,4 +1,4 @@
-"""Pure planning for bounded ordinary logical 2K transactions in one forward.
+"""Pure planning for bounded original logical transactions in one forward.
 
 This module neither authorizes a scheduler allocation nor mutates publication,
 sampling or graph state. The caller supplies an immutable snapshot of *existing*
@@ -12,9 +12,14 @@ from .request_plan import RequestPlan
 
 
 LOGICAL_PREFILL_TOKENS = 2048
+SUPPORTED_LOGICAL_PREFILL_TOKENS = (1024, 2048)
+# Opt-in clipped final span (window limit): whole authority records only.
+PARTIAL_SPAN_TOKENS = 32
 # Retained as the compatible minimum physical group, not the selected size.
 PHYSICAL_PREFILL_TOKENS = 2 * LOGICAL_PREFILL_TOKENS
-MAX_LOGICAL_PREFILL_CHUNKS = 8
+# A 16K physical ceiling can retain sixteen original 1K transactions. Native
+# token capacity, sample rows and pressure boundaries still gate every span.
+MAX_LOGICAL_PREFILL_CHUNKS = 16
 
 
 def _integer(value, label, *, minimum=0):
@@ -38,9 +43,15 @@ class LogicalPrefillSpan:
     def __post_init__(self):
         for name in ('index','history_begin','local_begin','count','physical_offset'):
             _integer(getattr(self,name),name)
-        if (not 0 <= self.index < MAX_LOGICAL_PREFILL_CHUNKS or self.count != LOGICAL_PREFILL_TOKENS or
-                self.physical_offset != self.index * LOGICAL_PREFILL_TOKENS):
-            raise ValueError('A logical span must preserve one of the bounded complete 2K boundaries')
+        full = self.count in SUPPORTED_LOGICAL_PREFILL_TOKENS
+        # A partial span is only legal as the clipped final span of a group;
+        # LogicalPrefillGroup checks that position and its chunk size.
+        partial = 0 < self.count < max(SUPPORTED_LOGICAL_PREFILL_TOKENS) and self.count % PARTIAL_SPAN_TOKENS == 0
+        if (not 0 <= self.index < MAX_LOGICAL_PREFILL_CHUNKS or not (full or partial) or
+                (full and self.physical_offset != self.index * self.count) or
+                (not full and self.physical_offset not in tuple(self.index * size for size in
+                                                                SUPPORTED_LOGICAL_PREFILL_TOKENS))):
+            raise ValueError('A logical span must preserve a complete 1K or 2K boundary')
 
     @property
     def history_end(self):
@@ -78,8 +89,13 @@ class LogicalPrefillGroup:
             raise ValueError('Logical prefill requires an immutable RequestPlan')
         if (type(self.spans) is not tuple or not 2 <= len(self.spans) <= MAX_LOGICAL_PREFILL_CHUNKS or
                 any(not isinstance(span,LogicalPrefillSpan) for span in self.spans)):
-            raise ValueError('A physical group must contain two to eight immutable spans')
-        if (any(span.index != index for index,span in enumerate(self.spans)) or
+            raise ValueError('A physical group must contain two to sixteen immutable spans')
+        chunk = self.spans[0].count
+        if (chunk not in SUPPORTED_LOGICAL_PREFILL_TOKENS or
+                any(span.count != chunk for span in self.spans[:-1]) or
+                not 0 < self.spans[-1].count <= chunk or
+                any(span.physical_offset != span.index * chunk for span in self.spans) or
+                any(span.index != index for index,span in enumerate(self.spans)) or
                 any(right.history_begin != left.history_end or right.local_begin != left.local_end
                     for left,right in zip(self.spans,self.spans[1:])) or
                 any(span.history_begin-span.local_begin != self.offset for span in self.spans) or
@@ -125,8 +141,8 @@ class LogicalPrefillGroup:
 class LogicalPrefillEligibility:
     """Snapshot existing admission gates without charging or refunding them.
 
-    native_limits are the native admission ceilings at two to eight *original*
-    2K boundaries, before RequestPlan.admit. Their length is the attempt limit,
+    native_limits are the native admission ceilings at two to sixteen *original*
+    logical boundaries, before RequestPlan.admit. Their length is the attempt limit,
     not permission to cross a control boundary or combine admissions.
     blocked_reasons records prepared refresh/restore, replay, terminal, unknown
     composition or other scheduler gates. boundary_positions records dynamic
@@ -149,7 +165,7 @@ class LogicalPrefillEligibility:
             raise ValueError('Scheduled request ids must be an immutable tuple')
         if (type(self.native_limits) is not tuple or
                 not 2 <= len(self.native_limits) <= MAX_LOGICAL_PREFILL_CHUNKS):
-            raise ValueError('Two to eight native logical admission limits are required')
+            raise ValueError('Two to sixteen native logical admission limits are required')
         for limit in self.native_limits:
             _integer(limit,'native logical limit')
         _integer(self.physical_token_budget,'physical token budget')
@@ -170,18 +186,21 @@ class LogicalPrefillEligibility:
 
 def plan_logical_prefill(request_plan, *, request_id, owner_epoch, scheduler_step,
                          history_begin, offset, prompt_tokens, capacity, eligibility,
-                         coalescing_authorization_id=None):
+                         coalescing_authorization_id=None, logical_chunk_tokens=LOGICAL_PREFILL_TOKENS,
+                         partial_tail=False):
     """Return (immutable group, None), or (None, explicit ineligibility reason).
 
-    Select the longest qualifying prefix of two to eight complete 2K admissions.
+    Select the longest qualifying prefix of two to sixteen original admissions.
     The original minimum-pair checks retain their order and rejection reasons.
     Additional spans stop at the first failed gate/admission, preserving the
     already qualified prefix. Starting at or crossing a control boundary is
     disallowed; ending exactly at one preserves its next scheduler visit. No
-    alignment to global history modulo 2K is introduced.
+    alignment to global history modulo the logical chunk size is introduced.
     """
     if not isinstance(request_plan,RequestPlan) or not isinstance(eligibility,LogicalPrefillEligibility):
         raise ValueError('Logical prefill requires explicit policy and eligibility snapshots')
+    if type(logical_chunk_tokens) is not int or logical_chunk_tokens not in SUPPORTED_LOGICAL_PREFILL_TOKENS:
+        raise ValueError('Logical prefill must retain a supported original chunk size')
     _integer(request_plan.block_tokens,'logical page tokens',minimum=1)
     for name,value in (('history',history_begin),('offset',offset),('prompt',prompt_tokens),('capacity',capacity)):
         _integer(value,name)
@@ -199,7 +218,7 @@ def plan_logical_prefill(request_plan, *, request_id, owner_epoch, scheduler_ste
             return 'terminal_prefill'
         if eligibility.terminal_history is not None and eligibility.terminal_history <= end:
             return 'terminal_prefix'
-        if LOGICAL_PREFILL_TOKENS % request_plan.block_tokens or history_begin % request_plan.block_tokens:
+        if logical_chunk_tokens % request_plan.block_tokens or history_begin % request_plan.block_tokens:
             return 'partial_logical_block'
         if request_plan.query is not None and history_begin < request_plan.replay_end and end > request_plan.replay_begin:
             return 'query_replay'
@@ -216,25 +235,32 @@ def plan_logical_prefill(request_plan, *, request_id, owner_epoch, scheduler_ste
             return 'native_lookahead'
         return None
 
-    reason = prefix_gate(PHYSICAL_PREFILL_TOKENS)
+    reason = prefix_gate(2 * logical_chunk_tokens)
     if reason is not None:
         return None,reason
     spans = []
     for index,native_limit in enumerate(eligibility.native_limits):
-        if index >= 2 and prefix_gate((index+1)*LOGICAL_PREFILL_TOKENS) is not None:
+        if index >= 2 and prefix_gate((index+1)*logical_chunk_tokens) is not None:
             break
-        history = history_begin + index*LOGICAL_PREFILL_TOKENS
+        history = history_begin + index*logical_chunk_tokens
         action = request_plan.action(history,prompt_tokens,offset,capacity)
         if action is not None:
             if len(spans) >= 2:
                 break
             return None,'action:'+action
-        desired = min(LOGICAL_PREFILL_TOKENS,native_limit)
+        desired = min(logical_chunk_tokens,native_limit)
         count = request_plan.admit(history,desired,prompt_tokens,offset,capacity)
-        if count != LOGICAL_PREFILL_TOKENS:
+        if count != logical_chunk_tokens:
+            # Opt-in: keep a window-clipped final chunk in this physical step.
+            # Its boundaries are exactly those of the standalone step it
+            # replaces; sampling/statistics are planned per logical span.
+            if (partial_tail and len(spans) >= 2 and 0 < count < logical_chunk_tokens and
+                    count % request_plan.block_tokens == 0 and count % PARTIAL_SPAN_TOKENS == 0 and
+                    prefix_gate(index*logical_chunk_tokens + count) is None):
+                spans.append(LogicalPrefillSpan(index,history,history-offset,count,index*logical_chunk_tokens))
             if len(spans) >= 2:
                 break
             return None,'logical_admission'
-        spans.append(LogicalPrefillSpan(index,history,history-offset,count,index*LOGICAL_PREFILL_TOKENS))
+        spans.append(LogicalPrefillSpan(index,history,history-offset,count,index*logical_chunk_tokens))
     return LogicalPrefillGroup(request_id,owner_epoch,scheduler_step,offset,prompt_tokens,
                               capacity,tuple(spans),request_plan,coalescing_authorization_id),None

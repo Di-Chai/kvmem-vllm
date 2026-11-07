@@ -4,6 +4,7 @@ This copies packed payloads only; allocator and KV layout remain engine-owned.
 A producer must retain source_owners until poll() observes actual completion.
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 from threading import RLock
 
 import torch
@@ -64,7 +65,7 @@ class PackedTransfers:
                                        lambda staging: staging.copy_(payload.flatten()),
                                        source_owners=source_owners, ready=ready)
 
-    def upload_from_reader(self, size, destination, fill, source_owners=(), ready=None):
+    def upload_from_reader(self, size, destination, fill, source_owners=(), ready=None, *, profile=None):
         """Fill an exclusive pinned slot synchronously, then submit its H2D copy.
 
         The callback must finish all CPU writes before returning (including on
@@ -90,7 +91,8 @@ class PackedTransfers:
             retained = tuple(owner.clone() if isinstance(owner, _native.Lease) else owner
                              for owner in source_owners)
             staging = self.buffers[slot][:size]
-            filled = fill(staging)
+            with profile.stage('cpu_fill_total', transfer_bytes=size) if profile is not None else nullcontext():
+                filled = fill(staging)
             if self.bandwidth_limiter is not None:
                 self.bandwidth_limiter.acquire(size)
             if ready is None:
@@ -104,7 +106,10 @@ class PackedTransfers:
                 try:
                     with torch.cuda.stream(self.stream):
                         self.stream.wait_event(ready)
-                        destination.flatten().copy_(staging, non_blocking=True)
+                        # Timing begins after the existing consumer dependency.
+                        # Preserve the copy and lifetime fence in the same order.
+                        with profile.stage('h2d_copy', gpu=True, transfer_bytes=size) if profile is not None else nullcontext():
+                            destination.flatten().copy_(staging, non_blocking=True)
                         destination.record_stream(self.stream)
                         event = torch.cuda.Event()
                         event.record(self.stream)

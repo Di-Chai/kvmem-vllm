@@ -38,7 +38,7 @@ def _identity(rows):
     return tuple(tuple(row[2:]) for row in rows)
 
 
-def _resolve(authority, maps, position):
+def _resolve(authority, maps, position, *, planned_records=None):
     """Resolve original coordinates against the retained immutable archive."""
     by_begin = {record.history_begin: record for record in authority.records.values()}
     resolved, canonical = [], []
@@ -63,7 +63,8 @@ def _resolve(authority, maps, position):
                for rows in canonical]
     if any(rows != partial[0] for rows in partial):
         raise ValueError('Layerwise checkpoint has inconsistent partial-block geometry')
-    shared = tuple(authority.memory._store.working_records())
+    shared = (tuple(authority.memory._store.working_records()) if planned_records is None
+              else tuple(planned_records))
     if _identity(shared) != _identity(canonical[0]):
         raise ValueError('Layerwise checkpoint differs from the native layer-zero frame')
     return tuple(resolved), tuple(canonical)
@@ -94,7 +95,7 @@ def capture(controller, request_id, authority, position):
     return LayerwisePrefix(position, tuple(controller.names), maps, tuple(snapshots))
 
 
-def prepare_restore(controller, request_id, authority, snapshot, options):
+def prepare_restore(controller, request_id, authority, snapshot, options, *, planned_records=None):
     """Validate all CPU state without publishing partially restored owners."""
     if snapshot is None:
         raise ValueError('Layerwise restore requires an explicit per-layer checkpoint')
@@ -107,7 +108,7 @@ def prepare_restore(controller, request_id, authority, snapshot, options):
     if (request_id in controller.maps or request_id in controller.histories or
             request_id in controller.query.finished):
         raise ValueError('Layerwise restore requires a fresh native request owner')
-    chosen, maps = _resolve(authority, snapshot.maps, snapshot.position)
+    chosen, maps = _resolve(authority, snapshot.maps, snapshot.position, planned_records=planned_records)
     histories = []
     for rows, end, samples, chunks in snapshot.histories:
         if end > snapshot.position or any(begin >= snapshot.position for begin, _, _ in rows):

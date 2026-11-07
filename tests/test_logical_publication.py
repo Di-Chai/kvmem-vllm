@@ -29,7 +29,7 @@ class Lease:
 
 
 @contextmanager
-def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2):
+def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2, request_id='r'):
     tmp_path.mkdir(parents=True, exist_ok=True)
     config = KVMemConfig(block_tokens=32, select_budget=8192, gen_budget=8192,
                         repository_blocks=1024, sink_blocks=0, recent_blocks=0)
@@ -39,7 +39,7 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
         gc.background, gc.ready_low, gc.ready_high = False, 2, 4
         gc.scan_blocks, gc.delete_blocks, gc.poll_ms = 16, 4, 1
         archive.enable_history_gc(gc)
-    authority = RequestAuthority('r', config, archive, 1, 1, 2, resident_records=256,
+    authority = RequestAuthority(request_id, config, archive, 1, 1, 2, resident_records=256,
                                  raw_dtype=raw_dtype,mean_k_backend='qw3_cuda')
     graph = authority.block_graph = BlockGraph('logical-owner', 32, topk=4)
     state = authority.action_history = NS(prefill=PrefillHistory(NS(
@@ -47,7 +47,7 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
     action = ActionRuntime.__new__(ActionRuntime)
     action.runtime = NS(output=tmp_path)
     spans = tuple(LogicalPrefillSpan(i, i*2048, i*2048, 2048, i*2048) for i in range(chunks))
-    group = LogicalPrefillGroup('r', (1, 0, 0), 7, 0, max(16384,(chunks+1)*2048), 16384, spans,
+    group = LogicalPrefillGroup(request_id, (1, 0, 0), 7, 0, max(16384,(chunks+1)*2048), 16384, spans,
                                RequestPlan(None, block_tokens=32, gen_budget=8192))
     plans = tuple(LogicalScorePlan(span, tuple(range(31, 2048, 32)),
         tuple(range(0, span.local_end, 32)), (32,)*(span.local_end//32),
@@ -57,7 +57,7 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
     parts = project_logical_scores(group, plans, masses, physical_rows=physical_rows)
     raw = ((torch.arange(group.count*2, dtype=torch.float32)%99)/16).reshape(1,group.count,1,2).to(raw_dtype)
     values = raw.float().to(torch.uint8)
-    packet = CapturedPacket(('r',),group.count,NS(owners=(Lease(),)),confirmed=False,
+    packet = CapturedPacket((request_id,),group.count,NS(owners=(Lease(),)),confirmed=False,
                             request_tokens=(group.count,),source_generation=9)
     cursor = LogicalPublicationCursor(group,packet,authority,action,parts,
                                      owner_epoch=group.owner_epoch,source_generation=9)

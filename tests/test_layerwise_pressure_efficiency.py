@@ -63,6 +63,7 @@ def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(m
     job=NS(command=NS(request_id='r',pressure_stage=stage),layerwise_pressure_plan=(chosen,[]))
     calls=[]
     def assemble(state,index,selected,**kwargs):
+        assert state['pressure_stage'] == stage
         calls.append((index,[r.history_begin for r in selected],kwargs,state['assembly_arena']))
         return dict(uploaded_bytes=64,chunks=1)
     controller=NS(names=('target0','target1'),query=NS(assemble_layer_pinned=assemble),
@@ -86,3 +87,46 @@ def test_single_assembly_rejects_draft_archive_reordering():
     from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
     with pytest.raises(ValueError,match='archive layer order'):
         install_single_assembly(NS(),NS(names=('a','b')),NS(),('a','draft','b'))
+
+
+@pytest.mark.parametrize('failed',[False,True])
+def test_single_assembly_closes_union_reader_on_success_and_submit_failure(monkeypatch,failed):
+    import torch
+    from vllm_kvmem import pressure_reader,window_assembly
+    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
+    records=[NS(history_begin=i*32,count=32,handle=NS(slot=i)) for i in range(3)]
+    chosen=[[records[0],records[1]],[records[0],records[2]]]
+    plan=NS(remaps=[NS(block_id=i,to_base=i*32,n_tokens=32,skip=False) for i in (0,1)],total_window_tokens=64)
+    authority=NS(memory=NS(phase=Phase.ASSEMBLING,_plan=plan))
+    job=NS(command=NS(request_id='r',pressure_stage='prefill'),layerwise_pressure_plan=(chosen,[]))
+    states=[];calls=[]
+    class Reader:
+        source_blocks=3
+        def __enter__(self):calls.append('enter');return self
+        def __exit__(self,*args):calls.append('close')
+    reader=Reader()
+    def prepare(a,p,layers):
+        assert a is authority and p is plan and layers is chosen
+        calls.append('prepare');return reader
+    def assemble(state,index,records,**kwargs):
+        assert state['prepared_pressure_reader'] is reader
+        states.append(state)
+        if failed and index==1:raise OSError('submit failed')
+        return dict(uploaded_bytes=64,chunks=1,inline_read_chunks=1,prepared_read_chunks=1)
+    monkeypatch.setattr(pressure_reader,'prepare_pressure_reader',prepare)
+    monkeypatch.setattr(window_assembly,'_validate_destinations',lambda *a:None)
+    monkeypatch.setattr(torch.cuda,'Event',lambda:NS(record=lambda stream:None))
+    monkeypatch.setattr(torch.cuda,'current_stream',lambda device:'stream')
+    controller=NS(names=('a','b'),query=NS(assemble_layer_pinned=assemble,paired_reads=True),
+                  runner=NS(device='cuda'),prepared_reads=True)
+    assembler=NS(layers=['a','b','draft'])
+    install_single_assembly(assembler,controller,job,('a','b','draft'))
+    if failed:
+        with pytest.raises(OSError,match='submit failed'):assembler._assemble(authority,plan)
+        assert not getattr(job,'layerwise_single_assembly_done',False)
+    else:
+        result=assembler._assemble(authority,plan)
+        assert result.read_stats['layerwise_prepared_source_blocks']==3
+        assert result.read_stats['layerwise_prepared_read_chunks']==3
+    assert calls==['prepare','enter','close']

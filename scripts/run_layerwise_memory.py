@@ -30,10 +30,16 @@ EXECUTION_FLAGS=('layerwise_prefill_pressure','layerwise_pressure_single_assembl
     'layerwise_pressure_fast_metadata','layerwise_packed_assembly',
     'layerwise_prepared_index','layerwise_batched_reads','layerwise_paired_reads',
     'layerwise_buffered_history','layerwise_rolling_decode')
+EXPERIMENTAL_EXECUTION_FLAGS=('layerwise_pressure_prepared_reads',
+    'layerwise_pressure_post_forward_reap','layerwise_pressure_submit_on_prepare','layerwise_pressure_native_score_export',
+    'layerwise_pressure_reuse_layer_views','layerwise_pressure_resident_values')
 
 
 def inherited_execution(origin):
-    return {key:origin.get(key,False) for key in EXECUTION_FLAGS}
+    result={key:origin.get(key,False) for key in EXECUTION_FLAGS}
+    # Do not add absent False keys to historical frozen fixtures/gates.
+    result.update({key:origin[key] for key in EXPERIMENTAL_EXECUTION_FLAGS if key in origin})
+    return result
 
 
 def server_command(root,fixture):
@@ -44,7 +50,7 @@ def server_command(root,fixture):
     command=[sys.executable,'-B','-m','vllm_kvmem','serve','--config',str(root/config),
         '--run-dir',str(root/'run/server'),'--layerwise-query-diagnostic','sequential',
         '--layerwise-query-optimized','--layerwise-query-native-batches']
-    for key in EXECUTION_FLAGS:
+    for key in (*EXECUTION_FLAGS,*EXPERIMENTAL_EXECUTION_FLAGS):
         if fixture.get('execution_flags',{}).get(key):command.append('--'+key.replace('_','-'))
     return command
 
@@ -555,13 +561,15 @@ def verify(root):
     return fixture,profile
 
 
-def infer(root,capture):
+def infer(root,capture,*,workers=8):
+    if type(workers) is not int or not 1<=workers<=8:
+        raise ValueError('Memory client workers must be an integer in [1, 8]')
     fixture,profile=verify(root);suite=fixture['suite'];kv=profile['kvmem']
     rows=fixture['rows'];bindings={r['id']:r for r in fixture['bindings']}
     reference=Path(fixture['reference']);out=root/'run/answers';out.mkdir(parents=True,exist_ok=True)
     p.save(out/'manifest.json',dict(reference=str(reference),suite=suite,cases=len(rows),rows=rows,
         cohort_sha256=fixture['source_cohort_sha256'],source_cohort_sha256=fixture['source_cohort_sha256'],
-        profile_sha256=p.sha(root/'profile.json'),layerwise=True,workers=8))
+        profile_sha256=p.sha(root/'profile.json'),layerwise=True,workers=workers))
     groups={}
     for row in rows:
         group=row['id'] if suite=='longmemeval_s' else row['id'].rsplit('_q',1)[0]
@@ -667,13 +675,13 @@ def infer(root,capture):
         finally:credits.release(group,amount)
     inherited=set(results)
     started_wall=time.time();started=time.perf_counter()
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures=[pool.submit(execute_group,g,items) for g,items in groups.items()]
         for future in as_completed(futures):future.result()
     elapsed=time.perf_counter()-started
     fresh=[row for row in rows if row['id'] not in inherited]
     p.save(root/'inference-performance.json',dict(started_at=started_wall,completed_at=time.time(),
-        inference_wall_seconds=elapsed,concurrency_limit=8,completed_cases=len(results),
+        inference_wall_seconds=elapsed,concurrency_limit=workers,completed_cases=len(results),
         fresh_cases=len(fresh),inherited_cases=len(inherited),
         fresh_cases_per_hour=3600*len(fresh)/elapsed,
         fresh_logical_request_tokens=sum(row['input_tokens'] for row in fresh),
@@ -699,7 +707,9 @@ def infer(root,capture):
         regenerated_completed_answers=0))
 
 
-def run(root):
+def run(root,*,workers=8):
+    if type(workers) is not int or not 1<=workers<=8:
+        raise ValueError('Memory client workers must be an integer in [1, 8]')
     sys.path[:0]=[str(root/'runtime-v1/src'),str(root/'runtime-v1/scripts')]
     fixture,profile=verify(root)
     if (root/'process.json').exists() or (root/'run/server.log').exists():
@@ -738,7 +748,7 @@ def run(root):
                     'sample','--output',str(root/'run/gpu.jsonl'),'--interval','1',
                     '--owned-root-pid',str(server.pid)],cwd=runtime,env=environment,
                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            infer(root,root/'run/server/capture');verify(root)
+            infer(root,root/'run/server/capture',workers=workers);verify(root)
         except BaseException as error:
             p.save(root/'status.json',dict(status='failed',error=repr(error),at=time.time()));raise
         finally:

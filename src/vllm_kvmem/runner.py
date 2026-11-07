@@ -112,6 +112,9 @@ def make_probe_runner(base):
                     self._kvmem_probe_output / 'public_work.json')
             self._kvmem_cpu_history_coordination = options.cpu_history_coordination
             self._kvmem_repository_gc = options.repository_gc
+            self._kvmem_request_swap_options = (options
+                if getattr(options, 'gpu_memory_admission', 'static') == 'incremental' else None)
+            self._kvmem_request_swap_worker = None
             self._kvmem_prepared_archive = None
             if options.nvme_preallocate or options.nvme_max_bytes or options.archive_io_max_bytes or options.historical_gc is not None:
                 from .storage import make_shared_archive
@@ -235,6 +238,9 @@ def make_probe_runner(base):
             result = super().finish_requests(scheduler_output)
             for request_id in scheduler_output.finished_req_ids:
                 self._kvmem_request_generations.pop(request_id, None)
+                layerwise = getattr(self, '_kvmem_layerwise_query', None)
+                if getattr(layerwise, 'no_probe', False):
+                    layerwise.retire(request_id)
             return result
 
         def shutdown(self):
@@ -301,7 +307,9 @@ def make_probe_runner(base):
             batch = super().prepare_inputs(*args, **kwargs)
             refresh = getattr(self, '_kvmem_async_refresh', None)
             cobatch = getattr(refresh, 'cobatch', None)
-            return cobatch.prepare(batch) if cobatch is not None else batch
+            batch = cobatch.prepare(batch) if cobatch is not None else batch
+            fork = getattr(self, '_kvmem_systemone_fork', None)
+            return fork.prepare(batch) if fork is not None else batch
 
         def _kvmem_rebuild_public_metadata(self, batch):
             from vllm.config.compilation import CUDAGraphMode
@@ -320,13 +328,16 @@ def make_probe_runner(base):
             refresh = getattr(self, '_kvmem_async_refresh', None)
             cobatch = getattr(refresh, 'cobatch', None)
             public = cobatch.public_batch(input_batch) if cobatch is not None else input_batch
+            fork = getattr(self, '_kvmem_systemone_fork', None)
+            if fork is not None:
+                public = fork.public_batch(public)
             sessions = getattr(self, '_kvmem_sessions', None)
             if sessions is not None and not projecting:
                 sessions.before_attention(public)
             if getattr(self, '_kvmem_bounded_target', False) and not projecting:
                 from .native_state import canonicalize_before_non_speculative_batch, initialize_cold_single_token_state
-                initialize_cold_single_token_state(self, input_batch)
-                canonicalize_before_non_speculative_batch(self, input_batch)
+                initialize_cold_single_token_state(self, public)
+                canonicalize_before_non_speculative_batch(self, public)
             decisions = getattr(self, '_kvmem_active_decisions', None)
             if decisions is not None and not projecting:
                 decisions.before_attention(public)
@@ -432,6 +443,10 @@ def make_probe_runner(base):
                 if cobatch is not None and cobatch.frame is not None:
                     state = cobatch.complete(state)
                     self.execute_model_state = state
+                fork = getattr(self, '_kvmem_systemone_fork', None)
+                if fork is not None and fork.frame is not None:
+                    state = fork.complete(state)
+                    self.execute_model_state = state
                 fresh = observe_work and state is not None and state is not before
                 work = getattr(self, '_kvmem_public_work', None)
                 if fresh and work is not None:
@@ -471,6 +486,9 @@ def make_probe_runner(base):
                           skip_attn_for_dummy_run=skip_attn_for_dummy_run,
                           is_profile=is_profile, context_len=context_len,
                           valid_dummy_state_slots=valid_dummy_state_slots, **native_kwargs)
+            if not dummy_run and not is_profile:
+                from .systemone_fork import before_step
+                before_step(self, scheduler_output)
             timing = getattr(self, '_kvmem_step_timing', None)
             if (timing is not None and not dummy_run and not is_profile and
                     scheduler_output.total_num_scheduled_tokens and
@@ -478,6 +496,16 @@ def make_probe_runner(base):
                 timing.begin(getattr(scheduler_output.kv_connector_metadata, 'cost_classification', None))
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             refresh = getattr(self, '_kvmem_async_refresh', None)
+            if not dummy_run and not is_profile:
+                swap_options = getattr(self, '_kvmem_request_swap_options', None)
+                if swap_options is not None and runtime is not None:
+                    if self._kvmem_request_swap_worker is None:
+                        from .request_swap_worker import RequestSwapWorker
+                        self._kvmem_request_swap_worker = RequestSwapWorker(
+                            self, swap_options.request_checkpoint_bytes,
+                            checkpoint_ssd_bytes=swap_options.request_checkpoint_ssd_bytes,
+                            checkpoint_directory=self._kvmem_probe_output/'request-checkpoints')
+                    self._kvmem_request_swap_worker.validate_public_step(scheduler_output)
             # Every forward replaces this receipt, including ordinary 2K and
             # idle steps. Worker planning binds it to its own authority/window
             # generations before any grouped target computation is submitted.
@@ -563,9 +591,16 @@ def make_probe_runner(base):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 connector = get_kv_transfer_group()
                 connector.session_worker = sessions
+                connector.swap_worker = getattr(self, '_kvmem_request_swap_worker', None)
                 connector.restore_completion_poll = (
                     refresh.poll_restore_completions if refresh is not None and
                     getattr(refresh.options, 'restore_handoff_fastpath', False) else None)
+                connector.pressure_completion_poll = (
+                    refresh.poll_pressure_completions if refresh is not None and
+                    getattr(getattr(self, '_kvmem_layerwise_pressure', None), 'post_forward_reap', False) else None)
+                connector.query_completion_poll = (
+                    refresh.poll_query_completions if refresh is not None and
+                    getattr(refresh, 'query_post_forward_reap', False) else None)
                 if timing is not None:
                     connector.step_timings = timing.poll
                 if refresh is not None and refresh.maintenance is not None:
@@ -604,6 +639,9 @@ def make_probe_runner(base):
                 captured = self._kvmem_graph_captures
             if not captured:
                 raise RuntimeError("Real native batch executed without any KVMem captures")
+            fork = getattr(self, '_kvmem_systemone_fork', None)
+            if fork is not None:
+                captured = fork.project_capture(captured)
             if self._kvmem_continuous:
                 if self._kvmem_pending_capture is not None:
                     raise RuntimeError("Previous target capture never reached native sampling")

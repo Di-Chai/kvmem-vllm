@@ -48,6 +48,22 @@ def test_two_original_admissions_not_one_larger_admission(monkeypatch):
         group.spans[0].count = 4096
 
 
+@pytest.mark.parametrize('chunks',[9,14,16])
+def test_extended_one_k_group_checks_each_boundary_and_stops_before_pressure(chunks):
+    gates = eligibility(native_limits=(1024,)*chunks,physical_token_budget=16384)
+    full,reason = build(gates=gates,logical_chunk_tokens=1024)
+    assert reason is None and len(full.spans) == chunks
+    assert full.count == chunks*1024
+    for boundary in range(2,chunks+1):
+        # This original pressure policy reserves two physical blocks.
+        capacity = 8192+boundary*1024+64
+        group,reason = build(gates=gates,capacity=capacity,logical_chunk_tokens=1024)
+        assert reason is None
+        assert len(group.spans) == boundary
+        assert group.history_end == capacity-64
+        assert group.request_plan.action(group.history_end,262144,0,capacity) == 'pressure'
+
+
 def test_pressure_phase_keeps_original_non_2k_aligned_history_and_dense_coordinates():
     group,reason = build(history_begin=40992,offset=8192)
     assert reason is None
@@ -286,7 +302,7 @@ def test_g16_pressure_cycle_has_four_plus_three_complete_logical_chunks():
     assert policy().action(49088,262144,0,49152)=='pressure'
 
 
-@pytest.mark.parametrize('maximum', [0,1,9,64])
+@pytest.mark.parametrize('maximum', [0,1,17,64])
 def test_attempt_count_and_direct_group_size_are_bounded(maximum):
     with pytest.raises(ValueError): wide_gates(maximum)
     group,_=build(gates=wide_gates(8))
@@ -295,8 +311,57 @@ def test_attempt_count_and_direct_group_size_are_bounded(maximum):
 
 def test_direct_wider_group_checks_every_middle_span_and_exact_order():
     group,_ = build(gates=wide_gates(8))
-    assert MAX_LOGICAL_PREFILL_CHUNKS==8
+    assert MAX_LOGICAL_PREFILL_CHUNKS==16
     for index in range(8):
         with pytest.raises(ValueError):
             replace(group,spans=(*group.spans[:index],replace(group.spans[index],history_begin=40960),*group.spans[index+1:]))
-    with pytest.raises(ValueError): LogicalPrefillSpan(8,16384,16384,2048,16384)
+    with pytest.raises(ValueError): LogicalPrefillSpan(16,32768,32768,2048,32768)
+
+
+def clipped_admit(limit):
+    """Admission that clips at an absolute history limit (a full window)."""
+    def admit(self, history, desired, *rest):
+        return max(0, min(desired, limit - history))
+    return admit
+
+
+def test_partial_tail_is_opt_in_and_reproduces_the_clipped_standalone_step(monkeypatch):
+    monkeypatch.setattr(RequestPlan, 'admit', clipped_admit(8192 + 3*1024 + 224))
+    gates = eligibility(native_limits=(1024,)*4, physical_token_budget=4096)
+    group, reason = build(gates=gates, logical_chunk_tokens=1024)
+    assert reason is None and [s.count for s in group.spans] == [1024]*3       # original behavior
+    group, reason = build(gates=gates, logical_chunk_tokens=1024, partial_tail=True)
+    assert reason is None and [s.count for s in group.spans] == [1024, 1024, 1024, 224]
+    tail = group.spans[-1]
+    assert (tail.history_begin, tail.physical_offset, group.count) == (8192+3072, 3072, 3296)
+    assert group.accepted_counts(3100) == (1024, 1024, 1024, 28)
+
+
+def test_partial_tail_never_starts_a_group_or_breaks_a_gate(monkeypatch):
+    # Clipped second span: still the original two-span requirement.
+    monkeypatch.setattr(RequestPlan, 'admit', clipped_admit(8192 + 1024 + 224))
+    gates = eligibility(native_limits=(1024,)*4, physical_token_budget=4096)
+    assert build(gates=gates, logical_chunk_tokens=1024, partial_tail=True)[0] is None
+    # A tail that is not whole authority records stays a separate step.
+    monkeypatch.setattr(RequestPlan, 'admit', clipped_admit(8192 + 2*1024 + 100))
+    group, _ = build(gates=gates, logical_chunk_tokens=1024, partial_tail=True)
+    assert [s.count for s in group.spans] == [1024, 1024]
+    # The physical budget still bounds the tail's real end.
+    monkeypatch.setattr(RequestPlan, 'admit', clipped_admit(8192 + 2*1024 + 224))
+    tight = eligibility(native_limits=(1024,)*3, physical_token_budget=2048+192)
+    group, _ = build(gates=tight, logical_chunk_tokens=1024, partial_tail=True)
+    assert [s.count for s in group.spans] == [1024, 1024]
+
+
+def test_partial_span_only_as_the_final_member():
+    mk = lambda i, h, n, off: LogicalPrefillSpan(i, h, h, n, off)
+    plan = policy()
+    args = dict(request_id='a', owner_epoch=(1,), scheduler_step=1, offset=0, prompt_tokens=10**6,
+                capacity=10**6, request_plan=plan)
+    LogicalPrefillGroup(spans=(mk(0, 0, 1024, 0), mk(1, 1024, 1024, 1024), mk(2, 2048, 224, 2048)), **args)
+    with pytest.raises(ValueError):
+        LogicalPrefillGroup(spans=(mk(0, 0, 1024, 0), mk(1, 1024, 224, 1024), mk(2, 1248, 1024, 2048)), **args)
+    with pytest.raises(ValueError):
+        mk(1, 1024, 100, 1024)                       # not whole 32-token records
+    with pytest.raises(ValueError):
+        LogicalPrefillGroup(spans=(mk(0, 0, 1024, 0), mk(1, 1024, 2048, 1024)), **args)

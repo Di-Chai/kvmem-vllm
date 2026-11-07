@@ -8,7 +8,9 @@ import torch
 
 from vllm_kvmem.action_attention import ActionPacket, ActionRuntime
 from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.logical_action import LogicalScorePlan, plan_logical_scores, project_logical_scores
+from vllm_kvmem.logical_action import (
+    LogicalScorePlan, _score_geometry, plan_logical_scores, project_logical_scores,
+)
 from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
 from vllm_kvmem.prefill_attention import PrefillHistory
 from vllm_kvmem.request_plan import RequestPlan
@@ -122,6 +124,43 @@ def test_projection_preserves_noncontinuous_logical_history_and_duplicate_partia
     assert parts[0].plan.history[:3] == (4096, 4096, 0)
     assert parts[0].plan.counts[:3] == (16, 16, 32)
     assert parts[0].masses.shape == (64, 67)
+
+
+@pytest.mark.parametrize('chunks', [2, 4, 8, 16])
+def test_score_geometry_preserves_rows_and_columns_for_every_logical_boundary(chunks):
+    group, plans, rows, _ = fixture(chunks=chunks)
+    plans = tuple(replace(plan, starts=(0, 16, *plan.starts[1:]),
+        counts=(16, 16, *plan.counts[1:]), history=(4096, 4096, 0, *plan.history[2:]))
+        for plan in plans)
+    # The original segment triples remain the independent domain oracle,
+    # including duplicate identities and partial retained segments.
+    assert all(plan.segments == plans[-1].segments[:len(plan.starts)] for plan in plans)
+    assert _score_geometry(group, plans) == (rows, len(plans[-1].starts))
+
+
+@pytest.mark.parametrize('corruption', ['starts', 'counts', 'history'])
+def test_projection_rejects_each_mismatched_segment_vector(corruption):
+    group, plans, rows, masses = fixture()
+    if corruption == 'starts':
+        first = plans[0]
+        plans = (replace(first, starts=(0, 16, *first.starts[1:]),
+            counts=(16, 16, *first.counts[1:]), history=(first.history[0], *first.history)),
+            *plans[1:])
+    elif corruption == 'counts':
+        # Both plans are individually valid, but extending the partial last
+        # segment changes its count inside the earlier logical domain.
+        spans = tuple(replace(span, local_begin=span.local_begin-1) for span in group.spans)
+        group = replace(group, spans=spans, offset=group.offset+1)
+        plans = tuple(replace(plan, span=span, counts=(*plan.counts[:-1], 31))
+                      for span, plan in zip(spans, plans))
+        columns = len(plans[0].starts)
+        assert plans[0].starts == plans[-1].starts[:columns]
+        assert plans[0].history == plans[-1].history[:columns]
+    else:
+        plans = (replace(plans[0], history=(4096, 0, *plans[0].history[2:])), *plans[1:])
+    assert getattr(plans[0], corruption) != getattr(plans[-1], corruption)[:len(plans[0].starts)]
+    with pytest.raises(ValueError, match='Logical segments are not an exact prefix'):
+        project_logical_scores(group, plans, masses, physical_rows=rows)
 
 
 @pytest.mark.parametrize('corruption', ['rows', 'columns', 'order', 'identity', 'block', 'policy', 'domain',

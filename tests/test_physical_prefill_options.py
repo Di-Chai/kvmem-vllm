@@ -18,6 +18,7 @@ def payload(**changes):
 def test_default_off_roundtrip_and_logical_chunk_unchanged(tmp_path):
     assert RuntimeOptions().prefill_physical_coalescing is False
     assert RuntimeOptions().prefill_physical_max_chunks == 2
+    assert RuntimeOptions().prefill_physical_fill_rows is False
     profile = model_profile(tmp_path)
     profile.update(prefill_chunk_tokens=2048)
     profile['kvmem'] = payload()
@@ -26,6 +27,22 @@ def test_default_off_roundtrip_and_logical_chunk_unchanged(tmp_path):
     assert profile == before
     assert runtime(worker_payload(launch)).prefill_physical_coalescing is True
     assert launch['environment']['KVMEM_PREFILL_CHUNK_TOKENS'] == '2048'
+
+
+def test_row_remainder_requires_explicit_multiowner_and_survives_payload(tmp_path):
+    with pytest.raises(ValueError,match='requires multi-owner'):
+        RuntimeOptions(prefill_physical_fill_rows=True)
+    profile=model_profile(tmp_path)
+    profile['prefill_chunk_tokens']=2048
+    profile['kvmem']=payload(prefill_physical_multi_owner=True,prefill_physical_fill_rows=True)
+    launch=build_launch(profile,tmp_path,tmp_path/'run')
+    assert runtime(worker_payload(launch)).prefill_physical_fill_rows
+
+
+@pytest.mark.parametrize('value',[0,1,None,'true'])
+def test_row_remainder_flag_is_strict_boolean(value):
+    with pytest.raises(ValueError,match='prefill_physical_fill_rows must be boolean'):
+        RuntimeOptions(prefill_physical_fill_rows=value)
 
 
 @pytest.mark.parametrize('value', [0, 1, None, 'true', [], {}])
@@ -60,7 +77,7 @@ def test_physical_cap_cannot_change_logical_policy(tmp_path, chunk):
         build_launch(profile, tmp_path, tmp_path/'bad')
 
 
-@pytest.mark.parametrize('value', [True,False,0,1,9,None,4.0,'4'])
+@pytest.mark.parametrize('value', [True,False,0,1,17,None,4.0,'4'])
 def test_physical_maximum_has_a_fixed_integer_bound(value):
     with pytest.raises(ValueError,match='prefill_physical_max_chunks'):
         RuntimeOptions(prefill_physical_max_chunks=value)
@@ -94,3 +111,18 @@ def test_generation_capacity_cannot_be_silently_increased(tmp_path):
     profile['kvmem'] = payload(prefill_physical_max_chunks=4,gen_budget=4096)
     with pytest.raises(ValueError,match='maximum physical forward'):
         build_launch(profile,tmp_path,tmp_path/'bad-generation')
+
+
+@pytest.mark.parametrize('maximum', [9,14,16])
+def test_sixteen_k_ceiling_retains_one_k_policy_and_sample_capacity(tmp_path,maximum):
+    profile = model_profile(tmp_path)
+    profile['prefill_chunk_tokens'] = 1024
+    profile['kvmem'] = payload(prefill_physical_max_chunks=maximum,
+        prefill_physical_logical_tokens=1024, action_native_max_rows=maximum*32,
+        gen_budget=16384, action_download_max_bytes=256<<20)
+    launch = build_launch(profile,tmp_path,tmp_path/'large-1k')
+    assert launch['environment']['KVMEM_PREFILL_CHUNK_TOKENS'] == '1024'
+    assert runtime(worker_payload(launch)).prefill_physical_max_chunks == maximum
+    profile['kvmem']['action_native_max_rows'] -= 1
+    with pytest.raises(ValueError,match='native sample capacity'):
+        build_launch(profile,tmp_path,tmp_path/'too-few-rows')

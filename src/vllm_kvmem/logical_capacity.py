@@ -20,7 +20,11 @@ def physical_config(config):
     from .options import RuntimeOptions
     from .pressure_query_capture import configured_method
     recall = configured_method()
-    if not recall and config.model_config.max_model_len <= 1048576:
+    finite_history = os.getenv('KVMEM_FULL_HISTORY_BENCHMARK') == '1'
+    transfer = getattr(config, 'kv_transfer_config', None)
+    payload = getattr(transfer, 'kv_connector_extra_config', {}) or {}
+    incremental = payload.get('kvmem', {}).get('gpu_memory_admission') == 'incremental'
+    if not recall and not finite_history and not incremental and config.model_config.max_model_len <= 1048576:
         return config
     transfer = config.kv_transfer_config
     if (transfer is None or transfer.kv_connector != 'KVMemConnector' or
@@ -28,6 +32,18 @@ def physical_config(config):
             config.scheduler_config.scheduler_cls != 'vllm_kvmem.scheduler.KVMemScheduler'):
         raise ValueError('Bounded logical KV planning requires the owned KVMem scheduler/connector')
     options = RuntimeOptions.from_vllm(config)
+    if incremental:
+        if (recall or finite_history or config.scheduler_config.async_scheduling or
+                config.cache_config.enable_prefix_caching or config.cache_config.mamba_cache_mode != 'none' or
+                (config.speculative_config is not None and config.speculative_config.method != 'mtp') or
+                any(getattr(config.parallel_config, field, 1) != 1 for field in
+                    ('tensor_parallel_size', 'pipeline_parallel_size', 'decode_context_parallel_size',
+                     'prefill_context_parallel_size'))):
+            raise ValueError('Incremental KV planning requires single-rank synchronous target or native MTP')
+        result = copy(config)
+        result.model_config = copy(config.model_config)
+        result.model_config.max_model_len = options.memory.select_budget + options.memory.gen_budget
+        return result
     gc = options.historical_gc
     if recall:
         # This opt-in campaign retains the complete CPU history while native
@@ -43,10 +59,13 @@ def physical_config(config):
                 options.memory.select_budget != 36864 or
                 options.memory.gen_budget != 16384 or not options.async_refresh):
             raise ValueError('Unqualified recall logical/physical KV configuration')
+    elif finite_history:
+        from .full_history_benchmark import validate_runtime_capacity
+        validate_runtime_capacity(config, options)
     elif gc is None or gc.mode != 'delete':
         raise ValueError('Unqualified bounded logical KV planning configuration')
     if (not options.request_planning or
-            not options.rolling_active_window or not options.cpu_history_coordination or
+            (not options.rolling_active_window and not finite_history) or not options.cpu_history_coordination or
             not options.cpu_progress_reserve or not options.session_capacity or
             config.speculative_config is None or config.speculative_config.method != 'mtp' or
             config.scheduler_config.async_scheduling or config.cache_config.enable_prefix_caching or
@@ -91,16 +110,20 @@ def wrap_planner(original):
         # mutations as well; immutable KVCacheSpec objects themselves are shared.
         result = original(bounded, [dict(row) for row in kv_cache_specs], available_memory)
         owners = vllm_config.scheduler_config.max_num_seqs
+        incremental = (vllm_config.kv_transfer_config.kv_connector_extra_config.get(
+            'kvmem', {}).get('gpu_memory_admission') == 'incremental')
         rows = []
         for cache in result:
             per_owner = sum(group.kv_cache_spec.max_num_blocks_per_req(
                 bounded, bounded.model_config.max_model_len) for group in cache.kv_cache_groups)
-            needed = owners*per_owner + 1  # native null page is never available
+            required_owners = 1 if incremental else owners
+            needed = required_owners*per_owner + 1  # native null page is never available
             if needed > cache.num_blocks:
-                raise ValueError(f'GPU pool cannot fit {owners} K+G windows plus recurrent states: '
+                raise ValueError(f'GPU pool cannot fit {required_owners} K+G windows plus recurrent states: '
                                  f'need {needed} native pages, have {cache.num_blocks}')
             rows.append(dict(pool_pages=cache.num_blocks, per_owner_pages=per_owner,
-                             concurrent_owners=owners, required_pages=needed))
+                             concurrent_owners=owners, required_pages=needed,
+                             admission='incremental' if incremental else 'static'))
         if directory := os.getenv('KVMEM_RUNNER_PROBE_DIR'):
             path = Path(directory)/'logical-kv-capacity.json'
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +131,7 @@ def wrap_planner(original):
             temp.write_text(json.dumps(dict(status='passed',
                 logical_limit=vllm_config.model_config.max_model_len,
                 physical_frame=bounded.model_config.max_model_len, workers=rows,
-                scope='Native allocation and all-owner capacity check; no inference qualification'), indent=2)+'\n')
+                scope='Native allocation capacity check; no inference qualification'), indent=2)+'\n')
             temp.replace(path)
         return result
     plan._kvmem_logical_capacity = True

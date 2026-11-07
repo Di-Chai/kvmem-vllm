@@ -276,6 +276,19 @@ def test_runner_reuses_fixed_staging_across_request_views(cuda_oracle, monkeypat
     assert second.close() and not cuda_oracle.pools
 
 
+def test_runner_module_map_is_walked_once_until_model_or_mtp_changes():
+    walks = []
+    def model(name):
+        return SimpleNamespace(named_modules=lambda: walks.append(name) or [(name, name)])
+    runner = SimpleNamespace(model=model('a'))
+    assert window._runner_modules(runner) == {'a': 'a'}
+    assert window._runner_modules(runner) == {'a': 'a'} and walks == ['a']
+    runner._kvmem_mtp_modules = {'__mtp__.d': 'd'}
+    assert window._runner_modules(runner) == {'a': 'a', '__mtp__.d': 'd'} and walks == ['a', 'a']
+    runner.model = model('b')
+    assert window._runner_modules(runner) == {'b': 'b', '__mtp__.d': 'd'} and walks == ['a', 'a', 'b']
+
+
 def test_read_only_oracle_views_do_not_activate_split_assembly(cuda_oracle,monkeypatch):
     import numpy as np
     layer=cpu_layer()

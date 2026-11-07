@@ -250,15 +250,17 @@ def _xqa_module(q_dtype, kv_dtype, page, dim, group, out_dtype, q_len, ragged):
 
 
 def prefill_module(directory, q_dtype, kv_dtype, out_dtype, idtype, dim, *, aligned_pieces=False,
-                   cta_gate=False, static_aligned=False, static_readonly=False):
+                   cta_gate=False, static_aligned=False, static_readonly=False, quad_store=False):
     return _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim, aligned_pieces, cta_gate,
-                          static_aligned, static_readonly)
+                          static_aligned, static_readonly, quad_store)
 
 
 @cache
 def _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim, aligned_pieces=False, cta_gate=False,
-                    static_aligned=False, static_readonly=False):
+                    static_aligned=False, static_readonly=False, quad_store=False):
     from flashinfer.jit.attention import gen_customize_batch_prefill_module
+    if quad_store and (not static_aligned or static_readonly):
+        raise ValueError('Quad statistics stores require only the static aligned component')
     if static_readonly and (not static_aligned or aligned_pieces or cta_gate):
         raise ValueError('Readonly metadata requires only the static aligned component')
     if static_aligned and (aligned_pieces or cta_gate):
@@ -280,6 +282,9 @@ def _prefill_module(q_dtype, kv_dtype, out_dtype, idtype, dim, aligned_pieces=Fa
     if static_aligned:
         name += '_static_aligned16'
         variant = 'KVMemStaticAlignedAttention'
+    if quad_store:
+        name += '_quad_store'
+        variant = 'KVMemStaticQuadAttention'
     if static_readonly:
         name += '_readonly_metadata'
         variant = 'KVMemStaticReadonlyAttention'

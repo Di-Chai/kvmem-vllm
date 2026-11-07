@@ -79,6 +79,7 @@ class LogicalActionSlice:
     masses: object = field(repr=False)
     event: object = field(default=None, repr=False)
     source_owner: object = field(default=None, repr=False)
+    layerwise_pressure: object = field(default=None, repr=False)
 
     def accepted_from_prefix(self, retained):
         if type(retained) is not int or not 0 <= retained <= self.group.count:
@@ -90,10 +91,13 @@ class LogicalActionSlice:
         """Build only the existing acceptance input; never call its consumer."""
         from .action_attention import ActionPacket
         span, plan = self.plan.span, self.plan
-        return ActionPacket(state, list(plan.rows), list(plan.history), self.masses, self.event,
+        packet = ActionPacket(state, list(plan.rows), list(plan.history), self.masses, self.event,
             (span.history_end, span.count, plan.starts, span.local_begin),
             source_positions=tuple(span.history_begin + row for row in plan.rows),
             history_begin=span.history_begin, candidate_count=span.count)
+        if self.layerwise_pressure is not None:
+            packet.layerwise_pressure = self.layerwise_pressure
+        return packet
 
 
 def _matrix_geometry(masses):
@@ -123,9 +127,8 @@ def _score_geometry(group, plans):
     if not isinstance(group, LogicalPrefillGroup):
         raise ValueError('Logical score projection requires a qualified immutable prefill group')
     if (type(plans) is not tuple or not 2 <= len(plans) <= MAX_LOGICAL_PREFILL_CHUNKS or
-            len(plans) != len(group.spans) or group.count != len(plans)*2048 or
-            any(span.count != 2048 for span in group.spans)):
-        raise ValueError('Score projection requires a bounded group of logical 2K spans')
+            len(plans) != len(group.spans)):
+        raise ValueError('Score projection requires a bounded group of original logical spans')
     if any(not isinstance(plan, LogicalScorePlan) for plan in plans):
         raise ValueError('Logical score projection requires validated score plans')
     final = plans[-1]
@@ -135,14 +138,19 @@ def _score_geometry(group, plans):
     for span, plan in zip(group.spans, plans):
         if plan.span != span or plan.block_tokens != final.block_tokens:
             raise ValueError('Logical score plan belongs to a different span or block geometry')
-        if plan.segments != final.segments[:len(plan.starts)]:
+        columns = len(plan.starts)
+        # Compare the existing immutable vectors without rebuilding a tuple
+        # for every segment of both plans at each logical boundary.
+        if (plan.starts != final.starts[:columns] or
+                plan.counts != final.counts[:columns] or
+                plan.history != final.history[:columns]):
             raise ValueError('Logical segments are not an exact prefix of the physical score domain')
         expected_rows.extend(span.physical_offset + row for row in plan.rows)
     return tuple(expected_rows), len(final.starts)
 
 
 def plan_logical_scores(group: 'LogicalPrefillGroup', frame):
-    """Plan the original 2K transactions without advancing any mutable state.
+    """Plan the original logical transactions without advancing mutable state.
 
     The caller checks native/storage admission before installing next_frame.
     Reusing the original immutable frame's extend preserves sample interval,
@@ -166,8 +174,9 @@ def plan_logical_scores(group: 'LogicalPrefillGroup', frame):
 
 
 def project_logical_scores(group: 'LogicalPrefillGroup', plans: tuple[LogicalScorePlan, ...],
-                           masses, *, physical_rows: tuple[int, ...], event=None):
-    """Project one qualified physical owner into its original 2K transactions.
+                           masses, *, physical_rows: tuple[int, ...], event=None,
+                           layerwise_pressure=None):
+    """Project one physical owner into its original logical transactions.
 
     ``physical_rows`` are owner-relative Q row indices in matrix order. The
     final logical plan supplies the physical producer's complete column domain.
@@ -182,13 +191,33 @@ def project_logical_scores(group: 'LogicalPrefillGroup', plans: tuple[LogicalSco
         raise ValueError('Physical sampled row order differs from the original logical plans')
     if _matrix_geometry(masses) != (len(physical_rows), columns):
         raise ValueError('Physical score matrix shape differs from its logical rows or segments')
+    if layerwise_pressure is not None:
+        controller, rid, histories, layer_masses = layerwise_pressure
+        layers = len(controller.names)
+        if (rid != group.request_id or not layers or len(histories) != layers or
+                not isinstance(layer_masses, torch.Tensor) or
+                tuple(layer_masses.shape) != (layers, len(physical_rows), columns) or
+                any(len(history) != columns for history in histories) or
+                tuple(histories[0]) != plans[-1].history):
+            raise ValueError('Layerwise logical score geometry differs from its physical owner')
+        for layer in range(layers):
+            if _matrix_geometry(layer_masses[layer]) != (len(physical_rows), columns):
+                raise ValueError('Layerwise physical score matrix has invalid geometry')
+        if (not isinstance(masses, torch.Tensor) or
+                masses.data_ptr() != layer_masses[0].data_ptr() or
+                masses.stride() != layer_masses[0].stride()):
+            raise ValueError('Shared logical scores must be the first layer of the same download')
     # Finish every geometry check before constructing any view. A malformed
     # later span cannot escape as a partially returned, committable prefix.
     result, begin = [], 0
     for plan in plans:
         end = begin + len(plan.rows)
         view = masses[begin:end, :len(plan.starts)]
-        result.append(LogicalActionSlice(group, plan, view, event, masses))
+        marker = None
+        if layerwise_pressure is not None:
+            marker = (controller, rid, tuple(history[:len(plan.starts)] for history in histories),
+                      layer_masses[:, begin:end, :len(plan.starts)])
+        result.append(LogicalActionSlice(group, plan, view, event, masses, marker))
         begin = end
     return tuple(result)
 
@@ -199,7 +228,7 @@ def reference_logical_scores(group, plans, query, positions, key, table, cos_sin
     """Use each original scorer width before assembling one physical result.
 
     The normal native producer never calls this helper. Numerical fallback
-    retains every original 2K causal context, query chunk and segment domain;
+    retains every original logical causal context, query chunk and segment domain;
     padding only transports those old scores through the shared layer average
     and D2H. It cannot expose future pages to either logical transaction.
     """

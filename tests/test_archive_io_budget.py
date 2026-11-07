@@ -43,7 +43,9 @@ def test_byte_pressure_across_namespaces_and_direct_cache_reads(tmp_path, cached
         assert not archive.wait_for_capacity(.01, size=4096)
         assert not archive.close()
         assert archive.io_usage() == dict(archive_io_max_bytes=8192,
-            archive_io_pending_bytes=8192, archive_io_peak_bytes=8192, archive_io_deferrals=2)
+            archive_io_pending_bytes=8192, archive_io_peak_bytes=8192, archive_io_deferrals=2,
+            query_window_cache_reserved_bytes=0, historical_feature_reserved_bytes=0,
+            query_window_cache_bytes=0)
         assert archive.tier.used_slots == 2
     finally:
         proceed.set()

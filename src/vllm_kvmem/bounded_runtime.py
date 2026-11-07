@@ -36,6 +36,17 @@ class QueryJob:
 def install_bounded_target(runner):
     from .options import RuntimeOptions
     options = RuntimeOptions.from_vllm(runner.vllm_config)
+    if os.getenv('KVMEM_LAYERWISE_QUERY_MODE') and not options.async_refresh:
+        raise ValueError('Layerwise selection requires the asynchronous refresh lifecycle')
+    if options.request_swap_layerwise:
+        query = getattr(runner, '_kvmem_layerwise_query', None)
+        pressure = getattr(runner, '_kvmem_layerwise_pressure', None)
+        if (query is None or query.mode != 'sequential' or not query.optimized or
+                not query.native_batches or query.no_probe or pressure is None or
+                not pressure.single_assembly or pressure.rolling_decode):
+            raise ValueError('Layerwise request swap configuration lost its active layerwise controllers')
+        from .layerwise_swap import validate_modes
+        validate_modes(query, pressure)
     draft_contract = None
     if runner.speculative_config is not None:
         if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1":

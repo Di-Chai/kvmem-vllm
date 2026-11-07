@@ -1135,6 +1135,21 @@ std::vector<uint32_t> KvMemStore::pick_prefill_pressure_blocks(
     return pick_prefill_pressure_from(chronological_ids(), mandatory_blocks, action_scores, budget_tokens);
 }
 
+std::vector<std::vector<uint32_t>> KvMemStore::pick_prefill_pressure_batch(
+        const std::vector<uint32_t> &mandatory_blocks,
+        const std::vector<PressureActionScores> &layer_scores, uint32_t budget_tokens) const {
+    if (gc_ || repository_gc_ || history_observer_)
+        throw std::invalid_argument("Batched pressure selection requires a stable history without GC");
+    if (layer_scores.empty())
+        throw std::invalid_argument("Batched pressure selection requires at least one layer");
+    const auto order = chronological_ids();
+    std::vector<std::vector<uint32_t>> result;
+    result.reserve(layer_scores.size());
+    for (const auto &scores : layer_scores)
+        result.push_back(pick_prefill_pressure_from(order, mandatory_blocks, scores, budget_tokens));
+    return result;
+}
+
 KvMemStore::RepositoryPressureSelection KvMemStore::pin_repository_pressure_selection(
         const std::vector<uint32_t> &mandatory_blocks,
         const PressureActionScores &action_scores) const {

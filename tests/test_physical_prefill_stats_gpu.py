@@ -33,10 +33,10 @@ def segments(end, split):
     return starts, counts, history
 
 
-def geometry(tmp_path, *, prefix=4096, chunks=2):
+def geometry(tmp_path, *, prefix=4096, chunks=2, logical=2048):
     from flashinfer import BatchPrefillWithPagedKVCacheWrapper
     torch.manual_seed(9361)
-    heads,kvheads,dim,page,count = 24,4,256,16,chunks*2048
+    heads,kvheads,dim,page,count = 24,4,256,16,chunks*logical
     physical = (prefix+count)//page+7
     cache = (torch.randn(physical,kvheads,page,2*dim,device='cuda')*.4).to(torch.float8_e4m3fn)
     key,value = cache.transpose(1,2).split(dim,-1)
@@ -44,7 +44,7 @@ def geometry(tmp_path, *, prefix=4096, chunks=2):
     query = torch.randn(count,heads,dim,device='cuda',dtype=torch.bfloat16)
     workspace = torch.zeros(32<<20,device='cuda',dtype=torch.uint8)
     wrappers = []
-    for qlen,length in [*( (2048,prefix+(i+1)*2048) for i in range(chunks)),(count,prefix+count)]:
+    for qlen,length in [*( (logical,prefix+(i+1)*logical) for i in range(chunks)),(count,prefix+count)]:
         wrapper = BatchPrefillWithPagedKVCacheWrapper(workspace,'NHD',backend='fa2')
         wrapper.plan(torch.tensor([0,qlen],device='cuda',dtype=torch.int32),
             torch.tensor([0,(length+page-1)//page],device='cuda',dtype=torch.int32),
@@ -62,11 +62,11 @@ def geometry(tmp_path, *, prefix=4096, chunks=2):
                attn=NS(layer_name=NAME,impl=impl,_q_scale_float=1.))
     runner = NS(model=NS(named_modules=lambda:[(NAME,layer)]),_kvmem_layers=[NAME],
                 max_num_tokens=count,max_num_reqs=2)
-    options = NS(action_native_scores='reuse',action_layers='all',action_native_max_rows=chunks*64,
+    options = NS(action_native_scores='reuse',action_layers='all',action_native_max_rows=chunks*logical//32,
         action_native_max_bytes=256<<20,memory=NS(select_budget=8192,gen_budget=4096,block_tokens=32))
     bank = NativeAttentionStats(runner,options,tmp_path)
     assert bank.disabled is None,bank.disabled
-    queries = [*(query[i*2048:(i+1)*2048] for i in range(chunks)),query]
+    queries = [*(query[i*logical:(i+1)*logical] for i in range(chunks)),query]
     outputs = [torch.empty_like(q) for q in queries]
     metas = [NS(prefill=NS(wrapper=w),q_data_type_prefill=query.dtype,num_decode_tokens=0) for w in wrappers]
     def execute(index, baseline=False):
@@ -116,11 +116,12 @@ def errors(actual,expected):
 
 
 @pytest.mark.parametrize('chunks',[2,3,4,7,8])
-def test_logical_2k_scores_vs_one_physical_full_causal_domain(tmp_path,chunks):
-    env = geometry(tmp_path,chunks=chunks)
-    rows = list(range(31,2048,32))
-    physical_rows = [i*2048+row for i in range(chunks) for row in rows]
-    original_plans = tuple(plan(env.prefix+i*2048,2048,rows) for i in range(chunks))
+@pytest.mark.parametrize('logical',[1024,2048])
+def test_logical_scores_vs_one_physical_full_causal_domain(tmp_path,chunks,logical):
+    env = geometry(tmp_path,chunks=chunks,logical=logical)
+    rows = list(range(31,logical,32))
+    physical_rows = [i*logical+row for i in range(chunks) for row in rows]
+    original_plans = tuple(plan(env.prefix+i*logical,logical,rows) for i in range(chunks))
     old_scores,old_outputs = [],[]
     for index,pending in enumerate(original_plans):
         env.bank.arm({'r':pending});env.execute(index)
@@ -135,19 +136,19 @@ def test_logical_2k_scores_vs_one_physical_full_causal_domain(tmp_path,chunks):
     assert masses is not None,env.bank.reasons
     masses = masses.clone()
     torch.testing.assert_close(env.outputs[chunks],env.execute(chunks,True),rtol=0,atol=0)
-    spans = tuple(LogicalPrefillSpan(i,8192+i*2048,4096+i*2048,2048,i*2048) for i in range(chunks))
+    spans = tuple(LogicalPrefillSpan(i,8192+i*logical,4096+i*logical,logical,i*logical) for i in range(chunks))
     group = LogicalPrefillGroup('r',(1,0,0),7,4096,8192+env.count+2048,env.prefix+env.count,spans,
                                RequestPlan(None,block_tokens=32,gen_budget=4096))
     score_plans = tuple(LogicalScorePlan(span,tuple(rows),tuple(p['starts']),tuple(p['counts']),
                        tuple(p['history'])) for span,p in zip(spans,original_plans))
     projected = project_logical_scores(group,score_plans,masses.cpu(),physical_rows=tuple(physical_rows))
-    report = dict(geometry=dict(prefix=env.prefix,physical_tokens=env.count,logical_tokens=2048,
+    report = dict(geometry=dict(prefix=env.prefix,physical_tokens=env.count,logical_tokens=logical,
         q_heads=24,kv_heads=4,dim=256,page=16,k_scale=.37,noncontiguous_physical_pages=True),
         tolerance=dict(rtol=RTOL,atol=ATOL,source='existing native_attention_stats_gpu qualification'),
         logical=[],model_attention_cross_shape=errors(env.outputs[chunks],torch.cat(old_outputs)))
     comparisons = []
     for i,(pending,part) in enumerate(zip(original_plans,projected)):
-        selected_rows = [i*2048+row for row in rows]
+        selected_rows = [i*logical+row for row in rows]
         expected = oracle(env,selected_rows,pending['starts'],pending['counts'])
         candidate = part.masses.to('cuda')
         report['logical'].append(dict(index=i,old_vs_oracle=errors(old_scores[i],expected),
@@ -158,12 +159,17 @@ def test_logical_2k_scores_vs_one_physical_full_causal_domain(tmp_path,chunks):
         torch.testing.assert_close(old,expected,rtol=RTOL,atol=ATOL)
         torch.testing.assert_close(candidate,expected,rtol=RTOL,atol=ATOL)
         torch.testing.assert_close(candidate,old,rtol=RTOL,atol=ATOL)
-        torch.testing.assert_close(candidate.sum(-1),torch.ones(64,device='cuda'),rtol=0,atol=2e-5)
+        torch.testing.assert_close(candidate.sum(-1),torch.ones(len(rows),device='cuda'),rtol=0,atol=2e-5)
     # Future columns must contribute exactly zero, never enter the old domain.
     for i,pending in enumerate(original_plans[:-1]):
-        assert torch.count_nonzero(masses[i*64:(i+1)*64,len(pending['starts']):]).item() == 0
+        assert torch.count_nonzero(masses[i*len(rows):(i+1)*len(rows),len(pending['starts']):]).item() == 0
     assert env.bank.validation_failures == 0
     assert not any(key.startswith('fallback:') for key in env.bank.counts)
+
+
+@pytest.mark.parametrize('chunks',[14,16])
+def test_extended_one_k_physical_scores_preserve_all_causal_domains(tmp_path,chunks):
+    test_logical_scores_vs_one_physical_full_causal_domain(tmp_path,chunks,1024)
 
 
 @pytest.mark.parametrize('chunks',[2,3,4,7,8])

@@ -100,6 +100,19 @@ def _validate_resident_sources(remaps, layers):
             raise ValueError('Resident V source exceeds retained native pages')
 
 
+def _runner_modules(runner):
+    # named_modules() walks the whole model under the GIL; layerwise pressure
+    # builds one assembler per layer, so reuse the map until model/MTP change.
+    model, mtp = runner.model, getattr(runner, '_kvmem_mtp_modules', None)
+    cached = getattr(runner, '_kvmem_assembly_modules', None)
+    if cached is not None and cached[0] is model and cached[1] is mtp:
+        return cached[2]
+    modules = dict(model.named_modules())
+    modules.update(mtp or {})
+    runner._kvmem_assembly_modules = model, mtp, modules
+    return modules
+
+
 class _AssemblyStaging:
     """Runner-owned scratch; neither selected pages nor archived records live here.
 
@@ -270,13 +283,15 @@ class NativeWindowAssembler:
     def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
                  direct_pinned_reads=False, *, staging=None, raw_cache=None, reuse_resident_v=False,
                  value_capacity_bytes=None, lease=None, raw_dtype=torch.bfloat16, read_prefetch=False,
-                 fused_layers=False):
+                 fused_layers=False, _validated_parent=None):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
         heads, dim = layers[0].key.shape[-2:]
         if lease is not None:
             lease.validate(lease.runner)
+        if _validated_parent is not None:
+            _validated_parent._validate_borrowed_layers(layers, block_tokens, lease)
         checked_tables = set()
         for layer in layers:
             if (layer.key.device != device or layer.key.shape != layer.value.shape or
@@ -293,7 +308,7 @@ class NativeWindowAssembler:
                     rows = lease.group_rows(layer.restore_group, page_count=layer.key.shape[0])
                     if len(rows) != layer.kernel_page_table.numel():
                         raise ValueError('Restore assembly table differs from its allocation extent')
-                elif (not layer.kernel_page_table.numel() or
+                elif _validated_parent is None and (not layer.kernel_page_table.numel() or
                       torch.any((layer.kernel_page_table <= 0) | (layer.kernel_page_table >= layer.key.shape[0])).item()):
                     raise ValueError("Native page table contains null or out-of-arena pages")
                 checked_tables.add(signature)
@@ -329,10 +344,70 @@ class NativeWindowAssembler:
         self._completion = None
         self.closed = False
         self._restore_lease = lease
+        # Keep the original, private cloned tables alive through the consuming
+        # assembly. They are immutable for this suspended request transaction.
+        self._validated_parent = _validated_parent
+        self._validated_layer_metadata = tuple(self._layer_metadata(l) for l in layers)
+
+    @staticmethod
+    def _layer_metadata(layer):
+        try:
+            version = layer.kernel_page_table._version
+        except RuntimeError:
+            # Inference tensors have no counter. The original assembler owns
+            # this private clone and never exposes it as a mutable live table.
+            version = None
+        return (version, tuple((id(t), t.data_ptr(), tuple(t.shape), tuple(t.stride()), t.dtype, t.device)
+                     for t in (layer.key, layer.value, layer.cos_sin,
+                               layer.key_scale, layer.kernel_page_table)))
+
+    def _validate_borrowed_layers(self, layers, block_tokens, lease):
+        if (self.closed or self.staging.owner is not self or self._restore_lease is not None or lease is not None or
+                self.block_tokens != block_tokens or self._validated_parent is not None):
+            raise ValueError('Borrowed pressure views require a live original assembly')
+        for layer in layers:
+            indices = [i for i, original in enumerate(self.layers) if layer is original]
+            if len(indices) != 1 or self._layer_metadata(layer) != self._validated_layer_metadata[indices[0]]:
+                raise ValueError('Borrowed pressure layer or native allocation changed')
+
+    @classmethod
+    def from_pressure_parent(cls, runner, request_id, parent, layer_index, block_tokens, chunk_blocks):
+        """Borrow one validated transaction layer without cloning/syncing again.
+
+        Only the original pressure assembler owns these private cloned tables;
+        the suspended request cannot be resumed or have its pages trimmed until
+        its final CUDA fence commits. Query and restore do not use this path.
+        Pinned/DMA/consumer staging capacities and fences are unchanged.
+        """
+        binding = getattr(parent, '_runner_binding', None)
+        if binding is None or binding[0] is not runner or binding[1] != request_id:
+            raise ValueError('Pressure parent belongs to a different runner or request')
+        if type(layer_index) is not int or not 0 <= layer_index < len(parent.layers):
+            raise ValueError('Pressure layer index is outside the original assembly')
+        if type(chunk_blocks) is not int or not 1 <= chunk_blocks <= 256:
+            raise ValueError('Invalid pressure chunk size')
+        layer = parent.layers[layer_index]
+        options = getattr(getattr(runner, '_kvmem_capture_runtime', None), 'options', None)
+        capacity = (layer.key.shape[-2]*layer.key.shape[-1]*options.memory.select_budget
+                    if options is not None and options.reuse_resident_v else 0)
+        lane = getattr(parent, '_staging_lane', 0)
+        staging_name = '_kvmem_pressure_assembly_staging' + (f'_lane{lane}' if lane else '')
+        staging = getattr(runner, staging_name, None)
+        child = cls((layer,), block_tokens, chunk_blocks, staging=staging,
+                    value_capacity_bytes=capacity, raw_dtype=parent.raw_dtype,
+                    read_prefetch=getattr(options, 'assembly_read_prefetch', False),
+                    fused_layers=getattr(options, 'assembly_fused_layers', False),
+                    _validated_parent=parent)
+        if staging is None:
+            setattr(runner, staging_name, child.staging)
+            child._shared_staging = True
+        return child
 
     @classmethod
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=None, packed=False,
-                    direct_pinned_reads=False, *, arena='main', lease=None):
+                    direct_pinned_reads=False, *, arena='main', lease=None, staging_lane=0):
+        if type(staging_lane) is not int or staging_lane < 0 or staging_lane and arena != 'refresh':
+            raise ValueError('Separate staging lanes are only defined for refresh assembly')
         if getattr(runner, '_kvmem_qsa_layers', None):
             from .qsa_assembly import QSAWindowAssembler
             return QSAWindowAssembler(runner, request_id, layer_names, block_tokens,
@@ -348,8 +423,7 @@ class NativeWindowAssembler:
             lease.validate(runner)
             if lease.request_id != request_id:
                 raise ValueError('Assembly restore lease belongs to another request')
-        modules = dict(runner.model.named_modules())
-        modules.update(getattr(runner, '_kvmem_mtp_modules', {}))
+        modules = _runner_modules(runner)
         groups = {name: group_id for group_id, group in enumerate(runner.kv_cache_config.kv_cache_groups)
                   for name in group.layer_names}
         index = runner.req_states.req_id_to_index[request_id]
@@ -371,8 +445,14 @@ class NativeWindowAssembler:
         # different scratch geometry. Neither may publish into the other's
         # runner-owned pool; checkpoint restore can follow the first Query.
         prefix = '' if arena == 'main' else '_' + arena
-        staging_name = '_kvmem' + prefix + '_assembly_staging'
+        # Opt-in pressure lanes own disjoint scratch; lane 0 keeps the name.
+        staging_name = '_kvmem' + prefix + '_assembly_staging' + (f'_lane{staging_lane}' if staging_lane else '')
         cache_name = '_kvmem' + prefix + '_gpu_raw_cache'
+        # The raw-K cache index has one CPU producer. Resident-V buffers live
+        # inside each lane's own staging pool and are allocated lazily.
+        if staging_lane and (getattr(runner, cache_name, None) is not None or
+                             getattr(options, 'gpu_raw_k_cache_bytes', 0)):
+            raise ValueError('A shared GPU raw-K cache cannot serve concurrent refresh lanes')
         staging = getattr(runner, staging_name, None)
         raw_cache = getattr(runner, cache_name, None)
         if direct_pinned_reads and options is not None and options.gpu_raw_k_cache_bytes and raw_cache is None:
@@ -399,6 +479,8 @@ class NativeWindowAssembler:
             # pass; an invalid first request must not poison the runner pool.
             setattr(runner, staging_name, assembler.staging)
             assembler._shared_staging = True
+        assembler._runner_binding = (runner, request_id)
+        assembler._staging_lane = staging_lane
         return assembler
 
     @property
@@ -807,5 +889,8 @@ class NativeWindowAssembler:
         if not self._shared_staging and not self.staging.close():
             return False
         self._metadata_owners.clear()
+        if getattr(self, '_layerwise_pressure_assembly_override', False):
+            self.__dict__.pop('_assemble', None)
+            self._layerwise_pressure_assembly_override = False
         self.closed = True
         return True

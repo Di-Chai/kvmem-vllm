@@ -24,6 +24,9 @@ class MaintenancePolicy:
             raise ValueError('Maintenance transfer budget must fit one complete active view')
         self.owner = None
         self.inflight_bytes = 0
+        # request_id -> (reserved bytes, multi-lane). One ordinary transfer
+        # owner, or up to N opt-in prefill-pressure lanes, never a mixture.
+        self.owners = {}
         # A resident restore only uploads its bounded model checkpoint, never
         # target KV or shared assembly scratch. Keep one independent credit
         # until its CUDA fence is committed, including cancelled requests.
@@ -113,7 +116,7 @@ class MaintenancePolicy:
             return (2, self.estimate(job), last)
         return sorted(pending, key=priority)
 
-    def acquire(self, job):
+    def acquire(self, job, *, lanes=1):
         if getattr(job.command, 'resident', False):
             rid = job.command.request_id
             if rid in self.resident_owners:
@@ -127,12 +130,21 @@ class MaintenancePolicy:
             self.resident_inflight_bytes += amount
             self.resident_peak_inflight = max(self.resident_peak_inflight, len(self.resident_owners))
             return True
-        if self.owner is not None:
+        if type(lanes) is not int or lanes < 1:
+            raise ValueError('Maintenance transfer lanes must be a positive integer')
+        owners = getattr(self, 'owners', None)
+        if owners is None:
+            owners = self.owners = ({} if self.owner is None else
+                                    {self.owner: (self.inflight_bytes, False)})
+        if owners and (lanes == 1 or len(owners) >= lanes or
+                       not all(multi for _, multi in owners.values())):
             return False
         amount = self.cost(job)
         if amount > self.capacity:
             raise ValueError('Refresh exceeds its transfer reservation')
-        self.owner, self.inflight_bytes = job.command.request_id, amount
+        owners[job.command.request_id] = (amount, lanes > 1)
+        self.owner = next(iter(owners))
+        self.inflight_bytes = sum(value for value, _ in owners.values())
         return True
 
     def release(self, job):
@@ -141,9 +153,15 @@ class MaintenancePolicy:
                 raise ValueError('Foreign resident transfer completion')
             self.resident_inflight_bytes -= self.resident_owners.pop(job.command.request_id)
             return
-        if self.owner != job.command.request_id:
+        owners = getattr(self, 'owners', None)
+        if owners is None:
+            owners = self.owners = ({} if self.owner is None else
+                                    {self.owner: (self.inflight_bytes, False)})
+        if job.command.request_id not in owners:
             raise ValueError('Foreign maintenance transfer completion')
-        self.owner, self.inflight_bytes = None, 0
+        del owners[job.command.request_id]
+        self.owner = next(iter(owners), None)
+        self.inflight_bytes = sum(value for value, _ in owners.values())
 
     def pump(self, jobs, step, *, busy):
         if self.transfer_budget is not None:

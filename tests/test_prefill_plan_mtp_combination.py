@@ -42,7 +42,10 @@ def setup(monkeypatch, tmp_path, *, plan_arm, early, retry=False, owners=('a',))
     action.runtime._raise_publication_error = lambda: None
     action.runtime.output = tmp_path
     action.runner._kvmem_layers = ['L0', 'L1', 'L2']
-    action.runner.block_tables = NS(block_tables=[NS(gpu=torch.zeros((len(owners), 6), dtype=torch.int64))])
+    action.runner.block_tables = NS(
+        block_tables=[NS(gpu=torch.zeros((len(owners), 6), dtype=torch.int64))],
+        num_blocks=NS(np=torch.full((1,len(owners)),6,dtype=torch.int32).numpy()),
+        kernel_block_sizes=[32])
     memories = {rid: RequestMemory(rid, action.options.memory) for rid in owners}
     for rid, memory in memories.items():
         action.runtime.authorities[rid].memory = memory

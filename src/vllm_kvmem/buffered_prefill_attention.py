@@ -5,8 +5,49 @@ returns a new state; rejected or failed packets cannot mutate a prior snapshot.
 The existing dictionary interface is materialized only for scoring/checkpoints.
 """
 import math
+import os
 
 from .prefill_attention import PrefillHistory
+
+
+def require_batch_accept():
+    from . import _prefill_state_native
+    if not callable(getattr(_prefill_state_native,'committed_batch',None)):
+        raise ValueError('Batched layer acceptance requires the rebuilt prefill state extension')
+    return _prefill_state_native.committed_batch
+
+
+def accept_buffered_batch(histories,end,count,accepted,rows,starts,logical,local_begin,masses):
+    """Update staged histories together; publication remains the caller's transaction."""
+    if any(type(history) is not BufferedPrefillHistory for history in histories):
+        raise ValueError('Batched layer acceptance requires native buffered histories')
+    # Preserve skipped/mixed sampling boundaries and malformed outer geometry's
+    # scalar indexing/error order. Normal downloaded packets always batch.
+    if (not histories or accepted!=count or not rows or
+            any(end<=history.end for history in histories) or
+            len(logical)!=len(histories) or getattr(masses,'ndim',None)!=3 or
+            masses.shape[0]!=len(histories)):
+        return [history.accept(end,count,accepted,rows,starts,logical[layer],local_begin,masses[layer])
+                for layer,history in enumerate(histories)]
+    if hasattr(masses,'numpy'):
+        buffer=masses.numpy()
+    else:
+        import numpy as np
+        buffer=np.asarray(masses)
+        if buffer.dtype.kind!='f':buffer=buffer.astype('float64')
+    decays=[math.exp2(-(end-history.end)/history.options.prefill_attention_half_life)
+            for history in histories]
+    for history in histories:
+        history.last_commit_backend=None
+    updated=require_batch_accept()([history._buffered_state for history in histories],
+        decays,rows,starts,logical,local_begin,buffer)
+    for history,state in zip(histories,updated):
+        history._buffered_state=state
+        history.end=end;history.samples+=len(rows);history.chunks+=1
+        history.successful_buffered_commits+=1
+        history.successful_buffered_batch_commits+=1
+        history.last_commit_backend='native_buffered'
+    return [True]*len(histories)
 
 
 class BufferedPrefillHistory(PrefillHistory):
@@ -26,7 +67,16 @@ class BufferedPrefillHistory(PrefillHistory):
         if not self.native_commit:
             raise ValueError('Buffered history requires the qualified native commit policy')
         self.successful_buffered_commits=0
+        self.successful_buffered_batch_commits=0
         self.successful_buffered_restores=0
+        self.native_score_export=os.getenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT')=='1'
+        if self.native_score_export and not hasattr(self._buffered_state,'scores'):
+            raise ValueError('Native score export requires the rebuilt prefill state extension')
+
+    def scores(self):
+        # Keep the qualified dictionary path by default, even in a new build.
+        # The separate execution candidate must be explicitly enabled.
+        return self._buffered_state.scores() if self.native_score_export else super().scores()
 
     def restore(self,snapshot,position):
         super().restore(snapshot,position)

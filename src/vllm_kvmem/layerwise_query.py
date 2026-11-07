@@ -15,9 +15,10 @@ import torch
 from .original_rope import enabled as original_rope, record_positions
 
 
-def top_set(memory, records, scores, fixed, budget):
+def top_set(memory, records, scores, fixed, budget, *, record_index=None):
     selected = set(memory.preview_selection(
-        {r.handle.slot: float(s) for r, s in zip(records, scores)},
+        ({r.handle.slot: float(s) for r, s in zip(records, scores)} if record_index is None
+         else record_index.score_dict(scores)),
         tuple(fixed), action=False, prefill_scores=None, max_tokens=budget))
     if not set(fixed) <= selected or len(selected) * 32 > budget:
         raise RuntimeError('Layer selection lost mandatory content or exceeded its budget')
@@ -48,19 +49,68 @@ class LayerwiseQuery:
         self.finished = set()
         self.path = None
         self.optimized = os.getenv('KVMEM_LAYERWISE_QUERY_OPTIMIZED') == '1'
+        self.no_probe = os.getenv('KVMEM_LAYERWISE_QUERY_NO_PROBE') == '1'
+        self.mtp_selection = os.getenv('KVMEM_LAYERWISE_QUERY_MTP_SELECTION',
+                                       'layer0' if self.no_probe else 'global')
+        if self.mtp_selection not in ('global', 'layer0'):
+            raise ValueError('Expected global or layer0 MTP selection')
+        if (self.no_probe or self.mtp_selection == 'layer0') and (
+                self.mode != 'sequential' or not self.optimized):
+            raise ValueError('No-probe/layer0 MTP requires optimized sequential Query')
+        if self.no_probe and self.mtp_selection != 'layer0':
+            raise ValueError('No-probe Query requires layer0 MTP selection')
         self.packed_assembly = os.getenv('KVMEM_LAYERWISE_PACKED_ASSEMBLY') == '1'
         self.prepared_index = os.getenv('KVMEM_LAYERWISE_PREPARED_INDEX') == '1'
+        # Query-local metadata only; native ranking and KV execution stay unchanged.
+        record_index = os.getenv('KVMEM_LAYERWISE_QUERY_RECORD_INDEX', '0')
+        if record_index not in ('0', '1'):
+            raise ValueError('Query record indexing must be 0 or 1')
+        self.record_index = record_index == '1'
+        # Execution candidate remains disabled until full-prefix byte and
+        # output equivalence plus matched serving measurements pass.
+        self.direct_prefix_restore = False
         self.batched_reads = os.getenv('KVMEM_LAYERWISE_BATCHED_READS') == '1'
         self.paired_reads = os.getenv('KVMEM_LAYERWISE_PAIRED_READS') == '1'
+        paired_gather = os.getenv('KVMEM_LAYERWISE_QUERY_PAIRED_GATHER', '0')
+        if paired_gather not in ('0', '1'):
+            raise ValueError('Query paired gathering must be 0 or 1')
+        self.paired_gather = paired_gather == '1'
+        if self.paired_gather and (not self.optimized or not self.paired_reads):
+            raise ValueError('Query paired gathering requires optimized paired layer reads')
         if self.paired_reads and not self.optimized:
             raise ValueError('Paired layer reads require optimized Query execution')
         if self.batched_reads and not self.optimized:
             raise ValueError('Batched layer reads require optimized Query execution')
         if self.prepared_index and not self.optimized:
             raise ValueError('Prepared layer index requires optimized Query execution')
+        self.score_backend = os.getenv('KVMEM_LAYERWISE_QUERY_SCORE_BACKEND', 'legacy')
+        if self.score_backend not in ('legacy', 'tiled'):
+            raise ValueError('Query score backend must be legacy or tiled')
+        if self.score_backend != 'legacy' and (
+                not self.optimized or not self.prepared_index or self.mode != 'sequential'):
+            raise ValueError('Query score backend override requires prepared optimized sequential Query')
+        for attribute, name in (('resident_values', 'KVMEM_LAYERWISE_QUERY_RESIDENT_V'),
+                                ('lazy_reader', 'KVMEM_LAYERWISE_QUERY_LAZY_READER')):
+            value = os.getenv(name, '0')
+            if value not in ('0', '1'):
+                raise ValueError(name+' must be 0 or 1')
+            setattr(self, attribute, value == '1')
+            if value == '1' and (not self.optimized or not self.paired_reads or
+                    self.mode != 'sequential' or self.no_probe or self.mtp_selection != 'global'):
+                raise ValueError(name+' requires optimized public sequential Query with global MTP')
+        if self.resident_values and (not self.packed_assembly or original_rope()):
+            raise ValueError('Query resident V requires packed compact-position assembly')
+        if (self.lazy_reader or self.resident_values) and self.paired_gather:
+            raise ValueError('Query transport candidates and experimental paired gather require separate qualification')
         if self.packed_assembly and (not self.optimized or original_rope()):
             raise ValueError('Packed layer assembly requires optimized compact-position execution')
         self.diagnostics = not self.optimized or os.getenv('KVMEM_LAYERWISE_QUERY_DIAGNOSTICS') == '1'
+        stage_profile = os.getenv('KVMEM_QUERY_STAGE_PROFILE', '0')
+        if stage_profile not in ('0', '1'):
+            raise ValueError('Query stage profiling must be 0 or 1')
+        self.stage_profile = stage_profile == '1'
+        if self.stage_profile and (not self.optimized or self.mode != 'sequential'):
+            raise ValueError('Query stage profiling requires optimized sequential Query')
         self.buffered_events = []
         self.active_owners = {}
         self.pressure = None
@@ -121,10 +171,13 @@ class LayerwiseQuery:
                 fixed = tuple(authority.memory._store.fixed_selection_blocks(
                     pins, pressure=False, budget=cfg.select_budget))
             state = dict(authority=authority, records=tuple(records), means=means[:len(self.names)].clone(),
-                         old_q=queries.detach().clone(), score_mask=score_mask, fixed=fixed,
+                         old_q=queries.detach().clone() if queries is not None else None,
+                         score_mask=score_mask, fixed=fixed,
                          budget=cfg.select_budget, history=job.history, span=job.command.query_span,
                          request_id=rid, next_layer=0, query_tokens=len(job.command.input_tokens))
-        if state['old_q'].shape[0] != len(self.names):
+        if queries is None and not self.no_probe:
+            raise ValueError('Sequential comparison requires its private Query captures')
+        if queries is not None and state['old_q'].shape[0] != len(self.names):
             raise ValueError('Frozen Query does not cover every full-attention layer')
         if self.optimized:
             state['means'] = state['means'].to(self.runner.device)
@@ -135,6 +188,50 @@ class LayerwiseQuery:
                 # Keep one index copy after preparation, as in the old path.
                 state['means'] = None
         self.pending[rid] = state
+
+    def arm_no_probe(self, refresh, job):
+        from .layerwise_no_probe import arm
+        arm(self, refresh, job)
+
+    def retire(self, request_id):
+        for states in (self.pending, self.active_owners):
+            self._close_query_resources(states.get(request_id), drain=True)
+            states.pop(request_id, None)
+        if self.active is not None and self.active['request_id'] == request_id:
+            self._close_query_resources(self.active, drain=True)
+            self.active = None
+        self.finished.discard(request_id)
+
+    def _close_query_resources(self, state, *, drain=False):
+        if state is None:
+            return
+        owners = state.get('query_resident_metadata_owners')
+        if drain and owners:
+            torch.cuda.current_stream(self.runner.device).synchronize()
+        reader = state.get('query_region_reader')
+        if reader is not None:
+            if not reader.close():
+                raise RuntimeError('Query source reader still has an active CPU producer')
+            state.pop('query_region_reader')
+        if owners:
+            owners.clear()
+
+    def _query_reader(self, state):
+        """Prepare immutable sources lazily; a single Query owns their lifetime."""
+        reader = state.get('query_region_reader')
+        if reader is None:
+            from .query_region_reader import QueryRegionReader
+            rid = state['request_id']
+            authority = state['authority']
+            def generation():
+                runtime = self.runner._kvmem_capture_runtime
+                if runtime.authorities.get(rid) is not authority:
+                    raise ValueError('Lazy Query reader lost its native authority binding')
+                return self.runner._kvmem_request_generations.get(rid)
+            reader = QueryRegionReader(authority, request_generation=generation(),
+                                       generation_getter=generation)
+            state['query_region_reader'] = reader
+        return reader
 
     def committed(self, job):
         if job.command.selection != 'query':
@@ -159,6 +256,17 @@ class LayerwiseQuery:
                                      if r.count != 32 and r.handle.slot not in original}
         state['selected_tokens'] = job.selected_tokens
         state['global_slots'] = original
+        if getattr(self, 'resident_values', False):
+            from .query_resident_values import bind_query_resident_sources
+            started = time.perf_counter()
+            binding = bind_query_resident_sources(self, state, working,
+                                                 global_assembly=job.result[:3])
+            proof = binding.value_proof
+            self.emit('resident_sources_bound', request_id=state['request_id'],
+                      source_prepare_seconds=time.perf_counter()-started,
+                      **{key: value for key, value in proof.items() if key != 'records'},
+                      records=[dict(slot=key[0], generation=key[1], **value)
+                               for key, value in proof['records'].items()])
         if self.native_batches:
             self.active_owners[state['request_id']] = state
         else:
@@ -181,8 +289,18 @@ class LayerwiseQuery:
             self._projection(self.active, layer_index, record)
 
     def _projection(self, state, layer_index, record):
+        try:
+            return self._projection_inner(state, layer_index, record)
+        except BaseException:
+            self._close_query_resources(state, drain=True)
+            raise
+
+    def _projection_inner(self, state, layer_index, record):
         if state is None:
             return
+        if state.get('no_probe') and self.runner._kvmem_request_generations.get(
+                state['request_id']) != state['request_generation']:
+            raise RuntimeError('No-probe Query reached a recycled native request')
         batch = self.runner._kvmem_last_batch
         if not self.native_batches and list(batch.req_ids) != [state['request_id']]:
             raise RuntimeError('Layerwise diagnostic reached a foreign batch')
@@ -205,37 +323,66 @@ class LayerwiseQuery:
                 raise RuntimeError('Layer Query did not use original-history RoPE positions')
             position_evidence = dict(rope_position_policy='original', query_rope_span=[qb,qe],
                                      query_rope_verified=True)
-        if q.shape != state['old_q'][layer_index:layer_index+1].shape:
+        old_q = state['old_q'][layer_index:layer_index+1] if state['old_q'] is not None else None
+        compare = self.diagnostics and old_q is not None
+        if old_q is not None and q.shape != old_q.shape:
             raise RuntimeError('Fresh and frozen layer Queries have different rows')
         from .cuda_scoring import mean_key_scores
+        from .query_stage_profile import QueryStageProfile, no_stage
+        profile = state.get('query_stage_profile')
+        if getattr(self, 'stage_profile', False) and profile is None:
+            profile = state['query_stage_profile'] = QueryStageProfile(
+                self.runner._kvmem_probe_output / 'query_stage_profile.jsonl', state['request_id'])
+        if profile is not None:
+            profile.layer = layer_index
+        stage = profile.stage if profile is not None else no_stage
         records = state['records']
         started = time.perf_counter()
-        old_q = state['old_q'][layer_index:layer_index+1]
         if self.prepared_index:
             from .cuda_scoring import prepared_layer_scores
-            scores = prepared_layer_scores(q,state['mean_index'],layer_index).cpu().tolist()
-            old_scores = (prepared_layer_scores(old_q,state['mean_index'],layer_index).cpu().tolist()
-                          if self.diagnostics else None)
+            score_backend = getattr(self, 'score_backend', 'legacy')
+            score_kwargs = {} if score_backend == 'legacy' else {'backend': score_backend}
+            scores = (profile.score(lambda: prepared_layer_scores(q,state['mean_index'],layer_index,**score_kwargs))
+                      if profile is not None else
+                      prepared_layer_scores(q,state['mean_index'],layer_index,**score_kwargs).cpu().tolist())
+            old_scores = (prepared_layer_scores(old_q,state['mean_index'],layer_index,**score_kwargs).cpu().tolist()
+                          if compare else None)
         else:
             means = state['means'][layer_index:layer_index+1].to(q.device)
             mask = state['gpu_mask'] if self.optimized else torch.tensor(state['score_mask'], device=q.device, dtype=torch.bool)
-            scores = mean_key_scores(q, means, mask).cpu().tolist()
-            old_scores = mean_key_scores(old_q, means, mask).cpu().tolist() if self.diagnostics else None
-        for i, r in enumerate(records):
-            if r.handle.slot in state['partial_excluded']:
-                scores[i] = -1.
-                if old_scores is not None:
-                    old_scores[i] = -1.
-        memory = state['authority'].memory
-        selected = top_set(memory, records, scores, state['fixed'], state['budget'])
-        frozen_selected = (top_set(memory, records, old_scores, state['fixed'], state['budget'])
-                           if old_scores is not None else None)
-        chosen = [r for r in records if r.handle.slot in selected]
-        if sum(r.count for r in chosen) != state['selected_tokens']:
-            raise RuntimeError('Layer-specific selection changed the native causal length')
+            scores = (profile.score(lambda: mean_key_scores(q, means, mask)) if profile is not None
+                      else mean_key_scores(q, means, mask).cpu().tolist())
+            old_scores = mean_key_scores(old_q, means, mask).cpu().tolist() if compare else None
+        record_index = None
+        with stage('selection_cpu', candidates=len(records)):
+            if getattr(self, 'record_index', False):
+                from .query_record_index import query_record_index
+                record_index = query_record_index(state)
+                for i in record_index.excluded_indices:
+                    scores[i] = -1.
+                    if old_scores is not None:
+                        old_scores[i] = -1.
+            else:
+                for i, r in enumerate(records):
+                    if r.handle.slot in state['partial_excluded']:
+                        scores[i] = -1.
+                        if old_scores is not None:
+                            old_scores[i] = -1.
+            memory = state['authority'].memory
+            selected = top_set(memory, records, scores, state['fixed'], state['budget'],
+                               record_index=record_index)
+            frozen_selected = (top_set(memory, records, old_scores, state['fixed'], state['budget'],
+                                      record_index=record_index)
+                               if old_scores is not None else None)
+            chosen = ([r for r in records if r.handle.slot in selected] if record_index is None
+                      else record_index.chosen(selected))
+            if sum(r.count for r in chosen) != state['selected_tokens']:
+                raise RuntimeError('Layer-specific selection changed the native causal length')
         scoring_seconds = time.perf_counter() - started
         actual = selected if self.mode == 'sequential' else state['global_slots']
-        if self.pressure is not None and self.pressure.rolling_decode:
+        if layer_index == 0 and self.mtp_selection == 'layer0':
+            state['layer_zero_records'] = chosen
+        if state.get('no_probe') or (self.pressure is not None and self.pressure.rolling_decode):
             from .layerwise_decode import record_map
             state.setdefault('rolling_maps', []).append(record_map(chosen))
         assembly_started = time.perf_counter()
@@ -247,33 +394,68 @@ class LayerwiseQuery:
                 self.assemble_layer(state, layer_index, chosen)
         assembly_seconds = time.perf_counter() - assembly_started
         diagnostic = {}
-        if self.diagnostics:
+        if getattr(self, 'score_backend', 'legacy') != 'legacy':
+            diagnostic['score_backend'] = self.score_backend
+        if compare:
             fresh, old = q.float(), old_q.float()
             norm = old.norm().clamp_min(1e-12)
             cosine = torch.nn.functional.cosine_similarity(fresh.flatten(), old.flatten(), dim=0)
             diagnostic = dict(query_cosine=float(cosine), query_relative_l2=float((fresh-old).norm()/norm),
                 fresh_frozen_set_overlap=len(selected & frozen_selected)/max(1,len(selected)),
-                frozen_layer_selected_starts=[r.history_begin for r in records if r.handle.slot in frozen_selected],
-                q_sha256=hashlib.sha256(q.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest())
+                frozen_layer_selected_starts=([r.history_begin for r in records if r.handle.slot in frozen_selected]
+                    if record_index is None else record_index.starts(frozen_selected)))
+        if self.diagnostics:
+            diagnostic['q_sha256'] = hashlib.sha256(
+                q.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
         self.emit('layer_selected', request_id=state['request_id'], layer=layer_index,
                   layer_name=self.names[layer_index], query_source='same_forward_current_layer',
                   predecessor_layers_completed=layer_index, scoring_seconds=scoring_seconds,
                   assembly_host_seconds=assembly_seconds, optimized=self.optimized, diagnostics=self.diagnostics,
                   assembly_backend=assembly_stats,
+                  no_probe=state.get('no_probe', False),
                   prepared_candidate_index=self.prepared_index,
                   selected_tokens=state['selected_tokens'], charged_tokens=32*len(actual),
-                  selected_starts=[r.history_begin for r in records if r.handle.slot in actual],
+                  selected_starts=([r.history_begin for r in records if r.handle.slot in actual]
+                    if record_index is None else [r.history_begin for r in chosen]
+                    if self.mode == 'sequential' else record_index.starts(actual)),
                   **diagnostic, **position_evidence)
         state['next_layer'] += 1
         if state['next_layer'] == len(self.names):
-            if self.pressure is not None and self.pressure.rolling_decode:
+            mtp_stats = []
+            if self.mtp_selection == 'layer0':
+                names = tuple(getattr(self.runner, '_kvmem_archive_layers', self.names))
+                if names[:len(self.names)] != self.names:
+                    raise RuntimeError('MTP archive order differs from the target layer order')
+                for index, name in enumerate(names[len(self.names):], len(self.names)):
+                    mtp_stats.append(self.assemble_layer_pinned(
+                        state, index, state['layer_zero_records'], layer_name=name))
+                self.emit('mtp_selected', request_id=state['request_id'], source='layer0',
+                          layers=len(mtp_stats), selected_tokens=state['selected_tokens'],
+                          selected_starts=[r.history_begin for r in state['layer_zero_records']],
+                          assembly_backend=mtp_stats)
+            if state.get('no_probe'):
+                from .layerwise_no_probe import commit_layer_zero
+                commit_layer_zero(self, state)
+            if self.pressure is not None and (state.get('no_probe') or self.pressure.rolling_decode):
                 self.pressure.maps[state['request_id']] = state['history'], tuple(state['rolling_maps'])
             if self.optimized:
                 # One final fence also makes the phase timing comparable to
                 # the original synchronized path; queued last-layer DMA must
                 # not be reported as completed work.
-                torch.cuda.current_stream(self.runner.device).synchronize()
+                with stage('final_query_completion_wait'):
+                    torch.cuda.current_stream(self.runner.device).synchronize()
+            if profile is not None:
+                profile.finish()
+            if state.get('query_region_reader') is not None:
+                reader = state['query_region_reader']
+                self.emit('query_reader_completed', request_id=state['request_id'],
+                          source_blocks=reader.source_blocks, read_chunks=reader.read_chunks,
+                          reused_blocks=reader.reused_blocks)
+            self._close_query_resources(state)
             self.finished.add(state['request_id'])
+            if state.get('no_probe'):
+                from .layerwise_no_probe import report_completed
+                report_completed(self, state, mtp_stats)
             self.emit('completed', request_id=state['request_id'], layers=len(self.names))
             if self.native_batches:
                 self.active_owners.pop(state['request_id'])
@@ -292,6 +474,23 @@ class LayerwiseQuery:
         from .assembly import assemble_fp8
         from .packed_assembly import read_packed_records
         from .window_assembly import NativeWindowAssembler
+        from .query_stage_profile import no_stage
+        profile = state.get('query_stage_profile')
+        if profile is not None and state.get('assembly_arena') == 'pressure':
+            raise RuntimeError('Final Query stage profile cannot measure pressure assembly')
+        if profile is not None:
+            profile.layer = layer_index
+            read_packed_records = profile.read_packed
+        public_query = (state.get('assembly_arena') != 'pressure' and
+                        'next_layer' in state and 'span' in state)
+        if public_query and getattr(self, 'lazy_reader', False):
+            prepared_read = self._query_reader(state).read
+            if profile is None:
+                read_packed_records = prepared_read
+            else:
+                def read_packed_records(authority, handles, **kwargs):
+                    return profile.read_prepared(prepared_read, authority, handles, **kwargs)
+        stage = profile.stage if profile is not None else no_stage
         authority = state['authority']
         if authority.raw_element_bytes != 1:
             raise ValueError('Layerwise assembly requires original FP8 content Keys')
@@ -300,11 +499,19 @@ class LayerwiseQuery:
             from .layerwise_pressure_efficiency import layer_read_blocks
             options = getattr(getattr(self.runner, '_kvmem_capture_runtime', None), 'options', None)
             read_blocks = layer_read_blocks(getattr(options, 'assembly_chunk_blocks', 32), authority.shape[0])
-        assembler = NativeWindowAssembler.from_runner(
-            self.runner, state['request_id'],
-            (self.names[layer_index] if layer_name is None else layer_name,), 32,
-            chunk_blocks=read_blocks,
-            arena=state.get('assembly_arena', 'layerwise'))
+        with stage('assembler_views_prepare'):
+            parent = state.get('pressure_parent_assembler')
+            if parent is not None:
+                if state.get('assembly_arena') != 'pressure' or state.get('pressure_stage') != 'prefill':
+                    raise ValueError('Borrowed pressure views escaped their prefill transaction')
+                assembler = NativeWindowAssembler.from_pressure_parent(
+                    self.runner, state['request_id'], parent, layer_index, 32, read_blocks or 32)
+            else:
+                assembler = NativeWindowAssembler.from_runner(
+                    self.runner, state['request_id'],
+                    (self.names[layer_index] if layer_name is None else layer_name,), 32,
+                    chunk_blocks=read_blocks,
+                    arena=state.get('assembly_arena', 'layerwise'))
         layer, staging = assembler.layers[0], assembler.staging
         row_bytes = 32 * authority.shape[2] * authority.shape[3]
         total_raw = authority.shape[0] * row_bytes
@@ -312,23 +519,55 @@ class LayerwiseQuery:
         if chunk_blocks < 1:
             raise ValueError('Bounded native staging cannot hold one layer block')
         from .layerwise_pressure_efficiency import assembly_groups
-        groups, total = assembly_groups(chosen, chunk_blocks, skip_history_begins)
-        uploaded_bytes = chunks = packed_chunks = paired_read_chunks = 0
+        with stage('assembly_groups_prepare'):
+            groups, total = assembly_groups(chosen, chunk_blocks, skip_history_begins)
+        uploaded_bytes = chunks = packed_chunks = paired_read_chunks = inline_read_chunks = prepared_read_chunks = 0
+        native_paired_gather_chunks = 0
+        # Restore and pressure also call this assembler. The candidate belongs
+        # only to the layer-by-layer public Query forward, including its MTP.
+        paired_native = (getattr(self, 'paired_gather', False) and
+                         state.get('assembly_arena') != 'pressure' and
+                         'next_layer' in state and 'span' in state)
+        inline_cpu = (state.get('assembly_arena') == 'pressure' and
+                      state.get('pressure_stage') == 'prefill' and
+                      getattr(authority.archive, 'memory_only', False))
         staging.claim(assembler)
         try:
+            if public_query and getattr(self, 'resident_values', False):
+                from .query_resident_values import assemble_query_resident_values
+                reused = assemble_query_resident_values(self, state, layer_index, chosen,
+                    assembler, chunk_blocks, reader=read_packed_records)
+                if reused is not None:
+                    return reused
+            if 'pressure_value_sources' in state:
+                from .pressure_resident_values import assemble_resident_values
+                reused = assemble_resident_values(self, state, layer_index, chosen,
+                    assembler, groups, total, row_bytes, chunk_blocks)
+                if reused is not None:
+                    return reused
             for cursor, group in groups:
                 n = sum(r.count for r in group)
                 half = n * authority.shape[2] * authority.shape[3]
-                gpu, ready, slot = staging.destination(2 * half)
+                with stage('device_staging_destination', transfer_bytes=2*half):
+                    gpu, ready, slot = staging.destination(2 * half)
                 def fill(host):
-                    nonlocal paired_read_chunks
+                    nonlocal paired_read_chunks, inline_read_chunks, prepared_read_chunks, native_paired_gather_chunks
                     if all(r.count == 32 and r.archived for r in group):
                         handles = [r.handle for r in group]
                         if getattr(self, 'paired_reads', False):
-                            read_packed_records(authority, handles, destination=host,
-                                regions=((layer_index*row_bytes, row_bytes),
-                                         (total_raw+layer_index*row_bytes, row_bytes)))
+                            regions = ((layer_index*row_bytes, row_bytes),
+                                       (total_raw+layer_index*row_bytes, row_bytes))
+                            prepared = state.get('prepared_pressure_reader') if inline_cpu else None
+                            if prepared is not None and prepared.contains(group):
+                                _,stats = prepared.read(group, regions, destination=host)
+                            else:
+                                _, stats = read_packed_records(authority, handles, destination=host,
+                                    regions=regions, inline_cpu=inline_cpu,
+                                    **({'paired_native': True} if paired_native else {}))
                             paired_read_chunks += 1
+                            inline_read_chunks += int(stats.get('inline_cpu_region_read', False))
+                            prepared_read_chunks += int(stats.get('prepared_cpu_region_read', False))
+                            native_paired_gather_chunks += int(stats.get('paired_native_gather', False))
                         else:
                             read_packed_records(authority, handles, destination=host[:half],
                                 region=(layer_index*row_bytes, row_bytes))
@@ -340,32 +579,41 @@ class LayerwiseQuery:
                         values = torch.cat([v[layer_index, :r.count] for r,(k,v) in zip(group,operands)])
                         host[:half].copy_(raw.contiguous().view(torch.uint8).flatten())
                         host[half:].copy_(values.contiguous().view(torch.uint8).flatten())
-                transfer = assembler.transfers.upload_from_reader(2*half, gpu, fill, ready=ready)
+                transfer_profile = {'profile': profile} if profile is not None else {}
+                with stage('reader_upload_total', transfer_bytes=2*half):
+                    transfer = assembler.transfers.upload_from_reader(2*half, gpu, fill, ready=ready,
+                                                                     **transfer_profile)
                 if transfer is None:
-                    next(iter(assembler.transfers.pending.values())).event.synchronize()
-                    transfer = assembler.transfers.upload_from_reader(2*half, gpu, fill, ready=ready)
+                    with stage('pinned_slot_retry_wait'):
+                        next(iter(assembler.transfers.pending.values())).event.synchronize()
+                    with stage('reader_upload_total', transfer_bytes=2*half):
+                        transfer = assembler.transfers.upload_from_reader(2*half, gpu, fill, ready=ready,
+                                                                         **transfer_profile)
                 if transfer is None:
                     raise RuntimeError('Pinned layerwise transfer made no progress')
-                torch.cuda.current_stream(self.runner.device).wait_event(transfer.event)
+                with stage('consumer_wait_for_h2d', gpu=True):
+                    torch.cuda.current_stream(self.runner.device).wait_event(transfer.event)
                 packed = False
                 if getattr(self, 'packed_assembly', False):
                     from .layerwise_pressure_efficiency import packed_layer_chunk
-                    packed = packed_layer_chunk(state,layer,gpu,half,cursor,group,row_bytes,chunk_blocks)
+                    with stage('layout_and_rebuild', gpu=True, tokens=n):
+                        packed = packed_layer_chunk(state,layer,gpu,half,cursor,group,row_bytes,chunk_blocks)
                 if packed:
                     staging.consumed(slot)
                     uploaded_bytes += 2 * half
                     chunks += 1
                     packed_chunks += 1
                     continue
-                raw = gpu[:half].view(torch.float8_e4m3fn).reshape(n, authority.shape[2], authority.shape[3])
-                values = gpu[half:].view(torch.float8_e4m3fn).reshape_as(raw)
-                positions = torch.arange(cursor, cursor+n, device=gpu.device, dtype=torch.int64)
-                page_tokens = layer.key.shape[1]
-                slots = layer.kernel_page_table[positions//page_tokens].long()*page_tokens + positions%page_tokens
-                rp = record_positions(group, gpu.device) if original_rope() else positions
-                if original_rope() and max(r.history_begin+r.count for r in group) > layer.cos_sin.shape[0]:
-                    raise ValueError('Original Key position exceeds RoPE table')
-                assemble_fp8(raw, values, rp, slots, layer.cos_sin, layer.key, layer.value, layer.key_scale)
+                with stage('layout_and_rebuild_fallback', gpu=True, tokens=n):
+                    raw = gpu[:half].view(torch.float8_e4m3fn).reshape(n, authority.shape[2], authority.shape[3])
+                    values = gpu[half:].view(torch.float8_e4m3fn).reshape_as(raw)
+                    positions = torch.arange(cursor, cursor+n, device=gpu.device, dtype=torch.int64)
+                    page_tokens = layer.key.shape[1]
+                    slots = layer.kernel_page_table[positions//page_tokens].long()*page_tokens + positions%page_tokens
+                    rp = record_positions(group, gpu.device) if original_rope() else positions
+                    if original_rope() and max(r.history_begin+r.count for r in group) > layer.cos_sin.shape[0]:
+                        raise ValueError('Original Key position exceeds RoPE table')
+                    assemble_fp8(raw, values, rp, slots, layer.cos_sin, layer.key, layer.value, layer.key_scale)
                 staging.consumed(slot)
                 uploaded_bytes += 2 * half
                 chunks += 1
@@ -378,11 +626,17 @@ class LayerwiseQuery:
             torch.cuda.current_stream(self.runner.device).synchronize()
             raise
         finally:
-            staging.release(assembler)
-            assembler.close()
+            with stage('assembler_release'):
+                staging.release(assembler)
+                assembler.close()
         return dict(uploaded_bytes=uploaded_bytes, chunks=chunks, packed_chunks=packed_chunks,
                     chunk_blocks=chunk_blocks, staging_slot_bytes=staging.slot_bytes,
-                    paired_read_chunks=paired_read_chunks)
+                    paired_read_chunks=paired_read_chunks, inline_read_chunks=inline_read_chunks,
+                    prepared_read_chunks=prepared_read_chunks,
+                    native_paired_gather_chunks=native_paired_gather_chunks,
+                    **({'query_resident_v': False,
+                        'query_resident_fallback_reason': state.get('query_resident_fallback_reason')}
+                       if public_query and getattr(self, 'resident_values', False) else {}))
 
     def assemble_layer(self, state, layer_index, chosen):
         from .assembly import assemble_fp8
@@ -468,6 +722,9 @@ def install_layerwise_query(runner):
     if not getattr(AsyncRefresh, '_layerwise_diagnostic_installed', False):
         assemble, report = AsyncRefresh._assemble, AsyncRefresh.report
         def assemble_with_probe(self, job, queries, ready):
+            if (getattr(self.options, 'action_profiling', False) or
+                    getattr(self.runner, '_kvmem_step_timing', None) is not None):
+                self.emit(job, 'assembly_worker_started')
             diagnostic = getattr(self.runner, '_kvmem_layerwise_query', None)
             if diagnostic is not None:
                 with torch.inference_mode(), torch.cuda.device(self.runner.device), torch.cuda.stream(self.stream):
@@ -477,7 +734,7 @@ def install_layerwise_query(runner):
         def report_with_probe(self, job, assembly, fit, seconds):
             result = report(self, job, assembly, fit, seconds)
             diagnostic = getattr(self.runner, '_kvmem_layerwise_query', None)
-            if diagnostic is not None:
+            if diagnostic is not None and not getattr(job, 'layerwise_pipeline_published', False):
                 diagnostic.committed(job)
             return result
         AsyncRefresh._assemble, AsyncRefresh.report = assemble_with_probe, report_with_probe
@@ -499,9 +756,19 @@ def install_native_query_dispatch(controller):
     if getattr(original_dispatch, '_kvmem_layerwise_owner', None) is not None:
         raise RuntimeError('A second layerwise dispatcher cannot share the native worker')
     def dispatch(*args, **kwargs):
+        pipeline = getattr(controller.pressure, 'pipeline', None)
         if controller.has_active:
             kwargs['need_eager'] = True
-        return original_dispatch(*args, **kwargs)
+        result = original_dispatch(*args, **kwargs)
+        if pipeline is not None and pipeline.needs_dispatch_boundary:
+            from vllm.config import CUDAGraphMode
+            # Native prefill PIECEWISE graphs already exclude the opaque KV
+            # writer/attention ops. Preserve those compute graphs and shapes;
+            # only a whole-model FULL replay would bypass the per-layer waits.
+            if result[0].cg_mode == CUDAGraphMode.FULL:
+                kwargs['need_eager'] = True
+                result = original_dispatch(*args, **kwargs)
+        return result
     def context(*args, **kwargs):
         if controller.has_active:
             kwargs['skip_compiled'] = True

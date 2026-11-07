@@ -163,6 +163,8 @@ class HistoryAdmission:
     def snapshot(self):
         used, reserve = self._usage({k: v.bytes for k, v in self.leases.items()})
         return dict(capacity_bytes=self.capacity_bytes, reserved_bytes=used,
+                    storage_tier=getattr(self, 'storage_tier', 'cpu'),
+                    unmaterialized_reserved_bytes=max(0, used-self.observed_bytes),
                     progress_reserve_bytes=reserve, available_bytes=self.capacity_bytes-used-reserve,
                     leases=len(self.leases), active=sum(v.phase == 'active' for v in self.leases.values()),
                     lease_views=[dict(key=list(key), generation=lease.generation,

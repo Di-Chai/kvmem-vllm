@@ -92,7 +92,9 @@ def test_direct_seal_copies_raw_and_values_into_native_storage_without_python_sl
     raw, values = bytearray(b'ABCD'), bytearray(b'1234')
     monkeypatch.setattr(n, 'pack_record_views', lambda *_: pytest.fail('Unexpected Python bytes slab'))
     try:
-        stats = archive.write_from_views('a', [lease], [memoryview(raw), memoryview(values)]).result(5)
+        with monkeypatch.context() as sealing:
+            sealing.setattr(archive, 'span', lambda *_: pytest.fail('Unexpected native seal I/O span'))
+            stats = archive.write_from_views('a', [lease], [memoryview(raw), memoryview(values)]).result(5)
         raw[:] = values[:] = b'????'
         assert bytes(archive.read('a', [lease]).result(5)[0]) == b'ABCD1234'
         assert stats['record_digests'] == (hashlib.sha256(b'ABCD1234').hexdigest(),)

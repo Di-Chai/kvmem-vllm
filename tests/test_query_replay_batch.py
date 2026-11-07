@@ -32,7 +32,7 @@ def batch(ids=('a', 'b'), counts=(5, 7), indices=(0, 1), drafts=(4, 0)):
         seq_lens=torch.tensor(computed + counts), seq_lens_cpu_upper_bound=torch.tensor(computed + counts),
         dcp_local_seq_lens=None, num_computed_tokens_np=computed,
         prefill_len_np=computed + counts, num_computed_prefill_tokens_np=computed,
-        is_prefilling_np=prefill, has_prefill=bool(np.any(prefill)),
+        is_prefilling_np=prefill, has_prefill=bool(np.any(prefill)), decode_graph_eligible=False,
         input_ids=torch.arange(total, dtype=torch.int32), positions=torch.arange(128, 128 + total),
         is_padding=torch.zeros(total, dtype=torch.bool), logits_indices=torch.tensor(logits),
         cu_num_logits=torch.tensor(cu), cu_num_logits_np=cu,
@@ -175,9 +175,9 @@ def test_stale_owner_and_cancel_are_rejected_before_native_execution(mutation):
 def ExecuteState(batch, hidden, aux, metadata, slots):
     from vllm.v1.worker.gpu.model_runner import ExecuteModelState
     return ExecuteModelState(input_batch=batch, hidden_states=hidden, aux_hidden_states=aux,
-        attn_metadata=metadata, slot_mappings_by_layer=slots, dp_sync=None,
+        attn_metadata=metadata, slot_mappings_by_layer=slots, dp_sync_state=None,
         finished_req_ids={'already-finished'}, ec_connector_output=None,
-        routed_experts=None, cudagraph_stats=None)
+        num_spec_tokens_to_schedule=1, cudagraph_stats=None)
 
 
 def test_completion_extracts_private_q_then_exposes_only_public_state_to_sampling_and_mtp():
@@ -191,7 +191,7 @@ def test_completion_extracts_private_q_then_exposes_only_public_state_to_samplin
     hidden = torch.arange(28).reshape(14,2)
     result = co.complete(ExecuteState(combined, hidden, [hidden+1], 'mixed', 'mixed'))
     assert result.input_batch is public
-    assert result.finished_req_ids == {'already-finished'} and result.dp_sync is None
+    assert result.finished_req_ids == {'already-finished'} and result.dp_sync_state is None
     assert result.hidden_states.shape == (12,2) and result.aux_hidden_states[0].shape == (12,2)
     assert result.attn_metadata == 'public-attention' and result.slot_mappings_by_layer == 'public-slots'
     assert torch.equal(job.query_rows[0], refresh.runner._kvmem_graph_captures[0].query[12:14].unsqueeze(0))

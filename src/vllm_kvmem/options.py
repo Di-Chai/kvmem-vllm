@@ -354,14 +354,20 @@ class RuntimeOptions:
     prefill_deferred_validation_scratch_bytes: int = 2147483648
     prefill_scatter_after_target: bool = False
     cpu_mean_index_simd: bool = False
+    cpu_reuse_record_views: bool = False
+    cpu_fuse_record_mean: bool = False
     assembly_read_prefetch: bool = False
     assembly_fused_layers: bool = False
     flashinfer_gemm_bucket_alignment: bool = False
     prefill_physical_coalescing: bool = False
+    prefill_physical_multi_owner: bool = False
+    prefill_physical_fill_rows: bool = False
     prefill_physical_max_chunks: int = 2
+    prefill_physical_logical_tokens: int = 2048
     action_native_prefill_cta_gate: bool = False
     capture_opaque_projection: bool = False
     action_native_prefill_static_aligned: bool = False
+    action_native_prefill_static_quad: bool = False
     cpu_seal_pack_workers: int = 1
     cpu_seal_serial_allocate: bool = False
     query_replay_backend: str = 'eager'
@@ -379,6 +385,14 @@ class RuntimeOptions:
     query_mean_quota_fraction: float = 0.0
     cpu_release_sealed_sums: bool = False
     query_fps_cache_fp8: bool = False
+    tiered_segment_bytes: int = 67108864
+    tiered_cpu_low_watermark: float = 0.7
+    tiered_cpu_high_watermark: float = 0.85
+    gpu_memory_admission: str = 'static'
+    request_checkpoint_bytes: int = 0
+    request_swap_min_resident_steps: int = 32
+    request_checkpoint_ssd_bytes: int = 0
+    request_swap_layerwise: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -499,6 +513,10 @@ class RuntimeOptions:
                 raise ValueError('Native prefill static aligned requires native Action scores')
             if self.action_native_prefill_aligned_pieces or self.action_native_prefill_cta_gate:
                 raise ValueError('Native prefill static aligned cannot combine runtime aligned pieces or CTA gate')
+        if type(self.action_native_prefill_static_quad) is not bool:
+            raise ValueError('Native prefill static quad must be boolean')
+        if self.action_native_prefill_static_quad and not self.action_native_prefill_static_aligned:
+            raise ValueError('Native prefill static quad requires native prefill static aligned')
         if (type(self.action_native_max_rows) is not int or self.action_native_max_rows < 1 or
                 type(self.action_native_max_bytes) is not int or self.action_native_max_bytes < 1):
             raise ValueError('Native Action buffer limits must be positive integers')
@@ -561,9 +579,20 @@ class RuntimeOptions:
             raise ValueError('Prefill capture ahead requires the publication pipeline and native scores')
         if type(self.prefill_physical_coalescing) is not bool:
             raise ValueError('prefill_physical_coalescing must be boolean')
+        if type(self.prefill_physical_multi_owner) is not bool:
+            raise ValueError('prefill_physical_multi_owner must be boolean')
+        if self.prefill_physical_multi_owner and not self.prefill_physical_coalescing:
+            raise ValueError('Multi-owner prefill requires physical coalescing')
+        if type(self.prefill_physical_fill_rows) is not bool:
+            raise ValueError('prefill_physical_fill_rows must be boolean')
+        if self.prefill_physical_fill_rows and not self.prefill_physical_multi_owner:
+            raise ValueError('Filling physical row reservations requires multi-owner prefill')
         if (type(self.prefill_physical_max_chunks) is not int or
-                not 2 <= self.prefill_physical_max_chunks <= 8):
-            raise ValueError('prefill_physical_max_chunks must be an integer in [2, 8]')
+                not 2 <= self.prefill_physical_max_chunks <= 16):
+            raise ValueError('prefill_physical_max_chunks must be an integer in [2, 16]')
+        if (type(self.prefill_physical_logical_tokens) is not int or
+                self.prefill_physical_logical_tokens not in (1024,2048)):
+            raise ValueError('prefill_physical_logical_tokens must preserve a 1024 or 2048 token chunk')
         if self.prefill_physical_coalescing:
             if not (self.request_planning and self.prefill_publication_pipeline and
                     self.prefill_native_plan_arm and self.action_native_scores == 'reuse' and
@@ -578,7 +607,7 @@ class RuntimeOptions:
                 raise ValueError('Physical prefill coalescing does not qualify early slot release, '
                                  'deferred validation/scatter, other coalescing or prefill budget '
                                  'controllers, or guided Query')
-            if self.action_native_max_rows < 64*self.prefill_physical_max_chunks:
+            if self.action_native_max_rows < (self.prefill_physical_logical_tokens//32)*self.prefill_physical_max_chunks:
                 raise ValueError('Physical prefill coalescing requires native sample capacity for every logical chunk')
             if not self.action_download_pool or self.action_download_max_slots < 4:
                 raise ValueError('Physical prefill coalescing requires four bounded Action download slots')
@@ -692,7 +721,7 @@ class RuntimeOptions:
                          not self.query_history)
         if type(self.async_restore) is not bool or (self.async_restore and (
                 not self.async_refresh or not self.maintenance_max_steps or not self.session_capacity or
-                self.repository_gc or self.archive_backend != 'cpu' or
+                self.repository_gc or self.archive_backend not in ('cpu', 'tiered') or
                 (self.session_checkpoint_policy != 'pm' and not frozen_prompt))):
             raise ValueError('Asynchronous restore requires CPU P/M or frozen-P sessions, non-GC async refresh and maintenance budgets')
         if type(self.restore_handoff_fastpath) is not bool or (self.restore_handoff_fastpath and (
@@ -700,7 +729,7 @@ class RuntimeOptions:
             raise ValueError('Restore handoff fastpath requires split asynchronous restore without offline ordering')
         if type(self.cpu_history_coordination) is not bool or type(self.cpu_progress_reserve) is not bool:
             raise ValueError('CPU history coordination settings must be boolean')
-        if self.cpu_history_coordination and (self.archive_backend != 'cpu' or self.repository_gc or
+        if self.cpu_history_coordination and (self.archive_backend not in ('cpu', 'tiered') or self.repository_gc or
                 not self.async_archive_retirement or not self.request_planning or not self.session_capacity):
             raise ValueError('CPU history coordination requires CPU authority, planning and fenced non-GC retirement')
         if type(self.maintenance_max_steps) is not int or not 0 <= self.maintenance_max_steps <= 64:
@@ -776,8 +805,53 @@ class RuntimeOptions:
                 raise ValueError('Guided refresh trigger leaves insufficient private headroom')
         if type(self.guided_query_tokens) is not int or not 0 <= self.guided_query_tokens <= 4096:
             raise ValueError('Guided query tokens must be in [0, 4096]')
-        if self.archive_backend not in ('nvme', 'cpu'):
-            raise ValueError('Archive backend must be nvme or cpu')
+        if self.archive_backend not in ('nvme', 'cpu', 'tiered'):
+            raise ValueError('Archive backend must be nvme, cpu or tiered')
+        if self.gpu_memory_admission not in ('static', 'incremental'):
+            raise ValueError('gpu_memory_admission must be static or incremental')
+        if type(self.request_swap_layerwise) is not bool:
+            raise ValueError('request_swap_layerwise must be boolean')
+        if self.request_swap_layerwise and (
+                self.gpu_memory_admission != 'incremental' or not self.async_refresh or
+                self.archive_backend != 'cpu' or not self.request_planning or
+                not self.prefill_attention or self.pressure_policy != 'attention'):
+            raise ValueError('Layerwise request swaps require incremental admission, asynchronous '
+                             'refresh, CPU archive and planned cumulative-attention pressure')
+        if type(self.request_checkpoint_bytes) is not int or self.request_checkpoint_bytes < 0:
+            raise ValueError('request_checkpoint_bytes must be a nonnegative integer')
+        if type(self.request_checkpoint_ssd_bytes) is not int or self.request_checkpoint_ssd_bytes < 0:
+            raise ValueError('request_checkpoint_ssd_bytes must be a nonnegative integer')
+        if (type(self.request_swap_min_resident_steps) is not int or
+                self.request_swap_min_resident_steps < 1):
+            raise ValueError('request_swap_min_resident_steps must be a positive integer')
+        if self.gpu_memory_admission == 'incremental':
+            if not self.request_checkpoint_bytes:
+                raise ValueError('Incremental GPU admission requires a bounded request checkpoint pool')
+            if ((self.async_refresh and not self.request_swap_layerwise) or
+                    self.async_restore or self.rolling_active_window or
+                    self.active_residency_enabled or self.historical_gc is not None or self.repository_gc or
+                    self.prefill_deferred_validation or
+                    (self.prefill_physical_coalescing and not self.request_swap_layerwise) or
+                    self.offline_agent_policy or self.offline_phase_policy or self.offline_prefill_coalescing or
+                    self.guided_query_tokens or (self.graph_mode != 'off' and not self.request_swap_layerwise)):
+                raise ValueError('Incremental GPU admission currently requires synchronous '
+                                 'execution without deferred prefill, guided probes, graphs or historical GC')
+        elif self.request_checkpoint_bytes or self.request_checkpoint_ssd_bytes:
+            raise ValueError('Request swap checkpoints require incremental GPU admission')
+        if type(self.tiered_segment_bytes) is not int or self.tiered_segment_bytes <= 0:
+            raise ValueError('tiered_segment_bytes must be a positive integer')
+        if (any(type(value) not in (int, float) or not math.isfinite(value) for value in
+                (self.tiered_cpu_low_watermark, self.tiered_cpu_high_watermark)) or
+                not 0 < self.tiered_cpu_low_watermark < self.tiered_cpu_high_watermark < 1):
+            raise ValueError('Tiered CPU watermarks must satisfy 0 < low < high < 1')
+        if self.archive_backend == 'tiered':
+            if (not self.cpu_read_cache_bytes or not self.nvme_max_bytes or self.nvme_preallocate or
+                    not self.archive_io_max_bytes):
+                raise ValueError('Tiered archive requires CPU, SSD and I/O byte limits without full preallocation')
+            if not self.cpu_history_coordination:
+                raise ValueError('Tiered archive requires fenced history coordination for its logical SSD quota')
+            if self.historical_gc is not None or self.repository_gc:
+                raise ValueError('Tiered archive does not yet support historical or repository GC')
         if self.archive_backend == 'cpu' and (not self.cpu_read_cache_bytes or self.nvme_preallocate or self.nvme_max_bytes):
             raise ValueError('CPU-only archive requires a memory budget and no NVMe reservation')
         if type(self.cpu_direct_record_seal) is not bool:
@@ -786,6 +860,12 @@ class RuntimeOptions:
             raise ValueError('cpu_direct_record_seal requires archive_backend=cpu and async_seal=true')
         if type(self.cpu_mean_index_simd) is not bool:
             raise ValueError('cpu_mean_index_simd must be boolean')
+        if type(self.cpu_reuse_record_views) is not bool:
+            raise ValueError('cpu_reuse_record_views must be boolean')
+        if type(self.cpu_fuse_record_mean) is not bool:
+            raise ValueError('cpu_fuse_record_mean must be boolean')
+        if self.cpu_fuse_record_mean and (self.mean_k_backend != 'qw3_cuda' or self.cpu_mean_index_simd):
+            raise ValueError('cpu_fuse_record_mean requires native indexing with SIMD disabled')
         if self.cpu_mean_index_simd and self.mean_k_backend != 'qw3_cuda':
             raise ValueError('cpu_mean_index_simd requires mean_k_backend=qw3_cuda')
         if type(self.assembly_read_prefetch) is not bool:
@@ -914,6 +994,13 @@ class RuntimeOptions:
         graph = {name: payload.pop(name) for name in GRAPH_DEFAULTS if name in payload}
         graph['pressure_policy'] = payload.pop('pressure_policy', _UNSET)
         action = {name: payload.pop(name, default) for name, default in (
+            ('tiered_segment_bytes', 67108864),
+            ('gpu_memory_admission', 'static'),
+            ('request_checkpoint_bytes', 0),
+            ('request_checkpoint_ssd_bytes', 0),
+            ('request_swap_layerwise', False),
+            ('request_swap_min_resident_steps', 32),
+            ('tiered_cpu_low_watermark', 0.7), ('tiered_cpu_high_watermark', 0.85),
             ('query_score_mode', 'mean_k'), ('query_window_cache_bytes', 2147483648),
             ('query_fps_halo_blocks', 0), ('query_fps_optimized', False),
             ('query_fps_prebuild', False),
@@ -939,6 +1026,7 @@ class RuntimeOptions:
             ('action_native_prefill_cta_gate', False),
             ('capture_opaque_projection', False),
             ('action_native_prefill_static_aligned', False),
+            ('action_native_prefill_static_quad', False),
             ('action_native_max_bytes', 2147483648),
             ('async_refresh', False), ('refresh_quantum_tokens', 256),
             ('prefill_attention', False), ('action_pressure', _UNSET),
@@ -979,11 +1067,16 @@ class RuntimeOptions:
             ('prefill_deferred_validation_scratch_bytes', 2147483648),
             ('prefill_scatter_after_target', False),
             ('cpu_mean_index_simd', False),
+            ('cpu_reuse_record_views', False),
+            ('cpu_fuse_record_mean', False),
             ('assembly_read_prefetch', False),
             ('assembly_fused_layers', False),
             ('flashinfer_gemm_bucket_alignment', False),
             ('prefill_physical_coalescing', False),
+            ('prefill_physical_multi_owner', False),
+            ('prefill_physical_fill_rows', False),
             ('prefill_physical_max_chunks', 2),
+            ('prefill_physical_logical_tokens', 2048),
             ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),
             ('action_profile_interval', 1), ('action_profile_max_events', 256))}
         try:

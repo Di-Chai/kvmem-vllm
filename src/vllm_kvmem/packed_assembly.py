@@ -37,11 +37,19 @@ class PackedRead:
             self.owners = ()
 
 
-def begin_read_packed_records(authority, handles, *, destination=None, region=None, regions=None, wait=True):
-    """Submit through the existing archive executor; optionally decline busy admission."""
+def begin_read_packed_records(authority, handles, *, destination=None, region=None, regions=None, wait=True,
+                             inline_cpu=False, paired_native=False):
+    """Admit one read, asynchronously by default; optionally decline busy admission."""
     from .authority import record_key
     if not handles:
         raise ValueError("No immutable records requested")
+    if type(paired_native) is not bool or paired_native and (
+            regions is None or region is not None or destination is None or
+            not getattr(authority.archive, 'memory_only', False)):
+        raise ValueError('Native paired reads require CPU authority, paired regions and owned staging')
+    if inline_cpu and (not wait or (regions is None and region is None) or destination is None or
+                       not getattr(authority.archive, 'memory_only', False)):
+        raise ValueError('Inline packed reads require synchronous CPU regions and owned staging')
     if regions is not None:
         if region is not None:
             raise ValueError('Specify one region or paired regions, never both')
@@ -60,6 +68,10 @@ def begin_read_packed_records(authority, handles, *, destination=None, region=No
         if not all(leases):
             raise ValueError("Stale archive generation")
         kwargs = {}
+        if inline_cpu:
+            kwargs['inline'] = True
+        if paired_native:
+            kwargs['paired_native'] = True
         sources = [entry[1] for entry in admitted]
         if sources and all(sources):
             kwargs['_sources'] = sources
@@ -108,10 +120,12 @@ def begin_read_packed_records(authority, handles, *, destination=None, region=No
                 lease.reset()
 
 
-def read_packed_records(authority, handles, *, destination=None, region=None, regions=None):
+def read_packed_records(authority, handles, *, destination=None, region=None, regions=None, inline_cpu=False,
+                        paired_native=False):
     """One bounded read; optionally fill an exclusively owned CPU staging tensor."""
     return begin_read_packed_records(authority, handles, destination=destination,
-                                     region=region, regions=regions).result()
+                                     region=region, regions=regions, inline_cpu=inline_cpu,
+                                     paired_native=paired_native).result()
 
 
 class PackedReadAhead:

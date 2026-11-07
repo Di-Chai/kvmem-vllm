@@ -85,7 +85,16 @@ class KVMemScheduler(Scheduler):
         self.prefill_controller = None
         self.prefill_batch = None
         self.prefill_physical_coalescing = options.prefill_physical_coalescing
+        self.prefill_physical_multi_owner = getattr(options, 'prefill_physical_multi_owner', False)
+        self.prefill_physical_fill_rows = getattr(options, 'prefill_physical_fill_rows', False)
+        self._physical_native_rows = options.action_native_max_rows
         self.prefill_physical_max_chunks = options.prefill_physical_max_chunks
+        partial_tail = os.getenv('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL', '0')
+        if partial_tail not in ('0', '1'):
+            raise ValueError('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL must be 0 or 1')
+        if partial_tail == '1' and not self.prefill_physical_coalescing:
+            raise ValueError('Partial physical tails require physical prefill coalescing')
+        self.prefill_physical_partial_tail = partial_tail == '1'
         self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
@@ -125,11 +134,43 @@ class KVMemScheduler(Scheduler):
         if not self.window_managers:
             raise ValueError("No full-attention cache group found")
         coordinator.single_type_managers = tuple(managers)
+        self.swap_controller = None
         if self._bounded_target:
             from .capacity import ReservedKVCacheManager
-            self.kv_cache_manager = ReservedKVCacheManager(self.kv_cache_manager, self.vllm_config,
+            manager_type, extra = ReservedKVCacheManager, {}
+            if options.gpu_memory_admission == 'incremental':
+                from .incremental_capacity import IncrementalKVCacheManager
+                from .request_swap_control import RequestSwapController
+                if (os.getenv('KVMEM_SYSTEMONE_FORK') == '1' or
+                        (not self.vllm_config.model_config.enforce_eager and not options.request_swap_layerwise) or
+                        any(getattr(self.vllm_config.parallel_config, field, 1) != 1 for field in
+                            ('tensor_parallel_size', 'pipeline_parallel_size',
+                             'decode_context_parallel_size', 'prefill_context_parallel_size'))):
+                    raise ValueError('Incremental admission requires eager single-rank execution without forks')
+                sizes = {tensor.size for tensor in self.kv_cache_config.kv_cache_tensors}
+                if len(sizes) != 1:
+                    raise ValueError('Exact request swap requires one native V2 backing allocation')
+                page_bytes, remainder = divmod(sizes.pop(), self.kv_cache_config.num_blocks)
+                if remainder or not page_bytes:
+                    raise ValueError('Exact request swap requires integral native backing pages')
+                self.swap_controller = RequestSwapController(self,
+                    checkpoint_bytes=options.request_checkpoint_ssd_bytes or options.request_checkpoint_bytes,
+                    checkpoint_cpu_bytes=options.request_checkpoint_bytes, page_bytes=page_bytes,
+                    finish_callback=self._finish_swapped_request,
+                    min_resident_steps=options.request_swap_min_resident_steps)
+                manager_type = IncrementalKVCacheManager
+                extra['pause_controller'] = self.swap_controller
+            self.kv_cache_manager = manager_type(self.kv_cache_manager, self.vllm_config,
                 draft_contract=self.draft_contract,
-                max_authorities=self.scheduler_config.max_num_seqs if options.async_archive_retirement else None)
+                max_authorities=(self.scheduler_config.max_num_seqs
+                    if options.async_archive_retirement or self.swap_controller is not None else None),
+                **extra)
+            if self.swap_controller is not None:
+                self.swap_controller.bind(self.kv_cache_manager)
+                self.connector.request_swap_pending = self.swap_controller.has_pending_work
+        if os.getenv('KVMEM_SYSTEMONE_FORK') == '1':
+            from .systemone_fork import ForkPagePool
+            self.connector.systemone_pool = ForkPagePool(self, config)
         self.connector.scheduler_completion = self._complete_refresh
         if self._bounded_target:
             self.kv_cache_manager.guided_reserve = options.guided_reserve
@@ -192,6 +233,10 @@ class KVMemScheduler(Scheduler):
             record_bytes = row_bytes * config.block_tokens
             capacity = min(history_bytes,
                 record_bytes * config.repository_blocks * (self.scheduler_config.max_num_seqs + options.session_capacity))
+            if options.archive_backend == 'tiered':
+                from .archive_limits import tiered_capacity_records
+                capacity = record_bytes * tiered_capacity_records(options, record_bytes,
+                    self.scheduler_config.max_num_seqs)
             if options.historical_gc is not None:
                 from .historical_admission import HistoricalHistoryAdmission
                 from .historical_gc import historical_record_charge
@@ -205,6 +250,8 @@ class KVMemScheduler(Scheduler):
                 self.connector.history_admission = HistoryAdmission(capacity, config.block_tokens,
                     row_bytes, self.vllm_config.model_config.max_model_len,
                     reserve_progress=options.cpu_progress_reserve)
+                self.connector.history_admission.storage_tier = (
+                    'ssd_logical' if options.archive_backend == 'tiered' else 'cpu')
         if options.active_residency_enabled:
             if self.draft_contract is not None and self.draft_contract.method != 'mtp':
                 raise ValueError('Idle active residency currently qualifies target-only or native MTP')
@@ -350,6 +397,10 @@ class KVMemScheduler(Scheduler):
             "archive_capacity_deferrals": self.archive_admission.deferred if getattr(self, 'archive_admission', None) else 0,
             "free_blocks": gate.block_pool.get_num_free_blocks(),
             "total_blocks": gate.block_pool.num_gpu_blocks}
+        if callable(getattr(gate, 'snapshot', None)):
+            report['gpu_capacity'] = gate.snapshot()
+        if getattr(self, 'swap_controller', None) is not None:
+            report['request_swaps'] = self.swap_controller.snapshot()
         if getattr(self, 'prefill_controller', None) is not None:
             report['adaptive_prefill'] = self.prefill_controller.snapshot()
         if getattr(self, 'prefill_batch', None) is not None:
@@ -396,6 +447,11 @@ class KVMemScheduler(Scheduler):
         temporary.replace(path / 'scheduled_queries.json')
 
     def update_from_output(self, *args, **kwargs):
+        pool = getattr(self.connector, 'systemone_pool', None)
+        if pool is not None:
+            output = args[1] if len(args) > 1 else kwargs['model_runner_output']
+            meta = getattr(getattr(output, 'kv_connector_output', None), 'kv_connector_worker_meta', None)
+            pool.consume(getattr(meta, 'systemone_notices', ()))
         rejected = self._finish_capacity_rejections()
         result = super().update_from_output(*args, **kwargs)
         if rejected:
@@ -439,6 +495,12 @@ class KVMemScheduler(Scheduler):
             self._write_scheduled_queries(force=True)
 
     def _free_request(self, request, delay_free_blocks=False):
+        controller = getattr(self, 'swap_controller', None)
+        if controller is not None and controller.defer_free(request, delay_free_blocks):
+            return None, None
+        return self._finish_swapped_request(request, delay_free_blocks)
+
+    def _finish_swapped_request(self, request, delay_free_blocks=False):
         getattr(self.connector, 'publication_blocked', set()).discard(request.request_id)
         restore_admission = getattr(self.connector, 'restore_admission', None)
         if restore_admission is not None:
@@ -485,6 +547,9 @@ class KVMemScheduler(Scheduler):
         return super()._request_blocks_can_be_freed(request)
 
     def _complete_refresh(self, request_id, command_id, selected_tokens=None):
+        controller = getattr(self, 'swap_controller', None)
+        if controller is not None and controller.complete(request_id, command_id):
+            return
         command, previous_step = self.transactions[request_id]
         if command.command_id != command_id:
             raise ValueError("Refresh command identity mismatch")
@@ -592,6 +657,19 @@ class KVMemScheduler(Scheduler):
                 (entry.namespace, entry.generation, entry.history, entry.window))
 
     def _reserve_prefill_lookahead(self, request, num_computed_tokens, num_new_tokens):
+        controller = getattr(self, 'swap_controller', None)
+        if controller is not None and controller.is_suspended(request.request_id):
+            return 0
+        tokens = self._reserve_kvmem_lookahead(request, num_computed_tokens, num_new_tokens)
+        if tokens and controller is not None:
+            if not self.kv_cache_manager.can_schedule(request, tokens,
+                    num_lookahead_tokens=self.num_lookahead_tokens,
+                    num_external_computed_tokens=max(0, num_computed_tokens-request.num_computed_tokens),
+                    has_scheduled_reqs=bool(self.running)):
+                return 0
+        return tokens
+
+    def _reserve_kvmem_lookahead(self, request, num_computed_tokens, num_new_tokens):
         if getattr(self, 'prefill_physical_coalescing', False):
             self._logical_prefill_groups.pop(request.request_id, None)
         logical_group = None
@@ -769,17 +847,58 @@ class KVMemScheduler(Scheduler):
     def _prepare_logical_prefill(self):
         self._logical_prefill_groups = {}
         self._logical_prefill_owner = None
+        self._logical_prefill_owners = {}
+        self._logical_owner_chunks = {}
+        self._logical_owner_max_chunks = getattr(self, 'prefill_physical_max_chunks', 2)
         if not getattr(self, 'prefill_physical_coalescing', False):
             return
         # The first qualification admits exactly one live request. Counting
         # blocked/waiting neighbours as well avoids guessing native composition.
         requests = list(self.running) + list(self._waiting_requests())
+        if getattr(self, 'prefill_physical_multi_owner', False) and requests:
+            from .multiowner_prefill import owner_chunk_limit
+            # Reuse the exact native running-row gates. A pressure transaction
+            # or an unpublished running owner cannot enter this forward; its
+            # idle score-row share may be used by the remaining owners. Waiting
+            # requests remain counted because native may admit them this step.
+            step = self.current_step + 1
+            blocked = getattr(self.connector, 'publication_blocked', ())
+            requests = [item for item in requests if not (
+                getattr(item, 'status', None) is RequestStatus.RUNNING and (
+                    item.request_id in self.transactions or item.request_id in blocked or
+                    item.next_decode_eligible_step > step))]
+            if not requests:
+                return
+            # Keep decode, Query/replay and unknown policy compositions on the
+            # original path. All owners share the existing native score bank.
+            from .request_plan import request_plan
+            for item in requests:
+                plan = request_plan(item, self.query_policy.block_tokens, self.query_policy.gen_budget)
+                history = item.num_computed_tokens
+                if (plan is None or history >= item.num_prompt_tokens or
+                        plan.query is not None and history >= plan.replay_begin or
+                        getattr(item, 'spec_token_ids', ())):
+                    return
+            chunk = int(os.getenv('KVMEM_PREFILL_CHUNK_TOKENS', '0'))
+            limit = owner_chunk_limit(len(requests), self._physical_native_rows,
+                chunk, self.prefill_physical_max_chunks)
+            if getattr(self, 'prefill_physical_fill_rows', False):
+                from .multiowner_prefill import owner_chunk_allocations
+                limits = owner_chunk_allocations(len(requests), self._physical_native_rows,
+                    chunk, self.prefill_physical_max_chunks, rotation=step)
+                limit = max(limits)
+                self._logical_owner_chunks = {r.request_id:n for r,n in zip(requests,limits)}
+            if limit >= 2:
+                self._logical_owner_max_chunks = limit
+                self._logical_prefill_owners = {item.request_id: item for item in requests}
+            return
         if len(requests) == 1:
             self._logical_prefill_owner = requests[0]
 
     def _logical_prefill_group(self, request, plan, history, offset, budget, chunk):
-        if (not getattr(self, 'prefill_physical_coalescing', False) or chunk != 2048 or history == 0 or
-                getattr(self, '_logical_prefill_owner', None) is not request or budget < 4096 or
+        if (not getattr(self, 'prefill_physical_coalescing', False) or chunk not in (1024,2048) or history == 0 or
+                (getattr(self, '_logical_prefill_owner', None) is not request and
+                 getattr(self, '_logical_prefill_owners', {}).get(request.request_id) is not request) or budget < 2*chunk or
                 request.request_id in self.transactions or request.request_id in self.connector.pending or
                 request.request_id in self.prepared_refreshes or
                 getattr(request, '_kvmem_guided_epoch', None) is not None or
@@ -796,13 +915,19 @@ class KVMemScheduler(Scheduler):
         gate = getattr(self, 'archive_admission', None)
         if gate is not None and callable(getattr(gate, 'available_tokens', None)):
             budget = min(budget, gate.available_tokens(request.request_id, history))
-        maximum = min(getattr(self, 'prefill_physical_max_chunks', 2), budget//2048,
-                      (request.num_prompt_tokens-history-1)//2048,
-                      (self.query_policy.capacity-history+offset)//2048)
+        owner_max = getattr(self, '_logical_owner_chunks', {}).get(request.request_id,
+            getattr(self, '_logical_owner_max_chunks', getattr(self, 'prefill_physical_max_chunks', 2)))
+        room = self.query_policy.capacity-history+offset
+        partial = getattr(self, 'prefill_physical_partial_tail', False)
+        # Opt-in: one extra span slot for a window-clipped final chunk. The
+        # planner admits it only when it is exactly the original clipped step.
+        maximum = min(owner_max, budget//chunk,
+                      (request.num_prompt_tokens-history-1)//chunk,
+                      room//chunk + (1 if partial and room % chunk else 0))
         if maximum < 2:
             return None
         limits = tuple(super(KVMemScheduler, self)._reserve_prefill_lookahead(
-            request, history + i * 2048, 2048) for i in range(maximum))
+            request, history + i * chunk, chunk) for i in range(maximum))
         gates = LogicalPrefillEligibility((request.request_id,), limits, budget,
             native_prefill_lookahead=getattr(self, 'num_prefill_lookahead', 1))
         group, _ = plan_logical_prefill(plan, request_id=request.request_id,
@@ -811,7 +936,8 @@ class KVMemScheduler(Scheduler):
             owner_epoch=('scheduler', self.current_step, request.request_id, offset),
             scheduler_step=self.current_step, history_begin=history, offset=offset,
             prompt_tokens=request.num_prompt_tokens, capacity=self.query_policy.capacity,
-            eligibility=gates)
+            eligibility=gates,logical_chunk_tokens=chunk,
+            **({'partial_tail': True} if partial else {}))
         return group
 
     def _preserve_deferred_padding(self, request, output, query_tokens):
@@ -879,6 +1005,11 @@ class KVMemScheduler(Scheduler):
                     continue
                 selected_budget = (plan.selection_budget(request.num_computed_tokens, request.num_prompt_tokens,
                     self.query_policy.capacity) if plan is not None else self.query_policy.select_budget)
+                fork_pool = getattr(connector, 'systemone_pool', None)
+                if (fork_pool is not None and action is None and
+                        request.num_computed_tokens >= request.num_prompt_tokens and
+                        fork_pool.take_refresh_probe(request_id)):
+                    action = 'pressure'  # Explicit byte-audit injection; ordinary admission is unchanged.
                 if action == 'exhausted':
                     raise RuntimeError('keep_selected append headroom was exhausted')
                 if ((plan is None and (imported_query or self.query_policy.refresh(
@@ -959,7 +1090,8 @@ class KVMemScheduler(Scheduler):
         if getattr(self, 'prefill_physical_coalescing', False):
             groups = {rid: group for rid, group in self._logical_prefill_groups.items()
                       if rid in output.num_scheduled_tokens}
-            if groups and (len(groups) != 1 or len(output.num_scheduled_tokens) != 1 or
+            if groups and ((not getattr(self, 'prefill_physical_multi_owner', False) and
+                    (len(groups) != 1 or len(output.num_scheduled_tokens) != 1)) or
                     any(output.num_scheduled_tokens[rid] != group.count or
                         output.scheduled_spec_decode_tokens.get(rid)
                         for rid, group in groups.items())):
@@ -1292,6 +1424,8 @@ class KVMemScheduler(Scheduler):
         return throttle
 
     def schedule(self, throttle_prefills=False):
+        if getattr(self, 'swap_controller', None) is not None:
+            self.swap_controller.before_schedule()
         if getattr(self.connector, 'active_residency', None) is not None:
             self.connector.active_residency.expire()
         if getattr(self, 'offline_policy', None) is not None:

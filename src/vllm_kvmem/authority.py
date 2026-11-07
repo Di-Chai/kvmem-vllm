@@ -33,6 +33,7 @@ class Record:
     submitted: bool = False
     digest: str | None = None
     scatter_views: tuple | None = field(default=None, repr=False)
+    archive_views: tuple | None = field(default=None, repr=False)
     mean_key: torch.Tensor | None = field(default=None, repr=False)
     staging_slot: int | None = field(default=None, repr=False)
     index_owner: object | None = field(default=None, repr=False)
@@ -41,7 +42,7 @@ class Record:
         # Keep the native buffer owner until every Python tensor field
         # has dropped its reference. Its destruction only queues native work.
         owner = getattr(self, 'index_owner', None)
-        self.key_sum = self.mean_key = self.scatter_views = None
+        self.key_sum = self.mean_key = self.scatter_views = self.archive_views = None
         self.index_owner = None
         del owner
 
@@ -90,7 +91,9 @@ class RequestAuthority:
                  scoring_layers=None, mean_k_backend='torch_reference',
                  cpu_mean_index_simd=False, mean_index_stats=None,
                  query_score_mode='mean_k', query_window_cache_bytes=2147483648,
-                 cpu_release_sealed_sums=False, query_fps_cache_fp8=False):
+                 cpu_release_sealed_sums=False, query_fps_cache_fp8=False,
+                 cpu_reuse_record_views=False, record_view_stats=None,
+                 cpu_fuse_record_mean=False, fused_mean_stats=None):
         if min(layers, heads, head_dim, resident_records) <= 0 or raw_dtype not in (
                 torch.bfloat16, torch.float16, torch.float8_e4m3fn):
             raise ValueError("Invalid authority geometry or staging budget")
@@ -131,6 +134,18 @@ class RequestAuthority:
         if cpu_mean_index_simd and mean_k_backend != 'qw3_cuda':
             raise ValueError('cpu_mean_index_simd requires mean_k_backend=qw3_cuda')
         self.cpu_mean_index_simd = cpu_mean_index_simd
+        if type(cpu_fuse_record_mean) is not bool:
+            raise ValueError('cpu_fuse_record_mean must be boolean')
+        if cpu_fuse_record_mean and (mean_k_backend != 'qw3_cuda' or
+                raw_dtype not in (torch.bfloat16, torch.float8_e4m3fn) or cpu_mean_index_simd):
+            raise ValueError('Fused record mean requires native BF16/FP8 indexing with SIMD disabled')
+        self.cpu_fuse_record_mean = cpu_fuse_record_mean
+        self.fused_mean_stats = dict(records=0, batches=0) if fused_mean_stats is None else fused_mean_stats
+        if type(cpu_reuse_record_views) is not bool:
+            raise ValueError('cpu_reuse_record_views must be boolean')
+        self.cpu_reuse_record_views = cpu_reuse_record_views
+        self.record_view_stats = (dict(slot_exports=0, bound_records=0,
+            finalize_records=0, sealed_records=0) if record_view_stats is None else record_view_stats)
         self.mean_index_stats = MeanIndexStats() if mean_index_stats is None else mean_index_stats
         self.raw_element_bytes = raw_dtype.itemsize
         self.record_elements = layers * config.block_tokens * heads * head_dim
@@ -151,6 +166,9 @@ class RequestAuthority:
         # large raw/V tensors between persistent small index allocations can
         # leave many GiB of resident-but-free allocator holes during prefill.
         self._record_buffers = []
+        # These exports belong to the existing bounded staging slots, never to
+        # an archived generation. A slot remains busy until its write finishes.
+        self._record_buffer_views = []
         self._free_record_buffers = []
         self._busy_record_buffers = set()
         self.writes = []
@@ -298,6 +316,12 @@ class RequestAuthority:
                        torch.empty(self.shape, dtype=torch.uint8))
             slot = len(self._record_buffers)
             self._record_buffers.append(buffers)
+            if self.cpu_reuse_record_views:
+                raw, values = buffers
+                raw_bytes, value_bytes = raw.view(torch.uint8).numpy(), values.numpy()
+                self._record_buffer_views.append((raw_bytes, value_bytes,
+                    (memoryview(raw_bytes).cast('B'), memoryview(value_bytes).cast('B'))))
+                self.record_view_stats['slot_exports'] += 1
         if slot in self._busy_record_buffers:
             raise RuntimeError('Record staging slot is still owned by publication')
         self._busy_record_buffers.add(slot)
@@ -341,8 +365,13 @@ class RequestAuthority:
             # row layout and per-record checksums remain byte-for-byte identical.
             views = []
             for record in records:
-                views.extend((memoryview(record.raw.view(torch.uint8).numpy()).cast('B'),
-                              memoryview(record.values.numpy()).cast('B')))
+                if self.cpu_reuse_record_views:
+                    if record.archive_views is None:
+                        raise RuntimeError('Prepared record lost its archive views')
+                    views.extend(record.archive_views)
+                else:
+                    views.extend((memoryview(record.raw.view(torch.uint8).numpy()).cast('B'),
+                                  memoryview(record.values.numpy()).cast('B')))
             if getattr(self.archive, 'async_seal', False):
                 job = self.archive.write_from_views(self.memory.request_id, leases, views)
             else:
@@ -361,6 +390,9 @@ class RequestAuthority:
         for record in records:
             record.submitted = True
             record.scatter_views = None
+            record.archive_views = None
+            if self.cpu_reuse_record_views:
+                self.record_view_stats['sealed_records'] += 1
             record.raw = record.values = None
             if self.cpu_release_sealed_sums:
                 # This sealed generation is immutable; reads use its finalized
@@ -440,6 +472,11 @@ class RequestAuthority:
                     record = Record(handle, span.history_begin, 0,
                         record_raw, record_values, sums, staging_slot=slot)
                     record.index_owner = index_owner
+                    if self.cpu_reuse_record_views:
+                        raw_bytes, value_bytes, archive_views = self._record_buffer_views[slot]
+                        record.scatter_views = (raw_bytes, value_bytes, sums.numpy())
+                        record.archive_views = archive_views
+                        self.record_view_stats['bound_records'] += 1
                     self.records[key] = record
                 except BaseException:
                     self._busy_record_buffers.remove(slot)
@@ -449,7 +486,7 @@ class RequestAuthority:
             rows.append((key, record, offset, start, n))
         return raw, values, count, rows
 
-    def _commit_prepared_append(self, prepared):
+    def _commit_prepared_append(self, prepared, *, finalized_records=()):
         raw, values, count, rows = prepared
         if not count:
             return
@@ -461,19 +498,23 @@ class RequestAuthority:
             # Source scatter has completed and every destination is owned by
             # this append. Keep token-order FP32 addition and the existing
             # FP16 conversion; only batch the small native calls/GIL handoffs.
-            jobs = [(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(),
+            jobs = [(*(record.scatter_views[0::2] if self.cpu_reuse_record_views else
+                        (record.raw.view(torch.uint8).numpy(), record.key_sum.numpy())),
                      record.count+n, self.raw_dtype == torch.float8_e4m3fn)
-                    for _, record, _, _, n in rows
-                    if record.count+n == self.shape[1]]
+                    for key, record, _, _, n in rows
+                    if record.count+n == self.shape[1] and key not in finalized_records]
+            vectorized = 0
             if jobs:
-                vectorized = 0
+                if self.cpu_reuse_record_views:
+                    self.record_view_stats['finalize_records'] += len(jobs)
                 if self.cpu_mean_index_simd:
                     vectorized = finalize_batch(jobs, vectorized=True)
                     if type(vectorized) is not int or not 0 <= vectorized <= len(jobs):
                         raise RuntimeError('Invalid native MeanK SIMD execution count')
                 else:
                     finalize_batch(jobs)
-                self.mean_index_stats.record(len(jobs), vectorized, self.cpu_mean_index_simd)
+            if jobs or finalized_records:
+                self.mean_index_stats.record(len(jobs)+len(finalized_records), vectorized, self.cpu_mean_index_simd)
         for key, record, offset, start, n in rows:
             record.count += n
             if record.count == self.shape[1]:
@@ -482,7 +523,7 @@ class RequestAuthority:
                         raise ValueError('Original content-index finalization requires a qualified raw source')
                     finalize = (_native.finalize_mean_fp8 if self.raw_dtype == torch.float8_e4m3fn
                                 else _native.finalize_mean_bf16)
-                    if not batched_index:
+                    if not batched_index and key not in finalized_records:
                         finalize(record.raw.view(torch.uint8).numpy(), record.key_sum.numpy(), record.count)
                     if record.index_owner is not None:
                         if self.cpu_release_sealed_sums:
@@ -1029,6 +1070,7 @@ class RequestAuthority:
             if self._busy_record_buffers:
                 raise RuntimeError('Authority closed with live record staging')
             self._record_buffers.clear()
+            self._record_buffer_views.clear()
             self._free_record_buffers.clear()
             if historical:
                 self.archive.unregister_history_scope(self.memory.request_id, self.gc.scope)
@@ -1065,6 +1107,7 @@ def append_authority_batch(entries):
     if len({id(entry[0]) for entry in entries}) != len(entries):
         raise ValueError('A history batch must contain distinct authority owners')
     plans, jobs = [], []
+    finalized = {}
     for authority, raw, values, kwargs in entries:
         # Later queued packets can start beyond an EOS/cancelled prefix. They
         # are fully discarded, as on the reference drain path, without opening
@@ -1095,8 +1138,19 @@ def append_authority_batch(entries):
             destination_raw, destination_values, sums = record.scatter_views
             job = (source_raw, source_values, destination_raw,
                    destination_values, delta, sums, start, offset, n)
-            jobs.append((*job, True) if copy_only else job)
-    _native.scatter_history_batch(jobs)
+            if copy_only and authority.cpu_fuse_record_mean:
+                jobs.append((*job, True, True))
+                finalized.setdefault(authority, set()).add(key)
+            else:
+                jobs.append((*job, True) if copy_only else job)
+    observed = _native.scatter_history_batch(jobs)
+    expected = sum(len(keys) for keys in finalized.values())
+    if expected and (type(observed) is not int or observed != expected):
+        raise RuntimeError('Native fused record mean did not execute all requested pages')
     for authority, prepared in plans:
-        authority._commit_prepared_append(prepared)
+        keys = finalized.get(authority, ())
+        if keys:
+            authority.fused_mean_stats['records'] += len(keys)
+            authority.fused_mean_stats['batches'] += 1
+        authority._commit_prepared_append(prepared, finalized_records=keys)
     return len(plans)

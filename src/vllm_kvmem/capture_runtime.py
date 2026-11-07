@@ -23,6 +23,8 @@ from .options import RuntimeOptions
 from .storage import make_shared_archive
 from .transfer import PackedDownloads
 from .capture_feedback import EarlyCaptureFeedback
+from .process_memory import sample_process_memory
+from .archive_telemetry import ArchiveResourceReporter
 
 
 @dataclass
@@ -66,6 +68,9 @@ class CapturedPacket:
     logical_cursor: object = None
     logical_confirmation: tuple | None = None
     logical_payload: tuple | None = None
+    # Per-owner cursors borrow this packet's one DMA lease. Only the parent
+    # releases it, after all ordinary and coalesced owners have completed.
+    logical_owners: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -226,6 +231,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
         self.completed = CompletionHistory(serving=bool(getattr(runner, '_kvmem_serving', False)))
         self.batches = 0
         self._progress_batch = -1
+        def checkpoint_resources():
+            worker = getattr(self.runner, '_kvmem_request_swap_worker', None)
+            return worker.snapshot() if worker is not None else {}
+        self._archive_resource_reporter = ArchiveResourceReporter(
+            self.output, self.archive, checkpoint_sampler=checkpoint_resources)
         self.retiring = {}
         self.retirement = None
         if self.options.async_archive_retirement:
@@ -313,7 +323,13 @@ class CaptureRuntime(EarlyCaptureFeedback):
         else:
             action_inputs = self.action.capture(captured,batch) if getattr(self,'action',None) is not None else {}
         try:
-            logical_group,logical_slices = self._logical_capture_inputs(action_inputs,batch)
+            logical_owners = {}
+            if getattr(self.options, 'prefill_physical_multi_owner', False) and batch.num_reqs > 1:
+                from .multiowner_prefill import capture_owner_plans
+                logical_owners = capture_owner_plans(self, action_inputs, batch)
+                logical_group,logical_slices = None,()
+            else:
+                logical_group,logical_slices = self._logical_capture_inputs(action_inputs,batch)
         except BaseException as error:
             if staged is not None:
                 download = staged[2]
@@ -359,6 +375,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 packet.logical_group,packet.logical_slices = logical_group,logical_slices
                 self._logical_source_generation = getattr(self,'_logical_source_generation',0)+1
                 packet.source_generation = self._logical_source_generation
+            elif logical_owners:
+                from .multiowner_prefill import attach_owner_views
+                self._logical_source_generation = getattr(self,'_logical_source_generation',0)+1
+                packet.source_generation = self._logical_source_generation
+                attach_owner_views(packet, logical_owners)
             with self._publication_lock():
                 if packet.pipeline_requests:
                     self._pipeline_count('eligible_packets')
@@ -844,6 +865,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
             if self.prefill_pipeline_enabled and request_ids and action is not None:
                 action.invalidate_prefill_plans(request_ids)
             for packet in self.queue:
+                for child in getattr(packet, 'logical_owners', {}).values():
+                    step = getattr(self.runner, '_kvmem_logical_prefill_step', None)
+                    if type(step) is not int or step <= child.logical_group.scheduler_step:
+                        raise RuntimeError('Logical owner confirmation must follow its scheduler decision')
+                    child.logical_confirmation = (step,self.terminal_prefixes.get(child.request_ids[0]))
+                    child.confirmed = True
                 if getattr(packet,'logical_group',None) is not None:
                     step = getattr(self.runner,'_kvmem_logical_prefill_step',None)
                     if type(step) is not int or step <= packet.logical_group.scheduler_step:
@@ -967,7 +994,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
                                      int(any(i in packet.consuming for packet, i in pending)))
 
     def publication_blocked_requests(self):
-        return self._publication_blocked_requests(allow_pipeline=True)
+        result = self._publication_blocked_requests(allow_pipeline=True)
+        # This feedback is installed for every capture runtime, including CPU
+        # and tiered archives without repository GC. Publish only after the
+        # publication-state lock has been released.
+        reporter = getattr(self, '_archive_resource_reporter', None)
+        if reporter is not None:
+            reporter.publish(len(self.authorities), len(self.retiring))
+        return result
 
     def _publication_blocked_requests(self, *, allow_pipeline):
         """Large pending owners for scheduler admission, including newest DMA.
@@ -1312,6 +1346,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 query_score_mode=getattr(self.options, 'query_score_mode', 'mean_k'),
                 query_window_cache_bytes=getattr(self.options, 'query_window_cache_bytes', 2147483648),
                 cpu_mean_index_simd=getattr(self.options, 'cpu_mean_index_simd', False),
+                cpu_reuse_record_views=getattr(self.options, 'cpu_reuse_record_views', False),
+                cpu_fuse_record_mean=getattr(self.options, 'cpu_fuse_record_mean', False),
+                fused_mean_stats=self.__dict__.setdefault('_fused_mean_stats', dict(records=0, batches=0)),
+                record_view_stats=self.__dict__.setdefault('_record_view_stats',
+                    dict(slot_exports=0, bound_records=0, finalize_records=0, sealed_records=0)),
                 cpu_release_sealed_sums=getattr(self.options, 'cpu_release_sealed_sums', False),
                 query_fps_cache_fp8=getattr(self.options, 'query_fps_cache_fp8', False),
                 mean_index_stats=self.cpu_mean_index_stats)
@@ -1470,7 +1509,17 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 self._publication_metric('claim_seconds', time.perf_counter()-started, lane=packet.lane)
                 self._publication_metric('claim_calls', 1, lane=packet.lane)
             with condition:
-                if getattr(packet,'logical_group',None) is not None and consumed:
+                if getattr(packet, 'logical_owners', None):
+                    from .multiowner_prefill import release_completed_owners
+                    complete = release_completed_owners(self, packet, indices[:consumed])
+                    packet.published.update(indices[:consumed])
+                    packet.consuming.difference_update(indices)
+                    while packet.next_request in packet.published:
+                        packet.next_request += 1
+                    if complete:
+                        assert not packet.consuming
+                        self.queue[:] = [queued for queued in self.queue if queued is not packet]
+                elif getattr(packet,'logical_group',None) is not None and consumed:
                     # A logical owner's publication ACK follows successful
                     # source release. A failed finalizer keeps it quarantined
                     # and cannot make publication_ready report completion.
@@ -1546,12 +1595,37 @@ class CaptureRuntime(EarlyCaptureFeedback):
 
     def _publish_claim(self, packet, indices, wait):
         try:
+            if getattr(packet, 'logical_owners', None):
+                return self._publish_multiowner_claim(packet,indices,wait)
             if getattr(packet,'logical_group',None) is not None:
                 return self._publish_logical_claim(packet,indices,wait)
             return self._publish_reserved_claim(packet, indices, wait)
         except BaseException:
             self._abort_graph_updates(packet, indices)
             raise
+
+    def _publish_multiowner_claim(self, packet, indices, wait):
+        from .multiowner_prefill import bind_owner_payload
+        if not packet.download.query():
+            if not wait:
+                return 0
+            started = time.perf_counter()
+            packet.download.event.synchronize()
+            self._publication_metric('dma_wait_seconds',time.perf_counter()-started,lane=packet.lane)
+            self._publication_metric('dma_wait_calls',1,lane=packet.lane)
+        completed = 0
+        for index in indices:
+            if index in packet.logical_owners:
+                child = bind_owner_payload(self,packet,index)
+                consumed = self._publish_logical_claim(child,[0],wait)
+            else:
+                consumed = self._publish_reserved_claim(packet,[index],wait)
+            if not consumed:
+                break
+            if consumed != 1:
+                raise RuntimeError('Shared physical owner returned an invalid publication count')
+            completed += 1
+        return completed
 
     def _publish_logical_claim(self, packet, indices, wait):
         """One claimed physical owner, bounded original reserve/append/commit steps."""
@@ -1883,6 +1957,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
             'capture_opaque_stats': (self.runner._kvmem_capture_opaque.snapshot()
                 if getattr(self.runner, '_kvmem_capture_opaque', None) is not None else {}),
             'cpu_mean_index_simd': getattr(self.options, 'cpu_mean_index_simd', False),
+            'cpu_reuse_record_views': getattr(self.options, 'cpu_reuse_record_views', False),
+            'cpu_fuse_record_mean': getattr(self.options, 'cpu_fuse_record_mean', False),
+            'cpu_fused_mean_stats': dict(getattr(self, '_fused_mean_stats', {})),
+            'cpu_record_view_stats': dict(getattr(self, '_record_view_stats', {})),
             'query_score_mode': getattr(self.options, 'query_score_mode', 'mean_k'),
             'query_mean_quota_fraction': getattr(self.options, 'query_mean_quota_fraction', 0.),
             'query_window_cache_bytes': getattr(self.options, 'query_window_cache_bytes', 2147483648),
@@ -1937,7 +2015,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 # The scheduler debits its suffix against this older prefix.
                 value = self._published_capacity.get(request_id)
                 result[request_id] = value if value is not None else ArchiveCapacity(0, 0)
-            return result
+        reporter = getattr(self, '_archive_resource_reporter', None)
+        if reporter is not None:
+            reporter.publish(len(self.authorities), len(self.retiring))
+        return result
 
     def _wait_archive_progress(self, request_ids=None):
         # Shared queue pressure may come from another request, even when this
@@ -2084,15 +2165,30 @@ class CaptureRuntime(EarlyCaptureFeedback):
             if retained is not None:
                 return retained
         if request_id in self.retiring:
-            result = self.retirement.poll(request_id)
-            if result is None:
+            physical = getattr(self, '_physical_retirement_results', None)
+            if physical is None:
+                physical = self._physical_retirement_results = {}
+            if request_id not in physical:
+                result = self.retirement.poll(request_id)
+                if result is None:
+                    return False
+                physical[request_id] = result
+            ready = getattr(self.archive, 'reclamation_ready', None)
+            if ready is not None and not ready():
                 return False
+            result = physical.pop(request_id)
             self.completed.append({**self.retiring.pop(request_id), **result,
                                    "retirement_ack_ready_at": time.perf_counter()})
-            self._write_archive_report()
         done = request_id not in self.authorities
+        ready = getattr(self.archive, 'reclamation_ready', None)
+        if done and ready is not None and not ready():
+            return False
         if done and sessions is not None:
             sessions.ordinary_retired(request_id)
+        if done:
+            # Keep terminal polling alive until physical ownership has drained,
+            # then publish the final counters before the last engine ACK.
+            self._write_archive_report()
         return done
 
     def shutdown_retirement(self):
@@ -2115,13 +2211,22 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     raise TimeoutError('Session checkpoint cleanup did not drain during shutdown')
                 self.archive.wait_for_idle(.05)
         self.finish(set(self.authorities))
+        deadline = time.monotonic() + 180
         for request_id in list(self.retiring):
-            self.retirement.jobs[request_id].result(timeout=180)
-            assert self.retirement_done(request_id)
+            job = self.retirement.jobs.get(request_id)
+            if job is not None:
+                job.result(timeout=max(.001, deadline-time.monotonic()))
+            while not self.retirement_done(request_id):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Physical archive retirement did not drain during shutdown')
+                self.archive.wait_for_idle(.05)
         if not self.retirement.close() or not self.archive.close():
             raise RuntimeError('Shutdown retained archive I/O or retirement jobs')
 
     def _write_archive_report(self):
+        reporter = getattr(self, '_archive_resource_reporter', None)
+        if reporter is not None:
+            reporter.publish(len(self.authorities), len(self.retiring), force=True)
         sessions = getattr(self.runner, '_kvmem_sessions', None)
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": list(self.completed),
@@ -2155,6 +2260,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                   "nvme_capacity_bytes": 0 if self.options.archive_backend=='cpu' else self.archive.capacity_bytes,
                   "nvme_preallocated": self.archive.preallocated,
                   **self.archive.io_usage(),
+                  "process_memory": sample_process_memory(),
                   "pending_downloads": self._pending_download_count()}
         temporary = self.output / 'archive.tmp'
         temporary.write_text(json.dumps(report, indent=2))

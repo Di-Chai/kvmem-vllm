@@ -4,6 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace as NS
 import weakref
 
+import numpy as np
 import pytest
 import torch
 
@@ -33,7 +34,8 @@ def runtime(monkeypatch, *, retry=False, interval=2048, pooled_metadata=False, c
         _kvmem_window_adapter=NS(generations={'r': 3}, offsets={'r': 8128}),
         _kvmem_logical_prefill_groups={'r': replace(group, owner_epoch=('scheduler', 7, 'r', 8128))},
         _kvmem_logical_prefill_step=7,
-        block_tables=NS(block_tables=[NS(gpu=torch.zeros((1, 4096), dtype=torch.int32))]))
+        block_tables=NS(block_tables=[NS(gpu=torch.zeros((1, 4096), dtype=torch.int32))],
+                        num_blocks=NS(np=np.array([[4096]])), kernel_block_sizes=[16]))
     action.runtime = NS(config=opts.memory, authorities={'r': authority},
         drain_requests=lambda *_a, **_kw: True, ensure_authority=lambda _: authority,
         prefill_pipeline_can_advance=lambda _: True)

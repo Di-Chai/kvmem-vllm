@@ -109,4 +109,40 @@ struct KVMemStats {
     if ((lane & 3) == 0 && sum > 0.f)
       write(sample, head, base >> 4, center + logf(sum), false);
   }
+
+  // Four consecutive sixteen-token fragments (n = 0..3) for one Q row. Same
+  // values as four store16_weight_static_aligned calls: each lane forms
+  // a + b + c + d in the same order and every fragment is reduced as
+  // (lane0 + lane1) + (lane2 + lane3), only commuted where IEEE addition is
+  // exact. A reduce-scatter leaves fragment n on quad lane n, so the quad
+  // issues three shuffles, one log and one contiguous store instead of eight
+  // shuffles, four logs and four predicated stores.
+  __device__ void store64_weight_static_aligned(float const (&v)[4][4], float center,
+                                 int base, int limit, int sample, int head) const {
+    if (base >= limit) return;
+    int lane = threadIdx.x % 32, quad = lane & 3;
+    float s[4];
+    #pragma unroll
+    for (int n = 0; n < 4; ++n) {
+      int token = base + 16 * n + 2 * quad;
+      float a = token < limit ? v[n][0] : 0.f;
+      float b = token + 1 < limit ? v[n][1] : 0.f;
+      float c = token + 8 < limit ? v[n][2] : 0.f;
+      float d = token + 9 < limit ? v[n][3] : 0.f;
+      s[n] = a + b + c + d;
+    }
+    unsigned int active = __activemask() & (0xfU << (lane & ~3));
+    bool odd = quad & 1, high = quad & 2;
+    // Pair lanes (0,1) and (2,3): keep fragments whose parity matches this lane.
+    float r0 = __shfl_xor_sync(active, odd ? s[0] : s[1], 1);
+    float r1 = __shfl_xor_sync(active, odd ? s[2] : s[3], 1);
+    float low_pair = (odd ? s[1] : s[0]) + r0;
+    float high_pair = (odd ? s[3] : s[2]) + r1;
+    // Pair lanes (0,2) and (1,3): lane quad keeps fragment quad.
+    float other = __shfl_xor_sync(active, high ? low_pair : high_pair, 2);
+    float sum = (high ? high_pair : low_pair) + other;
+    int token = base + 16 * quad;
+    if (token < limit && sum > 0.f)
+      write(sample, head, token >> 4, center + logf(sum), false);
+  }
 };

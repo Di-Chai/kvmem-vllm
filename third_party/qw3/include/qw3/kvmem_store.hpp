@@ -669,6 +669,13 @@ public:
     std::vector<uint32_t> pick_prefill_pressure_blocks(
         const std::vector<uint32_t> &mandatory_blocks,
         const PressureActionScores &action_scores = {}, uint32_t budget_tokens = 0) const;
+    // Execution-only batch: all layers use the same stable chronological
+    // snapshot and the original per-layer picker, including its tie order.
+    // Concurrent retirement is deliberately unsupported for this candidate.
+    std::vector<std::vector<uint32_t>> pick_prefill_pressure_batch(
+        const std::vector<uint32_t> &mandatory_blocks,
+        const std::vector<PressureActionScores> &layer_scores,
+        uint32_t budget_tokens = 0) const;
     struct RepositoryPressureSelection {
         std::vector<uint32_t> blocks;
         std::vector<KvMemRepository::Lease> leases;

@@ -63,6 +63,7 @@ class WindowBatchAdapter:
             raise ValueError("Invalid full-attention window configuration")
         self.attention_groups = attention_groups
         self.capacity = capacity
+        self.private_capacities = {}
         self.offsets: dict[str, int] = {}
         self.history_ends: dict[str, int] = {}
         self.generations: dict[str, int] = {}
@@ -105,6 +106,7 @@ class WindowBatchAdapter:
         self.generations[request_id] = self._generation
 
     def free(self, request_id):
+        self.private_capacities.pop(request_id, None)
         self.offsets.pop(request_id, None)
         self.history_ends.pop(request_id, None)
         self.generations.pop(request_id, None)
@@ -123,7 +125,10 @@ class WindowBatchAdapter:
         cpu_offsets = torch.zeros(batch.num_reqs_after_padding, dtype=torch.int32)
         cpu_offsets[:batch.num_reqs] = torch.tensor(offsets, dtype=torch.int32)
         bounds = batch.seq_lens_cpu_upper_bound - cpu_offsets
-        if torch.any(bounds < 0).item() or torch.any(bounds > self.capacity).item():
+        caps = torch.full_like(bounds, self.capacity)
+        for i, rid in enumerate(batch.req_ids):
+            caps[i] = self.private_capacities.get(rid, self.capacity)
+        if torch.any(bounds < 0).item() or torch.any(bounds > caps).item():
             raise ValueError("Native batch exceeds the admitted working-set extent")
         if self.buffers is None:
             gpu_offsets = cpu_offsets.to(batch.positions.device)

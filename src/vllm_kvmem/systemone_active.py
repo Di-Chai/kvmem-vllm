@@ -22,9 +22,18 @@ def session_reference(request):
     if reference is None:
         return None
     if (not isinstance(reference, dict) or
-            set(reference) - {'session_id', 'generation', 'history_end'} or
+            set(reference) - {'session_id', 'generation', 'history_end', 'mode', 'fork_group'} or
             not isinstance(reference.get('session_id'), str) or not reference['session_id']):
-        raise ValueError('kvmem_session requires session_id and optional generation/history_end')
+        raise ValueError('kvmem_session requires session_id and optional generation/history_end/mode')
+    if reference.get('mode', 'active_branch') not in ('active_branch', 'fork_cobatch'):
+        raise ValueError('Unknown active decision mode')
+    group = reference.get('fork_group')
+    if group is not None:
+        if (reference.get('mode') != 'fork_cobatch' or not isinstance(group, dict) or
+                set(group) != {'id', 'size'} or not isinstance(group['id'], str) or
+                not 1 <= len(group['id']) <= 128 or type(group['size']) is not int or
+                group['size'] not in (2, 4)):
+            raise ValueError('fork_group requires mode=fork_cobatch, id and size=2 or 4')
     from .session_control import session_namespace
     namespace = session_namespace(reference['session_id'], request.cache_salt)
     for key in ('generation', 'history_end'):

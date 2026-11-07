@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import wraps
+import os
 import importlib
 import json
 import math
@@ -314,6 +315,15 @@ class NativeAttentionStats:
         self.static_prefill_enabled = bool(getattr(options, 'action_native_prefill_static_aligned', False))
         if self.static_prefill_enabled and (self.aligned_prefill_enabled or self.cta_gate_enabled):
             raise ValueError('Static aligned FA2 cannot combine runtime aligned pieces or CTA gate')
+        # Same host qualification and outputs; only the sampled-row capture
+        # inside the static FA2 kernel uses the quad reduce-scatter variant.
+        flag = os.getenv('KVMEM_NATIVE_PREFILL_STATIC_QUAD',
+                         '1' if getattr(options, 'action_native_prefill_static_quad', False) else '0')
+        if flag not in ('0', '1'):
+            raise ValueError('KVMEM_NATIVE_PREFILL_STATIC_QUAD must be 0 or 1')
+        self.static_quad_enabled = flag == '1'
+        if self.static_quad_enabled and not self.static_prefill_enabled:
+            raise ValueError('Static quad FA2 requires static aligned FA2')
         self.static_prefill_counts = Counter()
         self.static_prefill_source_fingerprint = None
         self.static_prefill_unavailable = None
@@ -654,12 +664,13 @@ class NativeAttentionStats:
                             if getattr(self, 'static_prefill_enabled', False):
                                 reason = self._static_prefill_qualification(wrapper, run_args, attn_metadata)
                                 if reason is None:
-                                    static_key = geometry + ('static_aligned16',)
+                                    quad = getattr(self, 'static_quad_enabled', False)
+                                    static_key = geometry + ('static_aligned16',) + (('quad_store',) if quad else ())
                                     selected_module = self.prefill_modules.get(static_key)
                                     if selected_module is None:
                                         try:
                                             selected_module = prefill_module(self.directory, *geometry,
-                                                                            static_aligned=True)
+                                                static_aligned=True, **({'quad_store': True} if quad else {}))
                                             self.prefill_modules[static_key] = selected_module
                                         except (UnsupportedNativeStats, RuntimeError) as error:
                                             reason = 'build:' + str(error).splitlines()[0][:160]
@@ -930,6 +941,7 @@ class NativeAttentionStats:
                     candidate_counts_are_host_qualification=True,
                     dispatch_counts_exclude_graph_replays=True),
                 'prefill_static_aligned': dict(enabled=getattr(self, 'static_prefill_enabled', False),
+                    quad_store=getattr(self, 'static_quad_enabled', False),
                     counts=dict(getattr(self, 'static_prefill_counts', {})),
                     source_fingerprint=getattr(self, 'static_prefill_source_fingerprint', None),
                     unavailable=getattr(self, 'static_prefill_unavailable', None),

@@ -63,6 +63,7 @@ class RequestMemory:
         self._fence = None
         self._submitted = False
         self._action_scores = {}
+        self._layerwise_materialization = None
 
     def _require(self, phase: Phase) -> None:
         if self.phase is not phase:
@@ -155,6 +156,10 @@ class RequestMemory:
         """Clone CPU/execution rights of this already admitted assembly only."""
         if self.phase is Phase.ASSEMBLING and self._plan is not None:
             result = self._plan.admitted_read(handle)
+            if result is not None:
+                return result
+        if self._layerwise_materialization is not None:
+            result = self._layerwise_materialization.plan.admitted_read(handle)
             if result is not None:
                 return result
         return self.repository.pin(handle), None
@@ -261,6 +266,36 @@ class RequestMemory:
         self._require(Phase.ASSEMBLING)
         if not self._completed():
             return False
+        self._publish_selection()
+        return True
+
+    def commit_layerwise_selection(self, materialization):
+        """Publish host mapping for explicitly guarded, partially ready KV.
+
+        This is deliberately separate from commit_selection: an early first
+        layer event is not a completion fence for the whole window.
+        """
+        from .pressure_pipeline import LayerMaterialization
+        self._require(Phase.ASSEMBLING)
+        if (not isinstance(materialization, LayerMaterialization) or self._submitted or
+                self._layerwise_materialization is not None):
+            raise RuntimeError('Invalid or overlapping layer materialization')
+        materialization.validate_dispatch(self)
+        self._layerwise_materialization = materialization
+        # The immutable reader must see its retained plan even if the engine
+        # yields the GIL during native host-map publication.
+        self._publish_selection()
+
+    def finish_layerwise_selection(self, materialization):
+        if self._layerwise_materialization is not materialization or not materialization.query():
+            raise RuntimeError('Layer materialization cannot release before its final fence')
+        self._layerwise_materialization = None
+
+    def _require_materialized(self):
+        if self._layerwise_materialization is not None and not self._layerwise_materialization.query():
+            raise RuntimeError('Whole-window access preceded layer materialization completion')
+
+    def _publish_selection(self):
         validator = getattr(self, '_selection_validator', None)
         if validator is not None:
             validator()
@@ -273,7 +308,6 @@ class RequestMemory:
         self._plan = None
         self._selection_validator = None
         self._reset()
-        return True
 
     def read(self, begin: int, count: int):
         self._require(Phase.READY)
@@ -286,6 +320,7 @@ class RequestMemory:
         also snapshot exact model state, tokens, position maps and mutable tails.
         """
         self._require(Phase.READY)
+        self._require_materialized()
         return self._store.checkpoint(self.history_end)
 
     def checkpoint_valid(self, checkpoint):
@@ -294,6 +329,7 @@ class RequestMemory:
     def checkpoint_window(self, *, allow_partial=False, native_validation=False):
         """Capture a sealed prompt boundary including its exact selected frame."""
         self._require(Phase.READY)
+        self._require_materialized()
         if self.history_end == 0 or (self.history_end % self.config.block_tokens and not allow_partial):
             raise ValueError('Window checkpoint requires a nonempty sealed prefix')
         records = tuple(self._store.working_records())
@@ -346,6 +382,7 @@ class RequestMemory:
     def checkpoint_frame(self, records):
         """Pin an exact CPU frame after replacing a cancelled partial tail."""
         self._require(Phase.READY)
+        self._require_materialized()
         hold = self._protect_checkpoint(records)
         leases = tuple(self.repository.pin(_native.Handle(slot, generation))
                        for slot, generation, *_ in records)
@@ -434,6 +471,8 @@ class RequestMemory:
     def close(self, *, background_retire=False) -> bool:
         if self.phase is Phase.CLOSED:
             return True
+        if self._layerwise_materialization is not None and not self._layerwise_materialization.query():
+            return False
         if self._submitted and not self._fence.query():
             return False
         # Before submission, cancelling reservations is safe. After submission,

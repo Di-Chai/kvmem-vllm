@@ -1,5 +1,7 @@
 """Execution-only optimizations for the existing per-layer pressure policy."""
 from types import MethodType
+from contextlib import nullcontext
+import os
 import time
 
 
@@ -123,6 +125,12 @@ def install_single_assembly(assembler, controller, job, runtime_names):
     rolling = job.command.pressure_stage == 'decode' and getattr(controller, 'rolling_decode', False)
     if job.command.pressure_stage != 'prefill' and not rolling:
         raise ValueError('Single pressure assembly is only qualified for prefill')
+    parent_staging = os.getenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0')
+    if parent_staging not in ('0', '1'):
+        raise ValueError('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING must be 0 or 1')
+    # This candidate changes only prefill transport. A long answer can still
+    # enter the existing rolling-decode path under the same process flag.
+    parent_staging = parent_staging == '1' and job.command.pressure_stage == 'prefill'
 
     def assemble(self, authority, plan):
         import torch
@@ -146,24 +154,86 @@ def install_single_assembly(assembler, controller, job, runtime_names):
         # immutable records, so native shared-map skip hints cannot leak in.
         skip = set() if rolling else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
         state = dict(authority=authority, request_id=job.command.request_id,
-                     selected_tokens=plan.total_window_tokens, assembly_arena='pressure')
+                     selected_tokens=plan.total_window_tokens, assembly_arena='pressure',
+                     pressure_stage=job.command.pressure_stage)
+        if job.command.pressure_stage == 'prefill' and getattr(controller, 'reuse_layer_views', False):
+            state['pressure_parent_assembler'] = self
+        if job.command.pressure_stage == 'prefill' and getattr(controller, 'resident_values', False):
+            source = job.layerwise_pressure_value_sources
+            if source[:2] != (job.command.request_id, job.history):
+                raise ValueError('Resident pressure V belongs to another accepted request')
+            state['pressure_value_sources'] = source
+            state['pressure_value_metadata_owners'] = self._metadata_owners
         started = time.perf_counter(); uploaded = chunks = packed_chunks = paired_chunks = 0
-        for index, name in enumerate(names):
-            records = chosen[index] if index < len(chosen) else chosen[0]
-            stats = controller.query.assemble_layer_pinned(state, index, records,
-                layer_name=name, skip_history_begins=skip if index == 0 or index >= len(chosen) else ())
-            uploaded += stats['uploaded_bytes']; chunks += stats['chunks']
-            packed_chunks += stats.get('packed_chunks',0)
-            paired_chunks += stats.get('paired_read_chunks',0)
+        inline_chunks = prepared_chunks = source_blocks = resident_v_tokens = 0
+        native_paired_chunks = 0
+        parent_results = None
+        parent_timings = {}
+        reader = None
+        if (job.command.pressure_stage == 'prefill' and getattr(controller, 'prepared_reads', False) and
+                getattr(controller.query, 'paired_reads', False)):
+            from .pressure_reader import prepare_pressure_reader
+            reader = prepare_pressure_reader(authority, plan, chosen)
+        with (reader if reader is not None else nullcontext()):
+            if reader is not None:
+                state['prepared_pressure_reader'] = reader
+                source_blocks = reader.source_blocks
+            pipeline = getattr(controller, 'pipeline', None) if job.command.pressure_stage == 'prefill' else None
+            lease = pipeline.begin(job, plan, names) if pipeline is not None else None
+            if parent_staging:
+                from .pressure_parent_staging import assemble_parent_pressure_layers
+                parent_results = assemble_parent_pressure_layers(
+                    self, controller, state, plan, chosen, names, skip)
+            for index, name in enumerate(names):
+                records = chosen[index] if index < len(chosen) else chosen[0]
+                stats = (parent_results[index] if parent_results is not None else
+                    controller.query.assemble_layer_pinned(state, index, records,
+                    layer_name=name, skip_history_begins=skip if index == 0 or index >= len(chosen) else ())
+                    )
+                if lease is not None:
+                    event = torch.cuda.Event()
+                    event.record(torch.cuda.current_stream(controller.runner.device))
+                    lease.publish_layer(index, event)
+                uploaded += stats['uploaded_bytes']; chunks += stats['chunks']
+                packed_chunks += stats.get('packed_chunks',0)
+                paired_chunks += stats.get('paired_read_chunks',0)
+                inline_chunks += stats.get('inline_read_chunks',0)
+                prepared_chunks += stats.get('prepared_read_chunks',0)
+                resident_v_tokens += stats.get('resident_v_reused_tokens',0)
+                native_paired_chunks += stats.get('native_paired_gather_chunks',0)
+                for key,value in stats.items():
+                    if key.startswith('parent_staging_') and key.endswith('_seconds'):
+                        parent_timings[key] = parent_timings.get(key,0.)+value
         done = torch.cuda.Event(); done.record(torch.cuda.current_stream(controller.runner.device))
+        if lease is not None:
+            lease.final_event = done
         job.layerwise_single_assembly_done = True
         rebuilt = sum(r.n_tokens for r in remaps if rolling or not r.skip)
         skipped = 0 if rolling else sum(r.n_tokens for r in remaps if r.skip)
         return AssemblyResult(done, (self, plan, authority), rebuilt, skipped, chunks,
             time.perf_counter()-started, uploaded,
             dict(layerwise_single_assembly=True, layerwise_assembled_layers=len(names),
+                 layerwise_reused_layer_views='pressure_parent_assembler' in state,
                  layerwise_redundant_rebuilds=0,layerwise_packed_chunks=packed_chunks,
-                 layerwise_paired_read_chunks=paired_chunks),
+                 layerwise_paired_read_chunks=paired_chunks,
+                  layerwise_inline_read_chunks=inline_chunks,
+                  layerwise_prepared_read_chunks=prepared_chunks,
+                  layerwise_prepared_source_blocks=source_blocks,
+                  layerwise_resident_v_reused_tokens=resident_v_tokens,
+                  layerwise_native_paired_gather_chunks=native_paired_chunks,
+                  **(dict(reader.read_stats) if reader is not None and
+                     getattr(reader,'paired_gather',False) else {}),
+                  **(dict(layerwise_parent_staging_requested=True,
+                     layerwise_parent_staging=parent_results is not None,
+                     layerwise_parent_staging_fallback_reason=state.get('pressure_parent_staging_fallback_reason'),
+                     layerwise_parent_chunk_blocks=(parent_results[0]['chunk_blocks'] if parent_results else None),
+                     layerwise_parent_slot_bytes=self.staging.slot_bytes,
+                     layerwise_parent_scratch_scope='Existing parent two-slot pool replaces child pool; live pressure scratch may be larger; no Active/Gen change',
+                     **parent_timings) if parent_staging else {})),
             partial_tokens=sum(r.n_tokens for r in remaps if not r.skip and r.n_tokens != 32))
 
     assembler._assemble = MethodType(assemble, assembler)
+    # close() must remove this instance-bound override after its CUDA fence.
+    # Otherwise assembler -> bound method -> assembler keeps the job, selected
+    # records and tensor views alive until a process-wide cyclic-GC scan.
+    assembler._layerwise_pressure_assembly_override = True

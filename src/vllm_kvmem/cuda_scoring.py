@@ -98,11 +98,16 @@ def mean_key_scores(queries, means, eligible, *, scale=None):
     return scores
 
 
-def _compact_values(queries, compact_means, scale):
+def _compact_values(queries, compact_means, scale, *, backend='legacy'):
+    if backend not in ('legacy', 'tiled'):
+        raise ValueError('MeanK scoring backend must be legacy or tiled')
     attention_scale = queries.shape[-1] ** -.5 if scale is None else scale
     scorer = kernel()
+    score = scorer.score if backend == 'legacy' else getattr(scorer, 'score_tiled', None)
+    if not callable(score):
+        raise RuntimeError('Explicit tiled MeanK requires the updated CUDA extension')
     if queries.dtype == torch.float16 and queries.is_contiguous():
-        values = scorer.score(queries, compact_means, attention_scale)
+        values = score(queries, compact_means, attention_scale)
     else:
         # The kernel sums over Query tokens and averages only layers/heads.
         # Keep its full page softmax domain while bounding dtype/layout copies;
@@ -113,7 +118,7 @@ def _compact_values(queries, compact_means, scale):
         for begin in range(0, queries.shape[1], chunk_tokens):
             chunk = queries[:, begin:begin+chunk_tokens].to(
                 dtype=torch.float16, memory_format=torch.contiguous_format)
-            values.add_(scorer.score(chunk, compact_means, attention_scale))
+            values.add_(score(chunk, compact_means, attention_scale))
             del chunk
     return values
 
@@ -135,12 +140,17 @@ def prepare_mean_key_index(means, eligible):
     return PreparedMeanKeyIndex(indices,compact,means.shape[1])
 
 
-def prepared_layer_scores(queries, index, layer, *, scale=None):
+def prepared_layer_scores(queries, index, layer, *, scale=None, backend='legacy'):
+    # This choice changes only execution. The immutable candidate mask, FP16
+    # operands, query-token sum and head/layer averaging are retained.
+    if backend not in ('legacy', 'tiled'):
+        raise ValueError('MeanK scoring backend must be legacy or tiled')
     if (queries.ndim!=4 or queries.shape[0]!=1 or any(n<=0 for n in queries.shape) or
             not 0<=layer<index.means.shape[0] or queries.device!=index.means.device):
         raise ValueError('Current layer Query does not match its prepared index')
     scores=torch.zeros(index.pages,device=queries.device,dtype=torch.float32)
     if index.indices.numel():
-        values=_compact_values(queries,index.means[layer:layer+1],scale)
+        values=_compact_values(queries,index.means[layer:layer+1],scale,
+                               **({'backend': backend} if backend != 'legacy' else {}))
         scores.index_copy_(0,index.indices,values)
     return scores

@@ -549,8 +549,11 @@ class ActionRuntime:
         if not self.options.prefill_attention or not hasattr(batch, 'num_computed_tokens_np'):
             return
         logical_groups = getattr(self.runner, '_kvmem_logical_prefill_groups', {})
+        multi = getattr(self.options, 'prefill_physical_multi_owner', False)
         if logical_groups and (not getattr(self.options, 'prefill_physical_coalescing', False) or
-                len(batch.req_ids) != 1 or set(logical_groups) != set(batch.req_ids)):
+                (not multi and (len(batch.req_ids) != 1 or set(logical_groups) != set(batch.req_ids))) or
+                not set(logical_groups).issubset(batch.req_ids) or
+                multi and not all(batch.is_prefilling_np)):
             raise RuntimeError('Logical prefill receipt requires the qualified single-owner batch')
         plans = {}
         frames = self.__dict__.setdefault('prefill_plan_frames', {})
@@ -627,6 +630,8 @@ class ActionRuntime:
                 counts=counts, history=history, index=i, begin=begin, count=count,
                 pipeline=True, **extra)
             self.pipeline_requests.add(request_id)
+        if logical_groups and sum(len(plan['rows']) for plan in plans.values()) > self.native.max_rows:
+            raise RuntimeError('Logical owner cohort exceeds the shared native score allocation')
         self.prefill_plans = (batch, plans)
 
     def _plan_logical_prefill(self, group, frame, batch, index, begin, count,
@@ -635,7 +640,7 @@ class ActionRuntime:
 
         A rejected receipt is fail-closed: a scheduled physical group cannot be
         silently consumed as one new statistical transaction. The scheduler
-        chooses ordinary 2K for requests outside the conservative gates.
+        keeps the original logical chunk outside the conservative gates.
         """
         from .logical_action import plan_logical_scores
         from .logical_prefill import LogicalPrefillGroup
@@ -643,6 +648,7 @@ class ActionRuntime:
         step = getattr(self.runner, '_kvmem_logical_prefill_step', None)
         if (not isinstance(group, LogicalPrefillGroup) or group.request_id != batch.req_ids[index] or
                 not 2 <= len(group.spans) <= getattr(self.options, 'prefill_physical_max_chunks', 2) or
+                group.spans[0].count != getattr(self.options, 'prefill_physical_logical_tokens', 2048) or
                 group.scheduler_step != step or count != group.count or
                 group.history_begin != history_begin or group.local_begin != local_begin or
                 group.offset != history_begin-local_begin or group.prompt_tokens != prompt or
@@ -666,7 +672,9 @@ class ActionRuntime:
             return max(256, 1 << (max(1, size)-1).bit_length())
         # Two in-flight physical packets, each with one coordinate and score
         # download. This is an admission bound, not a new allocation or wait.
-        required = 2 * (bucket(24*count) + bucket(4*len(rows)*len(final.starts)))
+        layerwise = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+        layers = len(layerwise.names) if layerwise is not None else 1
+        required = 2 * (bucket(24*count) + bucket(4*layers*len(rows)*len(final.starts)))
         if pool is None or pool.max_slots < 4 or pool.max_bytes < required:
             raise RuntimeError('Logical prefill exceeds the bounded score download budget')
         upload = getattr(self, 'metadata_upload', None)
@@ -687,7 +695,8 @@ class ActionRuntime:
         if not isinstance(packets, LogicalActionResult):
             packets = LogicalActionResult(packets)
         parts = project_logical_scores(group, plan['logical_score_plans'], pending.masses,
-            physical_rows=tuple(plan['rows']), event=pending.event)
+            physical_rows=tuple(plan['rows']), event=pending.event,
+            layerwise_pressure=getattr(pending, 'layerwise_pressure', None))
         pending.logical_group = group
         packets[request_id] = pending
         packets.logical_groups[request_id] = group
