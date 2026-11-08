@@ -8,6 +8,8 @@ from enum import Enum, auto
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 import math
+import os
+import time
 from typing import Protocol
 
 from . import _native
@@ -16,6 +18,10 @@ from .config import KVMemConfig
 
 class Fence(Protocol):
     def query(self) -> bool: ...
+
+
+def _native_lookups():
+    return os.getenv('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0') == '1'
 
 
 class Phase(Enum):
@@ -133,11 +139,17 @@ class RequestMemory:
         Async scorers must retain a storage read and use generation-qualified
         native handles before entering this synchronous convenience method.
         """
+        self.first_pick = None
         for _ in range(self.config.repository_blocks + 1):
             selected = self.preview_selection(scores, mandatory_slots, action=action,
                 prefill_scores=prefill_scores, pressure_scores=pressure_scores, max_tokens=max_tokens)
+            if self.first_pick is None:
+                # The pure (const) native pick for these inputs; a report may reuse it.
+                self.first_pick = selected
             try:
-                plan = self._store.select([self._store.handle(slot) for slot in selected])
+                by_slots = getattr(self._store, 'select_slots', None) if _native_lookups() else None
+                plan = (by_slots(list(selected)) if by_slots is not None else
+                        self._store.select([self._store.handle(slot) for slot in selected]))
                 break
             except _native.HistoryAdmissionRetry:
                 # No window mutation or GPU work preceded this failure. Each
@@ -163,6 +175,51 @@ class RequestMemory:
             if result is not None:
                 return result
         return self.repository.pin(handle), None
+
+    def admitted_pin_set(self, handles):
+        """admitted_read_batch for the plain-pin case as one native LeaseSet, or
+        None when a live plan carries a read window (callers then use the
+        original per-handle path) or the native set is unavailable."""
+        pin_set = getattr(self.repository, 'pin_set', None)
+        if pin_set is None:
+            return None
+        plans = []
+        if self.phase is Phase.ASSEMBLING and self._plan is not None:
+            plans.append(self._plan)
+        if self._layerwise_materialization is not None:
+            plans.append(self._layerwise_materialization.plan)
+        for plan in plans:
+            probe = plan.admitted_read(handles[0]) if handles else None
+            if probe is not None:
+                for owner in probe:
+                    if owner is not None and hasattr(owner, 'reset'):
+                        owner.reset()
+                return None
+        return pin_set(list(handles))
+
+    def admitted_read_batch(self, handles):
+        """[admitted_read(h) for h in handles] with one call for the common case.
+
+        When no live plan carries a repository read window, every handle takes
+        the plain repository pin, exactly as admitted_read would.
+        """
+        plans = []
+        if self.phase is Phase.ASSEMBLING and self._plan is not None:
+            plans.append(self._plan)
+        if self._layerwise_materialization is not None:
+            plans.append(self._layerwise_materialization.plan)
+        for plan in plans:
+            probe = plan.admitted_read(handles[0]) if handles else None
+            if probe is not None:
+                for owner in probe:
+                    if owner is not None and hasattr(owner, 'reset'):
+                        owner.reset()
+                return [self.admitted_read(handle) for handle in handles]
+        many = getattr(self.repository, 'pin_many', None)
+        if many is not None:
+            return [(lease, None) for lease in many(list(handles))]
+        pin = self.repository.pin
+        return [(pin(handle), None) for handle in handles]
 
     def select_groups(self, groups, group_scores, mandatory_slots=(), *, max_tokens=None,
                       expected_slots=None):
@@ -296,18 +353,32 @@ class RequestMemory:
             raise RuntimeError('Whole-window access preceded layer materialization completion')
 
     def _publish_selection(self):
+        from . import publication_trace
+        traced = publication_trace.enabled()
+        if traced:
+            t0 = time.perf_counter(), time.thread_time()
         validator = getattr(self, '_selection_validator', None)
         if validator is not None:
             validator()
+        if traced:
+            t1 = time.perf_counter(), time.thread_time()
+            stage_out, remaps = len(self._plan.stage_out), len(self._plan.remaps)
         for slot in self._plan.stage_out:
             self._store.working_resident(self._store.handle(slot), False)
         for remap in self._plan.remaps:
             handle = self._store.handle(remap.block_id)
             self._store.working_resident(handle, True)
             self._store.set_baked(handle.slot, remap.to_base, handle.generation)
+        if traced:
+            t2 = time.perf_counter(), time.thread_time()
         self._plan = None
         self._selection_validator = None
         self._reset()
+        if traced:
+            t3 = time.perf_counter(), time.thread_time()
+            publication_trace.emit('publish_selection_sections', stage_out=stage_out, remaps=remaps,
+                validator=[t1[0]-t0[0], t1[1]-t0[1]], mapping=[t2[0]-t1[0], t2[1]-t1[1]],
+                reset=[t3[0]-t2[0], t3[1]-t2[1]])
 
     def read(self, begin: int, count: int):
         self._require(Phase.READY)

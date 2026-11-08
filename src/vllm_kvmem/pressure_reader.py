@@ -7,6 +7,40 @@ import torch
 from .memory import Phase
 
 
+def native_reader():
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_READER', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_READER must be 0 or 1')
+    from . import _native
+    return value == '1' and callable(getattr(_native, 'RecordSources', None))
+
+
+def layer0_parallel_gather():
+    """KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER: parallel copies for layer 0 of a
+    promised refresh only, while the next forward is blocked at its guard."""
+    value = os.getenv('KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER must be 0 or 1')
+    return value == '1'
+
+
+def reader_adopt():
+    value = os.getenv('KVMEM_PRESSURE_READER_ADOPT', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_READER_ADOPT must be 0 or 1')
+    return value == '1'
+
+
+def reader_extend():
+    """KVMEM_PRESSURE_READER_EXTEND: with lazy layer-0-first selection the
+    prepared reader covers layer 0's records; add each later layer's records
+    before its upload instead of reading them through the per-chunk path."""
+    value = os.getenv('KVMEM_PRESSURE_READER_EXTEND', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_READER_EXTEND must be 0 or 1')
+    return value == '1'
+
+
 class PressureReader:
     def __init__(self, authority, plan, layers):
         paired = os.getenv('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER', '0')
@@ -32,12 +66,24 @@ class PressureReader:
         self.closed = False
         self.records = {}
         leases, keys, seen_keys = [], [], set()
+        from . import publication_trace
+        _traced = publication_trace.enabled()
+        _t0 = time.perf_counter()
         authority.poll()
+        _t1 = time.perf_counter()
+        visits = 0
+        accepted = self.records
+        block = authority.shape[1]
         try:
-            for layer in layers:
+            if os.getenv('KVMEM_PRESSURE_READER_BATCH', '0') == '1':
+                visits = sum(len(layer) for layer in layers)
+                self._collect_batched(authority, layers, block, leases, keys)
+            for layer in (() if self.records else layers):
+                visits += len(layer)
                 for record in layer:
-                    if (record.count != authority.shape[1] or not record.archived or
-                            id(record) in self.records):
+                    # Same predicate as before, cheapest term first: layers
+                    # share most records, and count/archived are plain fields.
+                    if id(record) in accepted or record.count != block or not record.archived:
                         continue
                     handle = record.handle
                     key = handle.slot, handle.generation
@@ -53,12 +99,90 @@ class PressureReader:
                     self.records[id(record)] = (record, handle, record.history_begin, len(keys))
                     keys.append(key)
             self.validate()
-            self.reader = (authority.archive.prepare_region_reader(self.namespace, leases) if leases else None)
+            _t2 = time.perf_counter()
+            lease_set = getattr(self, 'lease_set', None)
+            if lease_set is not None:
+                # One native LeaseSet: adopted by the reader exactly like the list.
+                self.lease_set = None
+                leases = [lease_set]          # reset by finally if adoption fails
+                self.reader = authority.archive.prepare_region_reader(self.namespace, lease_set,
+                    keys=[(self.namespace, slot, generation) for slot, generation in keys], adopt=True)
+                leases = []
+            elif leases and reader_adopt():
+                # Same sources and leases: pass the validated keys, transfer ownership.
+                self.reader = authority.archive.prepare_region_reader(self.namespace, leases,
+                    keys=[(self.namespace, slot, generation) for slot, generation in keys], adopt=True)
+                leases = []      # owned by the reader now; never reset here
+            else:
+                self.reader = (authority.archive.prepare_region_reader(self.namespace, leases) if leases else None)
+            _t3 = time.perf_counter()
             self.source_blocks = len(keys)
             self.read_chunks = 0
+            self.native = False
+            if self.reader is not None and native_reader() and not self.paired_gather:
+                # Opt-in: export the immutable sources once; reads then copy
+                # with the GIL released and validate records natively.
+                from . import _native
+                self.reader.native = _native.RecordSources(list(self.reader.sources),
+                                                           authority.archive.record_bytes)
+                self.native = True
         finally:
             for lease in leases:
                 lease.reset()
+        if _traced:
+            _t4 = time.perf_counter()
+            publication_trace.emit('reader_prepare_sections', visits=visits, unique=len(keys),
+                poll=_t1-_t0, record_loop=_t2-_t1, region_reader=_t3-_t2, lease_reset=_t4-_t3)
+
+    def _collect_batched(self, authority, layers, block, leases, keys):
+        """Same records, order, checks and leases as the per-record loop.
+
+        First-visit order is a dict's insertion order; the qualification is a
+        pure function of each record, and admission is one memory call.
+        """
+        table = None
+        if native_reader():
+            from . import _native
+            collect = getattr(_native, 'collect_pressure_sources', None)
+            if collect is not None:
+                # Same records, order, checks and table, without Python per-record work.
+                records, handles, pairs, table = collect(layers, block, authority.records)
+        if table is None:
+            unique = {}
+            for layer in layers:
+                unique.update(zip(map(id, layer), layer))
+            records = [r for r in unique.values() if r.count == block and r.archived]
+        if not records:
+            return
+        if table is None:
+            handles = [r.handle for r in records]
+            pairs = [(h.slot, h.generation) for h in handles]
+            get = authority.records.get
+            if len(set(pairs)) != len(pairs) or any(get(k) is not r for k, r in zip(pairs, records)):
+                raise ValueError('Pressure sources have aliased or foreign generations')
+        if table is not None and reader_adopt():
+            # Native reader + adoption: the pins stay in one native LeaseSet.
+            pin_set = getattr(authority.memory, 'admitted_pin_set', None)
+            lease_set = pin_set(handles) if pin_set is not None else None
+            if lease_set is not None:
+                if not lease_set.valid():
+                    lease_set.reset()
+                    raise ValueError('Stale pressure source generation')
+                self.lease_set = lease_set
+                self.records = table
+                keys.extend(pairs)
+                return
+        batch = getattr(authority.memory, 'admitted_read_batch', None)
+        admitted = (batch(handles) if batch is not None else
+                    [authority.memory.admitted_read(handle) for handle in handles])
+        leases.extend(lease for lease, _ in admitted)
+        if not all(lease for lease, _ in admitted):
+            raise ValueError('Stale pressure source generation')
+        if any(source is not None for _, source in admitted):
+            raise ValueError('Prepared pressure reads cannot bypass native payload admission')
+        self.records = table if table is not None else {id(r): (r, h, r.history_begin, i)
+                        for i, (r, h) in enumerate(zip(records, handles))}
+        keys.extend(pairs)
 
     def validate(self):
         memory = self.authority.memory
@@ -70,18 +194,22 @@ class PressureReader:
                 memory.request_id != self.namespace or self.authority.history_end != self.history_end):
             raise ValueError('Prepared pressure reader belongs to a different plan, owner or prefix')
 
-    def read(self, records, regions, *, destination):
+    def read(self, records, regions, *, destination, parallel=False):
         self.validate()
         if self.reader is None:
             raise ValueError('Pressure plan has no complete immutable sources')
-        indices = []
-        for record in records:
-            entry = self.records.get(id(record))
-            if (entry is None or entry[0] is not record or record.handle is not entry[1] or
-                    record.history_begin != entry[2] or record.count != self.authority.shape[1] or
-                    not record.archived):
-                raise ValueError('Prepared pressure source is absent, partial or changed')
-            indices.append(entry[3])
+        if getattr(self, 'native', False):
+            from . import _native
+            indices = _native.prepared_record_indices(records, self.records, self.authority.shape[1])
+        else:
+            indices = []
+            for record in records:
+                entry = self.records.get(id(record))
+                if (entry is None or entry[0] is not record or record.handle is not entry[1] or
+                        record.history_begin != entry[2] or record.count != self.authority.shape[1] or
+                        not record.archived):
+                    raise ValueError('Prepared pressure source is absent, partial or changed')
+                indices.append(entry[3])
         if (destination.device.type != 'cpu' or destination.dtype != torch.uint8 or
                 destination.ndim != 1 or not destination.is_contiguous()):
             raise ValueError('Prepared pressure destination must be contiguous CPU bytes')
@@ -91,6 +219,7 @@ class PressureReader:
         while True:
             self.validate()
             result = self.reader.read(indices, regions, destination=target,
+                **({'parallel': True} if parallel and getattr(self, 'native', False) else {}),
                 **({'paired_native': True} if self.paired_gather else {}),
                 **({'paired_workers': self.paired_workers} if self.paired_workers != 1 else {}))
             if result is not None:
@@ -120,8 +249,55 @@ class PressureReader:
                 self.read_stats['pressure_paired_'+key+'_seconds'] += stats.get('paired_native_'+key+'_ns',0)/1e9
         return tensor,stats
 
+    def extend(self, records):
+        """Prepare a lazily selected layer's records (KVMEM_PRESSURE_READER_EXTEND).
+
+        Same qualification, alias/foreign checks, pins, entry checks and source
+        bytes as construction; existing indices are unchanged. Returns False and
+        leaves the reader unchanged whenever that is not possible: the caller's
+        original per-chunk read path then handles those records (and raises its
+        own original errors), exactly as without this option.
+        """
+        if self.closed or self.reader is None or not getattr(self, 'native', False):
+            return False
+        self.validate()
+        fresh = [record for record in records if id(record) not in self.records]
+        if not fresh:
+            return True
+        from . import _native
+        collect = getattr(_native, 'collect_pressure_sources', None)
+        pin_set = getattr(self.authority.memory, 'admitted_pin_set', None)
+        extend = getattr(self.authority.archive, 'extend_region_reader', None)
+        if collect is None or pin_set is None or extend is None:
+            return False
+        try:
+            collected, handles, pairs, table = collect([fresh], self.authority.shape[1], self.authority.records)
+        except ValueError:
+            return False
+        if not collected:
+            return True
+        lease_set = pin_set(handles)
+        if lease_set is None:
+            return False
+        try:
+            if not lease_set.valid():
+                raise ValueError('Stale pressure source generation')
+            base = extend(self.reader, self.namespace, lease_set,
+                          [(self.namespace, slot, generation) for slot, generation in pairs])
+        except Exception:
+            lease_set.reset()
+            return False
+        for record, handle, begin, index in table.values():
+            self.records[id(record)] = (record, handle, begin, base + index)
+        self.source_blocks += len(pairs)
+        self.extended_blocks = getattr(self, 'extended_blocks', 0) + len(pairs)
+        return True
+
     def contains(self, records):
         self.validate()
+        if getattr(self, 'native', False):
+            from . import _native
+            return _native.prepared_contains(records, self.records)
         return all(id(record) in self.records for record in records)
 
     def __enter__(self):

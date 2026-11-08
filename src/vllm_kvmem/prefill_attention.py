@@ -92,6 +92,9 @@ class PrefillHistory:
     def snapshot(self):
         return {key: tuple(v) for key, v in self.values.items()}, self.end, self.samples, self.chunks
 
+    def page_count(self):
+        return len(self.values)
+
     def restore(self, snapshot, position):
         values, end, samples, chunks = snapshot
         if end > position:
@@ -143,10 +146,22 @@ def pressure_seed(authority, records):
     if state is None:
         raise ValueError('Attention pressure requires accepted attention state')
     scores = []
-    for slot, generation, begin, _, _ in records:
-        handle = authority.memory._store.handle(slot)
-        if handle.generation != generation:
+    store = authority.memory._store
+    batch = getattr(store, 'generations', None) if _native_lookups() else None
+    if batch is not None:
+        # [store.handle(slot).generation ...] in one native call; same check.
+        current = batch([slot for slot, _, _, _, _ in records])
+        if any(g != generation for g, (_, generation, _, _, _) in zip(current, records)):
             raise RuntimeError('Stale resident identity in pressure attention')
+    # Prefill stage (no output scores, no samples): every output seed is 0.0, so
+    # the prefill fallback below replaces them; skip building the zero list.
+    zero_output = (batch is not None and state.prefill is not None and
+                   not state.scores and not state.samples)
+    for slot, generation, begin, _, _ in (() if zero_output else records):
+        if batch is None:
+            handle = store.handle(slot)
+            if handle.generation != generation:
+                raise RuntimeError('Stale resident identity in pressure attention')
         score = state.scores.get(begin, 0.)
         if state.samples:
             score = state.options.action_decay * score + state.mass.get(begin, 0.) / state.samples
@@ -154,15 +169,56 @@ def pressure_seed(authority, records):
     if any(not math.isfinite(score) or score < 0 for _, score in scores):
         raise ValueError('Pressure seed must be finite and nonnegative')
     source = 'output' if any(score > 0 for _, score in scores) else 'none'
-    if state.prefill is not None and not any(score > 0 for _, score in scores):
-        prefill = state.prefill.scores()
-        scores = [(slot, prefill.get(begin, 0.)) for slot, _, begin, _, _ in records]
+    if zero_output or (state.prefill is not None and not any(score > 0 for _, score in scores)):
+        native_state = (getattr(state.prefill, '_buffered_state', None)
+                        if _native_lookups() and getattr(state.prefill, 'native_score_export', False) else None)
+        if native_state is not None and hasattr(native_state, 'scores_for'):
+            # Buffered global history: scores().get(begin, 0.) natively.
+            looked_up = native_state.scores_for([begin for _, _, begin, _, _ in records])
+            scores = [(slot, value) for (slot, _, _, _, _), value in zip(records, looked_up)]
+        elif type(state.prefill) is PrefillHistory and _native_lookups():
+            # prefill.scores().get(begin, 0.) per record, without building the
+            # whole dictionary: identical mass/exposure division and filter.
+            values = state.prefill.values
+            def lookup(begin, get=values.get):
+                pair = get(begin)
+                if pair is None:
+                    return 0.
+                mass, exposure = pair
+                return mass / exposure if exposure > 0 else 0.
+            scores = [(slot, lookup(begin)) for slot, _, begin, _, _ in records]
+        else:
+            prefill = state.prefill.scores()
+            scores = [(slot, prefill.get(begin, 0.)) for slot, _, begin, _, _ in records]
         source = 'prefill' if any(score > 0 for _, score in scores) else 'none'
     if any(not math.isfinite(score) or score < 0 for _, score in scores):
         raise ValueError('Pressure seed must be finite and nonnegative')
     if not scores and authority.history_end:
         raise RuntimeError('Attention pressure has no resident history')
     return scores, source
+
+
+def _selected_tokens(authority, picked):
+    """sum(authority.records[record_key(store.handle(s))].count for s in picked)."""
+    from .authority import record_key
+    store = authority.memory._store
+    batch = getattr(store, 'generations', None) if _native_lookups() else None
+    if batch is None:
+        return sum(authority.records[record_key(store.handle(s))].count for s in picked)
+    picked = list(picked)
+    return sum(authority.records[(s, g)].count for s, g in zip(picked, batch(picked)))
+
+
+def _native_lookups():
+    from .layerwise_pressure import native_lookups
+    return native_lookups()
+
+
+def single_pick():
+    value = os.getenv('KVMEM_PRESSURE_SINGLE_PICK', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_SINGLE_PICK must be 0 or 1')
+    return value == '1'
 
 
 def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
@@ -175,6 +231,8 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
         return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
                                        tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
     # Checkpoint records remain authoritative after physical residency clears.
+    import time as _time
+    _s0 = _time.perf_counter()
     records = tuple(authority.memory._store.working_records() if candidate_records is None else candidate_records)
     if policy == 'graph':
         from .graph_integration import pressure_score_and_select
@@ -182,12 +240,21 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
     if policy != 'attention':
         raise ValueError('Unknown pressure policy')
     scores, source = pressure_seed(authority, records)
+    _s1 = _time.perf_counter()
+    single = single_pick() and getattr(authority, 'block_graph', None) is not None
+    if single:
+        # KVMEM_PRESSURE_SINGLE_PICK: the report's preview is the same const
+        # native pick on the same inputs as select's first pick; run it once.
+        plan = authority.memory.select({}, tuple(h.slot for h in mandatory), action=False,
+                                       pressure_scores=scores, max_tokens=max_tokens)
+        _s2 = _time.perf_counter()
     if getattr(authority,'block_graph',None) is not None:
         from .authority import SCORE_DOMAIN_VERSION, record_key
         from .graph_integration import emit_graph_report
         graph=authority.block_graph
-        picked = authority.memory.preview_selection({}, tuple(h.slot for h in mandatory),
-            action=False,pressure_scores=scores,max_tokens=max_tokens)
+        picked = (authority.memory.first_pick if single else
+                  authority.memory.preview_selection({}, tuple(h.slot for h in mandatory),
+                      action=False,pressure_scores=scores,max_tokens=max_tokens))
         report=dict(phase='pressure',seed_source=source,pressure_policy='attention',
             mode=options.graph_mode,scoring_version=getattr(options,'graph_scoring_version','v1'),
             alpha=getattr(options,'graph_alpha',.2),propagation_applied=False,
@@ -195,11 +262,20 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
             score_mask_count=len(records),transport_mask_count=0,
             revision=graph.revision,runtime_epoch=graph.runtime_epoch,
             accepted_through=graph.accepted_through,
-            selected_tokens=sum(authority.records[record_key(authority.memory._store.handle(s))].count for s in picked),
+            selected_tokens=_selected_tokens(authority, picked),
             budget=max_tokens or authority.memory.config.select_budget,
             graph_bytes=graph.bytes,graph_live_bytes=graph.live_bytes,
             locality_provenance=dict(getattr(graph,'locality_provenance',())))
         authority.graph_selection_report=report
         emit_graph_report(authority,report)
+    if single:
+        from .publication_trace import emit as _trace
+        _trace('select_pressure_sections', records=len(records), seed=_s1-_s0, select=_s2-_s1,
+               preview_report=_time.perf_counter()-_s2)
+        return plan
+    _s2 = _time.perf_counter()
     plan = authority.memory.select({}, tuple(h.slot for h in mandatory), action=False, pressure_scores=scores, max_tokens=max_tokens)
+    from .publication_trace import emit as _trace
+    _trace('select_pressure_sections', records=len(records), seed=_s1-_s0, preview_report=_s2-_s1,
+           select=_time.perf_counter()-_s2)
     return plan

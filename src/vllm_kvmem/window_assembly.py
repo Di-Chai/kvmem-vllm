@@ -64,6 +64,7 @@ def _validate_destinations(remaps, by_slot, layers):
     retaining the original per-layer error order when a bound is exceeded.
     """
     bounds = None
+    original = original_rope()   # process-wide flag; read once, not per remap
     for remap in remaps:
         record = by_slot.get(remap.block_id)
         if record is None or record.count != remap.n_tokens or remap.to_base < 0:
@@ -74,7 +75,7 @@ def _validate_destinations(remaps, by_slot, layers):
             capacity = min((limit[0] for limit in bounds), default=float('inf'))
             rope = min((limit[1] for limit in bounds), default=float('inf'))
         end = remap.to_base + remap.n_tokens
-        rope_end = record.history_begin + remap.n_tokens if original_rope() else end
+        rope_end = record.history_begin + remap.n_tokens if original else end
         if end > capacity or rope_end > rope:
             for layer_capacity, layer_rope in bounds:
                 if end > layer_capacity:

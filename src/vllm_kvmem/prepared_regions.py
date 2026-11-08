@@ -15,13 +15,35 @@ class PreparedRegionReader:
         self.archive, self.namespace = archive, namespace
         self.keys, self.sources, self.leases = tuple(keys), tuple(sources), leases
         self.closed, self.active = False, 0
+        self.extra_leases = []
 
-    def read(self, indices, regions, *, destination, paired_native=False, paired_workers=1):
+    def extend(self, keys, sources, leases):
+        """KVMEM_PRESSURE_READER_EXTEND: append further immutable sources and
+        adopt their pins (a native LeaseSet) until close. Existing indices and
+        sources are unchanged; returns the index of the first new source.
+        Call under the archive lock, as construction is."""
+        if self.closed:
+            raise RuntimeError('Prepared CPU reader is closed')
+        native = getattr(self, 'native', None)
+        if native is None:
+            raise RuntimeError('Prepared reader extension requires native sources')
+        base = native.extend(list(sources))      # validates every source before appending
+        if base != len(self.keys):
+            raise RuntimeError('Prepared reader sources and keys diverged')
+        self.keys += tuple(keys)
+        self.sources += tuple(sources)
+        self.extra_leases.append(leases)
+        return base
+
+    def read(self, indices, regions, *, destination, paired_native=False, paired_workers=1, parallel=False):
         archive = self.archive
+        native = getattr(self, 'native', None) if not paired_native else None
         indices = tuple(indices)
         regions = tuple(tuple(r) for r in regions)
+        if native is not None:
+            native.check(list(indices))   # same rule and message, without a Python loop
         if (not indices or len(regions) != 2 or
-                any(type(i) is not int or not 0 <= i < len(self.keys) for i in indices) or
+                (native is None and any(type(i) is not int or not 0 <= i < len(self.keys) for i in indices)) or
                 any(len(r) != 2 for r in regions) or
                 any(type(o) is not int or type(n) is not int or o < 0 or n <= 0 or
                     o+n > archive.record_bytes for o,n in regions)):
@@ -34,7 +56,8 @@ class PreparedRegionReader:
         paired_eligible = False
         if paired_native:
             from . import _native
-            from .memory_storage import CPU_REGION_GATHER_PARALLEL_MIN_BYTES
+            from .memory_storage import region_gather_parallel_min_bytes
+            CPU_REGION_GATHER_PARALLEL_MIN_BYTES = region_gather_parallel_min_bytes()
             if (not archive.memory_only or getattr(archive, '_native_payload_arena', None) is not None):
                 raise ValueError('Prepared paired gather requires no-GC CPU authority')
             # Preserve the existing gather thresholds. Full-record fields and
@@ -54,7 +77,7 @@ class PreparedRegionReader:
             if not archive._admit(size):
                 return None
             try:
-                sources = [self.sources[i] for i in indices]
+                sources = [] if native is not None else [self.sources[i] for i in indices]
             except BaseException:
                 archive._complete(size)
                 raise
@@ -66,6 +89,13 @@ class PreparedRegionReader:
                 native_stats = archive._gather_regions_paired(target, sources, regions,
                     **({'workers':paired_workers} if paired_workers != 1 else {}))
                 tasks = native_stats.get('worker_count',1)
+            elif native is not None:
+                cursor = tasks = 0
+                listed = list(indices)
+                for offset,length in regions:
+                    end = cursor+len(indices)*length
+                    tasks += native.gather(listed, offset, length, target[cursor:end], parallel)
+                    cursor = end
             else:
                 cursor = tasks = 0
                 for offset,length in regions:
@@ -96,10 +126,17 @@ class PreparedRegionReader:
                 return True
             if self.active:
                 return False
-            for lease in self.leases:
-                lease.reset()
+            if hasattr(self.leases, 'valid'):
+                self.leases.reset()      # native LeaseSet: releases every pin
+            else:
+                for lease in self.leases:
+                    lease.reset()
             self.leases.clear()
+            for extra in getattr(self, 'extra_leases', ()):
+                extra.reset()
+            self.extra_leases = []
             self.sources = ()
+            self.native = None      # release the native source buffer exports
             self.closed = True
             self.archive._prepared_region_readers -= 1
             self.archive._capacity_changed.notify_all()

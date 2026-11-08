@@ -348,8 +348,16 @@ class NativeAttentionStats:
         layers = [modules[name] for name in producer_names]
         self.names = [layer.attn.layer_name for layer in layers]
         self.decode_names = {modules[name].attn.layer_name for name in decode_names}
-        if torch.cuda.get_device_capability()[0] != 12:
+        # KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED=1 reproduces exactly the
+        # non-sm12x behaviour on any GPU, to qualify the portable fallbacks.
+        # `unavailable`: this platform (GPU architecture or installed attention
+        # sources) cannot run the overlay at all. Portable consumers may then
+        # use the reference scorer instead of failing (action_attention).
+        self.unavailable = False
+        if (torch.cuda.get_device_capability()[0] != 12 or
+                os.getenv('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED') == '1'):
             self.disabled = 'unsupported_architecture_requires_sm12x'
+            self.unavailable = True
             return
         try:
             self.source_fingerprint = source_overlay(self.directory).name
@@ -357,6 +365,7 @@ class NativeAttentionStats:
                 if self.cta_gate_enabled else self.source_fingerprint)
         except UnsupportedNativeStats as error:
             self.disabled = str(error)
+            self.unavailable = True
             return
         if self.static_prefill_enabled:
             try:

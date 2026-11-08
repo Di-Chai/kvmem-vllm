@@ -10,6 +10,9 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
+
+#include <sys/mman.h>
 
 namespace vllm_kvmem {
 namespace {
@@ -21,6 +24,124 @@ Phase phase(uint64_t value) { return Phase(value >> shift); }
 uint64_t refs(uint64_t value) { return value & refs_mask; }
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
               "Historical payload lifetime requires lock-free 64-bit atomics");
+
+// Opt-in fixed-size record pool. An archive grows monotonically while a long
+// prompt is prefilled, so per-record heap allocations land on fresh pages and
+// every publication pays first-touch faults (kernel zeroing) on the archive
+// producer's critical path. The pool carves records from huge-page-advised
+// slabs, pre-faults free records on its own thread and reuses released
+// records LIFO. Only the memory location changes; every byte is copied as before.
+class RecordPool {
+public:
+    RecordPool(size_t record_bytes, size_t chunk_mib, size_t ahead)
+        : slot_bytes_((record_bytes + 4095) & ~size_t{4095}),
+          chunk_bytes_(std::max(chunk_mib << 20, slot_bytes_ + huge_)),
+          ahead_(ahead), filler_([this] { fill(); }) {}
+    ~RecordPool() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        want_.notify_all();
+        if (filler_.joinable()) filler_.join();
+        for (auto &chunk : chunks_) munmap(chunk.first, chunk.second);
+    }
+    RecordPool(const RecordPool &) = delete;
+    RecordPool &operator=(const RecordPool &) = delete;
+
+    uint8_t *acquire() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        uint8_t *record;
+        if (!free_.empty()) {
+            record = free_.back();
+            free_.pop_back();
+            hits_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            record = carve_locked();  // First touch happens in the caller's memcpy.
+            misses_.fetch_add(1, std::memory_order_relaxed);
+        }
+        const bool low = free_.size() < ahead_;
+        lock.unlock();
+        if (low) want_.notify_one();
+        return record;
+    }
+    void release(uint8_t *record) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        free_.push_back(record);  // vector capacity is reserved below; see carve_locked.
+    }
+    uint64_t hits() const { return hits_.load(std::memory_order_relaxed); }
+    uint64_t misses() const { return misses_.load(std::memory_order_relaxed); }
+    uint64_t reserved() const { return reserved_.load(std::memory_order_relaxed); }
+
+private:
+    static constexpr size_t huge_ = size_t{2} << 20;
+
+    uint8_t *carve_locked() {
+        if (!left_) {
+#ifdef MAP_NORESERVE
+            constexpr int reserve_flag = MAP_NORESERVE;
+#else
+            constexpr int reserve_flag = 0;
+#endif
+            void *raw = mmap(nullptr, chunk_bytes_ + huge_, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | reserve_flag, -1, 0);
+            if (raw == MAP_FAILED) throw std::bad_alloc();
+            chunks_.emplace_back(raw, chunk_bytes_ + huge_);
+            auto aligned = (reinterpret_cast<uintptr_t>(raw) + huge_ - 1) & ~(huge_ - 1);
+#ifdef MADV_HUGEPAGE
+            // Linux transparent huge pages are a hint only; other platforms
+            // use ordinary pages with identical contents and behaviour.
+            madvise(reinterpret_cast<void *>(aligned), chunk_bytes_, MADV_HUGEPAGE);
+#endif
+            next_ = reinterpret_cast<uint8_t *>(aligned);
+            left_ = chunk_bytes_ / slot_bytes_;
+            // release() runs in a noexcept deleter: never let push_back allocate.
+            free_.reserve(free_.size() + carved_ + left_);
+            reserved_.fetch_add(chunk_bytes_ + huge_, std::memory_order_relaxed);
+        }
+        auto *record = next_;
+        next_ += slot_bytes_;
+        --left_;
+        ++carved_;
+        return record;
+    }
+    void fill() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stop_) {
+            if (!ahead_ || free_.size() >= ahead_) {
+                want_.wait_for(lock, std::chrono::milliseconds(50));
+                continue;
+            }
+            uint8_t *batch[32];
+            size_t n = 0;
+            while (n < 32 && free_.size() + n < ahead_) batch[n++] = carve_locked();
+            lock.unlock();
+            for (size_t i = 0; i < n; ++i)  // Fault in every page off the publication path.
+                for (size_t off = 0; off < slot_bytes_; off += 4096) batch[i][off] = 0;
+            lock.lock();
+            for (size_t i = 0; i < n; ++i) free_.push_back(batch[i]);
+        }
+    }
+
+    const size_t slot_bytes_, chunk_bytes_, ahead_;
+    std::mutex mutex_;
+    std::condition_variable want_;
+    std::vector<uint8_t *> free_;
+    std::vector<std::pair<void *, size_t>> chunks_;
+    uint8_t *next_ = nullptr;
+    size_t left_ = 0, carved_ = 0;
+    bool stop_ = false;
+    std::atomic<uint64_t> hits_{0}, misses_{0}, reserved_{0};
+    std::thread filler_;  // Last member: starts after every field above is ready.
+};
+
+struct PayloadFree {
+    RecordPool *pool = nullptr;
+    void operator()(uint8_t *record) const noexcept {
+        if (pool) pool->release(record); else delete[] record;
+    }
+};
+using Payload = std::unique_ptr<uint8_t[], PayloadFree>;
 }
 
 struct HistoricalPayloadArena::ExternalOwner::Node {
@@ -35,14 +156,19 @@ struct HistoricalPayloadArena::Shared {
     struct Entry {
         std::atomic<uint64_t> control{vllm_kvmem::control(Phase::Empty)};
         std::atomic<uint64_t> generation{0}, released_generation{0};
-        std::unique_ptr<uint8_t[]> payload;
+        Payload payload;
     };
     explicit Shared(Config c)
-        : config(c), entries(new Entry[c.capacity]), dirty_words((uint64_t(c.capacity) + 63) / 64),
+        : config(c),
+          pool(c.pool_chunk_mib ? new RecordPool(c.record_bytes, c.pool_chunk_mib, c.pool_ahead_records)
+                                : nullptr),
+          entries(new Entry[c.capacity]), dirty_words((uint64_t(c.capacity) + 63) / 64),
           dirty(new std::atomic<uint64_t>[dirty_words]) {
         for (size_t i = 0; i < dirty_words; ++i) dirty[i].store(0, std::memory_order_relaxed);
     }
     Config config;
+    // Declared before entries: payload deleters return records to a live pool.
+    std::unique_ptr<RecordPool> pool;
     std::unique_ptr<Entry[]> entries;
     size_t dirty_words;
     std::unique_ptr<std::atomic<uint64_t>[]> dirty;
@@ -312,7 +438,8 @@ void HistoricalPayloadArena::publish_segments(Handle h, const Segment *segments,
     try {
         if (h.generation <= entry.generation.load(std::memory_order_relaxed))
             throw std::invalid_argument("Historical CPU payload generation must increase");
-        auto payload = std::make_unique<uint8_t[]>(bytes);
+        Payload payload = shared->pool ? Payload(shared->pool->acquire(), PayloadFree{shared->pool.get()})
+                                       : Payload(std::make_unique<uint8_t[]>(bytes).release(), PayloadFree{});
         size_t offset = 0;
         for (size_t i = 0; i < count; ++i) {
             if (segments[i].size) std::memcpy(payload.get() + offset, segments[i].data, segments[i].size);
@@ -401,6 +528,11 @@ HistoricalPayloadArena::Stats HistoricalPayloadArena::stats() const {
     LOAD(released_slots); LOAD(released_bytes); LOAD(last_release_thread);
     LOAD(external_owners); LOAD(external_bytes); LOAD(external_released_bytes);
 #undef LOAD
+    if (shared_->pool) {
+        result.pool_hits = shared_->pool->hits();
+        result.pool_misses = shared_->pool->misses();
+        result.pool_reserved_bytes = shared_->pool->reserved();
+    }
     return result;
 }
 size_t HistoricalPayloadArena::advance() { return shared_->advance(); }

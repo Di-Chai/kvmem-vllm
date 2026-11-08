@@ -8,6 +8,7 @@ the existing causal per-layer Mean-K implementation.
 from copy import copy
 import math
 import os
+import time
 
 import torch
 
@@ -55,6 +56,155 @@ def extend_records(records, origin, end, block_tokens=32):
     return result
 
 
+class DeferredPreparedCommit:
+    """Thread-safe one-shot builder for a PreparedPressureCommit.
+
+    The producer builds it after its per-layer upload loop; any consumer that
+    needs the maps earlier builds it itself. Errors are re-raised to every caller.
+    """
+    def __init__(self, build, layer_zero_starts):
+        import threading
+        self._build, self._lock = build, threading.Lock()
+        self._value = self._error = None
+        self.layer_zero_starts = layer_zero_starts
+
+    @property
+    def ready(self):
+        return self._value is not None
+
+    def value(self):
+        with self._lock:
+            if self._value is None and self._error is None:
+                try:
+                    self._value = self._build()
+                except BaseException as error:
+                    self._error = error
+            if self._error is not None:
+                raise self._error
+            self._build = None
+            return self._value
+
+
+class PendingMaps:
+    """A committed pressure owner whose per-layer maps are still being built."""
+    def __init__(self, deferred, job):
+        self.deferred, self.job = deferred, job
+
+    def resolve(self):
+        prepared = self.deferred.value()
+        prepared.validate(self.job)
+        return self.job.history, tuple(prepared.maps)
+
+
+def native_lookups():
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_LOOKUPS must be 0 or 1')
+    return value == '1'
+
+
+def native_layer_pick():
+    """KVMEM_PRESSURE_NATIVE_LAYER_PICK: one native call per layer for the
+    fast-prepare candidate loop, preview pick, layer checks and archive order."""
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_LAYER_PICK', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_LAYER_PICK must be 0 or 1')
+    return value == '1'
+
+
+def native_lookup_scores(history, mapping):
+    """Opt-in: history.scores().get(begin, 0.) for every mapping row, computed
+    natively from the same doubles (same IEEE division), or None when off."""
+    if not native_lookups() or not getattr(history, 'native_score_export', False):
+        return None
+    state = history._buffered_state
+    if not hasattr(state, 'scores_for'):
+        return None
+    return state.scores_for([row[2] for row in mapping])
+
+
+def same_snapshot(global_history, layer_zero):
+    """global_history.snapshot() == layer_zero.snapshot(); opt-in native compare."""
+    from .prefill_attention import PrefillHistory
+    state = getattr(layer_zero, '_buffered_state', None) if native_lookups() else None
+    other = getattr(global_history, '_buffered_state', None) if state is not None else None
+    if other is not None and hasattr(state, 'same_state'):
+        # Both native (KVMEM_GLOBAL_PREFILL_BUFFERED): compare states directly.
+        return ((global_history.end, global_history.samples, global_history.chunks) ==
+                (layer_zero.end, layer_zero.samples, layer_zero.chunks) and state.same_state(other))
+    if (state is None or not hasattr(state, 'same_values') or type(global_history) is not PrefillHistory):
+        return global_history.snapshot() == layer_zero.snapshot()
+    return ((global_history.end, global_history.samples, global_history.chunks) ==
+            (layer_zero.end, layer_zero.samples, layer_zero.chunks) and
+            state.same_values(global_history.values))
+
+
+def record_index(controller, authority):
+    """Opt-in KVMEM_PRESSURE_RECORD_INDEX_CACHE: reuse the sorted records,
+    their slots and lookup tables while the authority's record set is unchanged
+    (VersionedRecords.version). Identical objects and order; None when off."""
+    value = os.getenv('KVMEM_PRESSURE_RECORD_INDEX_CACHE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_RECORD_INDEX_CACHE must be 0 or 1')
+    current = authority.records
+    version = getattr(current, 'version', None)
+    if value != '1' or version is None:
+        return None
+    cache = controller.__dict__.setdefault('_record_index_cache', {})
+    key = authority.memory.request_id
+    entry = cache.get(key)
+    if entry is not None and entry[0] is current and entry[1] == version:
+        return entry[2]
+    log = current.log
+    if (entry is not None and entry[0] is current and log is not None and
+            len(log) == version - entry[1]):
+        # Only appends since the cached index: extend copies when every new
+        # record starts after the last indexed one (the sorted order is then
+        # unchanged); anything else falls through to a full rebuild.
+        records, record_slots, record_positions, by_begin = (list(entry[2][0]), list(entry[2][1]),
+                                                             dict(entry[2][2]), dict(entry[2][3]))
+        last = records[-1].history_begin if records else None
+        extended = True
+        for record_key_ in log:
+            record = current.get(record_key_)
+            if record is None:
+                extended = False
+                break
+            slot = record.handle.slot
+            if slot in record_positions or (last is not None and record.history_begin <= last):
+                extended = False
+                break
+            record_positions[slot] = len(records)
+            records.append(record)
+            record_slots.append(slot)
+            by_begin[record.history_begin] = (record, slot)
+            last = record.history_begin
+        if extended:
+            index = (records, record_slots, record_positions, by_begin)
+            aligned = entry[3] and all(r.history_begin % 32 == 0 for r in records[len(entry[2][0]):])
+            aligned = aligned and len(by_begin) == len(records)
+            current.log = []
+            cache[key] = (current, version, index, aligned)
+            return index
+    records = sorted(current.values(), key=lambda r: r.history_begin)
+    record_slots = [r.handle.slot for r in records]
+    record_positions = {slot: i for i, slot in enumerate(record_slots)}
+    if len(record_positions) != len(records):
+        raise RuntimeError('Pressure archive contains duplicate physical slots')
+    by_begin = {r.history_begin: (r, s) for r, s in zip(records, record_slots)}
+    index = (records, record_slots, record_positions, by_begin)
+    aligned = len(by_begin) == len(records) and all(r.history_begin % 32 == 0 for r in records)
+    current.log = []        # start logging appends after this full build
+    cache[key] = (current, version, index, aligned)
+    return index
+
+
+def record_index_aligned(controller, authority):
+    """True when the cached index's records start at unique multiples of 32."""
+    entry = controller.__dict__.get('_record_index_cache', {}).get(authority.memory.request_id)
+    return bool(entry is not None and entry[0] is authority.records and entry[3])
+
+
 class LayerwisePrefillPressure:
     def __init__(self, query):
         self.query, self.runner, self.names = query, query.runner, query.names
@@ -74,6 +224,10 @@ class LayerwisePrefillPressure:
         if batch_accept not in ('0', '1'):
             raise ValueError('Layerwise pressure batch acceptance must be 0 or 1')
         self.batch_accept = batch_accept == '1'
+        from .deferred_fold import enabled as _deferred_fold
+        self.deferred_fold = _deferred_fold()
+        if self.deferred_fold and not self.batch_accept:
+            raise ValueError('Deferred layer folds require batched layer acceptance')
         if self.batch_accept:
             if not self.buffered_history:
                 raise ValueError('Batched layer acceptance requires native buffered histories')
@@ -90,6 +244,18 @@ class LayerwisePrefillPressure:
         if batch_selection not in ('0', '1'):
             raise ValueError('Layerwise pressure batch selection must be 0 or 1')
         self.batch_selection = batch_selection == '1'
+        # Opt-in: one pass per layer builds candidates and picker scores from
+        # the same accepted values (identical floats, order and checks).
+        fast_prepare = os.getenv('KVMEM_LAYERWISE_PRESSURE_FAST_PREPARE', '0')
+        if fast_prepare not in ('0', '1'):
+            raise ValueError('KVMEM_LAYERWISE_PRESSURE_FAST_PREPARE must be 0 or 1')
+        self.fast_prepare = fast_prepare == '1'
+        # Opt-in: build the prepared 17-layer commit maps after the plan/ACK on
+        # the producer instead of inside selection. Same maps; consumers resolve.
+        deferred_maps = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS', '0')
+        if deferred_maps not in ('0', '1'):
+            raise ValueError('KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS must be 0 or 1')
+        self.deferred_maps = deferred_maps == '1'
         pipeline = os.getenv('KVMEM_LAYERWISE_PRESSURE_PIPELINE', '0')
         if pipeline not in ('0', '1'):
             raise ValueError('Layerwise pressure pipeline must be 0 or 1')
@@ -114,6 +280,14 @@ class LayerwisePrefillPressure:
         if self.pipeline_handoff and (pipeline != '1' or not self.post_forward_reap or
                                       not self.submit_on_prepare):
             raise ValueError('Early handoff requires pipeline and original pressure prepare/reap paths')
+        # Opt-in: acknowledge an already-prepared plan at the next schedule
+        # instead of the next batch's feedback (synchronous single process).
+        schedule_ack = os.getenv('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
+        if schedule_ack not in ('0', '1'):
+            raise ValueError('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK must be 0 or 1')
+        self.schedule_ack = schedule_ack == '1'
+        if self.schedule_ack and not self.pipeline_handoff:
+            raise ValueError('Schedule-time pressure ACK requires the guarded early handoff')
         self.pipeline = None
         if pipeline == '1':
             if (not self.single_assembly or not self.prepared_reads or not self.reuse_layer_views or
@@ -143,6 +317,9 @@ class LayerwisePrefillPressure:
 
     def new_history(self, options):
         if getattr(self, 'buffered_history', False):
+            if getattr(self, 'deferred_fold', False):
+                from .deferred_fold import DeferredFoldHistory
+                return DeferredFoldHistory(options)
             from .buffered_prefill_attention import BufferedPrefillHistory
             return BufferedPrefillHistory(options)
         return PrefillHistory(options)
@@ -179,10 +356,20 @@ class LayerwisePrefillPressure:
             raise RuntimeError('Target attention layers changed their archive order')
         return [(i, action.runtime.layers[i]) for i in range(len(self.names))]
 
-    def records(self, rid, authority, history_begin, local_begin, layer):
+    def resolved_maps(self, rid):
         frame = self.maps.get(rid)
+        if isinstance(frame, PendingMaps):
+            frame = self.maps[rid] = frame.resolve()
+        return frame
+
+    def records(self, rid, authority, history_begin, local_begin, layer):
+        return self._layer_records(self.resolved_maps(rid), authority, history_begin, local_begin, layer)
+
+    def _layer_records(self, frame, authority, history_begin, local_begin, layer, working=None):
         if frame is None:
-            result = list(authority.memory._store.working_records())
+            # Without previous maps every layer starts from the native frame:
+            # lazy selection passes the snapshot taken before the layer-0 commit.
+            result = list(authority.memory._store.working_records() if working is None else working)
         else:
             origin, layers = frame
             result = extend_records(layers[layer], origin, history_begin)
@@ -201,7 +388,7 @@ class LayerwisePrefillPressure:
             return attach_packet(self, pending, rid, authority, starts, counts, masses)
         if self.fast_metadata and rid in self.maps:
             from .layerwise_pressure_efficiency import packet_histories
-            histories = packet_histories(self.maps.get(rid), pending, starts, counts)
+            histories = packet_histories(self.resolved_maps(rid), pending, starts, counts)
             pending.layerwise_pressure = (self, rid, histories, masses)
             return
         end, count, _, local = pending.prefill
@@ -237,8 +424,17 @@ class LayerwisePrefillPressure:
         staged = [copy(history) for history in self.histories[rid]]
         if getattr(self, 'batch_accept', False):
             from .buffered_prefill_attention import accept_buffered_batch
-            accepted_flags = accept_buffered_batch(staged, end, count, accepted, pending.rows,
-                starts, logical, local, masses)
+            deferred = None
+            if getattr(self, 'deferred_fold', False):
+                from . import deferred_fold as deferred
+            if deferred is not None and deferred.deferrable(staged, end, count, accepted, pending.rows,
+                                                            logical, masses):
+                # Layer 0 now; layer i is folded, bit-identically, on first use.
+                accepted_flags = deferred.accept_deferred(staged, end, count, accepted, pending.rows,
+                    starts, logical, local, masses)
+            else:
+                accepted_flags = accept_buffered_batch(staged, end, count, accepted, pending.rows,
+                    starts, logical, local, masses)
         else:
             accepted_flags = [history.accept(end, count, accepted, pending.rows,
                 starts, logical[layer], local, masses[layer]) for layer, history in enumerate(staged)]
@@ -258,27 +454,57 @@ class LayerwisePrefillPressure:
         decode = job.command.pressure_stage == 'decode' and self.rolling_decode
         if job.command.pressure_stage != 'prefill' and not decode:
             raise RuntimeError('This short-output experiment cannot reinterpret decode pressure')
-        authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+        from .publication_trace import emit as _trace, enabled as _tracing
+        _tr = _tracing()
+        _sec = {}
+        _clock = [time.perf_counter()]
+        def _lap(name):
+            if _tr:
+                now = time.perf_counter(); _sec[name] = _sec.get(name, 0.) + now - _clock[0]; _clock[0] = now
+        _sealed_started = time.perf_counter()
+        if getattr(job, 'promised_lease', None) is None:
+            authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+        # A promised refresh selects on record metadata only. _assemble repeats
+        # this read barrier after selection and before any payload read, so the
+        # just-appended records seal while selection runs (pressure_promise).
+        _trace('prepare_seal_wait', rid=rid, seconds=time.perf_counter()-_sealed_started)
+        _lap('seal_wait')
         cfg = selection_config(refresh.options.memory, job.command.groups[0][1].window_tokens,
             selection='pressure', pressure_policy='attention')
         fit = RequestPlan(None, block_tokens=32, gen_budget=cfg.gen_budget,
             mandatory=job.command.mandatory_spans).mandatory_fit(job.history, cfg)
         required = set(fit['hard_blocks'])
-        records = sorted(authority.records.values(), key=lambda r:r.history_begin)
-        # Each handle.slot read crosses pybind; read once per pressure, not per layer.
-        record_slots = [r.handle.slot for r in records]
-        record_positions = {slot:i for i,slot in enumerate(record_slots)}
-        if len(record_positions) != len(records):
-            raise RuntimeError('Pressure archive contains duplicate physical slots')
-        by_begin = {r.history_begin:(r, s) for r, s in zip(records, record_slots)}
-        mandatory = tuple(s for r, s in zip(records, record_slots) if r.history_begin//32 in required)
-        mandatory_set = set(mandatory)
-        if {r.history_begin//32 for r, s in zip(records, record_slots) if s in mandatory_set} != required:
-            raise RuntimeError('Missing original mandatory pressure blocks')
+        _lap('plan_fit')
+        index = record_index(self, authority)
+        if index is None:
+            records = sorted(authority.records.values(), key=lambda r:r.history_begin)
+            # Each handle.slot read crosses pybind; read once per pressure, not per layer.
+            record_slots = [r.handle.slot for r in records]
+            record_positions = {slot:i for i,slot in enumerate(record_slots)}
+            if len(record_positions) != len(records):
+                raise RuntimeError('Pressure archive contains duplicate physical slots')
+            by_begin = {r.history_begin:(r, s) for r, s in zip(records, record_slots)}
+        else:
+            records, record_slots, record_positions, by_begin = index
+        if index is not None and record_index_aligned(self, authority):
+            # Every record starts at a unique multiple of 32, so the records with
+            # begin//32 in required are exactly by_begin[32*b], in sorted order.
+            found = [by_begin.get(32 * b) for b in sorted(required)]
+            if any(entry is None for entry in found):
+                raise RuntimeError('Missing original mandatory pressure blocks')
+            mandatory = tuple(entry[1] for entry in found)
+            mandatory_set = set(mandatory)
+        else:
+            mandatory = tuple(s for r, s in zip(records, record_slots) if r.history_begin//32 in required)
+            mandatory_set = set(mandatory)
+            if {r.history_begin//32 for r, s in zip(records, record_slots) if s in mandatory_set} != required:
+                raise RuntimeError('Missing original mandatory pressure blocks')
+        _lap('records_sort_slots_mandatory')
         global_history = authority.action_history.prefill
         histories = (self.decode_histories if decode else self.histories).get(rid)
-        if histories is None or (not decode and global_history.snapshot() != histories[0].snapshot()):
+        if histories is None or (not decode and not same_snapshot(global_history, histories[0])):
             raise RuntimeError('Accepted layer-zero attention differs from the shared control state')
+        _lap('history_snapshot_check')
         current = list(authority.memory._store.working_records())
         local = sum(r[3] for r in current)
         chosen, evidence, source_maps = [], [], []
@@ -290,37 +516,106 @@ class LayerwisePrefillPressure:
             from .pressure_selection_batch import prepare_pressure_batch
             batched = prepare_pressure_batch(self, job, histories, local, by_begin,
                                              mandatory, cfg.select_budget)
-        for layer, history in enumerate(histories):
+        _lap('working_records_batch')
+        # Opt-in KVMEM_LAYERWISE_PRESSURE_LAYER0_FIRST (promised refreshes only):
+        # select layer 0 now; the producer selects every other layer just before
+        # uploading it. Inputs are frozen here (previous maps, histories, records,
+        # mandatory set); the native picker ignores residency, so the committed
+        # layer-0 host map cannot change any later layer's choice.
+        lazy = (getattr(job, 'promised_lease', None) is not None and not decode and batched is None and
+                not capture_values and prepare_commit and getattr(self, 'deferred_maps', False) and
+                os.getenv('KVMEM_LAYERWISE_PRESSURE_LAYER0_FIRST') == '1')
+        maps_snapshot = self.resolved_maps(rid) if lazy else None
+        def select_layer(layer):
+            history = histories[layer]
+            fused = None
             if batched is None:
-                mapping = self.records(rid, authority, job.history, local, layer)
-                candidates, candidate_slots = [], []
-                for _, _, begin, n, _ in mapping:
-                    entry = by_begin.get(begin)
-                    if entry is None or entry[0].count != n:
-                        raise RuntimeError('Layer pressure candidate is absent from accepted immutable history')
-                    candidates.append(entry[0])
-                    candidate_slots.append(entry[1])
-                scores = history.scores()
-                supplied = [(s, scores.get(r.history_begin, 0.)) for r, s in zip(candidates, candidate_slots)]
-                if any(not math.isfinite(s) or s < 0 for _,s in supplied):
-                    raise RuntimeError('Invalid layer cumulative attention score')
-                if not any(s > 0 for _,s in supplied):
-                    raise RuntimeError('Layer pressure has no accepted attention; refusing a recency fallback')
-                slots = set(authority.memory.preview_selection({}, mandatory, action=False,
-                    pressure_scores=supplied, max_tokens=cfg.select_budget))
+                mapping = (self._layer_records(maps_snapshot, authority, job.history, local, layer, current)
+                           if lazy else self.records(rid, authority, job.history, local, layer))
+                _lap('layer_records_map')
+                fused = None
+                if getattr(self, 'fast_prepare', False) and native_layer_pick():
+                    looked_up = native_lookup_scores(history, mapping)
+                    _lap('layer_history_scores')
+                    store = authority.memory._store
+                    if (looked_up is not None and hasattr(store, 'pressure_layer_pick') and
+                            type(records) is list and type(by_begin) is dict and
+                            type(record_positions) is dict):
+                        from .memory import Phase
+                        fused = store.pressure_layer_pick(
+                            mapping if type(mapping) is list else list(mapping), by_begin,
+                            looked_up if type(looked_up) is list else list(looked_up),
+                            list(mandatory), cfg.select_budget, record_positions, records,
+                            lambda: authority.memory._require(Phase.READY))
+                if fused is not None:
+                    # Same loop, checks, store calls and archive order, natively.
+                    candidates, candidate_slots, ordered_slots, picked = fused
+                    _lap('layer_native_select')
+                elif getattr(self, 'fast_prepare', False):
+                    looked_up = native_lookup_scores(history, mapping)
+                    if looked_up is None:
+                        scores = history.scores()
+                        score_of = scores.get
+                    else:
+                        # scores().get(begin, 0.) per mapping row, without the dict.
+                        score_of = iter(looked_up).__next__
+                    _lap('layer_history_scores')
+                    candidates, candidate_slots, supplied = [], [], []
+                    positive = False
+                    lookup, isfinite = by_begin.get, math.isfinite
+                    for _, _, begin, n, _ in mapping:
+                        entry = lookup(begin)
+                        if entry is None or entry[0].count != n:
+                            raise RuntimeError('Layer pressure candidate is absent from accepted immutable history')
+                        record, slot = entry
+                        score = score_of(begin, 0.) if looked_up is None else score_of()
+                        if not isfinite(score) or score < 0:
+                            raise RuntimeError('Invalid layer cumulative attention score')
+                        positive = positive or score > 0
+                        candidates.append(record)
+                        candidate_slots.append(slot)
+                        supplied.append((slot, score))
+                    if not positive:
+                        raise RuntimeError('Layer pressure has no accepted attention; refusing a recency fallback')
+                    _lap('layer_candidates_supplied')
+                else:
+                    candidates, candidate_slots = [], []
+                    for _, _, begin, n, _ in mapping:
+                        entry = by_begin.get(begin)
+                        if entry is None or entry[0].count != n:
+                            raise RuntimeError('Layer pressure candidate is absent from accepted immutable history')
+                        candidates.append(entry[0])
+                        candidate_slots.append(entry[1])
+                    _lap('layer_candidates')
+                    scores = history.scores()
+                    _lap('layer_history_scores')
+                    supplied = [(s, scores.get(r.history_begin, 0.)) for r, s in zip(candidates, candidate_slots)]
+                    if any(not math.isfinite(s) or s < 0 for _,s in supplied):
+                        raise RuntimeError('Invalid layer cumulative attention score')
+                    if not any(s > 0 for _,s in supplied):
+                        raise RuntimeError('Layer pressure has no accepted attention; refusing a recency fallback')
+                    _lap('layer_supplied_checks')
+                if fused is None:
+                    slots = set(authority.memory.preview_selection({}, mandatory, action=False,
+                        pressure_scores=supplied, max_tokens=cfg.select_budget))
+                    _lap('layer_native_picker')
             else:
                 mapping, candidates, candidate_slots, slots = batched[layer]
             if capture_values:
                 source_maps.append(tuple(mapping))
-            allowed = set(candidate_slots) | mandatory_set
-            if not mandatory_set <= slots or not slots <= allowed or 32*len(slots) > cfg.select_budget:
-                raise RuntimeError('Layer pressure violated candidates, mandatory blocks or Active budget')
-            # Preserve the original archive order without scanning cold records
-            # again for every layer. The native preview still owns all ranking.
-            ordered_slots = sorted(slots, key=record_positions.__getitem__)
-            picked = [records[record_positions[s]] for s in ordered_slots]
+            if fused is None:
+                allowed = set(candidate_slots) | mandatory_set
+                if not mandatory_set <= slots or not slots <= allowed or 32*len(slots) > cfg.select_budget:
+                    raise RuntimeError('Layer pressure violated candidates, mandatory blocks or Active budget')
+                # Preserve the original archive order without scanning cold records
+                # again for every layer. The native preview still owns all ranking.
+                ordered_slots = sorted(slots, key=record_positions.__getitem__)
+                picked = [records[record_positions[s]] for s in ordered_slots]
+                _lap('layer_order_pick')
             if prepare_commit:
                 selected_slot_groups.append(ordered_slots)
+            if layer == 0:
+                job.layerwise_zero_slots = ordered_slots   # slots of chosen[0], same order
             chosen.append(picked)
             evidence.append(dict(layer=layer, layer_name=self.names[layer],
                 candidate_block_count=len(candidates), candidate_starts=[r.history_begin for r in candidates],
@@ -332,15 +627,55 @@ class LayerwisePrefillPressure:
                 **(dict(attention_state_backend='native_decode',
                         score_scope='all_accepted_including_thinking') if decode else
                    self.history_execution(history))))
-        lengths = {sum(r.count for r in group) for group in chosen}
-        partial = [{(r.history_begin,r.count) for r in group if r.count != 32} for group in chosen]
-        if len(lengths) != 1 or any(p != partial[0] for p in partial):
-            raise RuntimeError('Layer pressure cannot change native causal length or partial-block geometry')
+            _lap('layer_evidence')
+        if lazy:
+            select_layer(0)
+        else:
+            if getattr(self, 'deferred_fold', False):
+                # Apply queued folds with the original layer-parallel batches.
+                from .deferred_fold import force_all
+                force_all(histories)
+                _lap('deferred_fold_force')
+            for layer in range(len(histories)):
+                select_layer(layer)
+        def geometry_check():
+            lengths = {sum(r.count for r in group) for group in chosen}
+            partial = [{(r.history_begin,r.count) for r in group if r.count != 32} for group in chosen]
+            if len(lengths) != 1 or any(p != partial[0] for p in partial):
+                raise RuntimeError('Layer pressure cannot change native causal length or partial-block geometry')
+        deferred_maps = prepare_commit and getattr(self, 'deferred_maps', False)
+        if not deferred_maps:
+            geometry_check()
         job.layerwise_pressure_plan = chosen, evidence
-        if prepare_commit:
+        if deferred_maps:
+            from .pressure_commit import prepare_commit as build_commit
+            def build():
+                geometry_check()
+                return build_commit(job, chosen, records, record_slots, selected_slot_groups)
+            job.layerwise_prepared_commit = DeferredPreparedCommit(
+                build, frozenset(r.history_begin for r in chosen[0]))
+        elif prepare_commit:
             from .pressure_commit import prepare_commit as build_commit
             job.layerwise_prepared_commit = build_commit(
                 job, chosen, records, record_slots, selected_slot_groups)
+        _lap('geometry_check_prepared_commit')
+        if lazy:
+            def select_next(layer):
+                if layer != len(chosen) or layer >= len(histories):
+                    raise RuntimeError('Lazy layer pressure selection lost its layer order')
+                select_layer(layer)
+                if len(chosen) == len(histories):
+                    if _tr:
+                        _trace('prepare_sections', rid=rid, records=len(records), layers=len(histories),
+                               lazy=True, **{k: round(v, 6) for k, v in _sec.items()})
+                    if getattr(job, 'layerwise_evidence_pending', False):
+                        job.layerwise_evidence_pending = False
+                        self._emit_selected(job)
+            job.layerwise_select_layer = select_next
+            job.layerwise_layers_total = len(histories)
+        elif _tr:
+            _trace('prepare_sections', rid=rid, records=len(records), layers=len(histories),
+                   **{k: round(v, 6) for k, v in _sec.items()})
         if capture_values:
             job.layerwise_pressure_value_sources = (rid, job.history, local, tuple(source_maps))
         if decode:
@@ -357,20 +692,29 @@ class LayerwisePrefillPressure:
         rid, authority = job.command.request_id, job.authority
         chosen, evidence = job.layerwise_pressure_plan
         actual = {r[2] for r in authority.memory._store.working_records()}
-        prepared = None
+        prepared = deferred = None
         if job.command.pressure_stage == 'prefill' and getattr(self, 'prepared_commit', False):
             prepared = getattr(job, 'layerwise_prepared_commit', None)
             if prepared is None:
                 raise RuntimeError('Missing the configured prepared pressure maps')
-            prepared.validate(job)
+            if isinstance(prepared, DeferredPreparedCommit):
+                deferred = prepared
+                prepared = deferred.value() if deferred.ready else None
+            if prepared is not None:
+                prepared.validate(job)
             if not (getattr(job, 'layerwise_single_assembly_done', False) or
                     getattr(job, 'layerwise_pipeline_published', False)):
                 raise RuntimeError('Prepared maps need completed assembly or guarded pipeline publication')
-        if actual != (prepared.layer_zero_starts if prepared else {r.history_begin for r in chosen[0]}):
+        if deferred is not None and prepared is None:
+            expected_zero = deferred.layer_zero_starts
+        else:
+            expected_zero = prepared.layer_zero_starts if prepared else {r.history_begin for r in chosen[0]}
+        if actual != expected_zero:
             raise RuntimeError('Native pressure selection disagrees with the layer-zero preview')
         state = dict(authority=authority, request_id=rid, selected_tokens=job.selected_tokens)
         maps = prepared.maps if prepared is not None else []
-        for layer, picked in (() if prepared is not None else enumerate(chosen)):
+        pending = deferred is not None and prepared is None
+        for layer, picked in (() if prepared is not None or pending else enumerate(chosen)):
             if layer and not (getattr(job, 'layerwise_single_assembly_done', False) or
                               getattr(job, 'layerwise_pipeline_published', False)):
                 self.query.assemble_layer_pinned(state, layer, picked)
@@ -387,8 +731,21 @@ class LayerwisePrefillPressure:
         if not (getattr(job, 'layerwise_single_assembly_done', False) or
                 getattr(job, 'layerwise_pipeline_published', False)):
             torch.cuda.current_stream(self.runner.device).synchronize()
-        self.maps[rid] = job.history, tuple(maps)
-        self.query.emit('pressure_selected', request_id=rid, accepted_history=job.history,
+        self.maps[rid] = PendingMaps(deferred, job) if pending else (job.history, tuple(maps))
+        if len(chosen) != getattr(job, 'layerwise_layers_total', len(chosen)):
+            # Layer-0-first: the evidence row needs every layer's selection.
+            job.layerwise_evidence_pending = True
+            return
+        self._emit_selected(job)
+
+    def _emit_selected(self, job):
+        rid = job.command.request_id
+        chosen, evidence = job.layerwise_pressure_plan
+        # Opt-in: the large per-layer evidence row is written after the ACK with
+        # its original timestamps, bytes and row order (deferred_evidence.py).
+        emit = (self.query.defer if job.command.pressure_stage == 'prefill' and
+                getattr(self.query, 'deferred_writer', None) is not None else self.query.emit)
+        emit('pressure_selected', request_id=rid, accepted_history=job.history,
             actual_method='accumulated_attention_per_layer', event_type=job.command.pressure_stage+'_pressure',
             configured_method='accumulated_attention_per_layer',
             query_source=('accepted_output_including_thinking' if job.command.pressure_stage == 'decode'
@@ -396,7 +753,7 @@ class LayerwisePrefillPressure:
             thinking_at_refresh=getattr(job, 'layerwise_decode_thinking', None),
             selected_tokens=job.selected_tokens, layers=evidence, fallback_reason=None)
         if original_rope():
-            self.query.emit('pressure_rope', request_id=rid, accepted_history=job.history,
+            emit('pressure_rope', request_id=rid, accepted_history=job.history,
                 rope_position_policy='original', key_source='record.history_begin',
                 score_query_source='accepted_original_position', physical_slots='dense')
 
@@ -424,9 +781,17 @@ class LayerwisePrefillPressure:
             staged = None
             if controller is not None and (getattr(pending, 'layerwise_pressure', None) is not None or
                                            getattr(pending, 'layerwise_decode', None) is not None):
+                _t0 = time.perf_counter()
                 runtime._wait_packet(pending)
+                _t1 = time.perf_counter()
                 staged = controller.prepare_accept(pending, accepted)
-            transaction = graph_prepare(runtime, packet, rid, accepted, **kwargs)
+                _t2 = time.perf_counter()
+                transaction = graph_prepare(runtime, packet, rid, accepted, **kwargs)
+                from .publication_trace import emit as _trace
+                _trace('accept_split', rid=rid, wait_scores=_t1-_t0, layerwise_fold=_t2-_t1,
+                       action_graph_prepare=time.perf_counter()-_t2)
+            else:
+                transaction = graph_prepare(runtime, packet, rid, accepted, **kwargs)
             return (_LayerwiseAcceptance(transaction, controller, staged)
                     if staged is not None else transaction)
         def finished(runtime, rid, authority):
@@ -435,6 +800,7 @@ class LayerwisePrefillPressure:
             if controller is not None:
                 controller.maps.pop(rid, None)
                 controller.histories.pop(rid, None)
+                controller.__dict__.get('_record_index_cache', {}).pop(rid, None)
                 controller.decode_histories.pop(rid, None)
             return result
         ActionRuntime.accept, ActionRuntime.finish = accept, finished

@@ -4,6 +4,7 @@ Query replay starts at the preceding sealed block. The complete tail + Query
 is admitted atomically; a caller receives a capacity error instead of a
 silently shortened Query. Prefix pressure never supplies a semantic Query.
 """
+import os
 from dataclasses import dataclass, replace
 
 
@@ -266,14 +267,19 @@ class RequestPlan:
         point=_native.branch_safe_checkpoint(prompt_tokens,0,self.block_tokens)
         return point if point and point%self.block_tokens==0 else None
 
-    def prefill_boundary(self, history, capacity):
+    def prefill_boundary(self, history, capacity, offset=None):
         # Reserve a replay block AND native MTP allocation lookahead. Pressure
         # must be visited before allocation; a filled old view cannot be probed.
         boundary = capacity - (1 if self.prefill_window == 'keep_selected' else 2) * self.block_tokens
         boundary -= self.pressure_probe_tokens
         if self.query is not None and history < self.replay_begin:
             query_boundary = (capacity - (self.replay_end - self.replay_begin) - self.block_tokens - self.probe_tokens) // self.block_tokens * self.block_tokens
-            boundary = min(boundary, query_boundary)
+            # Opt-in: the Query replay only needs room in the window where it
+            # will start. While its start lies beyond this window's full
+            # boundary, pressure must occur first and the next window decides.
+            if not (_query_reserve_final_window() and offset is not None and
+                    self.replay_begin - offset > boundary):
+                boundary = min(boundary, query_boundary)
         return boundary
 
     @classmethod
@@ -375,7 +381,7 @@ class RequestPlan:
                 return end - begin if desired >= end - begin else 0
             elif history < end:
                 raise RuntimeError('Explicit Query was split or its boundary was skipped')
-        boundary = self.prefill_boundary(history, capacity)
+        boundary = self.prefill_boundary(history, capacity, offset)
         if local < boundary:
             desired = min(desired, boundary - local)
         else:
@@ -394,12 +400,19 @@ class RequestPlan:
             return 'pressure'
         if self.prefill_window == 'semantic_chunk' and history < prompt_tokens:
             return 'chunk'
-        boundary = (self.prefill_boundary(history, capacity) if history < prompt_tokens
+        boundary = (self.prefill_boundary(history, capacity, offset) if history < prompt_tokens
                     else capacity - self.block_tokens)
         if history - offset >= boundary:
             rolling_decode = self.rolling_active_window and history >= prompt_tokens
             return 'pressure' if rolling_decode or self.prefill_window != 'keep_selected' else 'exhausted'
         return None
+
+
+def _query_reserve_final_window():
+    value = os.getenv('KVMEM_QUERY_RESERVE_FINAL_WINDOW', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_QUERY_RESERVE_FINAL_WINDOW must be 0 or 1')
+    return value == '1'
 
 
 def request_plan(request, block_tokens, gen_budget):

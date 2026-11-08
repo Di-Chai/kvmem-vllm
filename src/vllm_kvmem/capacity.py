@@ -6,6 +6,7 @@ that request's right to grow again. The optional qualified draft contract adds
 native SWA and speculative GDN credits.
 Execution remains synchronous, APC-off, TP=1.
 """
+import os
 from .window_manager import WorkingSetManager
 
 
@@ -169,15 +170,21 @@ class ReservedKVCacheManager:
             self._step_total -= self._step_remaining.pop(request_id, 0)
 
     def validate_refresh_controls(self, scheduled, transactions):
+        command_inputs = lambda command: getattr(command, 'input_tokens', ()) if command is not None else ()
         """A no-lookahead frame must never reach a public model forward."""
         for rid, (request, history, count) in self.refresh_control_allocations.items():
             transaction = transactions.get(rid)
             command = transaction[0] if transaction is not None else None
+            # Opt-in zero-replay prefill pressure: the boundary block is not
+            # replayed; the refresh window rebuild owns and releases its pages.
+            replayed = (0 if os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
+                        not command_inputs(command) and getattr(command, 'pressure_stage', None) == 'prefill'
+                        else count)
             if (rid in scheduled or command is None or not command.asynchronous or
                     command.selection != 'pressure' or command.query_span is not None or
-                    command.speculative_padding or len(command.input_tokens) != count or
+                    command.speculative_padding or len(command.input_tokens) != replayed or
                     request.num_computed_tokens != history or request.num_in_flight_tokens or
-                    any(ticket.history_end != history or ticket.replay_tokens != count
+                    any(ticket.history_end != history or ticket.replay_tokens != replayed
                         for _, ticket in command.groups)):
                 raise RuntimeError('Refresh control allocation escaped its private replay transaction')
         self.refresh_control_allocations.clear()

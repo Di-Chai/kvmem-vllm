@@ -21,8 +21,13 @@
 #include "restore_frame.hpp"
 #include "action_window_segments.hpp"
 #include "query_key_fps_cpu.hpp"
+#include "parallel_rows.hpp"
 #include <filesystem>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
+#include <set>
+#include <algorithm>
 #include <limits>
 #include <array>
 #include <cmath>
@@ -274,6 +279,47 @@ static bool mean_fp8_simd_eligible(const py::buffer_info &raw,
     return source + source_bytes <= destination || destination + destination_bytes <= source;
 }
 
+// True when every written buffer is pairwise disjoint from all other written
+// buffers and from every read buffer. Only then may independent rows run on
+// several threads without changing any byte a serial loop would produce.
+static bool disjoint_buffers(const std::vector<const py::buffer_info *> &writes,
+                             const std::vector<const py::buffer_info *> &reads = {}) {
+    auto range = [](const py::buffer_info &v, std::pair<uintptr_t, uintptr_t> &out) {
+        if (!v.ptr) return true;
+        size_t bytes = static_cast<size_t>(v.itemsize);
+        for (ssize_t axis = 0; axis < v.ndim; ++axis) {
+            if (v.shape[axis] <= 0) return true;
+            if (v.strides[axis] < 0) return false;
+            bytes += static_cast<size_t>(v.shape[axis] - 1) * static_cast<size_t>(v.strides[axis]);
+        }
+        const auto begin = reinterpret_cast<uintptr_t>(v.ptr);
+        out = {begin, begin + bytes};
+        return true;
+    };
+    std::vector<std::pair<uintptr_t, uintptr_t>> written;
+    written.reserve(writes.size());
+    for (const auto *v : writes) {
+        std::pair<uintptr_t, uintptr_t> r{0, 0};
+        if (!range(*v, r)) return false;
+        if (r.second > r.first) written.push_back(r);
+    }
+    std::sort(written.begin(), written.end());
+    for (size_t i = 1; i < written.size(); ++i)
+        if (written[i].first < written[i - 1].second) return false;
+    for (const auto *v : reads) {
+        std::pair<uintptr_t, uintptr_t> r{0, 0};
+        if (!range(*v, r)) return false;
+        if (r.second <= r.first) continue;
+        // First written range whose end is beyond this read's start.
+        auto it = std::lower_bound(written.begin(), written.end(), r,
+            [](const std::pair<uintptr_t, uintptr_t> &w, const std::pair<uintptr_t, uintptr_t> &x) {
+                return w.second <= x.first;
+            });
+        if (it != written.end() && it->first < r.second) return false;
+    }
+    return true;
+}
+
 template<int Count, bool Fp8=false>
 KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
                                      const py::buffer_info &sums, ssize_t begin) {
@@ -295,6 +341,264 @@ KVMEM_AVX2 static void add_decode_mean(const py::buffer_info &raw,
         }
     }
 }
+
+// Opt-in (KVMEM_PRESSURE_NATIVE_READER + adopt): one prepared reader's
+// repository pins held natively, instead of one Python Lease per record.
+// Same pins and lifetime; reset()/clear() releases them all.
+struct LeaseSet {
+    std::vector<KvMemRepository::Lease> leases;
+    LeaseSet() = default;
+    LeaseSet(const LeaseSet &) = delete;
+    LeaseSet &operator=(const LeaseSet &) = delete;
+    LeaseSet(LeaseSet &&) = default;
+    LeaseSet &operator=(LeaseSet &&) = default;
+    bool valid() const {
+        for (const auto &lease : leases) if (!lease) return false;
+        return true;
+    }
+    void reset() {
+        for (auto &lease : leases) lease.reset();
+        leases.clear();
+    }
+};
+
+// Opt-in KVMEM_GRAPH_NATIVE_SIZE: block_graph._size in C++. Same traversal
+// rules (tuple/list items, dict keys and values, dataclass fields, every
+// object counted once by id via the caller's ``seen`` set) and the same
+// per-object size function as sys.getsizeof, so the total is identical.
+static size_t graph_size_impl(PyObject *value, PyObject *seen, PyObject *fields) {
+    PyObject *key = PyLong_FromVoidPtr(value);
+    if (!key) throw py::error_already_set();
+    const int present = PySet_Contains(seen, key);
+    if (present < 0) { Py_DECREF(key); throw py::error_already_set(); }
+    if (present) { Py_DECREF(key); return 0; }
+    if (PySet_Add(seen, key) < 0) { Py_DECREF(key); throw py::error_already_set(); }
+    Py_DECREF(key);
+    const size_t own = _PySys_GetSizeOf(value);
+    if (own == static_cast<size_t>(-1) && PyErr_Occurred()) throw py::error_already_set();
+    size_t result = own;
+    if (PyTuple_Check(value) || PyList_Check(value)) {
+        const Py_ssize_t n = PySequence_Fast_GET_SIZE(value);
+        PyObject **items = PySequence_Fast_ITEMS(value);
+        for (Py_ssize_t i = 0; i < n; ++i) result += graph_size_impl(items[i], seen, fields);
+    } else if (PyDict_Check(value)) {
+        PyObject *k, *v; Py_ssize_t pos = 0;
+        while (PyDict_Next(value, &pos, &k, &v)) {
+            Py_INCREF(k); Py_INCREF(v);
+            try { result += graph_size_impl(k, seen, fields); result += graph_size_impl(v, seen, fields); }
+            catch (...) { Py_DECREF(k); Py_DECREF(v); throw; }
+            Py_DECREF(k); Py_DECREF(v);
+        }
+    } else {
+        const int dataclass = PyObject_HasAttrString(value, "__dataclass_fields__");
+        if (dataclass) {
+            py::object listed = py::reinterpret_borrow<py::object>(fields)(py::handle(value));
+            for (const auto &field : listed) {
+                py::object attribute = py::reinterpret_borrow<py::object>(value).attr(field.attr("name"));
+                result += graph_size_impl(attribute.ptr(), seen, fields);
+            }
+        }
+    }
+    return result;
+}
+
+// Opt-in KVMEM_PRESSURE_NATIVE_READER: one prepared pressure reader's
+// immutable record sources, exported once. gather() copies one region of each
+// indexed record into a destination slice, record after record (the layout of
+// MemoryArchive._gather_region), with the GIL released for the whole copy.
+class RecordSources {
+public:
+    RecordSources(const std::vector<py::buffer> &sources, size_t record_bytes) : record_bytes_(record_bytes) {
+        if (!record_bytes) throw std::invalid_argument("Invalid prepared record size");
+        sources_.reserve(sources.size());
+        for (const auto &source : sources) {
+            auto view = source.request();
+            if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1 ||
+                static_cast<size_t>(view.size) != record_bytes)
+                throw std::invalid_argument("Prepared CPU regions require exact immutable record bytes");
+            sources_.push_back(std::move(view));
+        }
+    }
+    size_t size() const { return sources_.size(); }
+    // Opt-in KVMEM_PRESSURE_READER_EXTEND: append the sources of a lazily
+    // selected layer. Every new source is validated before any is appended,
+    // so a rejected batch leaves the existing indices and sources unchanged.
+    size_t extend(const std::vector<py::buffer> &sources) {
+        std::vector<py::buffer_info> views;
+        views.reserve(sources.size());
+        for (const auto &source : sources) {
+            auto view = source.request();
+            if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1 ||
+                static_cast<size_t>(view.size) != record_bytes_)
+                throw std::invalid_argument("Prepared CPU regions require exact immutable record bytes");
+            views.push_back(std::move(view));
+        }
+        const size_t base = sources_.size();
+        sources_.reserve(base + views.size());
+        for (auto &view : views) sources_.push_back(std::move(view));
+        return base;
+    }
+    void check(const std::vector<int64_t> &indices) const {
+        if (indices.empty()) throw py::value_error("Invalid prepared CPU region extent or source index");
+        for (const auto i : indices)
+            if (i < 0 || static_cast<size_t>(i) >= sources_.size())
+                throw py::value_error("Invalid prepared CPU region extent or source index");
+    }
+    size_t gather(const std::vector<int64_t> &indices, size_t offset, size_t length, py::buffer destination,
+                  bool parallel) {
+        check(indices);
+        if (!length || offset > record_bytes_ || length > record_bytes_ - offset)
+            throw py::value_error("Invalid prepared CPU region extent or source index");
+        auto out = destination.request(true);
+        if (out.readonly || out.ndim != 1 || out.itemsize != 1 || out.strides[0] != 1 ||
+            static_cast<size_t>(out.size) != indices.size() * length)
+            throw std::invalid_argument("Prepared CPU region destination has a different extent");
+        char *base = static_cast<char *>(out.ptr);
+        std::vector<const char *> from(indices.size());
+        for (size_t k = 0; k < indices.size(); ++k)
+            from[k] = static_cast<const char *>(sources_[indices[k]].ptr) + offset;
+        {
+            // Serial by default, like the original inline copy: parallel layer
+            // gathers during the forward slow the forward itself (m4nfg). The
+            // caller requests parallel copies only while the GPU is idle at the
+            // layer-zero guard of a promised refresh.
+            py::gil_scoped_release release;
+            if (parallel)
+                return kvmem_parallel::for_rows(indices.size(), [&](size_t k) {
+                    std::memcpy(base + k * length, from[k], length);
+                });
+            for (size_t k = 0; k < indices.size(); ++k)
+                std::memcpy(base + k * length, from[k], length);
+        }
+        return 1;
+    }
+private:
+    size_t record_bytes_;
+    std::vector<py::buffer_info> sources_;
+};
+
+// Opt-in streaming publication (streaming_publication.py): one session's
+// record pages, filled one model layer at a time while the forward runs.
+// Built once with the GIL; each layer() call validates nothing new and
+// releases the GIL before any work, so the engine thread is never starved by
+// per-layer Python job lists. Copies are plain memcpy of contiguous token rows
+// and the MeanK sums use exactly the finalize_mean_batch arithmetic (SIMD when
+// eligible, else the scalar token-order FP32 loop), one layer at a time.
+class StreamPages {
+public:
+    StreamPages(py::buffer source_raw, py::buffer source_values,
+                const std::vector<py::buffer> &page_raw, const std::vector<py::buffer> &page_values,
+                const std::vector<py::buffer> &page_sums, ssize_t block)
+        : block_(block) {
+        source_raw_ = source_raw.request();
+        source_values_ = source_values.request();
+        const auto &s = source_raw_;
+        if (s.ndim != 4 || s.itemsize != 1 || source_values_.ndim != 4 || source_values_.itemsize != 1 ||
+            s.shape != source_values_.shape || block <= 0 || page_raw.empty() ||
+            page_raw.size() != page_values.size() || page_raw.size() != page_sums.size() ||
+            s.shape[1] != static_cast<ssize_t>(page_raw.size()) * block ||
+            !rows_contiguous(s) || !rows_contiguous(source_values_) ||
+            source_values_.strides != s.strides)
+            throw std::invalid_argument("Invalid streamed page source");
+        layers_ = s.shape[0];
+        row_bytes_ = s.shape[2] * s.shape[3];
+        for (size_t i = 0; i < page_raw.size(); ++i) {
+            auto raw = page_raw[i].request(true);
+            auto values = page_values[i].request(true);
+            auto sums = page_sums[i].request(true);
+            if (raw.ndim != 4 || raw.itemsize != 1 || raw.readonly || values.readonly ||
+                raw.shape != std::vector<ssize_t>{layers_, block, s.shape[2], s.shape[3]} ||
+                values.shape != raw.shape || values.itemsize != 1 || !contiguous(raw) || !contiguous(values) ||
+                sums.ndim != 3 || sums.itemsize != 4 || sums.readonly ||
+                sums.format != py::format_descriptor<float>::format() ||
+                sums.shape[0] <= 0 || sums.shape[0] > layers_ || sums.shape[1] != s.shape[2] ||
+                sums.shape[2] != s.shape[3] || !contiguous(sums))
+                throw std::invalid_argument("Invalid streamed record page");
+            if (i == 0) scoring_ = sums.shape[0];
+            else if (sums.shape[0] != scoring_)
+                throw std::invalid_argument("Streamed pages disagree on scoring layers");
+            raw_.push_back(std::move(raw));
+            values_.push_back(std::move(values));
+            sums_.push_back(std::move(sums));
+        }
+        std::vector<const py::buffer_info *> written, read{&source_raw_, &source_values_};
+        for (size_t i = 0; i < raw_.size(); ++i) {
+            written.push_back(&raw_[i]);
+            written.push_back(&values_[i]);
+            written.push_back(&sums_[i]);
+        }
+        if (!disjoint_buffers(written, read))
+            throw std::invalid_argument("Streamed pages overlap each other or their source");
+    }
+
+    // Returns how many pages took the vectorized MeanK path for this layer.
+    size_t layer(ssize_t layer, bool vectorized) {
+        if (layer < 0 || layer >= layers_) throw std::out_of_range("Streamed layer outside the session");
+        std::vector<uint8_t> simd(raw_.size(), 0);
+        {
+            py::gil_scoped_release release;
+            const size_t bytes = static_cast<size_t>(block_ * row_bytes_);
+            const char *src_raw = static_cast<const char *>(source_raw_.ptr) + layer * source_raw_.strides[0];
+            const char *src_values = static_cast<const char *>(source_values_.ptr) + layer * source_values_.strides[0];
+            auto fill = [&](size_t page) {
+                char *raw = static_cast<char *>(raw_[page].ptr) + layer * raw_[page].strides[0];
+                char *values = static_cast<char *>(values_[page].ptr) + layer * values_[page].strides[0];
+                std::memcpy(raw, src_raw + page * bytes, bytes);
+                std::memcpy(values, src_values + page * bytes, bytes);
+                if (layer >= scoring_) return;
+                // Single-layer views: identical to finalize_mean_batch on raw[layer:layer+1].
+                const auto &r = raw_[page];
+                const auto &m = sums_[page];
+                py::buffer_info a(raw, 1, "B", 4, {ssize_t(1), r.shape[1], r.shape[2], r.shape[3]},
+                                  {r.strides[0], r.strides[1], r.strides[2], r.strides[3]});
+                py::buffer_info b(static_cast<char *>(m.ptr) + layer * m.strides[0], 4,
+                                  py::format_descriptor<float>::format(), 3,
+                                  {ssize_t(1), m.shape[1], m.shape[2]}, {m.strides[0], m.strides[1], m.strides[2]});
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+                if (vectorized && mean_fp8_simd_eligible(a, b, block_)) {
+                    finalize_mean_fp8_simd(a, b, block_);
+                    simd[page] = 1;
+                    return;
+                }
+#endif
+                auto *out = static_cast<float *>(b.ptr);
+                const ssize_t channels = b.shape[1] * b.shape[2];
+                std::fill(out, out + channels, 0.f);
+                for (ssize_t token = 0; token < block_; ++token) {
+                    const char *row = raw + token * a.strides[1];
+                    for (ssize_t channel = 0; channel < channels; ++channel)
+                        out[channel] += fp8_as_float(row + channel);
+                }
+            };
+            kvmem_parallel::for_rows(raw_.size(), fill);
+        }
+        size_t total = 0;
+        for (auto flag : simd) total += flag;
+        return total;
+    }
+
+    ssize_t layers() const { return layers_; }
+    ssize_t scoring() const { return scoring_; }
+
+private:
+    // Token rows of each layer are contiguous; layers may be strided (a slice
+    // of a larger reusable pinned staging buffer).
+    static bool rows_contiguous(const py::buffer_info &v) {
+        return v.ndim == 4 && v.strides[3] == 1 && v.strides[2] == v.shape[3] &&
+               v.strides[1] == v.shape[2] * v.shape[3] && v.strides[0] >= v.shape[1] * v.strides[1];
+    }
+    static bool contiguous(const py::buffer_info &v) {
+        ssize_t expected = v.itemsize;
+        for (ssize_t axis = v.ndim - 1; axis >= 0; --axis) {
+            if (v.strides[axis] != expected) return false;
+            expected *= v.shape[axis];
+        }
+        return true;
+    }
+    py::buffer_info source_raw_, source_values_;
+    std::vector<py::buffer_info> raw_, values_, sums_;
+    ssize_t block_ = 0, layers_ = 0, row_bytes_ = 0, scoring_ = 0;
+};
 
 PYBIND11_MODULE(_native, m) {
     bind_historical_thinking(m);
@@ -437,6 +741,270 @@ PYBIND11_MODULE(_native, m) {
         }
     });
     m.def("finalize_mean_simd_supported", &native_decode_sum_supported);
+    m.def("graph_size", [](py::handle value, py::handle seen) {
+        if (!PySet_Check(seen.ptr())) throw py::type_error("graph_size needs a set of seen ids");
+        py::object fields = py::module_::import("dataclasses").attr("fields");
+        return graph_size_impl(value.ptr(), seen.ptr(), fields.ptr());
+    }, py::arg("value"), py::arg("seen"));
+    py::class_<LeaseSet>(m, "LeaseSet")
+        .def("valid", &LeaseSet::valid)
+        .def("reset", &LeaseSet::reset)
+        .def("clear", &LeaseSet::reset)
+        .def("__len__", [](const LeaseSet &s) { return s.leases.size(); });
+    py::class_<RecordSources>(m, "RecordSources")
+        .def(py::init<const std::vector<py::buffer> &, size_t>(), py::arg("sources"), py::arg("record_bytes"))
+        .def("__len__", &RecordSources::size)
+        .def("check", &RecordSources::check, py::arg("indices"))
+        .def("extend", &RecordSources::extend, py::arg("sources"))
+        .def("gather", &RecordSources::gather, py::arg("indices"), py::arg("offset"), py::arg("length"),
+             py::arg("destination"), py::arg("parallel") = false);
+    // PressureReader.read's per-record validation, in its original `or` order:
+    // [entry[3] for each record] or ValueError with the original message.
+    m.def("prepared_record_indices", [](const py::iterable &records, const py::dict &table, const py::object &block) {
+        py::list out;
+        auto fail = []() { throw py::value_error("Prepared pressure source is absent, partial or changed"); };
+        for (const auto &record : records) {
+            py::object key = py::reinterpret_steal<py::object>(PyLong_FromVoidPtr(record.ptr()));
+            if (!key) throw py::error_already_set();
+            PyObject *entry = PyDict_GetItemWithError(table.ptr(), key.ptr());
+            if (!entry) { if (PyErr_Occurred()) throw py::error_already_set(); fail(); }
+            if (!PyTuple_Check(entry) || PyTuple_GET_SIZE(entry) < 4) fail();
+            if (PyTuple_GET_ITEM(entry, 0) != record.ptr()) fail();
+            if (record.attr("handle").ptr() != PyTuple_GET_ITEM(entry, 1)) fail();
+            const int begin_differs = PyObject_RichCompareBool(record.attr("history_begin").ptr(),
+                                                               PyTuple_GET_ITEM(entry, 2), Py_NE);
+            if (begin_differs < 0) throw py::error_already_set();
+            if (begin_differs) fail();
+            const int count_differs = PyObject_RichCompareBool(record.attr("count").ptr(), block.ptr(), Py_NE);
+            if (count_differs < 0) throw py::error_already_set();
+            if (count_differs) fail();
+            const int archived = PyObject_IsTrue(record.attr("archived").ptr());
+            if (archived < 0) throw py::error_already_set();
+            if (!archived) fail();
+            out.append(py::reinterpret_borrow<py::object>(PyTuple_GET_ITEM(entry, 3)));
+        }
+        return out;
+    }, py::arg("records"), py::arg("table"), py::arg("block"));
+    // PressureReader._collect_batched's Python work: first-visit unique records
+    // across layers, count == block and archived, handles, (slot, generation)
+    // pairs, alias/foreign checks and the id -> (record, handle, begin, i) table.
+    m.def("collect_pressure_sources", [](const py::iterable &layers, const py::object &block,
+                                         const py::dict &authority_records) {
+        std::unordered_set<PyObject *> visited;
+        std::vector<py::object> unique;
+        for (const auto &layer : layers)
+            for (const auto &record : py::reinterpret_borrow<py::iterable>(layer))
+                if (visited.insert(record.ptr()).second) unique.push_back(py::reinterpret_borrow<py::object>(record));
+        py::list records, handles, pairs;
+        py::dict table;
+        std::set<std::pair<uint32_t, uint64_t>> keys;
+        bool aliased = false;
+        for (const auto &record : unique) {
+            const int full = PyObject_RichCompareBool(record.attr("count").ptr(), block.ptr(), Py_EQ);
+            if (full < 0) throw py::error_already_set();
+            if (!full) continue;
+            const int archived = PyObject_IsTrue(record.attr("archived").ptr());
+            if (archived < 0) throw py::error_already_set();
+            if (!archived) continue;
+            records.append(record);
+        }
+        for (size_t i = 0; i < records.size(); ++i) {
+            py::object record = records[i];
+            py::object handle = record.attr("handle");
+            const auto value = py::cast<KvMemBlockHandle>(handle);
+            handles.append(handle);
+            pairs.append(py::make_tuple(value.slot, value.generation));
+            if (!keys.insert({value.slot, value.generation}).second) aliased = true;
+        }
+        if (!aliased) {
+            for (size_t i = 0; i < records.size(); ++i) {
+                PyObject *found = PyDict_GetItemWithError(authority_records.ptr(), py::object(pairs[i]).ptr());
+                if (!found && PyErr_Occurred()) throw py::error_already_set();
+                if (found != py::object(records[i]).ptr()) { aliased = true; break; }
+            }
+        }
+        if (aliased) throw py::value_error("Pressure sources have aliased or foreign generations");
+        for (size_t i = 0; i < records.size(); ++i) {
+            py::object record = records[i];
+            py::object key = py::reinterpret_steal<py::object>(PyLong_FromVoidPtr(record.ptr()));
+            table[key] = py::make_tuple(record, handles[i], record.attr("history_begin"), i);
+        }
+        return py::make_tuple(records, handles, pairs, table);
+    }, py::arg("layers"), py::arg("block"), py::arg("authority_records"));
+    // Opt-in KVMEM_LAYER0_FAST: KvMemStore::pick_prefill_pressure_from in
+    // history-position space, for a repository whose live blocks are exactly
+    // the aligned history [0, history_end) (no GC; every block live). The
+    // layer-0 fast path picks before the chunk's records have slots; the
+    // original store pick still runs afterwards and must agree (checked).
+    // Same steps: sink prefix, mandatory, positive candidates by score with
+    // later-position tie break, then the most recent remaining candidates.
+    m.def("pressure_pick_positions", [](int64_t history_end, int64_t block_tokens, int64_t sink_blocks,
+            int64_t budget_blocks_limit, const std::vector<int64_t> &mandatory,
+            const std::vector<int64_t> &candidates, const std::vector<double> &scores,
+            int64_t budget_tokens) {
+        if (block_tokens <= 0 || history_end < 0 || history_end % block_tokens || sink_blocks < 0)
+            throw std::invalid_argument("Position pick requires an aligned history");
+        if (candidates.size() != scores.size())
+            throw std::invalid_argument("Position pick candidates and scores differ in length");
+        if (budget_tokens && (budget_tokens % block_tokens || budget_tokens / block_tokens > budget_blocks_limit ||
+                budget_tokens / block_tokens < sink_blocks))
+            throw std::invalid_argument("Invalid bounded pressure budget");
+        const int64_t n = history_end / block_tokens;
+        std::vector<int64_t> selected;
+        if (n == 0) return selected;
+        auto index_of = [&](int64_t begin) -> int64_t {
+            if (begin < 0 || begin % block_tokens || begin >= history_end)
+                throw std::runtime_error("KVMem mandatory block is outside the pressure snapshot");
+            return begin / block_tokens;
+        };
+        for (const auto begin : mandatory) (void)index_of(begin);
+        const int64_t budget = budget_tokens ? budget_tokens / block_tokens : budget_blocks_limit;
+        std::vector<uint8_t> resident(static_cast<size_t>(n), 0);
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            if (!std::isfinite(scores[i]) || scores[i] < 0)
+                throw std::invalid_argument("invalid pressure action score");
+            const int64_t begin = candidates[i];
+            if (begin >= 0 && begin % block_tokens == 0 && begin < history_end)
+                resident[static_cast<size_t>(begin / block_tokens)] = 1;
+        }
+        if (budget == 0 || n <= budget) {
+            for (const auto begin : mandatory) resident[static_cast<size_t>(begin / block_tokens)] = 1;
+            for (int64_t i = 0; i < n; ++i)
+                if (candidates.empty() || resident[static_cast<size_t>(i)] || i < sink_blocks)
+                    selected.push_back(i * block_tokens);
+            return selected;
+        }
+        std::vector<uint8_t> kept(static_cast<size_t>(n), 0);
+        int64_t count = 0;
+        auto keep = [&](int64_t i) { if (!kept[static_cast<size_t>(i)]) { kept[static_cast<size_t>(i)] = 1; ++count; } };
+        // fixed_selection_from(order, mandatory, pressure=true, budget)
+        {
+            std::vector<uint8_t> fixed(static_cast<size_t>(n), 0);
+            int64_t fixed_count = 0;
+            auto fix = [&](int64_t i) { if (!fixed[static_cast<size_t>(i)]) { fixed[static_cast<size_t>(i)] = 1; ++fixed_count; } };
+            for (int64_t i = 0; i < n; ++i) if (i < sink_blocks && fixed_count < budget) fix(i);
+            for (const auto begin : mandatory) fix(begin / block_tokens);
+            if (fixed_count > budget)
+                throw std::runtime_error("KVMem mandatory selection plus sink blocks exceeds the configured selection budget");
+            for (int64_t i = 0; i < n; ++i) if (fixed[static_cast<size_t>(i)]) keep(i);
+        }
+        std::vector<std::pair<int64_t, double>> ranked;
+        ranked.reserve(candidates.size());
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            const int64_t begin = candidates[i];
+            if (begin < 0 || begin % block_tokens || begin >= history_end) continue;
+            const int64_t index = begin / block_tokens;
+            if (!kept[static_cast<size_t>(index)] && scores[i] > 0) ranked.emplace_back(index, scores[i]);
+        }
+        std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
+            return a.second != b.second ? a.second > b.second : b.first < a.first;
+        });
+        for (const auto &[index, score] : ranked) {
+            (void)score;
+            if (count >= budget) break;
+            keep(index);
+        }
+        for (int64_t i = n - 1; i >= 0 && count < budget; --i) {
+            if (!resident[static_cast<size_t>(i)]) continue;
+            keep(i);
+        }
+        for (int64_t i = 0; i < n; ++i) if (kept[static_cast<size_t>(i)]) selected.push_back(i * block_tokens);
+        return selected;
+    }, py::arg("history_end"), py::arg("block_tokens"), py::arg("sink_blocks"), py::arg("budget_blocks_limit"),
+       py::arg("mandatory"), py::arg("candidates"), py::arg("scores"), py::arg("budget_tokens"));
+    // MemoryArchive.prepare_region_reader's entry checks and _region_sources,
+    // with the original exceptions (call under the archive and tier locks).
+    m.def("archive_region_sources", [](const py::dict &entries, const py::dict &tier_records,
+                                       const py::list &keys, size_t record_bytes) {
+        std::vector<PyObject *> found;
+        found.reserve(keys.size());
+        bool missing = false;
+        for (const auto &key : keys) {
+            PyObject *entry = PyDict_GetItemWithError(entries.ptr(), key.ptr());
+            if (!entry && PyErr_Occurred()) throw py::error_already_set();
+            found.push_back(entry);
+        }
+        for (PyObject *entry : found) {
+            if (!entry) { missing = true; break; }
+            const int ready = PyObject_IsTrue(py::handle(entry).attr("ready").ptr());
+            if (ready < 0) throw py::error_already_set();
+            if (!ready) { missing = true; break; }
+        }
+        if (missing) {
+            PyErr_SetObject(PyExc_KeyError, py::str("Prepared CPU record is absent, stale or unpublished").ptr());
+            throw py::error_already_set();
+        }
+        py::list sources;
+        for (PyObject *entry : found) {
+            py::object slot = py::handle(entry).attr("allocation").attr("slot");
+            PyObject *source = PyDict_GetItemWithError(tier_records.ptr(), slot.ptr());
+            if (!source) {
+                if (!PyErr_Occurred()) PyErr_SetObject(PyExc_KeyError, slot.ptr());
+                throw py::error_already_set();
+            }
+            sources.append(py::handle(source));
+        }
+        for (const auto &source : sources)
+            if (!PyBytes_CheckExact(source.ptr()) || static_cast<size_t>(PyBytes_GET_SIZE(source.ptr())) != record_bytes)
+                throw py::value_error("Prepared CPU regions require exact immutable record bytes");
+        return sources;
+    }, py::arg("entries"), py::arg("tier_records"), py::arg("keys"), py::arg("record_bytes"));
+    // pressure_commit.prepare_commit's per-layer map: entries = [identities[s]],
+    // the same length and (history_begin, count) checks in the same order, and
+    // rows (*entry, offset) with offsets accumulated from 0 by Python addition.
+    m.def("commit_map", [](const py::list &slots, const py::dict &identities, const py::list &picked) {
+        std::vector<py::object> entries;
+        entries.reserve(slots.size());
+        for (const auto &slot : slots) {
+            PyObject *entry = PyDict_GetItemWithError(identities.ptr(), slot.ptr());
+            if (!entry) {
+                if (!PyErr_Occurred()) PyErr_SetObject(PyExc_KeyError, slot.ptr());
+                throw py::error_already_set();
+            }
+            entries.push_back(py::reinterpret_borrow<py::object>(entry));
+        }
+        auto fail = []() { throw std::runtime_error("Prepared pressure map differs from the selected record order"); };
+        if (entries.size() != picked.size()) fail();
+        for (size_t i = 0; i < entries.size(); ++i) {
+            py::tuple entry = py::reinterpret_borrow<py::tuple>(entries[i]);
+            py::handle record = picked[i];
+            const int begin = PyObject_RichCompareBool(entry[2].ptr(), record.attr("history_begin").ptr(), Py_NE);
+            if (begin < 0) throw py::error_already_set();
+            if (begin) fail();
+            const int count = PyObject_RichCompareBool(entry[3].ptr(), record.attr("count").ptr(), Py_NE);
+            if (count < 0) throw py::error_already_set();
+            if (count) fail();
+        }
+        py::list rows;
+        py::object offset = py::int_(0);
+        for (const auto &item : entries) {
+            py::tuple entry = py::reinterpret_borrow<py::tuple>(item);
+            rows.append(py::make_tuple(entry[0], entry[1], entry[2], entry[3], offset));
+            PyObject *next = PyNumber_Add(offset.ptr(), entry[3].ptr());
+            if (!next) throw py::error_already_set();
+            offset = py::reinterpret_steal<py::object>(next);
+        }
+        return py::make_tuple(py::tuple(rows), offset);
+    }, py::arg("slots"), py::arg("identities"), py::arg("picked"));
+    // all(id(r) in table for r in records)
+    m.def("prepared_contains", [](const py::iterable &records, const py::dict &table) {
+        for (const auto &record : records) {
+            py::object key = py::reinterpret_steal<py::object>(PyLong_FromVoidPtr(record.ptr()));
+            if (!key) throw py::error_already_set();
+            const int found = PyDict_Contains(table.ptr(), key.ptr());
+            if (found < 0) throw py::error_already_set();
+            if (!found) return false;
+        }
+        return true;
+    }, py::arg("records"), py::arg("table"));
+    py::class_<StreamPages>(m, "StreamPages")
+        .def(py::init<py::buffer, py::buffer, const std::vector<py::buffer> &, const std::vector<py::buffer> &,
+                      const std::vector<py::buffer> &, ssize_t>(),
+             py::arg("source_raw"), py::arg("source_values"), py::arg("page_raw"), py::arg("page_values"),
+             py::arg("page_sums"), py::arg("block"))
+        .def("layer", &StreamPages::layer, py::arg("layer"), py::arg("vectorized") = false)
+        .def_property_readonly("layers", &StreamPages::layers)
+        .def_property_readonly("scoring_layers", &StreamPages::scoring);
     m.def("finalize_mean_batch", [](const std::vector<py::tuple> &jobs, bool vectorized) -> py::object {
         // Validate every page before touching any sum. Buffer exports retain
         // their owners across one GIL release for the accepted packet, instead
@@ -461,16 +1029,27 @@ PYBIND11_MODULE(_native, m) {
                 throw std::invalid_argument("Invalid content-index buffers");
             rows.push_back({std::move(a),std::move(b),count,fp8});
         }
-        size_t vectorized_records = 0;
+        std::vector<uint8_t> vectorized_rows(rows.size(), 0);
+        // Rows may run on several threads only when no two sums overlap; then
+        // every page keeps its own serial token-order FP32 additions.
+        std::vector<const py::buffer_info *> written, read;
+        written.reserve(rows.size());
+        read.reserve(rows.size());
+        for (const auto &r : rows) {
+            written.push_back(&r.sums);
+            read.push_back(&r.raw);
+        }
+        const bool disjoint = disjoint_buffers(written, read);
         {
           py::gil_scoped_release release;
-          for (const auto &r : rows) {
+          auto finalize_row = [&](size_t index) {
+            const auto &r = rows[index];
             const auto &a=r.raw, &b=r.sums;
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
             if (vectorized && r.fp8 && mean_fp8_simd_eligible(a, b, r.count)) {
                 finalize_mean_fp8_simd(a, b, r.count);
-                ++vectorized_records;
-                continue;
+                vectorized_rows[index] = 1;
+                return;
             }
 #endif
             for (ssize_t layer=0;layer<b.shape[0];++layer) {
@@ -488,8 +1067,15 @@ PYBIND11_MODULE(_native, m) {
                     }
                 }
             }
+          };
+          if (disjoint) {
+            kvmem_parallel::for_rows(rows.size(), finalize_row);
+          } else {
+            for (size_t index = 0; index < rows.size(); ++index) finalize_row(index);
           }
         }
+        size_t vectorized_records = 0;
+        for (const auto flag : vectorized_rows) vectorized_records += flag;
         if (vectorized) return py::int_(vectorized_records);
         return py::none();
     }, py::arg("jobs"), py::arg("vectorized") = false);
@@ -601,9 +1187,24 @@ PYBIND11_MODULE(_native, m) {
         // Every descriptor is validated before touching any destination. The
         // exported buffers retain the packet and each authority through this call.
         size_t finalized_records = 0;
+        // Copy-only prefill pages with disjoint destinations are independent;
+        // opt-in KVMEM_NATIVE_PUBLISH_THREADS spreads them across threads.
+        // Reductions into shared or aliased sums keep the serial row order.
+        bool parallel = true;
+        std::vector<const py::buffer_info *> written, read;
+        for (const auto &r : rows) {
+            parallel = parallel && r.copy_only;
+            written.push_back(&r.dst_raw);
+            written.push_back(&r.dst_values);
+            if (r.finalize_mean) written.push_back(&r.sum);
+            read.push_back(&r.raw);
+            read.push_back(&r.values);
+        }
+        parallel = parallel && rows.size() > 1 && disjoint_buffers(written, read);
         {
         py::gil_scoped_release no_gil;
-        for (const auto &r : rows) {
+        auto scatter_row = [&](size_t index) {
+            const auto &r = rows[index];
             for (ssize_t layer = 0; layer < r.raw.shape[0]; ++layer) {
                 auto copy_rows = [&](const py::buffer_info &dst, const py::buffer_info &src) {
                     const auto width = src.shape[2] * src.shape[3];
@@ -641,11 +1242,10 @@ PYBIND11_MODULE(_native, m) {
                     }
                 }
             }
-            finalized_records += r.finalize_mean;
             // The caller finalizes this completed page from its immutable raw
             // bytes before committing history. None without this explicit flag
             // retains the original small-decode fused-reduction semantics.
-            if (r.copy_only) continue;
+            if (r.copy_only) return;
             auto *sum = static_cast<float *>(r.sum.ptr);
             if (r.delta.ptr) {
                 const auto *delta = static_cast<const float *>(r.delta.ptr);
@@ -667,8 +1267,14 @@ PYBIND11_MODULE(_native, m) {
                     case 4: add_decode_mean<4>(r.raw, r.sum, r.begin); break;
                 }
             }
+        };
+        if (parallel) {
+            kvmem_parallel::for_rows(rows.size(), scatter_row);
+        } else {
+            for (size_t index = 0; index < rows.size(); ++index) scatter_row(index);
         }
         }
+        for (const auto &r : rows) finalized_records += r.finalize_mean;
         // Old 9/10-field callers keep the original None result. The explicit
         // fused descriptor reports actual execution, never silent fallback.
         for (const auto &job : jobs) if (job.size() == 11)
@@ -1031,6 +1637,19 @@ PYBIND11_MODULE(_native, m) {
         }))
         .def("reserve", &KvMemRepository::try_reserve)
         .def("pin", &KvMemRepository::try_pin)
+        .def("pin_set", [](const KvMemRepository &r, const std::vector<KvMemBlockHandle> &handles) {
+            LeaseSet set;
+            set.leases.reserve(handles.size());
+            for (const auto &handle : handles) set.leases.push_back(r.try_pin(handle));
+            return set;
+        })
+        // [pin(h) for h in handles] in one call: identical leases, in order.
+        .def("pin_many", [](const KvMemRepository &r, const std::vector<KvMemBlockHandle> &handles) {
+            py::list leases;
+            for (const auto &handle : handles)
+                leases.append(py::cast(r.try_pin(handle), py::return_value_policy::move));
+            return leases;
+        })
         .def("pin_slot", &KvMemRepository::try_pin_slot)
         .def("retire", &KvMemRepository::retire)
         .def("retire_permanently", &KvMemRepository::retire_permanently)
@@ -1081,13 +1700,18 @@ PYBIND11_MODULE(_native, m) {
         .value("RETRY", PayloadArena::RetireResult::Retry);
     py::class_<PayloadArena, std::shared_ptr<PayloadArena>>(m, "HistoricalPayloadArena")
         .def(py::init([](uint32_t capacity, size_t record_bytes, bool background,
-                        uint32_t poll_ms, uint32_t scan_slots, uint32_t release_batch) {
+                        uint32_t poll_ms, uint32_t scan_slots, uint32_t release_batch,
+                        uint32_t pool_chunk_mib, uint32_t pool_ahead_records) {
             if (record_bytes > size_t(PY_SSIZE_T_MAX))
                 throw std::invalid_argument("Historical CPU record exceeds buffer protocol limits");
+            if (pool_ahead_records && !pool_chunk_mib)
+                throw std::invalid_argument("Pre-faulted CPU records require a record pool");
             return std::make_shared<PayloadArena>(PayloadArena::Config{
-                capacity, record_bytes, poll_ms, scan_slots, release_batch, background});
+                capacity, record_bytes, poll_ms, scan_slots, release_batch, background,
+                pool_chunk_mib, pool_ahead_records});
         }), py::arg("capacity"), py::arg("record_bytes"), py::arg("background") = true,
-            py::arg("poll_ms") = 10, py::arg("scan_slots") = 256, py::arg("release_batch") = 64)
+            py::arg("poll_ms") = 10, py::arg("scan_slots") = 256, py::arg("release_batch") = 64,
+            py::arg("pool_chunk_mib") = 0, py::arg("pool_ahead_records") = 0)
         .def("publish", [](PayloadArena &arena, PayloadArena::Handle handle, py::buffer source) {
             auto view = source.request();
             if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
@@ -1142,6 +1766,7 @@ PYBIND11_MODULE(_native, m) {
             PAYLOAD_STAT(readers); PAYLOAD_STAT(released_slots); PAYLOAD_STAT(released_bytes);
             PAYLOAD_STAT(last_release_thread);
             PAYLOAD_STAT(external_owners); PAYLOAD_STAT(external_bytes); PAYLOAD_STAT(external_released_bytes);
+            PAYLOAD_STAT(pool_hits); PAYLOAD_STAT(pool_misses); PAYLOAD_STAT(pool_reserved_bytes);
 #undef PAYLOAD_STAT
             return result;
         });
@@ -1310,6 +1935,71 @@ PYBIND11_MODULE(_native, m) {
         PLAN(retained_position_stable) PLAN(retained_position_moved)
 #undef PLAN
         ;
+    // Opt-in KVMEM_PRESSURE_NATIVE_PLAN_CHECK: the layer-zero single-assembly
+    // checks of layerwise_pressure_efficiency and _validate_destinations, read
+    // from the plan's C++ remaps instead of 1,152 converted Python objects.
+    // Same checks, order and messages. Returns (skip_begins, rebuilt_tokens,
+    // skipped_tokens, partial_tokens) for the unchanged AssemblyResult fields.
+    m.def("check_pressure_plan", [](const KvMemPlan &plan, const std::vector<uint32_t> &slots,
+                                     const std::vector<int64_t> &counts, const std::vector<int64_t> &begins,
+                                     const std::vector<std::pair<int64_t, int64_t>> &layer_bounds,
+                                     bool original_rope, bool rolling) {
+        if (slots.size() != counts.size() || slots.size() != begins.size())
+            throw std::invalid_argument("Invalid layer-zero selection arrays");
+        std::unordered_map<uint32_t, size_t> by_slot;   // last wins, like a dict
+        std::unordered_map<uint32_t, int64_t> positions;
+        by_slot.reserve(slots.size()); positions.reserve(slots.size());
+        int64_t cursor = 0;
+        for (size_t i = 0; i < slots.size(); ++i) {
+            by_slot[slots[i]] = i;
+            positions[slots[i]] = cursor;
+            cursor += counts[i];
+        }
+        const auto &remaps = plan.remaps;
+        {
+            std::unordered_map<uint32_t, bool> seen;
+            seen.reserve(remaps.size());
+            for (const auto &r : remaps) seen[r.block_id] = true;
+            bool same = seen.size() == by_slot.size();
+            if (same) for (const auto &item : by_slot) if (!seen.count(item.first)) { same = false; break; }
+            if (same) for (const auto &r : remaps) if (r.to_base != positions[r.block_id]) { same = false; break; }
+            if (!same) throw py::value_error("Layer-zero selection differs from the native assembly plan");
+        }
+        bool have_bounds = false;
+        int64_t capacity = 0, rope = 0;
+        for (const auto &r : remaps) {
+            const size_t index = by_slot.at(r.block_id);
+            if (counts[index] != static_cast<int64_t>(r.n_tokens) || r.to_base < 0)
+                throw py::value_error("Selected generation/extent no longer matches authority");
+            if (!have_bounds) {
+                have_bounds = true;
+                capacity = std::numeric_limits<int64_t>::max();
+                rope = std::numeric_limits<int64_t>::max();
+                for (const auto &b : layer_bounds) { capacity = std::min(capacity, b.first); rope = std::min(rope, b.second); }
+            }
+            const int64_t end = static_cast<int64_t>(r.to_base) + r.n_tokens;
+            const int64_t rope_end = original_rope ? begins[index] + r.n_tokens : end;
+            if (end > capacity || rope_end > rope) {
+                for (const auto &b : layer_bounds) {
+                    if (end > b.first) throw py::value_error("Selected working window exceeds native allocated pages");
+                    if (rope_end > b.second) throw py::value_error("Selected position exceeds the model RoPE table");
+                }
+            }
+        }
+        py::list skip;
+        int64_t rebuilt = 0, skipped = 0, partial = 0;
+        for (const auto &r : remaps) {
+            if (!rolling && r.skip) {
+                skip.append(begins[by_slot.at(r.block_id)]);
+                skipped += r.n_tokens;
+            } else {
+                rebuilt += r.n_tokens;
+            }
+            if (!r.skip && r.n_tokens != 32) partial += r.n_tokens;
+        }
+        return py::make_tuple(skip, rebuilt, skipped, partial);
+    }, py::arg("plan"), py::arg("slots"), py::arg("counts"), py::arg("begins"), py::arg("layer_bounds"),
+       py::arg("original_rope"), py::arg("rolling"));
     py::class_<KvMemStore::RepositoryAppend>(m, "Append")
         .def_property_readonly("spans", &KvMemStore::RepositoryAppend::spans)
         .def_property_readonly("begin", &KvMemStore::RepositoryAppend::begin)
@@ -1381,6 +2071,13 @@ PYBIND11_MODULE(_native, m) {
             return OwnedRead(s.repository_storage_read(b, n));
         })
         .def("handle", &KvMemStore::repository_handle)
+        // [handle(slot).generation for slot in slots] in one call.
+        .def("generations", [](const KvMemStore &store, const std::vector<uint32_t> &slots) {
+            std::vector<uint64_t> out;
+            out.reserve(slots.size());
+            for (const auto slot : slots) out.push_back(store.repository_handle(slot).generation);
+            return out;
+        })
         .def_property_readonly("history_end", &KvMemStore::history_end)
         .def_property_readonly("runtime_select_budget", &KvMemStore::runtime_select_budget_tokens)
         .def("query_score_frame", [](KvMemStore &store,
@@ -1458,6 +2155,93 @@ PYBIND11_MODULE(_native, m) {
                                  const KvMemStore::PressureActionScores &scores, uint32_t budget) {
             return s.pick_prefill_pressure_blocks(mandatory, scores, budget);
         }, py::arg("mandatory"), py::arg("scores"), py::arg("budget") = 0)
+        // Opt-in KVMEM_PRESSURE_NATIVE_LAYER_PICK: one lazily selected layer of
+        // LayerwisePrefillPressure.prepare.select_layer (fast_prepare + native
+        // score lookups) in one call, in the original order: the candidate loop
+        // with its checks and messages, then preview_selection's READY check
+        // (``require``), its empty retrieval-score frame and the pressure pick,
+        // then the layer checks and the archive-order sort. Returns None before
+        // any side effect when an input is not in the expected shape, so the
+        // caller runs the original Python path instead.
+        .def("pressure_layer_pick", [](KvMemStore &s, const py::list &mapping, const py::dict &by_begin,
+                const py::list &scores, const std::vector<uint32_t> &mandatory, uint32_t budget,
+                const py::dict &record_positions, const py::list &records,
+                const py::object &require) -> py::object {
+            const Py_ssize_t count = PyList_GET_SIZE(mapping.ptr());
+            if (PyList_GET_SIZE(scores.ptr()) != count) return py::none();
+            for (Py_ssize_t i = 0; i < count; ++i) {
+                PyObject *row = PyList_GET_ITEM(mapping.ptr(), i);
+                if (!PyTuple_CheckExact(row) || PyTuple_GET_SIZE(row) != 5) return py::none();
+                if (!PyFloat_CheckExact(PyList_GET_ITEM(scores.ptr(), i))) return py::none();
+            }
+            py::list candidates, candidate_slots;
+            KvMemStore::PressureActionScores supplied;
+            supplied.reserve(static_cast<size_t>(count));
+            std::unordered_set<uint32_t> allowed(mandatory.begin(), mandatory.end());
+            bool positive = false;
+            for (Py_ssize_t i = 0; i < count; ++i) {
+                PyObject *row = PyList_GET_ITEM(mapping.ptr(), i);
+                PyObject *begin = PyTuple_GET_ITEM(row, 2), *n = PyTuple_GET_ITEM(row, 3);
+                PyObject *entry = PyDict_GetItemWithError(by_begin.ptr(), begin);
+                if (!entry && PyErr_Occurred()) throw py::error_already_set();
+                bool absent = entry == nullptr || entry == Py_None;
+                if (!absent) {
+                    if (!PyTuple_CheckExact(entry) || PyTuple_GET_SIZE(entry) != 2) return py::none();
+                    py::object record_count = py::handle(PyTuple_GET_ITEM(entry, 0)).attr("count");
+                    const int differs = PyObject_RichCompareBool(record_count.ptr(), n, Py_NE);
+                    if (differs < 0) throw py::error_already_set();
+                    absent = differs != 0;
+                }
+                if (absent)
+                    throw std::runtime_error("Layer pressure candidate is absent from accepted immutable history");
+                PyObject *record = PyTuple_GET_ITEM(entry, 0), *slot = PyTuple_GET_ITEM(entry, 1);
+                const double score = PyFloat_AS_DOUBLE(PyList_GET_ITEM(scores.ptr(), i));
+                if (!std::isfinite(score) || score < 0)
+                    throw std::runtime_error("Invalid layer cumulative attention score");
+                positive = positive || score > 0;
+                candidates.append(py::handle(record));
+                candidate_slots.append(py::handle(slot));
+                const auto slot_id = py::cast<uint32_t>(py::handle(slot));
+                supplied.emplace_back(slot_id, score);
+                allowed.insert(slot_id);
+            }
+            if (!positive)
+                throw std::runtime_error("Layer pressure has no accepted attention; refusing a recency fallback");
+            require();                                    // preview_selection: _require(Phase.READY)
+            s.set_repository_retrieval_scores({}, {});    // preview_selection: store.scores([], [])
+            const auto picked_ids = s.pick_prefill_pressure_blocks(mandatory, supplied, budget);
+            std::unordered_set<uint32_t> slots(picked_ids.begin(), picked_ids.end());
+            bool violated = 32ull * slots.size() > budget;
+            for (const auto id : mandatory) violated = violated || !slots.count(id);
+            for (const auto id : slots) violated = violated || !allowed.count(id);
+            if (violated)
+                throw std::runtime_error("Layer pressure violated candidates, mandatory blocks or Active budget");
+            std::vector<std::pair<Py_ssize_t, uint32_t>> order;
+            order.reserve(slots.size());
+            for (const auto id : slots) {
+                py::object key = py::int_(id);
+                PyObject *position = PyDict_GetItemWithError(record_positions.ptr(), key.ptr());
+                if (!position) {
+                    if (!PyErr_Occurred()) PyErr_SetObject(PyExc_KeyError, key.ptr());
+                    throw py::error_already_set();
+                }
+                const Py_ssize_t index = PyLong_AsSsize_t(position);
+                if (index == -1 && PyErr_Occurred()) throw py::error_already_set();
+                order.emplace_back(index, id);
+            }
+            std::sort(order.begin(), order.end());
+            py::list ordered_slots, picked;
+            for (const auto &[index, id] : order) {
+                ordered_slots.append(py::int_(id));
+                if (index < 0 || index >= PyList_GET_SIZE(records.ptr())) {
+                    PyErr_SetString(PyExc_IndexError, "list index out of range");
+                    throw py::error_already_set();
+                }
+                picked.append(py::handle(PyList_GET_ITEM(records.ptr(), index)));
+            }
+            return py::make_tuple(candidates, candidate_slots, ordered_slots, picked);
+        }, py::arg("mapping"), py::arg("by_begin"), py::arg("scores"), py::arg("mandatory"),
+           py::arg("budget"), py::arg("record_positions"), py::arg("records"), py::arg("require"))
         .def("pick_pressure_batch", [](const KvMemStore &s, const std::vector<uint32_t> &mandatory,
                 const std::vector<std::vector<uint32_t>> &layer_slots,
                 const std::vector<std::vector<double>> &layer_scores, uint32_t budget) {
@@ -1475,6 +2259,13 @@ PYBIND11_MODULE(_native, m) {
         }, py::arg("mandatory"), py::arg("layer_slots"), py::arg("layer_scores"), py::arg("budget") = 0)
         .def("select", &KvMemStore::set_repository_selection,
              py::arg("handles"), py::arg("force_raw_refresh") = false)
+        // select([handle(slot) for slot in slots]) without per-slot Python handles.
+        .def("select_slots", [](KvMemStore &store, const std::vector<uint32_t> &slots) {
+            std::vector<KvMemBlockHandle> handles;
+            handles.reserve(slots.size());
+            for (const auto slot : slots) handles.push_back(store.repository_handle(slot));
+            return store.set_repository_selection(handles, false);
+        }, py::arg("slots"))
         .def("restore_selection", &KvMemStore::restore_repository_selection,
              py::arg("handles"))
         // Experimental host adapter; serving continues to use RequestMemory's

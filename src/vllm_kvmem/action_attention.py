@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from contextlib import nullcontext
 import json
 import math
+import os
 import re
 import time
 
@@ -64,7 +65,15 @@ class ActionHistory:
         self.rounds=0
         self.replay_snapshot=None
         from .prefill_attention import PrefillHistory
-        self.prefill = PrefillHistory(options) if getattr(options,'prefill_attention',False) else None
+        self.prefill = None
+        if getattr(options,'prefill_attention',False):
+            self.prefill = PrefillHistory(options)
+            if global_prefill_buffered() and self.prefill.native_commit:
+                # Opt-in: the same immutable native state as the per-layer
+                # histories (identical arithmetic; no per-span Python dict).
+                # Only with the qualified native commit policy it requires.
+                from .buffered_prefill_attention import BufferedPrefillHistory
+                self.prefill = BufferedPrefillHistory(options)
         self.prefill_replay = None
         self.prefill_planning_epoch = 0
 
@@ -165,6 +174,13 @@ class ActionHistory:
         if self.prefill is not None:
             self.prefill.restore(prefill_snapshot, prefill_end)
         authority.memory.set_action_scores(self.scores)
+
+
+def global_prefill_buffered():
+    value = os.getenv('KVMEM_GLOBAL_PREFILL_BUFFERED', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_GLOBAL_PREFILL_BUFFERED must be 0 or 1')
+    return value == '1'
 
 
 def window_segments(records, history_begin, local_begin, count, block_tokens):
@@ -530,6 +546,20 @@ class ActionRuntime:
                 getattr(adapter, 'offsets', {}).get(request_id, 0),
                 getattr(state, 'prefill_planning_epoch', 0), state.prefill_replay)
 
+    def _publication_identity(self, request_id, state, history_end):
+        """Identity a queued logical packet must still match at publication.
+
+        A promised refresh (pressure_promise) commits the next window's
+        adapter offset before the chunk that filled the old window has been
+        published. That chunk was planned, and must be validated, against the
+        pre-promise window; every later chunk uses the current identity.
+        """
+        identity = self._prefill_identity(request_id, state)
+        override = getattr(self, 'promise_epochs', {}).get(request_id)
+        if override is not None and history_end <= override[0]:
+            identity = (identity[0], override[1], override[2], *identity[3:])
+        return identity
+
     def prefill_pipeline_ready(self, request_id, history_begin, local_begin):
         frame = getattr(self, 'prefill_plan_frames', {}).get(request_id)
         authority = getattr(self.runtime, 'authorities', {}).get(request_id)
@@ -550,10 +580,11 @@ class ActionRuntime:
             return
         logical_groups = getattr(self.runner, '_kvmem_logical_prefill_groups', {})
         multi = getattr(self.options, 'prefill_physical_multi_owner', False)
+        from .multiowner_prefill import owners_prefilling
         if logical_groups and (not getattr(self.options, 'prefill_physical_coalescing', False) or
                 (not multi and (len(batch.req_ids) != 1 or set(logical_groups) != set(batch.req_ids))) or
                 not set(logical_groups).issubset(batch.req_ids) or
-                multi and not all(batch.is_prefilling_np)):
+                multi and not owners_prefilling(batch, logical_groups)):
             raise RuntimeError('Logical prefill receipt requires the qualified single-owner batch')
         plans = {}
         frames = self.__dict__.setdefault('prefill_plan_frames', {})
@@ -591,25 +622,33 @@ class ActionRuntime:
             matches = (frame is not None and getattr(authority, 'action_history', None) is frame.state and
                        frame.matches(authority, identity, history_begin, local_begin))
             can_advance = getattr(self.runtime, 'prefill_pipeline_can_advance', None)
+            promised = None
             if not (matches and can_advance is not None and can_advance(request_id)):
                 frames.pop(request_id, None)
-                if not self.runtime.drain_requests((request_id,), wait=True):
-                    raise RuntimeError('Action capture preceded scheduler confirmation')
-                authority = self.runtime.ensure_authority(request_id)
-                state = getattr(authority, 'action_history', None)
-                if state is None:
-                    state = authority.action_history = ActionHistory(self.options, self.ids)
-                identity = self._prefill_identity(request_id, state)
-                local_begin = history_begin - identity[2]
-                excluded = state.prefill_replay
-                if excluded is not None and history_begin < excluded[1] and history_begin + count > excluded[0]:
-                    if request_id in logical_groups:
-                        raise RuntimeError('Logical prefill receipt overlaps restored Query replay')
-                    # _plan_owner retains the original overlap validation.
-                    continue
-                from .prefill_planning import freeze_prefill_frame
-                frame = freeze_prefill_frame(authority, state, identity, history_begin,
-                    local_begin, authority.memory._store.working_records())
+                promised = self._promised_frame(request_id, history_begin, count, frame)
+                if promised is not None:
+                    # Opt-in promised refresh: geometry now, exact keys in _capture.
+                    frame = promised[0]
+                    authority, local_begin = frame.authority, frame.local_end
+                else:
+                    self._await_promised_commit(request_id)
+                    if not self.runtime.drain_requests((request_id,), wait=True):
+                        raise RuntimeError('Action capture preceded scheduler confirmation')
+                    authority = self.runtime.ensure_authority(request_id)
+                    state = getattr(authority, 'action_history', None)
+                    if state is None:
+                        state = authority.action_history = ActionHistory(self.options, self.ids)
+                    identity = self._prefill_identity(request_id, state)
+                    local_begin = history_begin - identity[2]
+                    excluded = state.prefill_replay
+                    if excluded is not None and history_begin < excluded[1] and history_begin + count > excluded[0]:
+                        if request_id in logical_groups:
+                            raise RuntimeError('Logical prefill receipt overlaps restored Query replay')
+                        # _plan_owner retains the original overlap validation.
+                        continue
+                    from .prefill_planning import freeze_prefill_frame
+                    frame = freeze_prefill_frame(authority, state, identity, history_begin,
+                        local_begin, authority.memory._store.working_records())
             state = frame.state
             logical = logical_groups.get(request_id)
             extra = {}
@@ -623,6 +662,9 @@ class ActionRuntime:
                 rows, starts, counts, history, next_frame = frame.extend(
                     history_begin, local_begin, count, self.runtime.config.block_tokens)
             frames[request_id] = next_frame
+            if promised is not None:
+                extra.update(promise_lease=promised[1], promise_identity=frame.identity,
+                             promise_receipt=logical_groups.get(request_id), promise_next_frame=next_frame)
             sources = (tuple(history_begin + row for row in rows)
                        if getattr(authority, 'block_graph', None) is not None else ())
             plans[request_id] = dict(authority=authority, state=state, history_begin=history_begin,
@@ -630,9 +672,117 @@ class ActionRuntime:
                 counts=counts, history=history, index=i, begin=begin, count=count,
                 pipeline=True, **extra)
             self.pipeline_requests.add(request_id)
-        if logical_groups and sum(len(plan['rows']) for plan in plans.values()) > self.native.max_rows:
+        native = getattr(self, 'native', None)
+        if (logical_groups and native is not None and not native.disabled and
+                sum(len(plan['rows']) for plan in plans.values()) > native.max_rows):
             raise RuntimeError('Logical owner cohort exceeds the shared native score allocation')
         self.prefill_plans = (batch, plans)
+
+    # Placeholder page keys for a promised (not yet selected) window prefix:
+    # valid block-aligned identities that can never equal a real history page.
+    PROMISE_KEY_BASE = 1 << 60
+
+    def _promised_frame(self, request_id, history_begin, count, previous=None):
+        """Geometry-only frame for the first chunk after a promised refresh.
+
+        The refreshed prefix is select_budget full pages; the native score
+        kernel consumes only segment starts/counts and sampled rows. The exact
+        frame (real page identities, sampled end) is frozen in _capture after
+        the producer commits, and every geometry field is asserted equal.
+        """
+        from .pressure_promise import enabled
+        if not enabled():
+            return None
+        pipeline = getattr(getattr(self.runner, '_kvmem_layerwise_pressure', None), 'pipeline', None)
+        lease = pipeline.active.get(request_id) if pipeline is not None else None
+        if (lease is None or not getattr(lease, 'promised', False) or lease.committed.is_set() or
+                lease.job.history != history_begin):
+            return None
+        authority = getattr(self.runtime, 'authorities', {}).get(request_id)
+        state = getattr(authority, 'action_history', None)
+        if authority is None or state is None or authority is not lease.job.authority:
+            return None
+        # The sampled end after the unpublished chunk is exactly what that
+        # chunk's own planning frame recorded (rows -> its end, else unchanged).
+        if (previous is None or previous.history_end != history_begin or
+                previous.authority is not authority or previous.state is not state):
+            return None
+        sampled_end = previous.sampled_end
+        identity = self._prefill_identity(request_id, state)
+        local_begin = history_begin - identity[2]
+        excluded = state.prefill_replay
+        block = self.runtime.config.block_tokens
+        if (local_begin != lease.promise_extent or local_begin % block or
+                (excluded is not None and history_begin < excluded[1] and history_begin + count > excluded[0])):
+            return None
+        from .prefill_planning import PrefillPlanFrame
+        records = tuple((-2, -2, self.PROMISE_KEY_BASE + i*block, block, i*block)
+                        for i in range(local_begin // block))
+        counts = self.__dict__.setdefault('promise_plan_counts', {})
+        counts['geometry_frames'] = counts.get('geometry_frames', 0) + 1
+        return PrefillPlanFrame(authority, state, identity, history_begin, local_begin,
+                                sampled_end, records), lease
+
+    def _resolve_promised_plans(self, batch):
+        """Replace promised geometry plans by the exactly frozen plans.
+
+        Runs after the forward, before any score packet is built. The producer
+        has committed host maps; this owner has no queued packet. Any change in
+        rows, segments, spans or planning identity fails closed.
+        """
+        prepared = getattr(self, 'prefill_plans', None)
+        if prepared is None or prepared[0] is not batch:
+            return
+        frames = self.__dict__.setdefault('prefill_plan_frames', {})
+        counts = self.__dict__.setdefault('promise_plan_counts', {})
+        for request_id, plan in prepared[1].items():
+            lease = plan.pop('promise_lease', None)
+            if lease is None:
+                continue
+            started = time.perf_counter()
+            if not lease.committed.wait(600):
+                raise TimeoutError('Promised refresh did not commit before capture')
+            if lease.error is not None:
+                raise RuntimeError('Promised pressure refresh failed') from lease.error
+            if not self.runtime.drain_requests((request_id,), wait=True):
+                raise RuntimeError('Action capture preceded scheduler confirmation')
+            authority = self.runtime.ensure_authority(request_id)
+            state = getattr(authority, 'action_history', None)
+            identity = self._prefill_identity(request_id, state)
+            if (authority is not plan['authority'] or state is not plan['state'] or
+                    identity != plan.pop('promise_identity')):
+                raise RuntimeError('Promised refresh changed the prefill planning identity')
+            from .prefill_planning import freeze_prefill_frame
+            frame = freeze_prefill_frame(authority, state, identity, plan['history_begin'],
+                plan['local_begin'], authority.memory._store.working_records())
+            receipt = plan.pop('promise_receipt', None)
+            synthetic_next = plan.pop('promise_next_frame', None)
+            if receipt is not None:
+                from dataclasses import replace
+                from .logical_action import plan_logical_scores
+                group = replace(receipt, owner_epoch=identity)
+                score_plans, rows, next_frame = plan_logical_scores(group, frame)
+                old = plan['logical_score_plans']
+                if (group != plan['logical_group'] or list(rows) != list(plan['rows']) or
+                        len(old) != len(score_plans) or
+                        any((a.span, a.rows, a.starts, a.counts) != (b.span, b.rows, b.starts, b.counts)
+                            for a, b in zip(old, score_plans)) or
+                        list(score_plans[-1].starts) != list(plan['starts']) or
+                        list(score_plans[-1].counts) != list(plan['counts'])):
+                    raise RuntimeError('Promised refresh changed the logical score geometry')
+                plan.update(logical_group=group, logical_score_plans=score_plans,
+                            history=list(score_plans[-1].history))
+            else:
+                rows, starts, counts_, history, next_frame = frame.extend(
+                    plan['history_begin'], plan['local_begin'], plan['count'], self.runtime.config.block_tokens)
+                if (list(rows), list(starts), list(counts_)) != (list(plan['rows']), list(plan['starts']),
+                                                                list(plan['counts'])):
+                    raise RuntimeError('Promised refresh changed the prefill score geometry')
+                plan['history'] = list(history)
+            if frames.get(request_id) is synthetic_next:
+                frames[request_id] = next_frame
+            counts['resolved_plans'] = counts.get('resolved_plans', 0) + 1
+            counts['resolve_seconds'] = counts.get('resolve_seconds', 0.) + time.perf_counter() - started
 
     def _plan_logical_prefill(self, group, frame, batch, index, begin, count,
                               history_begin, local_begin, prompt):
@@ -656,14 +806,15 @@ class ActionRuntime:
                 group.request_plan.block_tokens != config.block_tokens or
                 group.request_plan.gen_budget != config.gen_budget):
             raise RuntimeError('Logical prefill receipt differs from the worker prefix or policy')
-        if (native is None or native.disabled or native.mode != 'reuse' or
-                not getattr(self.options, 'prefill_native_plan_arm', False)):
+        native_scores = (native is not None and not native.disabled and native.mode == 'reuse' and
+                         getattr(self.options, 'prefill_native_plan_arm', False))
+        if not native_scores and not self._portable_logical_scores(native):
             raise RuntimeError('Logical prefill requires available native prefill score capacity')
         group = replace(group, owner_epoch=self._prefill_identity(group.request_id, frame.state))
         plans, rows, next_frame = plan_logical_scores(group, frame)
         final = plans[-1]
         width = sum((start+size+15)//16-start//16 for start, size in zip(final.starts, final.counts))
-        if (len(rows) > native.max_rows or len(final.starts) > native.max_segments or
+        if native_scores and (len(rows) > native.max_rows or len(final.starts) > native.max_segments or
                 final.span.local_end > native.context or width > native.width or
                 getattr(native, 'rows', None) is not None and begin+count > native.rows.numel()):
             raise RuntimeError('Logical prefill exceeds the existing native score allocation')
@@ -684,6 +835,22 @@ class ActionRuntime:
         counters['planned_physical_groups'] = counters.get('planned_physical_groups', 0)+1
         counters['planned_logical_chunks'] = counters.get('planned_logical_chunks', 0)+len(plans)
         return group, plans, rows, next_frame
+
+    def _portable_logical_scores(self, native):
+        """Coalesced logical prefill without the architecture-specific kernels.
+
+        The native score overlay patches the attention kernels of one GPU
+        family (sm12x). Elsewhere it disables itself; logical groups are then
+        scored by the existing portable reference scorer (reference_logical_scores,
+        the same path native validation falls back to) instead of failing.
+        """
+        if native is None or not getattr(native, 'unavailable', False):
+            # Kernels configured off, available in another mode, or a runtime
+            # failure: keep the original fail-closed qualification rule.
+            return False
+        counts = self.__dict__.setdefault('logical_prefill_stats', {})
+        counts['portable_reference_groups'] = counts.get('portable_reference_groups', 0) + 1
+        return True
 
     @staticmethod
     def _logical_packet_views(packets, request_id, plan, pending):
@@ -756,7 +923,23 @@ class ActionRuntime:
         self.native.arm(plans)
         return True
 
+    def _await_promised_commit(self, request_id):
+        """Store reads for an owner wait until its promised refresh commits maps.
+
+        Before that commit the working records still describe the old window.
+        Geometry-only plans avoid this wait; every other planner must not read
+        a stale host map (pressure_promise).
+        """
+        pipeline = getattr(getattr(self.runner, '_kvmem_layerwise_pressure', None), 'pipeline', None)
+        if pipeline is None or not getattr(pipeline, 'active', None):
+            return
+        from .pressure_promise import wait_committed
+        if wait_committed(pipeline, request_id) is not None:
+            counts = self.__dict__.setdefault('promise_plan_counts', {})
+            counts['planner_commit_waits'] = counts.get('planner_commit_waits', 0) + 1
+
     def _plan_owner(self, request_id, prefill, tokens, global_positions, local_positions, count):
+        self._await_promised_commit(request_id)
         self.invalidate_prefill_plans((request_id,))
         if not self.runtime.drain_requests((request_id,), wait=True):
             raise RuntimeError('Action capture preceded scheduler confirmation')
@@ -1031,6 +1214,7 @@ class ActionRuntime:
                 self.native_candidates = None
 
     def _capture(self, captured, batch, trace=None):
+        self._resolve_promised_plans(batch)
         indices=[i for i in range(batch.num_reqs) if not batch.is_prefilling_np[i] or self.options.prefill_attention]
         if not indices:return {}
         started=time.perf_counter()
@@ -1281,7 +1465,7 @@ class ActionRuntime:
         with (self.runtime.output/'prefill_attention.jsonl').open('a') as stream:
             stream.write(json.dumps({'request_id':request_id,'end':pending.prefill[0],
                 'query_samples':len(pending.rows),'samples':history.samples,
-                'chunks':history.chunks,'pages':len(history.values)})+'\n')
+                'chunks':history.chunks,'pages':history.page_count()})+'\n')
 
     def prepare_accept(self, packet, request_id, accepted, *, graph, history_begin):
         """Reserve graph state before modifying any accepted feedback.
@@ -1304,9 +1488,13 @@ class ActionRuntime:
                 from copy import copy
                 kind = 'prefill'
                 original = pending.state.prefill
+                import time as _time
+                _ta = _time.perf_counter()
                 staged = copy(original)
                 committed = self._prefill_accept(staged, pending, accepted)
                 prefill = original, staged, committed
+                from .publication_trace import emit as _trace
+                _trace('global_prefill_accept', seconds=_time.perf_counter()-_ta)
                 # Preserve the existing full-chunk rule. An accepted partial
                 # prefill advances graph progress with no observed rows.
                 end,count,_,_ = pending.prefill
@@ -1430,7 +1618,7 @@ class ActionRuntime:
         report=state.finish(authority)
         if state.prefill is not None:
             report.update(prefill_samples=state.prefill.samples,prefill_chunks=state.prefill.chunks,
-                          prefill_end=state.prefill.end,prefill_pages=len(state.prefill.values))
+                          prefill_end=state.prefill.end,prefill_pages=state.prefill.page_count())
         report.update(request_id=request_id,candidate_samples_total=self.candidate_samples,
                       capture_host_seconds_total=self.capture_seconds,
                       metadata_early_batches=getattr(self,'metadata_early_batches',0),

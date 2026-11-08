@@ -21,6 +21,17 @@ class PreparedPressureCommit:
             raise RuntimeError('Prepared pressure maps lost their accepted owner/selection')
 
 
+def _native_commit_map():
+    import os
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_COMMIT_MAP', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_COMMIT_MAP must be 0 or 1')
+    if value != '1':
+        return None
+    from . import _native
+    return getattr(_native, 'commit_map', None)
+
+
 def prepare_commit(job, chosen, records, record_slots, selected_slots):
     """Read each selected handle's generation once, away from main-thread ACK.
 
@@ -35,7 +46,14 @@ def prepare_commit(job, chosen, records, record_slots, selected_slots):
     if len(identities) != len(selected):
         raise RuntimeError('Selected pressure identity is missing from the accepted archive')
     maps, lengths = [], set()
+    native = _native_commit_map()
     for picked, slots in zip(chosen, selected_slots):
+        if native is not None:
+            # Same lookups, checks, errors and rows, without a Python loop per row.
+            rows, length = native(list(slots), identities, list(picked))
+            maps.append(rows)
+            lengths.add(length)
+            continue
         entries = [identities[slot] for slot in slots]
         if len(entries) != len(picked) or any(
                 (entry[2], entry[3]) != (r.history_begin, r.count)

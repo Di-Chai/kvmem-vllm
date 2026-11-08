@@ -265,3 +265,25 @@ def test_receipt_cannot_silently_become_one_4k_transaction_without_pre_forward_p
     with pytest.raises(RuntimeError, match='pre-forward worker plan'):
         action.capture(captured, batch)
     assert 'native score' not in calls and current.prefill.snapshot() == before
+
+
+@pytest.mark.parametrize('reason', ['unsupported_architecture_requires_sm12x',
+                                    'FlashInfer source structure changed'])
+def test_platform_without_native_kernels_plans_logical_groups_for_the_reference_scorer(monkeypatch, reason):
+    # Other GPU architectures (or attention sources) cannot run the score
+    # overlay. Coalesced prefill must still plan its exact logical groups and
+    # never arm the native kernels; capture then uses the portable scorer.
+    action, batch, captured, current, calls = runtime(monkeypatch)
+    action.native.disabled, action.native.unavailable = reason, True
+    action.prepare(batch, captured[0].positions)
+    plans = action.prefill_plans[1]
+    assert set(plans) == {'r'} and plans['r'].get('logical_group') is not None
+    assert 'arm' not in calls
+    assert action.logical_prefill_stats['portable_reference_groups'] == 1
+
+
+def test_runtime_disabled_native_kernels_still_fail_closed(monkeypatch):
+    action, batch, captured, current, calls = runtime(monkeypatch)
+    action.native.disabled, action.native.unavailable = 'invalid_native_mass', False
+    with pytest.raises(RuntimeError, match='native prefill score capacity'):
+        action.prepare(batch, captured[0].positions)

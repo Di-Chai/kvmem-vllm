@@ -17,9 +17,24 @@ MASS_TOLERANCE = .005
 SNAPSHOT_VERSION = 1
 
 
+def _native_size():
+    import os
+    value = os.getenv('KVMEM_GRAPH_NATIVE_SIZE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_GRAPH_NATIVE_SIZE must be 0 or 1')
+    if value != '1':
+        return None
+    from . import _native
+    return getattr(_native, 'graph_size', None)
+
+
 def _size(value, seen=None):
     """Actual Python container footprint, including referenced numeric objects."""
     seen = set() if seen is None else seen
+    native = _native_size()
+    if native is not None:
+        # Same traversal and per-object sizes in C++ (identical total).
+        return native(value, seen)
     if id(value) in seen:
         return 0
     seen.add(id(value))

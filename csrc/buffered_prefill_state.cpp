@@ -2,6 +2,7 @@
 // Reuse the exact compensated validation sum, multiply and typed reads from
 // the qualified dictionary backend. Only state representation changes.
 #include "prefill_attention_commit.hpp"
+#include "parallel_rows.hpp"
 
 namespace {
 namespace py = pybind11;
@@ -44,6 +45,52 @@ struct State {
             if (exposure[i]>0.) result[py::int_(keys[i])]=mass[i]/exposure[i];
         }
         return result;
+    }
+
+    size_t size() const { return keys.size(); }
+
+    // values() == other.values() as dictionaries (order-insensitive, Python
+    // float == semantics: -0.0 == 0.0, NaN != NaN).
+    bool same_state(const State &other) const {
+        if (other.keys.size()!=keys.size()) return false;
+        for (size_t i=0;i<keys.size();++i) {
+            const auto found=other.positions.find(keys[i]);
+            if (found==other.positions.end()) return false;
+            if (!(mass[i]==other.mass[found->second]) || !(exposure[i]==other.exposure[found->second]))
+                return false;
+        }
+        return true;
+    }
+
+    // scores().get(key, 0.) for each key, without building the dictionary:
+    // the same IEEE division for exposed keys, 0.0 for absent/unexposed ones.
+    std::vector<double> scores_for(const std::vector<int64_t> &wanted) const {
+        std::vector<double> result(wanted.size(), 0.);
+        for (size_t i=0;i<wanted.size();++i) {
+            const auto found=positions.find(wanted[i]);
+            if (found!=positions.end() && exposure[found->second]>0.)
+                result[i]=mass[found->second]/exposure[found->second];
+        }
+        return result;
+    }
+
+    // {k: tuple(v) for k, v in values().items()} == {k: tuple(v) for k, v in other.items()}
+    // with Python float == semantics (so -0.0 == 0.0 and NaN != NaN).
+    bool same_values(const py::dict &other) const {
+        if (static_cast<size_t>(py::len(other))!=keys.size()) return false;
+        for (const auto &item : other) {
+            if (!PyLong_Check(item.first.ptr())) return false;
+            int overflow=0;
+            const long long key=PyLong_AsLongLongAndOverflow(item.first.ptr(),&overflow);
+            if (overflow || (key==-1 && PyErr_Occurred())) { PyErr_Clear(); return false; }
+            const auto found=positions.find(static_cast<int64_t>(key));
+            if (found==positions.end()) return false;
+            const py::handle pair=item.second;
+            if (py::len(pair)!=2) return false;
+            const double m=py::cast<double>(pair[py::int_(0)]), e=py::cast<double>(pair[py::int_(1)]);
+            if (!(m==mass[found->second]) || !(e==exposure[found->second])) return false;
+        }
+        return true;
     }
 
     static bool validate_buffer(const py::buffer_info &buffer,
@@ -120,6 +167,52 @@ struct State {
     }
 };
 
+// The validation committed_batch performs while folding, without folding:
+// same buffer/shape checks, finite/nonnegative values, compensated row sums and
+// position overflow, in layer then row order, with the same exception types
+// and messages. Deferred layer folds (deferred_fold.py) run this at
+// publication so an invalid span is still rejected there, before any commit.
+void validate_batch(const std::vector<int64_t> &rows,
+        const std::vector<std::vector<int64_t>> &histories,
+        int64_t local_begin,py::buffer masses) {
+    const auto buffer=masses.request();
+    const bool fp32=buffer.format==py::format_descriptor<float>::format() && buffer.itemsize==4;
+    const bool fp64=buffer.format==py::format_descriptor<double>::format() && buffer.itemsize==8;
+    if (buffer.ndim!=3 || (!fp32 && !fp64))
+        throw std::invalid_argument("Prefill attention requires a float32/float64 matrix");
+    if (buffer.shape[0]!=static_cast<ssize_t>(histories.size()))
+        throw std::invalid_argument("Missing independent prefill attention layers");
+    std::vector<py::buffer_info> layers;
+    layers.reserve(histories.size());
+    for (size_t layer=0;layer<histories.size();++layer)
+        layers.emplace_back(static_cast<char *>(buffer.ptr)+static_cast<ssize_t>(layer)*buffer.strides[0],
+            buffer.itemsize,buffer.format,2,
+            std::vector<ssize_t>{buffer.shape[1],buffer.shape[2]},
+            std::vector<ssize_t>{buffer.strides[1],buffer.strides[2]},buffer.readonly);
+    py::gil_scoped_release release;
+    // Same layer parallelism as committed_batch (KVMEM_NATIVE_PUBLISH_THREADS);
+    // for_rows rethrows the first failing layer in layer order.
+    kvmem_parallel::for_rows(histories.size(),[&](size_t layer) {
+        const auto &view=layers[layer];
+        const bool layer_fp32=State::validate_buffer(view,rows,histories[layer]);
+        const auto read_value=layer_fp32?&kvmem_prefill::read<float>:&kvmem_prefill::read<double>;
+        for (ssize_t row=0;row<view.shape[0];++row) {
+            kvmem_prefill::Sum sum;
+            for (ssize_t page=0;page<view.shape[1];++page) {
+                const double value=read_value(view,row,page);
+                if (!std::isfinite(value) || value<0.)
+                    throw std::runtime_error("Invalid prefill attention mass");
+                sum.add(value);
+            }
+            if (std::abs(sum.value()-1.)>.005)
+                throw std::runtime_error("Invalid prefill attention mass");
+            if ((rows[row]>0 && local_begin>INT64_MAX-rows[row]) ||
+                (rows[row]<0 && local_begin<INT64_MIN-rows[row]))
+                throw std::invalid_argument("Prefill position overflow");
+        }
+    });
+}
+
 std::vector<State> committed_batch(py::iterable state_objects,
         const std::vector<double> &decays,const std::vector<int64_t> &rows,
         const std::vector<int64_t> &starts,
@@ -152,17 +245,17 @@ std::vector<State> committed_batch(py::iterable state_objects,
             buffer.itemsize,buffer.format,2,
             std::vector<ssize_t>{buffer.shape[1],buffer.shape[2]},
             std::vector<ssize_t>{buffer.strides[1],buffer.strides[2]},buffer.readonly);
-    std::vector<State> result;
-    result.reserve(states.size());
+    std::vector<State> result(states.size());
     {
         py::gil_scoped_release release;
-        for (size_t layer=0;layer<states.size();++layer) {
-            // Validate and update in the same layer order as scalar commits.
-            // Nothing is returned or published when any layer fails.
+        // Layers are independent: each keeps its own ordered scalar arithmetic.
+        // Opt-in KVMEM_NATIVE_PUBLISH_THREADS spreads them across threads; the
+        // first failing layer (in layer order) is rethrown and nothing returns.
+        kvmem_parallel::for_rows(states.size(),[&](size_t layer) {
             const bool layer_fp32=State::validate_buffer(layers[layer],rows,histories[layer]);
-            result.push_back(states[layer]->committed_buffer(decays[layer],rows,starts,
-                histories[layer],local_begin,layers[layer],layer_fp32));
-        }
+            result[layer]=states[layer]->committed_buffer(decays[layer],rows,starts,
+                histories[layer],local_begin,layers[layer],layer_fp32);
+        });
     }
     return result;
 }
@@ -173,6 +266,11 @@ PYBIND11_MODULE(_prefill_state_native,module) {
         .def_static("from_values",&State::from_values)
         .def("values",&State::values)
         .def("scores",&State::scores)
+        .def("scores_for",&State::scores_for)
+        .def("same_values",&State::same_values)
+        .def("same_state",&State::same_state)
+        .def("size",&State::size)
         .def("committed",&State::committed);
     module.def("committed_batch",&committed_batch);
+    module.def("validate_batch",&validate_batch);
 }

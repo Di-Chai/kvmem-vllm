@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import time
+import threading
 from types import MethodType
 
 import torch
@@ -112,6 +113,14 @@ class LayerwiseQuery:
         if self.stage_profile and (not self.optimized or self.mode != 'sequential'):
             raise ValueError('Query stage profiling requires optimized sequential Query')
         self.buffered_events = []
+        self._emit_lock = threading.RLock()
+        self.deferred_writer = None
+        deferred_evidence = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE', '0')
+        if deferred_evidence not in ('0', '1'):
+            raise ValueError('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE must be 0 or 1')
+        if deferred_evidence == '1':
+            from .deferred_evidence import DeferredEvidence
+            self.deferred_writer = DeferredEvidence(self)
         self.active_owners = {}
         self.pressure = None
         if os.getenv('KVMEM_LAYERWISE_PREFILL_PRESSURE') == '1':
@@ -122,19 +131,45 @@ class LayerwiseQuery:
     def has_active(self):
         return self.active is not None or bool(self.active_owners)
 
-    def emit(self, event, **fields):
+    def _evidence_path(self):
         if self.path is None:
             self.path = self.runner._kvmem_probe_output / 'layerwise_query.jsonl'
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        return self.path
+
+    def _append_lines(self, lines):
+        # Caller holds _emit_lock; one complete line per write, in queue order.
+        with self._evidence_path().open('a') as stream:
+            for line in lines:
+                stream.write(line)
+
+    def emit(self, event, **fields):
+        self._evidence_path()
         record = dict(event=event, mode=self.mode, at=time.time(), monotonic_at=time.perf_counter(), **fields)
-        if self.optimized and event == 'layer_selected':
-            self.buffered_events.append(record)
-            return
-        with self.path.open('a') as stream:
-            for pending in self.buffered_events:
-                stream.write(json.dumps(pending, allow_nan=False) + '\n')
+        with self._emit_lock:
+            if self.optimized and event == 'layer_selected':
+                self.buffered_events.append(record)
+                return
+            # Opt-in deferred rows are older than anything buffered after them.
+            deferred = self.deferred_writer.take_lines() if self.deferred_writer is not None else []
+            with self.path.open('a') as stream:
+                for line in deferred:
+                    stream.write(line)
+                for pending in self.buffered_events:
+                    stream.write(json.dumps(pending, allow_nan=False) + '\n')
+                self.buffered_events.clear()
+                stream.write(json.dumps(record, allow_nan=False) + '\n')
+
+    def defer(self, event, **fields):
+        """Same row as emit(), timestamped now; written later in the same order."""
+        if self.deferred_writer is None:
+            return self.emit(event, **fields)
+        self._evidence_path()
+        record = dict(event=event, mode=self.mode, at=time.time(), monotonic_at=time.perf_counter(), **fields)
+        with self._emit_lock:
+            buffered = list(self.buffered_events)
             self.buffered_events.clear()
-            stream.write(json.dumps(record, allow_nan=False) + '\n')
+            self.deferred_writer.defer(record, buffered)
 
     def prepare(self, refresh, job, queries):
         rid = job.command.request_id
@@ -559,7 +594,11 @@ class LayerwiseQuery:
                                        (total_raw+layer_index*row_bytes, row_bytes))
                             prepared = state.get('prepared_pressure_reader') if inline_cpu else None
                             if prepared is not None and prepared.contains(group):
-                                _,stats = prepared.read(group, regions, destination=host)
+                                from .pressure_reader import layer0_parallel_gather
+                                parallel = (layer_index == 0 and layer0_parallel_gather() and
+                                            state.get('promised_layer0', False))
+                                _,stats = prepared.read(group, regions, destination=host,
+                                                        **({'parallel': True} if parallel else {}))
                             else:
                                 _, stats = read_packed_records(authority, handles, destination=host,
                                     regions=regions, inline_cpu=inline_cpu,

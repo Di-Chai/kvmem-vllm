@@ -18,6 +18,14 @@ def layer_read_blocks(full_frame_blocks, archive_layers):
     return min(256, full_frame_blocks * archive_layers)
 
 
+def fast_chunk_blocks(controller):
+    """Largest physical prefill chunk, in blocks, the layer-0 shadow must stage."""
+    options = getattr(getattr(controller.runner, '_kvmem_capture_runtime', None), 'options', None)
+    tokens = (getattr(options, 'prefill_physical_max_chunks', 4) *
+              getattr(options, 'prefill_physical_logical_tokens', 1024))
+    return max(1, tokens // 32)
+
+
 def packed_layer_chunk(state, layer, payload, half, cursor, records, row_bytes, chunk_blocks):
     """Reuse split assembly's paged addressing for contiguous complete blocks.
 
@@ -111,6 +119,26 @@ def packet_histories(frame, pending, starts, counts):
     return result
 
 
+def native_plan_check(job, chosen, plan=None, layers=()):
+    """Opt-in KVMEM_PRESSURE_NATIVE_PLAN_CHECK: (slots, counts, begins) of the
+    layer-zero selection for the native plan check, or None for the original."""
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_PLAN_CHECK', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_PLAN_CHECK must be 0 or 1')
+    from . import _native
+    if value != '1' or not callable(getattr(_native, 'check_pressure_plan', None)):
+        return None
+    plan_type = getattr(_native, 'Plan', None)
+    if plan_type is None or type(plan) is not plan_type or not all(
+            hasattr(layer, 'kernel_page_table') for layer in layers):
+        return None      # only real native plans and layer views take the native check
+    records = chosen[0]
+    slots = getattr(job, 'layerwise_zero_slots', None)
+    if slots is None or len(slots) != len(records):
+        slots = [r.handle.slot for r in records]
+    return list(slots), [r.count for r in records], [r.history_begin for r in records]
+
+
 def install_single_assembly(assembler, controller, job, runtime_names):
     """Replace a duplicated full-frame rebuild with one rebuild per layer.
 
@@ -138,24 +166,43 @@ def install_single_assembly(assembler, controller, job, runtime_names):
         from .window_assembly import AssemblyResult, _validate_destinations
         if authority.memory.phase is not Phase.ASSEMBLING or authority.memory._plan is not plan:
             raise ValueError('Single pressure assembly needs the original active transaction')
+        _v0 = time.perf_counter()
         chosen, _ = job.layerwise_pressure_plan
-        by_slot = {r.handle.slot:r for r in chosen[0]}
-        remaps = list(plan.remaps)
-        positions, cursor = {}, 0
-        for record in chosen[0]:
-            positions[record.handle.slot] = cursor
-            cursor += record.count
-        if ({r.block_id for r in remaps} != set(by_slot) or
-                any(r.to_base != positions[r.block_id] for r in remaps)):
-            raise ValueError('Layer-zero selection differs from the native assembly plan')
-        _validate_destinations(remaps, by_slot, self.layers)
-        # Query may have changed layer zero without changing the shared host
-        # frame. In rolling mode rebuild every target and draft layer from its
-        # immutable records, so native shared-map skip hints cannot leak in.
-        skip = set() if rolling else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
+        native_check = native_plan_check(job, chosen, plan, self.layers)
+        if native_check is not None:
+            # Same checks, order and messages over the plan's C++ remaps.
+            from .original_rope import enabled as original_rope
+            from . import _native
+            slots, counts, begins = native_check
+            bounds = [(layer.kernel_page_table.numel() * layer.key.shape[1], layer.cos_sin.shape[0])
+                      for layer in self.layers]
+            skip_begins, rebuilt_tokens, skipped_tokens, partial_tokens = _native.check_pressure_plan(
+                plan, slots, counts, begins, bounds, original_rope(), bool(rolling))
+            _v1 = _v2 = time.perf_counter()
+            skip = set(skip_begins)
+            remaps = None
+        else:
+            by_slot = {r.handle.slot:r for r in chosen[0]}
+            remaps = list(plan.remaps)
+            positions, cursor = {}, 0
+            for record in chosen[0]:
+                positions[record.handle.slot] = cursor
+                cursor += record.count
+            if ({r.block_id for r in remaps} != set(by_slot) or
+                    any(r.to_base != positions[r.block_id] for r in remaps)):
+                raise ValueError('Layer-zero selection differs from the native assembly plan')
+            _v1 = time.perf_counter()
+            _validate_destinations(remaps, by_slot, self.layers)
+            _v2 = time.perf_counter()
+            # Query may have changed layer zero without changing the shared host
+            # frame. In rolling mode rebuild every target and draft layer from its
+            # immutable records, so native shared-map skip hints cannot leak in.
+            skip = set() if rolling else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
         state = dict(authority=authority, request_id=job.command.request_id,
                      selected_tokens=plan.total_window_tokens, assembly_arena='pressure',
-                     pressure_stage=job.command.pressure_stage)
+                     pressure_stage=job.command.pressure_stage,
+                     # Promised refresh: the next forward waits at layer 0's guard.
+                     promised_layer0=getattr(job, 'promised_lease', None) is not None)
         if job.command.pressure_stage == 'prefill' and getattr(controller, 'reuse_layer_views', False):
             state['pressure_parent_assembler'] = self
         if job.command.pressure_stage == 'prefill' and getattr(controller, 'resident_values', False):
@@ -170,30 +217,95 @@ def install_single_assembly(assembler, controller, job, runtime_names):
         parent_results = None
         parent_timings = {}
         reader = None
+        pipeline = getattr(controller, 'pipeline', None) if job.command.pressure_stage == 'prefill' else None
+        # A promised (already acknowledged) lease binds its plan and commits
+        # host maps first: the next forward may already be waiting on layer 0.
+        early_lease = pipeline is not None and (os.getenv('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE') == '1' or
+                                                getattr(job, 'promised_lease', None) is not None)
+        if getattr(job, 'promised_lease', None) is not None and not parent_staging:
+            job.promise_commit_after_layer0 = True
+        _r0 = time.perf_counter()
+        # Opt-in: publish the prepared plan (ACK-able lease) before reading-plan
+        # preparation for all layers; per-layer guards still order every use.
+        lease = pipeline.begin(job, plan, names) if early_lease else None
+        if early_lease:
+            # Give the engine thread the GIL to dispatch the published plan before
+            # reader preparation (long native calls) monopolizes this producer.
+            # Pair with KVMEM_LAYERWISE_PRESSURE_IDLE_ACK_WAIT_MS so an idle
+            # engine is already waiting at the schedule boundary.
+            yield_ms = float(os.getenv('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE_YIELD_MS', '0'))
+            if not 0 <= yield_ms <= 50:
+                raise ValueError('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE_YIELD_MS must be in [0, 50]')
+            if yield_ms:
+                deadline = time.perf_counter() + yield_ms / 1000
+                # Wait for the whole ACK (job.done is set last by dispatch), not
+                # only the host-map publication, so dispatch runs uncontended.
+                while time.perf_counter() < deadline and not getattr(job, 'done', False):
+                    time.sleep(0.0003)
+        _r1 = time.perf_counter()
+        if getattr(job, 'promised_lease', None) is not None:
+            # Deferred read barrier of a promised refresh (async_refresh._assemble).
+            authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+        _rb = time.perf_counter()
         if (job.command.pressure_stage == 'prefill' and getattr(controller, 'prepared_reads', False) and
                 getattr(controller.query, 'paired_reads', False)):
             from .pressure_reader import prepare_pressure_reader
             reader = prepare_pressure_reader(authority, plan, chosen)
+        _r2 = time.perf_counter()
+        from .publication_trace import emit as _trace
+        _trace('assembly_setup', rid=job.command.request_id, early_lease=early_lease,
+               remap_checks=_v1-_v0, validate_destinations=_v2-_v1, pre_lease=_r0-_v2,
+               lease_begin=_r1-_r0, seal_barrier=_rb-_r1, reader_prepare=_r2-_rb)
         with (reader if reader is not None else nullcontext()):
             if reader is not None:
                 state['prepared_pressure_reader'] = reader
                 source_blocks = reader.source_blocks
-            pipeline = getattr(controller, 'pipeline', None) if job.command.pressure_stage == 'prefill' else None
-            lease = pipeline.begin(job, plan, names) if pipeline is not None else None
+            if not early_lease:
+                lease = pipeline.begin(job, plan, names) if pipeline is not None else None
             if parent_staging:
+                if getattr(job, 'layerwise_select_layer', None) is not None:
+                    raise ValueError('Parent staging needs every layer selection before uploads')
                 from .pressure_parent_staging import assemble_parent_pressure_layers
                 parent_results = assemble_parent_pressure_layers(
                     self, controller, state, plan, chosen, names, skip)
+            select_next = getattr(job, 'layerwise_select_layer', None)
+            from .pressure_reader import reader_extend
+            extend_reader = select_next is not None and reader_extend()
+            reader_extend_misses = 0
+            fast_future = getattr(job, 'layer0_fast', None)
+            fast_result = None
             for index, name in enumerate(names):
+                if (select_next is not None and len(chosen) <= index and
+                        index < getattr(job, 'layerwise_layers_total', 0)):
+                    # Layer-0-first: this layer's frozen-input selection runs
+                    # just before its upload, while the GPU runs earlier layers.
+                    select_next(index)
+                    if reader is not None and extend_reader:
+                        # Same sources and bytes; avoids the per-chunk read path.
+                        extended = reader.extend(chosen[index])
+                        reader_extend_misses += not extended
                 records = chosen[index] if index < len(chosen) else chosen[0]
-                stats = (parent_results[index] if parent_results is not None else
-                    controller.query.assemble_layer_pinned(state, index, records,
-                    layer_name=name, skip_history_begins=skip if index == 0 or index >= len(chosen) else ())
-                    )
-                if lease is not None:
-                    event = torch.cuda.Event()
-                    event.record(torch.cuda.current_stream(controller.runner.device))
-                    lease.publish_layer(index, event)
+                if index == 0 and fast_future is not None:
+                    fast_result = fast_future.result()
+                if fast_result is not None and index < fast_result.published:
+                    # KVMEM_LAYER0_FAST already assembled and published this layer
+                    # from the GPU shadow; it must equal this unchanged selection.
+                    from .layer0_fast import install as _layer0_fast
+                    _layer0_fast(controller.runner).verify(fast_result, index, records,
+                        skip if index == 0 else (), job.command.request_id, name)
+                    stats = dict(uploaded_bytes=0, chunks=0)
+                else:
+                    stats = (parent_results[index] if parent_results is not None else
+                        controller.query.assemble_layer_pinned(state, index, records,
+                        layer_name=name, skip_history_begins=skip if index == 0 or index >= len(chosen) else ())
+                        )
+                    if lease is not None:
+                        event = torch.cuda.Event()
+                        event.record(torch.cuda.current_stream(controller.runner.device))
+                        lease.publish_layer(index, event)
+                if lease is not None and index == 0 and getattr(job, 'promise_commit_after_layer0', False):
+                    from .pressure_promise import commit
+                    commit(pipeline, job, lease)
                 uploaded += stats['uploaded_bytes']; chunks += stats['chunks']
                 packed_chunks += stats.get('packed_chunks',0)
                 paired_chunks += stats.get('paired_read_chunks',0)
@@ -204,12 +316,29 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                 for key,value in stats.items():
                     if key.startswith('parent_staging_') and key.endswith('_seconds'):
                         parent_timings[key] = parent_timings.get(key,0.)+value
+            if getattr(job, 'promised_lease', None) is not None and job.command.pressure_stage == 'prefill':
+                from .layer0_fast import install
+                fast = install(controller.runner)
+                published = fast_result.published if fast_result is not None else 0
+                if fast is not None and published < fast.layers:
+                    # Off the critical path: every layer is already submitted.
+                    fast.rebuild(job.command.request_id, authority, chosen, reader,
+                                 len(chosen[0]), fast_chunk_blocks(controller), first=published)
         done = torch.cuda.Event(); done.record(torch.cuda.current_stream(controller.runner.device))
         if lease is not None:
             lease.final_event = done
         job.layerwise_single_assembly_done = True
-        rebuilt = sum(r.n_tokens for r in remaps if rolling or not r.skip)
-        skipped = 0 if rolling else sum(r.n_tokens for r in remaps if r.skip)
+        deferred = getattr(job, 'layerwise_prepared_commit', None)
+        if getattr(deferred, 'ready', True) is False:
+            # Opt-in deferred maps: every layer upload is already submitted, so
+            # building the 17-layer commit maps here never delays the plan/ACK.
+            deferred.value()
+        if remaps is None:
+            rebuilt, skipped = rebuilt_tokens, skipped_tokens
+        else:
+            rebuilt = sum(r.n_tokens for r in remaps if rolling or not r.skip)
+            skipped = 0 if rolling else sum(r.n_tokens for r in remaps if r.skip)
+            partial_tokens = sum(r.n_tokens for r in remaps if not r.skip and r.n_tokens != 32)
         return AssemblyResult(done, (self, plan, authority), rebuilt, skipped, chunks,
             time.perf_counter()-started, uploaded,
             dict(layerwise_single_assembly=True, layerwise_assembled_layers=len(names),
@@ -221,6 +350,14 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                   layerwise_prepared_source_blocks=source_blocks,
                   layerwise_resident_v_reused_tokens=resident_v_tokens,
                   layerwise_native_paired_gather_chunks=native_paired_chunks,
+                  **(dict(layer0_fast_published=(fast_result.published if fast_result is not None else 0),
+                          layer0_fast_reason=(getattr(fast_result, 'reason', '') if fast_result is not None
+                                              else 'declined:' + str(getattr(job, 'layer0_fast_declined', 'not_launched'))),
+                          layer0_fast_timings={k: round(1e3*v, 2) for k, v in getattr(fast_result, 'timings', ())})
+                     if os.getenv('KVMEM_LAYER0_FAST') == '1' else {}),
+                  **(dict(layerwise_reader_extended_blocks=getattr(reader, 'extended_blocks', 0),
+                          layerwise_reader_extend_misses=reader_extend_misses)
+                     if reader is not None and extend_reader else {}),
                   **(dict(reader.read_stats) if reader is not None and
                      getattr(reader,'paired_gather',False) else {}),
                   **(dict(layerwise_parent_staging_requested=True,
@@ -230,7 +367,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                      layerwise_parent_slot_bytes=self.staging.slot_bytes,
                      layerwise_parent_scratch_scope='Existing parent two-slot pool replaces child pool; live pressure scratch may be larger; no Active/Gen change',
                      **parent_timings) if parent_staging else {})),
-            partial_tokens=sum(r.n_tokens for r in remaps if not r.skip and r.n_tokens != 32))
+            partial_tokens=partial_tokens)
 
     assembler._assemble = MethodType(assemble, assembler)
     # close() must remove this instance-bound override after its CUDA fence.

@@ -20,7 +20,8 @@ class CachedArchive(AsyncArchive):
         # Separate from the archive executor: an I/O task may wait for gather,
         # so sharing its own bounded executor would deadlock under concurrency.
         self.gather_workers = gather_workers
-        self._gather_executor = ThreadPoolExecutor(max_workers=gather_workers,
+        from .portable import cap_workers
+        self._gather_executor = ThreadPoolExecutor(max_workers=cap_workers(gather_workers),
                                                    thread_name_prefix='kvmem-gather')
 
     def _gather(self, destination, cached):

@@ -31,7 +31,7 @@ def geometry(tmp_path, sizes, prefix=4096):
     key, value = cache.transpose(1, 2).split(dim, -1)
     table = torch.randperm(physical, device='cuda', dtype=torch.int32)[:(prefix+count+page-1)//page]
     query = torch.randn(count, heads, dim, device='cuda', dtype=torch.bfloat16)
-    workspace = torch.zeros(32 << 20, device='cuda', dtype=torch.uint8)
+    workspace = torch.zeros(256 << 20, device="cuda", dtype=torch.uint8)
     offsets = [sum(sizes[:i]) for i in range(len(sizes))]
     shapes = [*((n, prefix+o+n) for o, n in zip(offsets, sizes)), (count, prefix+count)]
     wrappers = []

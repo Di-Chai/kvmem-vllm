@@ -199,7 +199,8 @@ class AsyncArchive:
         else:
             self.tier = (_native.NvmeTier(directory, self.capacity_bytes, record_bytes, True)
                          if preallocate else _native.NvmeTier(directory, self.capacity_bytes, record_bytes))
-        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kvmem-io")
+        from .portable import cap_workers
+        self.executor = ThreadPoolExecutor(max_workers=cap_workers(workers), thread_name_prefix="kvmem-io")
         self.max_pending = max_pending
         self._pending = 0
         self._lock = Lock()

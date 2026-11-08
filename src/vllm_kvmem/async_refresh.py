@@ -241,8 +241,10 @@ class AsyncRefresh:
                 (padding and len(command.input_tokens)!=1) or
                 len(command.input_tokens)+padding!=command.groups[0][1].replay_tokens):
             raise ValueError('Invalid asynchronous refresh command')
+        no_replay_prefill = (os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
+                             getattr(command, 'pressure_stage', None) == 'prefill')
         if not command.input_tokens and (command.selection != 'pressure' or command.query_span is not None or
-                not getattr(self.options, 'rolling_active_window', False)):
+                not (getattr(self.options, 'rolling_active_window', False) or no_replay_prefill)):
             raise ValueError('Empty refresh input requires rolling accepted-history pressure selection')
         if command.query_span is not None:
             history=command.groups[0][1].history_end
@@ -521,6 +523,7 @@ class AsyncRefresh:
                 self.emit(job, 'pressure_assembly_submitted_inline')
 
     def _assemble(self,job,queries,ready):
+        _entered = time.perf_counter()
         from .recall_experiment import (ACCUMULATED_ATTENTION, configured_event_method,
                                        configured_method, select_for_event)
         from .request_plan import RequestPlan, selection_config
@@ -539,9 +542,19 @@ class AsyncRefresh:
         with torch.inference_mode(),torch.cuda.device(self.runner.device),torch.cuda.stream(self.stream):
             self.stream.wait_event(ready)
             self.emit(job,'assembly_started')
+            if getattr(job, 'promised_lease', None) is not None:
+                from .publication_trace import emit as _trace
+                _trace('assemble_entry', rid=job.command.request_id, seconds=time.perf_counter()-_entered)
             selection_started = time.perf_counter()
-            authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+            if getattr(job, 'promised_lease', None) is None:
+                authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+            # A promised refresh builds its plan from residency only (no CPU
+            # payload sources in this mode); the single-assembly producer runs
+            # this read barrier right before reader preparation and any read.
             published = time.perf_counter()
+            if getattr(job, 'promised_lease', None) is not None:
+                from .publication_trace import emit as _trace
+                _trace('assemble_prelude_start', rid=job.command.request_id)
             if os.getenv('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
                 from .retrieval_diagnostics import capture_archive
                 capture_archive(self, job, queries)
@@ -610,6 +623,7 @@ class AsyncRefresh:
                     publication_seconds=published-selection_started,
                     selection_seconds=time.perf_counter()-published)
             started=time.perf_counter()
+            _a0 = started
             assembler=NativeWindowAssembler.from_runner(self.runner,job.command.request_id,self.runtime.names,
                 cfg.block_tokens,packed=self.options.packed_assembly,
                 direct_pinned_reads=self.options.direct_pinned_reads,arena='refresh',
@@ -621,6 +635,9 @@ class AsyncRefresh:
                 install_single_assembly(assembler, pressure, job, self.runtime.names)
             if self.maintenance is not None:
                 assembler.bandwidth_limiter = self.maintenance.transfer_budget
+            if getattr(job, 'promised_lease', None) is not None:
+                from .publication_trace import emit as _trace
+                _trace('assembler_prelude', rid=job.command.request_id, build_install=time.perf_counter()-_a0)
             try:
                 assembly=assembler.assemble(authority,plan)
             except BaseException as error:
@@ -666,7 +683,8 @@ class AsyncRefresh:
                 if lane_busy(self) or (self._pressure_lanes() > 1 and self._producers()):
                     return False
             policy = getattr(self, 'maintenance', None)
-            if policy is not None and not policy.acquire(job, lanes=self._pressure_lanes() if multi else 1):
+            if policy is not None and not (policy.acquire(job, lanes=self._pressure_lanes()) if multi
+                                           else policy.acquire(job)):
                 return False
             job.authority._refresh_background=True
             job.stage='assembly'

@@ -373,6 +373,7 @@ def make_probe_runner(base):
                 if getattr(runtime, '_prefill_scatter_deferred', None) is not None:
                     runtime.recheck_prefill_scatter(batch)
                 runtime.note_prefill_pipeline_forward(batch)
+                runtime.start_stream_session(batch)
             else:
                 native = getattr(self, '_kvmem_native_attention', None)
                 if native is not None:
@@ -598,6 +599,11 @@ def make_probe_runner(base):
                 connector.pressure_completion_poll = (
                     refresh.poll_pressure_completions if refresh is not None and
                     getattr(getattr(self, '_kvmem_layerwise_pressure', None), 'post_forward_reap', False) else None)
+                _pressure = getattr(self, '_kvmem_layerwise_pressure', None)
+                connector.pressure_schedule_poll = (
+                    _pressure.pipeline.schedule_boundary
+                    if refresh is not None and getattr(_pressure, 'schedule_ack', False) and
+                    getattr(_pressure, 'pipeline', None) is not None else None)
                 connector.query_completion_poll = (
                     refresh.poll_query_completions if refresh is not None and
                     getattr(refresh, 'query_post_forward_reap', False) else None)

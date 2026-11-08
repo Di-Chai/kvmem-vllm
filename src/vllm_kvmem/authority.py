@@ -51,6 +51,77 @@ def record_key(handle):
     return handle.slot, handle.generation
 
 
+def _contiguous_sums(records):
+    """torch.stack([r.key_sum ...]) without the copy when the sums already are
+    consecutive views of one block (same values, same order)."""
+    sums = [r.key_sum for r in records]
+    first = sums[0]
+    base = first._base
+    if base is not None and base.dim() == first.dim() + 1 and base.is_contiguous():
+        step = first.numel()
+        start = first.storage_offset() - base.storage_offset()
+        if (start % step == 0 and all(s._base is base and s.is_contiguous() and
+                s.storage_offset() == first.storage_offset() + i * step for i, s in enumerate(sums))):
+            index = start // step
+            if index + len(sums) <= base.shape[0]:
+                return base[index:index + len(sums)]
+    return torch.stack(sums)
+
+
+class VersionedRecords(dict):
+    """The authority's record dict with a mutation counter (cache invalidation).
+
+    Behaves exactly like a dict; ``version`` changes on every insert/remove so
+    per-refresh indexes (sorted records, slots) can be reused while unchanged.
+    """
+    __slots__ = ('version', 'log')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.version = 0
+        # Keys set since the index consumer last reset it; None after any
+        # other kind of mutation (the consumer then rebuilds from scratch).
+        self.log = None
+
+    def _changed(self):
+        self.version += 1
+        self.log = None
+
+    def __setitem__(self, key, value):
+        self.version += 1
+        if self.log is not None:
+            self.log.append(key)
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._changed()
+        super().__delitem__(key)
+
+    def pop(self, *args):
+        self._changed()
+        return super().pop(*args)
+
+    def popitem(self):
+        self._changed()
+        return super().popitem()
+
+    def clear(self):
+        self._changed()
+        super().clear()
+
+    def update(self, *args, **kwargs):
+        self._changed()
+        super().update(*args, **kwargs)
+
+    def setdefault(self, key, default=None):
+        self._changed()
+        return super().setdefault(key, default)
+
+    def __ior__(self, other):
+        self._changed()
+        return super().__ior__(other)
+
+
 SCORE_DOMAIN_VERSION = 'qw3-native-v2'
 
 
@@ -144,6 +215,16 @@ class RequestAuthority:
         if type(cpu_reuse_record_views) is not bool:
             raise ValueError('cpu_reuse_record_views must be boolean')
         self.cpu_reuse_record_views = cpu_reuse_record_views
+        # Opt-in KVMEM_AUTHORITY_BATCHED_MEANS: pages completed by one append
+        # skip redundant zero-filling (the batched native finalizer writes every
+        # sum) and compute their FP16 MeanK in one stacked FP32 division.
+        import os
+        batched_means = os.getenv('KVMEM_AUTHORITY_BATCHED_MEANS', '0')
+        if batched_means not in ('0', '1'):
+            raise ValueError('KVMEM_AUTHORITY_BATCHED_MEANS must be 0 or 1')
+        self._fast_record_init = (batched_means == '1' and mean_k_backend == 'qw3_cuda' and
+                                  raw_dtype in (torch.bfloat16, torch.float8_e4m3fn) and
+                                  callable(getattr(_native, 'finalize_mean_batch', None)))
         self.record_view_stats = (dict(slot_exports=0, bound_records=0,
             finalize_records=0, sealed_records=0) if record_view_stats is None else record_view_stats)
         self.mean_index_stats = MeanIndexStats() if mean_index_stats is None else mean_index_stats
@@ -155,7 +236,7 @@ class RequestAuthority:
         if archive.record_bytes != self.record_bytes:
             raise ValueError("Archive record format does not match model geometry")
         self.resident_records = resident_records
-        self.records: dict[tuple[int, int], Record] = {}
+        self.records: dict[tuple[int, int], Record] = VersionedRecords()
         # These contain only live, not-yet-published generations, so ordinary
         # decode bookkeeping does not grow with archived history. GC can only
         # remove archived records; rewind explicitly removes its live suffix.
@@ -171,6 +252,13 @@ class RequestAuthority:
         self._record_buffer_views = []
         self._free_record_buffers = []
         self._busy_record_buffers = set()
+        # The staging pool may be borrowed by a streaming publication worker
+        # (streaming_publication.py) while the scatter thread publishes.
+        import threading
+        self._record_buffer_lock = threading.RLock()
+        # history_begin -> (raw, values, slot, sums): complete pages filled and
+        # summed layer by layer during the forward that produced them.
+        self._prefilled = {}
         self.writes = []
         self.closing = False
         self.discarded_records: dict[tuple[int, int], Record] = {}
@@ -307,6 +395,10 @@ class RequestAuthority:
         return completed
 
     def _borrow_record_buffers(self):
+        with self._record_buffer_lock:
+            return self._borrow_record_buffers_locked()
+
+    def _borrow_record_buffers_locked(self):
         if self._free_record_buffers:
             slot = self._free_record_buffers.pop()
         else:
@@ -331,11 +423,32 @@ class RequestAuthority:
         slot = record.staging_slot
         if slot is None:
             return
-        if slot not in self._busy_record_buffers:
-            raise RuntimeError('Record staging ownership was released twice')
-        self._busy_record_buffers.remove(slot)
-        self._free_record_buffers.append(slot)
+        self._release_staging_slot(slot)
         record.staging_slot = None
+
+    def _release_staging_slot(self, slot):
+        with self._record_buffer_lock:
+            if slot not in self._busy_record_buffers:
+                raise RuntimeError('Record staging ownership was released twice')
+            self._busy_record_buffers.remove(slot)
+            self._free_record_buffers.append(slot)
+
+    def register_prefilled(self, pages):
+        """Opt-in streaming publication: pages {history_begin: (raw, values, slot, sums)}."""
+        with self._record_buffer_lock:
+            if any(begin in self._prefilled for begin in pages):
+                raise RuntimeError('A streamed page was registered twice')
+            self._prefilled.update(pages)
+
+    def discard_prefilled(self, begins=None):
+        """Return unadopted streamed pages (aborted or clipped publication)."""
+        with self._record_buffer_lock:
+            keys = list(self._prefilled) if begins is None else [b for b in begins if b in self._prefilled]
+            for begin in keys:
+                slot = self._prefilled.pop(begin)[2]
+                if slot is not None:   # zero-copy pages own no staging slot
+                    self._release_staging_slot(slot)
+            return len(keys)
 
     @property
     def record_staging_bytes(self):
@@ -365,7 +478,12 @@ class RequestAuthority:
             # row layout and per-record checksums remain byte-for-byte identical.
             views = []
             for record in records:
-                if self.cpu_reuse_record_views:
+                packed = getattr(record, 'packed', None)
+                if packed is not None:
+                    # The seal adopts these private bytes (memory_storage zero copy).
+                    whole = memoryview(packed)
+                    views.extend((whole[:self.raw_record_bytes], whole[self.raw_record_bytes:]))
+                elif self.cpu_reuse_record_views:
                     if record.archive_views is None:
                         raise RuntimeError('Prepared record lost its archive views')
                     views.extend(record.archive_views)
@@ -373,6 +491,8 @@ class RequestAuthority:
                     views.extend((memoryview(record.raw.view(torch.uint8).numpy()).cast('B'),
                                   memoryview(record.values.numpy()).cast('B')))
             if getattr(self.archive, 'async_seal', False):
+                from .publication_trace import emit as _trace
+                _trace('seal_submitted', rid=self.memory.request_id, records=len(records))
                 job = self.archive.write_from_views(self.memory.request_id, leases, views)
             else:
                 payload = b"".join(views)
@@ -389,6 +509,7 @@ class RequestAuthority:
         keys = []
         for record in records:
             record.submitted = True
+            record.packed = None
             record.scatter_views = None
             record.archive_views = None
             if self.cpu_reuse_record_views:
@@ -425,6 +546,10 @@ class RequestAuthority:
             raise ValueError("Capture skipped or repeated logical history")
         if count == 0:
             return (raw, values, count, [])
+        waiter = getattr(self, '_prefill_wait', None)
+        if waiter is not None:
+            # Opt-in prescatter: this span's pages are being filled by a worker.
+            waiter(history_begin, count)
         self.flush()
         block = self.shape[1]
         # Includes I/O-owned byte snapshots after torch staging was released.
@@ -448,6 +573,17 @@ class RequestAuthority:
                     (previous is not None and (previous.count != offset or previous.submitted))):
                 raise RuntimeError("Repository append no longer matches the authoritative tail")
         rows = []
+        # Batched MeanK: one contiguous FP32 block for this append's new full
+        # pages, handed out as consecutive views (one allocation, and the means
+        # later come from one slice instead of a stack of separate tensors).
+        sum_block = sum_next = None
+        if self._fast_record_init and not getattr(self.gc, 'native_history', False):
+            fresh = sum(1 for span in spans if span.token_count == block and
+                        span.storage_begin % block == 0 and record_key(span.handle) not in self.records)
+            if fresh > 1:
+                sum_block = torch.empty((fresh, self.scoring_layers, self.shape[2], self.shape[3]),
+                                        dtype=torch.float32)
+                sum_next = 0
         for span in spans:
             key = record_key(span.handle)
             offset = span.storage_begin % block
@@ -465,13 +601,35 @@ class RequestAuthority:
                     sums, index_owner = self.archive.allocate_index(index_shape,
                         mean=self.mean_k_backend == 'qw3_cuda',
                         split_sums=self.cpu_release_sealed_sums)
+                elif self._fast_record_init and n == block:
+                    # Completed by this append: the batched MeanK finalizer
+                    # initializes and writes every sum before any read.
+                    if sum_block is not None and offset == 0 and sum_next < sum_block.shape[0]:
+                        sums = sum_block[sum_next]
+                        sum_next += 1
+                    else:
+                        sums = torch.empty(index_shape, dtype=torch.float32)
                 else:
                     sums = torch.zeros(index_shape, dtype=torch.float32)
-                record_raw, record_values, slot = self._borrow_record_buffers()
+                prefilled = None
+                # Native-history GC owns its own sum storage; never adopt there.
+                if self._prefilled and n == block and offset == 0 and index_owner is None:
+                    with self._record_buffer_lock:
+                        prefilled = self._prefilled.pop(span.history_begin, None)
+                if prefilled is not None:
+                    # Bytes and MeanK sums were produced layer by layer from the
+                    # same capture rows during the forward (streaming_publication).
+                    record_raw, record_values, slot, sums, packed = prefilled
+                else:
+                    record_raw, record_values, slot = self._borrow_record_buffers()
+                    packed = None
                 try:
                     record = Record(handle, span.history_begin, 0,
                         record_raw, record_values, sums, staging_slot=slot)
                     record.index_owner = index_owner
+                    record.prefilled = prefilled is not None
+                    # Zero-copy streamed page: its private archive bytes.
+                    record.packed = packed
                     if self.cpu_reuse_record_views:
                         raw_bytes, value_bytes, archive_views = self._record_buffer_views[slot]
                         record.scatter_views = (raw_bytes, value_bytes, sums.numpy())
@@ -479,8 +637,8 @@ class RequestAuthority:
                         self.record_view_stats['bound_records'] += 1
                     self.records[key] = record
                 except BaseException:
-                    self._busy_record_buffers.remove(slot)
-                    self._free_record_buffers.append(slot)
+                    if slot is not None:
+                        self._release_staging_slot(slot)
                     raise
                 self._resident_count += 1
             rows.append((key, record, offset, start, n))
@@ -490,6 +648,8 @@ class RequestAuthority:
         raw, values, count, rows = prepared
         if not count:
             return
+        import time as _time
+        _c0 = _time.perf_counter()
         finalize_batch = getattr(_native, 'finalize_mean_batch', None)
         batched_index = (self.mean_k_backend == 'qw3_cuda' and
                          self.raw_dtype in (torch.bfloat16, torch.float8_e4m3fn) and
@@ -515,6 +675,8 @@ class RequestAuthority:
                     finalize_batch(jobs)
             if jobs or finalized_records:
                 self.mean_index_stats.record(len(jobs)+len(finalized_records), vectorized, self.cpu_mean_index_simd)
+        _c1 = _time.perf_counter()
+        batched_means = []
         for key, record, offset, start, n in rows:
             record.count += n
             if record.count == self.shape[1]:
@@ -532,9 +694,18 @@ class RequestAuthority:
                             record.mean_key = torch.frombuffer(record.index_owner, dtype=torch.float16,
                                 count=record.key_sum.numel(), offset=record.key_sum.numel()*4).view(record.key_sum.shape)
                         torch.div(record.key_sum, record.count, out=record.mean_key)
+                    elif self._fast_record_init:
+                        batched_means.append(record)
                     else:
                         record.mean_key = (record.key_sum / record.count).to(torch.float16)
                 self._unsubmitted[key] = record
+        if batched_means:
+            # One element-wise FP32 division and FP16 rounding for the whole
+            # append; every completed page has count == block_tokens.
+            means = (_contiguous_sums(batched_means) / self.shape[1]).to(torch.float16)
+            for record, mean in zip(batched_means, means):
+                record.mean_key = mean
+        _c2 = _time.perf_counter()
         self.memory.attach_completion(_Ready())
         assert self.memory.commit_append(count)
         thinking = getattr(self, 'thinking_history', None)
@@ -547,7 +718,11 @@ class RequestAuthority:
             # One accepted public packet stamps the current GPU window. The
             # native observer does not scan historical records per decode.
             self.memory._store.gc_begin_step()
+        _c3 = _time.perf_counter()
         self.flush()
+        from .publication_trace import emit as _trace
+        _trace('commit_append_split', records=len(rows), finalize_mean=_c1-_c0, record_loop=_c2-_c1,
+               store_commit=_c3-_c2, flush_seal_submit=_time.perf_counter()-_c3)
 
     def append(self, raw, values, *, history_begin, local_rope_begin, accepted=None):
         prepared = self._prepare_append(raw, values, history_begin=history_begin,
@@ -1012,6 +1187,8 @@ class RequestAuthority:
 
     def close(self):
         self.closing = True
+        if getattr(self, '_prefilled', None):
+            self.discard_prefilled()
         recall_cache = getattr(self, '_recall_feature_cache', None)
         if recall_cache is not None:
             recall_cache.clear()
@@ -1108,6 +1285,9 @@ def append_authority_batch(entries):
         raise ValueError('A history batch must contain distinct authority owners')
     plans, jobs = [], []
     finalized = {}
+    prefilled_keys = {}
+    import time as _time
+    _t0 = _time.perf_counter()
     for authority, raw, values, kwargs in entries:
         # Later queued packets can start beyond an EOS/cancelled prefix. They
         # are fully discarded, as on the reference drain path, without opening
@@ -1122,6 +1302,14 @@ def append_authority_batch(entries):
         source_raw = raw.view(torch.uint8).numpy()
         source_values = values.numpy()
         for key, record, offset, start, n in prepared[3]:
+            if getattr(record, 'prefilled', False):
+                # Streamed during the forward: bytes are in place and the page's
+                # MeanK sums are final; no copy or finalizer runs for it here.
+                from .streaming_publication import verify_enabled, verify_page
+                if verify_enabled():
+                    verify_page(record, raw, values, start, n)
+                prefilled_keys.setdefault(authority, set()).add(key)
+                continue
             # The original MeanK finalizer recomputes every completed page in
             # token order. Its result does not use the incremental sum, so do
             # not widen/reduce a prefix that is about to be overwritten.
@@ -1143,7 +1331,9 @@ def append_authority_batch(entries):
                 finalized.setdefault(authority, set()).add(key)
             else:
                 jobs.append((*job, True) if copy_only else job)
+    _t1 = _time.perf_counter()
     observed = _native.scatter_history_batch(jobs)
+    _t2 = _time.perf_counter()
     expected = sum(len(keys) for keys in finalized.values())
     if expected and (type(observed) is not int or observed != expected):
         raise RuntimeError('Native fused record mean did not execute all requested pages')
@@ -1152,5 +1342,12 @@ def append_authority_batch(entries):
         if keys:
             authority.fused_mean_stats['records'] += len(keys)
             authority.fused_mean_stats['batches'] += 1
+        streamed = prefilled_keys.get(authority)
+        if streamed:
+            keys = set(keys) | streamed
+            authority.streamed_pages = getattr(authority, 'streamed_pages', 0) + len(streamed)
         authority._commit_prepared_append(prepared, finalized_records=keys)
+    from .publication_trace import emit as _trace
+    _trace('append_batch', records=len(jobs), prepare=_t1-_t0, scatter=_t2-_t1,
+           commit=_time.perf_counter()-_t2)
     return len(plans)

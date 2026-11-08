@@ -3,6 +3,7 @@
 No copied KV, new DMA slot, changed logical boundary or enlarged score bank.
 The parent CaptureRuntime packet owns release; children only borrow views.
 """
+import os
 from types import SimpleNamespace
 
 import torch
@@ -39,13 +40,29 @@ def owner_chunk_allocations(owners, native_rows, logical_tokens, maximum, *, rot
     return tuple(result)
 
 
+def coalesce_with_decode():
+    """Opt-in: logical owners may share a step with ordinary decode rows."""
+    value=os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE','0')
+    if value not in ('0','1'):
+        raise ValueError('KVMEM_PREFILL_COALESCE_WITH_DECODE must be 0 or 1')
+    return value=='1'
+
+
+def owners_prefilling(batch, owners):
+    """All rows by default; only the logical owners' rows when mixing is enabled."""
+    if not coalesce_with_decode():
+        return all(batch.is_prefilling_np)
+    ids=list(batch.req_ids)
+    return all(bool(batch.is_prefilling_np[ids.index(rid)]) for rid in owners)
+
+
 def capture_owner_plans(runtime, action_inputs, batch):
     groups=getattr(action_inputs,'logical_groups',{})
     slices=getattr(action_inputs,'logical_slices',{})
     if not groups and not slices:return {}
     if (not runtime.options.prefill_physical_multi_owner or
             set(groups)!=set(slices) or not set(groups).issubset(batch.req_ids) or
-            not all(batch.is_prefilling_np)):
+            not owners_prefilling(batch, groups)):
         raise RuntimeError('Invalid logical prefill owner cohort')
     result={}
     # Reuse the original complete single-owner plan/Query/coordinate validator.

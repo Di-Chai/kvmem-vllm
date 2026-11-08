@@ -25,8 +25,12 @@ class LayerMaterialization:
         self.dispatched = False
         self.first_consumer_at = None
         self.host_wait_seconds = 0.
+        self.layer_wait_seconds = [0.] * len(names)
         self.created_at = time.perf_counter()
         self.dispatch_at = None
+        # Opt-in promised ACK (pressure_promise): acknowledged before its plan.
+        self.promised = False
+        self.committed = None
 
     def publish_layer(self, index, event):
         with self.condition:
@@ -60,8 +64,12 @@ class LayerMaterialization:
         return self.final_event is not None and self.final_event.query()
 
     def validate_dispatch(self, memory):
+        # A promised lease is acknowledged (dispatched) before its plan exists;
+        # its host maps are committed exactly once, by its producer.
+        published = (self.committed.is_set() if self.promised else self.dispatched)
         if (not self.controller.installed or memory is not self.job.authority.memory or
-                memory._plan is not self.plan or self.dispatched or not self.dispatchable()):
+                self.plan is None or memory._plan is not self.plan or published or
+                not self.dispatchable()):
             raise RuntimeError('Invalid guarded pressure materialization')
 
     def wait_layer(self, index, stream):
@@ -83,6 +91,7 @@ class LayerMaterialization:
             self.waited.add(index)
             now = time.perf_counter()
             self.host_wait_seconds += now-started
+            self.layer_wait_seconds[index] = now-started
             if self.first_consumer_at is None:
                 self.first_consumer_at = now
 
@@ -93,6 +102,7 @@ class LayerMaterialization:
             pipeline_dispatch_at=self.dispatch_at,
             pipeline_waited_layers=len(self.waited),
             pipeline_host_event_wait_seconds=self.host_wait_seconds,
+            pipeline_layer_wait_ms=[round(1e3*w, 2) for w in self.layer_wait_seconds],
             pipeline_first_consumer_at=self.first_consumer_at,
             pipeline_last_layer_submitted_at=self.submitted_at[-1],
             pipeline_consumer_before_last_submit=(self.first_consumer_at is not None and
@@ -128,10 +138,23 @@ class PressurePipeline:
         for index, impl in enumerate(implementations):
             for method in ('do_kv_cache_update', 'forward'):
                 original = getattr(impl, method)
-                @wraps(original)
-                def guarded(*args, _original=original, _index=index, **kwargs):
-                    self.wait_layer(_index)
-                    return _original(*args, **kwargs)
+                if method == 'forward':
+                    @wraps(original)
+                    def guarded(*args, _original=original, _index=index, **kwargs):
+                        self.wait_layer(_index)
+                        result = _original(*args, **kwargs)
+                        # Opt-in streaming publication: this layer's projected
+                        # K/V is complete; enqueue its pack/D2H right away.
+                        session = getattr(getattr(self.runner, '_kvmem_capture_runtime', None),
+                                          '_stream_active', None)
+                        if session is not None and _index < session.target_layers:
+                            session.on_layer(_index)
+                        return result
+                else:
+                    @wraps(original)
+                    def guarded(*args, _original=original, _index=index, **kwargs):
+                        self.wait_layer(_index)
+                        return _original(*args, **kwargs)
                 setattr(impl, method, guarded)
         self.installed = True
         if self.preforward:
@@ -188,6 +211,83 @@ class PressurePipeline:
         self.prime_post_forward(refresh, max_wait_seconds=0,
             current_requests=self.progress_requests, boundary=boundary)
 
+    def schedule_boundary(self, wait_seconds=0., idle=False):
+        """Dispatch already-prepared plans just before the next schedule.
+
+        Opt-in (KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK). The engine is
+        synchronous and single-process, so this runs on the engine thread after
+        the previous batch's feedback and before the next schedule: the same
+        worker state as the end of post-forward. It never prepares, waits for a
+        plan or synchronizes CUDA; it only reaps finished leases, admits an
+        already-prepared waiter to the lane and dispatches prepared plans.
+        Returns the request IDs whose guarded handoff was acknowledged here.
+        """
+        refresh = getattr(self.runner, '_kvmem_async_refresh', None)
+        capture = getattr(self.runner, '_kvmem_capture_runtime', None)
+        if refresh is None or capture is None or not self.early_handoff:
+            return ()
+        from .pressure_promise import enabled as promise_enabled, promise
+        if idle and promise_enabled() and self.active:
+            # A promised producer normally finishes inside the forward it
+            # guarded. Nothing else can run now, so finish reaping it here
+            # (bounded) instead of losing the next promise to a busy lane.
+            import concurrent.futures
+            deadline = time.perf_counter() + .2
+            for lease in tuple(self.active.values()):
+                future = getattr(lease.job, 'future', None)
+                if not getattr(lease, 'promised', False) or future is None:
+                    continue
+                try:
+                    future.exception(timeout=max(0., deadline - time.perf_counter()))
+                except concurrent.futures.TimeoutError:
+                    continue
+                if lease.final_event is not None:
+                    lease.final_event.synchronize()
+        self.reap(refresh, boundary='schedule')
+        lanes = getattr(self.pressure, 'lanes', 1)
+        dispatched = []
+        if idle and promise_enabled():
+            # Opt-in: nothing else can run, so acknowledge with the fixed extent
+            # now and let the next forward wait per layer instead of idling.
+            for job in tuple(refresh.jobs.values()):
+                if promise(self, refresh, job):
+                    dispatched.append(job.command.request_id)
+            if dispatched:
+                return tuple(dispatched)
+        for job in tuple(refresh.jobs.values()):
+            command = job.command
+            rid = command.request_id
+            if (job.done or job.cancelled or getattr(command, 'selection', None) != 'pressure' or
+                    getattr(command, 'pressure_stage', None) != 'prefill' or job.guided_pressure or
+                    not capture.publication_ready((rid,))):
+                continue
+            authority = capture.authorities.get(rid)
+            if authority is None or authority.history_end != job.history:
+                continue
+            if job.stage == 'assembly_wait' and len(self.active) < lanes:
+                # Lane/byte admission only: submits the existing producer.
+                refresh.step(job)
+            if job.stage != 'assembly' or job.future is None:
+                continue
+            if getattr(job, 'layerwise_pipeline', None) is None and wait_seconds > 0:
+                # Only called when no other request could run this step: the GPU
+                # is idle anyway, so wait (GIL released) for the producer's plan.
+                deadline = time.perf_counter() + wait_seconds
+                with self.prepared_condition:
+                    while (getattr(job, 'layerwise_pipeline', None) is None and
+                           not job.future.done() and time.perf_counter() < deadline):
+                        self.prepared_condition.wait(min(.002, max(0., deadline-time.perf_counter())))
+            if getattr(job, 'layerwise_pipeline', None) is None:
+                if job.future.done():
+                    job.future.result()  # Do not swallow preparation failures.
+                continue
+            started = time.perf_counter()
+            if self.dispatch(refresh, job):
+                refresh.emit(job, 'pipeline_handoff_attempt', dispatched=True,
+                    host_seconds=time.perf_counter()-started, prepared=True, boundary='schedule')
+                dispatched.append(rid)
+        return tuple(dispatched)
+
     def install_preforward(self):
         native = self.runner.kv_connector
         if not callable(getattr(native, '_start_load_kv', None)):
@@ -234,6 +334,21 @@ class PressurePipeline:
     def begin(self, job, plan, names):
         if not self.installed or tuple(names) != self.names:
             raise RuntimeError('Pipeline cache guards are not installed for every layer')
+        promised = getattr(job, 'promised_lease', None)
+        if promised is not None:
+            # Producer thread: bind the immutable plan to the already
+            # acknowledged lease, then commit host maps before any upload.
+            if promised.plan is not None or self.active.get(job.command.request_id) is not promised:
+                raise RuntimeError('Promised pressure lease was replaced or bound twice')
+            with promised.condition:
+                promised.plan = plan
+            # Host maps commit after layer 0's upload is submitted (or at once
+            # when the assembler has no per-layer hook): uploads need only the
+            # immutable plan; layer-1 selection and capture wait for the commit.
+            from .pressure_promise import commit
+            if not getattr(job, 'promise_commit_after_layer0', False):
+                commit(self, job, promised)
+            return promised
         lease = LayerMaterialization(self, job, plan, names)
         with self.prepared_condition:
             job.layerwise_pipeline = lease
@@ -357,17 +472,32 @@ class PressurePipeline:
                     refresh.emit(job, 'pipeline_checkpoint_boundary_wait')
                     job.pipeline_checkpoint_wait_reported = True
                 return False
+        from . import publication_trace
+        marks = [] if publication_trace.enabled() else None
+        def mark(name):
+            if marks is not None:
+                marks.append((name, time.perf_counter(), time.thread_time()))
+        mark('start')
         authority.memory.commit_layerwise_selection(lease)
+        mark('commit_selection')
         lease.dispatched = True
         self.active[rid] = lease
         job.layerwise_pipeline_published = True
         job.selected_tokens = lease.plan.total_window_tokens
         job.pipeline_report_records = tuple(authority.memory._store.working_records())
+        mark('working_records')
         self.pressure.committed(job)
+        mark('pressure_committed')
         self.runner._kvmem_window_adapter.commit(rid, job.history, job.selected_tokens)
+        mark('window_commit')
         if sessions is not None:
             sessions.selection_committed(rid, job.history)
+        mark('sessions')
         refresh._release(job)
+        mark('release')
+        if marks is not None:
+            publication_trace.emit('dispatch_sections', request_id=rid, sections={
+                b[0]: [round(b[1]-a[1], 6), round(b[2]-a[2], 6)] for a, b in zip(marks, marks[1:])})
         # ACK means guarded execution is now legal. It does not release the
         # assembler, source plan, scratch or maintenance credit.
         job.done = True
@@ -400,6 +530,13 @@ class PressurePipeline:
                 refresh.maintenance.observe(job, assembly.uploaded_bytes)
                 refresh.maintenance.release(job)
             refresh.report(job, assembly, fit, seconds)
+            if lease.promised:
+                refresh._release(job)
+                job.promised_lease = None
+                action = getattr(getattr(self.runner, '_kvmem_capture_runtime', None), 'action', None)
+                epochs = getattr(action, 'promise_epochs', {})
+                if epochs.get(rid, (None,))[0] == job.history:
+                    del epochs[rid]
             refresh.emit(job, 'pipeline_completed', completion_poll=boundary or 'original', **lease.evidence())
             job.future = job.result = None
             job.layerwise_pipeline = None

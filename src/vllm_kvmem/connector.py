@@ -132,6 +132,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.restore_timings = None
         self.restore_completion_poll = None
         self.pressure_completion_poll = None
+        self.pressure_schedule_poll = None
         self.query_completion_poll = None
         self.scheduler_restore_feedback = None
         self.active_residency = None
@@ -211,6 +212,33 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             done.add(request_id)
         self.cancelled.difference_update(done)
         return done or None, None
+
+    def take_schedule_completions(self, wait_seconds=0., idle=False):
+        """Worker half of the opt-in schedule-time pressure ACK.
+
+        Only pressure handoffs dispatched by this call are reported, exactly as
+        get_finished would report them in the next batch feedback; every other
+        completion, cancellation and lifecycle notice keeps its native path.
+        """
+        poll = self.pressure_schedule_poll
+        if poll is None:
+            return None
+        completed, windows = [], {}
+        for request_id in (poll(wait_seconds, idle=True) if idle else
+                           poll(wait_seconds) if wait_seconds else poll()):
+            entry = self.worker_jobs.get(request_id)
+            if entry is None:
+                continue
+            command, job = entry
+            if not job.query():
+                raise RuntimeError('Schedule-time handoff did not complete its worker job')
+            completed.append((request_id, command.command_id))
+            if getattr(job, "selected_tokens", None) is not None:
+                windows[request_id] = job.selected_tokens
+            del self.worker_jobs[request_id]
+        if not completed:
+            return None
+        return ControlCompletions(completed, windows)
 
     def build_connector_worker_meta(self):
         capacity = self.archive_snapshot() if self.archive_snapshot is not None else None

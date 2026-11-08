@@ -23,6 +23,13 @@ public:
         // Manual advance is for deterministic tests. Closing still activates a
         // native reaper so a final foreground Read never destroys payloads.
         bool background = true;
+        // Opt-in record pool (0 = per-record heap allocation, the original
+        // behavior). Records are carved from huge-page-advised slabs of this
+        // many MiB; released records are reused LIFO (already faulted), and a
+        // native filler pre-faults `pool_ahead_records` free records so a
+        // publication never pays first-touch page faults. Bytes are identical.
+        uint32_t pool_chunk_mib = 0;
+        uint32_t pool_ahead_records = 0;
     };
     enum class RetireResult { Committed, AlreadyRetired, StaleHandle, Retry };
     struct Stats {
@@ -30,6 +37,7 @@ public:
         uint64_t readers = 0, released_slots = 0, released_bytes = 0;
         uint64_t last_release_thread = 0;
         uint64_t external_owners = 0, external_bytes = 0, external_released_bytes = 0;
+        uint64_t pool_hits = 0, pool_misses = 0, pool_reserved_bytes = 0;
     };
     // C-only storage deleters (e.g. native index arrays). The last
     // foreground owner enqueues; only the arena worker invokes the deleter.

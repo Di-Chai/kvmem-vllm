@@ -17,6 +17,31 @@ from .storage import AsyncArchive
 CPU_REGION_GATHER_PARALLEL_MIN_BYTES = 32 * 1024**2
 
 
+def region_gather_parallel_min_bytes():
+    """Opt-in KVMEM_CPU_REGION_GATHER_PARALLEL_MIN_MIB: split smaller layer-region
+    copies (8 MiB per K or V chunk) across the existing gather workers. Each
+    worker copies a disjoint record range with the same native routine, so the
+    bytes are identical; only the copy's latency on the refresh path changes."""
+    import os
+    value = os.getenv('KVMEM_CPU_REGION_GATHER_PARALLEL_MIN_MIB')
+    if value is None:
+        return globals()['CPU_REGION_GATHER_PARALLEL_MIN_BYTES']   # read at call time
+    if not value.isdigit() or not 1 <= int(value) <= 1024:
+        raise ValueError('KVMEM_CPU_REGION_GATHER_PARALLEL_MIN_MIB must be an integer in [1, 1024]')
+    return int(value) * 1024**2
+
+
+def _skip_digest():
+    """Opt-in: skip per-record SHA-256 that nothing reads while verification is off.
+
+    Digests are consumed only by verify_archive_on_finish checks (finish,
+    retirement, preserved sessions) and a session-restore diagnostic. Callers
+    must only enable this with verify_archive_on_finish=False.
+    """
+    import os
+    return os.getenv('KVMEM_ARCHIVE_SKIP_DIGEST') == '1'
+
+
 class SplitHistoricalIndexOwner:
     """Independent sum/mean native buffers with a joint release completion.
 
@@ -260,12 +285,35 @@ class MemoryTier:
                 'duration_ns':time.perf_counter_ns()-start, **read_stats}
 
 
+def _buffer_address(buffer):
+    import numpy as np
+    return np.frombuffer(buffer, dtype=np.uint8).__array_interface__['data'][0]
+
+
+def _prepacked_records(views, record_bytes):
+    """Per record pair: its bytes object when the pair is exactly that object's
+    two halves (in order, complete), else None. None overall when no pair is."""
+    result, found = [], False
+    for i in range(0, len(views) - 1, 2):
+        first, second = views[i], views[i+1]
+        owner = getattr(first, 'obj', None)
+        record = None
+        if (type(owner) is bytes and getattr(second, 'obj', None) is owner and
+                len(owner) == record_bytes and first.nbytes + second.nbytes == record_bytes):
+            base = _buffer_address(owner)
+            if _buffer_address(first) == base and _buffer_address(second) == base + first.nbytes:
+                record, found = owner, True
+        result.append(record)
+    return result if found else None
+
+
 class MemoryArchive(AsyncArchive):
     def __init__(self, *args, gather_workers=8, cpu_direct_record_seal=False, cpu_seal_hash_workers=1,
                  cpu_seal_pack_workers=1, cpu_seal_serial_allocate=False,
                  native_payloads=False, **kwargs):
         if type(gather_workers) is not int or not 1 <= gather_workers <= 16:
             raise ValueError('CPU gather workers must be between 1 and 16')
+        region_gather_parallel_min_bytes()   # validate the opt-in override early
         if type(cpu_direct_record_seal) is not bool:
             raise ValueError('cpu_direct_record_seal must be boolean')
         if type(cpu_seal_hash_workers) is not int or not 1 <= cpu_seal_hash_workers <= 8:
@@ -312,7 +360,8 @@ class MemoryArchive(AsyncArchive):
         self.gather_workers = gather_workers
         # Archive jobs wait for their copies; using the archive executor for
         # these tasks would deadlock when its workers are all occupied by reads.
-        self._gather_executor = ThreadPoolExecutor(max_workers=gather_workers,
+        from .portable import cap_workers
+        self._gather_executor = ThreadPoolExecutor(max_workers=cap_workers(gather_workers),
                                                    thread_name_prefix='kvmem-cpu-gather')
         self._gather_control = RLock()
         self._gather_unusable = None
@@ -333,7 +382,10 @@ class MemoryArchive(AsyncArchive):
                     [views[2*i:2*i+2] for i in range(len(entries))])
                 copied = time.perf_counter()
                 sources = self.tier.borrow_records(allocations)
-                digests = self._record_digests(sources)
+                digests = None if _skip_digest() else self._record_digests(sources)
+                from .publication_trace import emit as _trace
+                _trace('seal_done', path='native', records=len(entries), pack=copied-started,
+                       hash=time.perf_counter()-copied, ns=str(keys[0])[:60] if keys else None)
                 stats.update(record_digests=digests, seal_pack_seconds=copied-started,
                     seal_hash_seconds=time.perf_counter()-copied, seal_cache_seconds=0.,
                     seal_record_copy_seconds=0., seal_record_publish_seconds=0.,
@@ -356,8 +408,11 @@ class MemoryArchive(AsyncArchive):
                     any(type(record) is not bytes or len(record) != self.record_bytes for record in records)):
                 raise RuntimeError('Invalid owned CPU sealed record')
             packed = time.perf_counter()
-            digests = self._record_digests(records)
+            digests = None if _skip_digest() else self._record_digests(records)
             hashed = time.perf_counter()
+            from .publication_trace import emit as _trace
+            _trace('seal_done', path='direct', records=len(records), pack=packed-started,
+                   hash=hashed-packed, ns=str(keys[0])[:60] if keys else None)
             # No batch slab or record views survive publication. The exact
             # bytes objects hashed above become the immutable authority owners.
             stats = self.tier.publish_records([e.allocation for e in entries], records)
@@ -383,6 +438,28 @@ class MemoryArchive(AsyncArchive):
             self._gather_worker.active = False
 
     def _pack_records(self, views):
+        # Zero-copy streamed pages (streaming_publication): a pair of views that
+        # is exactly one private, complete bytes record is adopted as is.
+        adopted = subset = copied = None
+        try:
+            adopted = _prepacked_records(views, self.record_bytes)
+            if adopted is None:
+                return self._pack_copied(views)
+            missing = [i for i, record in enumerate(adopted) if record is None]
+            if missing:
+                subset = [v for i in missing for v in views[2*i:2*i+2]]
+                copied = self._pack_copied(subset)
+                for i, record in zip(missing, copied):
+                    adopted[i] = record
+            with self._lock:
+                self._seal_zero_copy_records = (getattr(self, '_seal_zero_copy_records', 0) +
+                                                len(adopted) - len(missing))
+            return adopted
+        finally:
+            # A failed future's traceback must not retain any source export.
+            views = subset = copied = adopted = None
+
+    def _pack_copied(self, views):
         """Pack an admitted batch with bounded shards and one copy per record.
 
         write_from_views already validates the complete source extent and owns
@@ -535,7 +612,7 @@ class MemoryArchive(AsyncArchive):
         # A layer's 256-record K or V region is only 8 MiB. Reuse the native
         # inline copy below 32 MiB instead of submitting eight 1-MiB jobs.
         # Full-record reads retain their existing parallel threshold.
-        threshold = CPU_REGION_GATHER_PARALLEL_MIN_BYTES if region else 8*1024**2
+        threshold = region_gather_parallel_min_bytes() if region else 8*1024**2
         parallel = workers > 1 and len(sources)*length >= threshold
         jobs, error = [], None
         with self._gather_control:
@@ -661,36 +738,84 @@ class MemoryArchive(AsyncArchive):
         with self.tier.lock:
             return [self.tier.records[self._entries[key].allocation.slot] for key in keys]
 
-    def prepare_region_reader(self, namespace, leases):
-        """Pin each immutable no-GC source once for one layerwise pressure plan."""
+    def prepare_region_reader(self, namespace, leases, *, keys=None, adopt=False):
+        """Pin each immutable no-GC source once for one layerwise pressure plan.
+
+        Opt-in (KVMEM_PRESSURE_READER_ADOPT): ``keys`` are the callers' already
+        validated (namespace, slot, generation) of each lease, and ``adopt``
+        transfers the live leases instead of cloning them (the caller then must
+        not reset them). Sources, keys and lease lifetimes are otherwise identical.
+        """
         from .prepared_regions import PreparedRegionReader
         if self._native_payload_arena is not None or not leases:
             raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
-        keys = [self.key(namespace, lease) for lease in leases]
+        if keys is None:
+            keys = [self.key(namespace, lease) for lease in leases]
+        elif len(keys) != len(leases) or not namespace:
+            raise ValueError('Prepared CPU source keys do not match their leases')
         if len(set(keys)) != len(keys):
             raise ValueError('Prepared CPU source identities must be unique')
         owned = []
+        native = None
+        if adopt:
+            from .pressure_reader import native_reader
+            if native_reader():
+                native = getattr(_native, 'archive_region_sources', None)
         with self._lock:
             if self._closed:
                 raise RuntimeError('Archive is closed')
-            entries = [self._entries.get(key) for key in keys]
-            if any(entry is None or not entry.ready for entry in entries):
-                raise KeyError('Prepared CPU record is absent, stale or unpublished')
-            sources = self._region_sources(keys)
-            if any(type(source) is not bytes or len(source) != self.record_bytes for source in sources):
-                raise ValueError('Prepared CPU regions require exact immutable record bytes')
+            if native is not None:
+                # Same entry checks, sources and errors in one native call.
+                with self.tier.lock:
+                    sources = native(self._entries, self.tier.records, list(keys), self.record_bytes)
+            else:
+                entries = [self._entries.get(key) for key in keys]
+                if any(entry is None or not entry.ready for entry in entries):
+                    raise KeyError('Prepared CPU record is absent, stale or unpublished')
+                sources = self._region_sources(keys)
+                if any(type(source) is not bytes or len(source) != self.record_bytes for source in sources):
+                    raise ValueError('Prepared CPU regions require exact immutable record bytes')
             try:
-                for lease in leases:
-                    owned.append(lease.clone())
-                    if not owned[-1]:
+                if adopt:
+                    native_set = hasattr(leases, 'valid')
+                    if not (leases.valid() if native_set else all(leases)):
                         raise ValueError('Stale prepared CPU source generation')
+                    owned = leases if native_set else list(leases)
+                else:
+                    for lease in leases:
+                        owned.append(lease.clone())
+                        if not owned[-1]:
+                            raise ValueError('Stale prepared CPU source generation')
                 result = PreparedRegionReader(self, namespace, keys, sources, owned)
             except BaseException:
-                for lease in owned:
-                    lease.reset()
+                if not adopt:      # adopted leases still belong to the caller
+                    for lease in owned:
+                        lease.reset()
                 raise
             self._prepared_region_readers = getattr(self, '_prepared_region_readers', 0)+1
             return result
+
+    def extend_region_reader(self, reader, namespace, leases, keys):
+        """KVMEM_PRESSURE_READER_EXTEND: prepare_region_reader's adopt path for
+        further records of the same plan (same entry checks, sources, unique
+        identities and pin validity), appended to an open native reader."""
+        if self._native_payload_arena is not None or not keys or not hasattr(leases, 'valid'):
+            raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
+        if len(keys) != len(leases) or not namespace or reader.namespace != namespace:
+            raise ValueError('Prepared CPU source keys do not match their leases')
+        if len(set(keys)) != len(keys) or not set(keys).isdisjoint(reader.keys):
+            raise ValueError('Prepared CPU source identities must be unique')
+        native = getattr(_native, 'archive_region_sources', None)
+        if native is None:
+            raise RuntimeError('Prepared reader extension requires the native source export')
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Archive is closed')
+            with self.tier.lock:
+                sources = native(self._entries, self.tier.records, list(keys), self.record_bytes)
+            if not leases.valid():
+                raise ValueError('Stale prepared CPU source generation')
+            return reader.extend(keys, sources, leases)
 
     def _admit_read_sources(self, entries):
         if self._native_payload_arena is not None:
@@ -868,7 +993,7 @@ class MemoryArchive(AsyncArchive):
                 seal_pack_parallel_batches_completed=self._seal_pack_parallel_batches_completed,
                 seal_pack_parallel_shards_completed=self._seal_pack_parallel_shards_completed)
         with self._gather_control:
-            gather_usage = dict(cpu_region_gather_parallel_min_bytes=CPU_REGION_GATHER_PARALLEL_MIN_BYTES,
+            gather_usage = dict(cpu_region_gather_parallel_min_bytes=region_gather_parallel_min_bytes(),
                 **{'cpu_region_gather_'+key:value for key,value in self._region_gather_counts.items()})
         native = self._native_payload_arena.stats if self._native_payload_arena is not None else None
         with self.tier.lock:

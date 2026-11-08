@@ -88,6 +88,13 @@ class KVMemScheduler(Scheduler):
         self.prefill_physical_multi_owner = getattr(options, 'prefill_physical_multi_owner', False)
         self.prefill_physical_fill_rows = getattr(options, 'prefill_physical_fill_rows', False)
         self._physical_native_rows = options.action_native_max_rows
+        mixed = os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '0')
+        if mixed not in ('0', '1'):
+            raise ValueError('KVMEM_PREFILL_COALESCE_WITH_DECODE must be 0 or 1')
+        self.prefill_coalesce_with_decode = mixed == '1'
+        if self.prefill_coalesce_with_decode and not (
+                self.prefill_physical_coalescing and self.prefill_physical_multi_owner):
+            raise ValueError('Coalescing with decode rows requires multi-owner physical prefill')
         self.prefill_physical_max_chunks = options.prefill_physical_max_chunks
         partial_tail = os.getenv('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL', '0')
         if partial_tail not in ('0', '1'):
@@ -95,6 +102,10 @@ class KVMemScheduler(Scheduler):
         if partial_tail == '1' and not self.prefill_physical_coalescing:
             raise ValueError('Partial physical tails require physical prefill coalescing')
         self.prefill_physical_partial_tail = partial_tail == '1'
+        no_replay = os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0')
+        if no_replay not in ('0', '1'):
+            raise ValueError('KVMEM_PREFILL_PRESSURE_NO_REPLAY must be 0 or 1')
+        self.prefill_pressure_no_replay = no_replay == '1'
         self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
@@ -172,6 +183,15 @@ class KVMemScheduler(Scheduler):
             from .systemone_fork import ForkPagePool
             self.connector.systemone_pool = ForkPagePool(self, config)
         self.connector.scheduler_completion = self._complete_refresh
+        schedule_ack = os.getenv('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
+        if schedule_ack not in ('0', '1'):
+            raise ValueError('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK must be 0 or 1')
+        self._schedule_ack = schedule_ack == '1'
+        if self._schedule_ack and (self.scheduler_config.async_scheduling or
+                                   self.vllm_config.parallel_config.tensor_parallel_size != 1 or
+                                   self.vllm_config.parallel_config.distributed_executor_backend
+                                   not in (None, 'uni')):
+            raise ValueError('Schedule-time pressure ACK requires the synchronous single-process engine')
         if self._bounded_target:
             self.kv_cache_manager.guided_reserve = options.guided_reserve
             self.kv_cache_manager.guided_block_tokens = config.block_tokens
@@ -871,20 +891,34 @@ class KVMemScheduler(Scheduler):
                 return
             # Keep decode, Query/replay and unknown policy compositions on the
             # original path. All owners share the existing native score bank.
+            # Opt-in KVMEM_PREFILL_COALESCE_WITH_DECODE: decoding requests stay
+            # ordinary rows of the same step instead; their largest possible
+            # sampled-row use (1 + speculative tokens) is reserved from the bank.
             from .request_plan import request_plan
+            mixed = getattr(self, 'prefill_coalesce_with_decode', False)
+            native_rows, owners = self._physical_native_rows, []
             for item in requests:
                 plan = request_plan(item, self.query_policy.block_tokens, self.query_policy.gen_budget)
                 history = item.num_computed_tokens
+                if (mixed and plan is not None and history >= item.num_prompt_tokens and
+                        getattr(item, 'status', None) is RequestStatus.RUNNING):
+                    native_rows -= 1 + max(len(getattr(item, 'spec_token_ids', ()) or ()),
+                                           getattr(self, 'num_spec_tokens', 0) or 0)
+                    continue
                 if (plan is None or history >= item.num_prompt_tokens or
                         plan.query is not None and history >= plan.replay_begin or
                         getattr(item, 'spec_token_ids', ())):
                     return
+                owners.append(item)
+            if not owners or native_rows <= 0:
+                return
+            requests = owners
             chunk = int(os.getenv('KVMEM_PREFILL_CHUNK_TOKENS', '0'))
-            limit = owner_chunk_limit(len(requests), self._physical_native_rows,
+            limit = owner_chunk_limit(len(requests), native_rows,
                 chunk, self.prefill_physical_max_chunks)
             if getattr(self, 'prefill_physical_fill_rows', False):
                 from .multiowner_prefill import owner_chunk_allocations
-                limits = owner_chunk_allocations(len(requests), self._physical_native_rows,
+                limits = owner_chunk_allocations(len(requests), native_rows,
                     chunk, self.prefill_physical_max_chunks, rotation=step)
                 limit = max(limits)
                 self._logical_owner_chunks = {r.request_id:n for r,n in zip(requests,limits)}
@@ -1047,6 +1081,12 @@ class KVMemScheduler(Scheduler):
                                 padding = len(spec)
                             if begin >= request.num_prompt_tokens or len(tokens) + padding != query_tokens:
                                 raise ValueError('Async refresh requires a complete public prompt/Query prefix')
+                            if (getattr(self, 'prefill_pressure_no_replay', False) and action == 'pressure' and
+                                    guided is None and not padding):
+                                # Opt-in: the window-boundary block is not replayed as its
+                                # own step after the refresh; it starts the next ordinary
+                                # (coalesced) group. Selection uses accepted history only.
+                                replay_tokens, tokens = 0, ()
                     self.begin_refresh(request, selected_budget, replay_tokens=replay_tokens,
                         query_span=plan.query if action == 'query' else None,
                         selection='pressure' if action == 'pressure' else 'query' if action in ('query', 'guided') else 'chunk',
@@ -1423,7 +1463,45 @@ class KVMemScheduler(Scheduler):
         self._cadence_requested += int(throttle)
         return throttle
 
+    def _schedule_time_acks(self):
+        """Apply pressure handoffs that became ready after the last feedback.
+
+        The synchronous single-process engine runs the worker on this thread
+        and has no batch in flight here, so the worker state equals the end of
+        the previous post-forward. Completions travel the native scheduler
+        completion path (update_connector_output -> _complete_refresh).
+        """
+        if not self.transactions:
+            return
+        from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
+        if not has_kv_transfer_group():
+            return
+        worker = get_kv_transfer_group()
+        if worker is self.connector:
+            raise RuntimeError('Schedule-time ACK found the scheduler connector, not the worker')
+        wait = 0.
+        idle_ms = float(os.getenv('KVMEM_LAYERWISE_PRESSURE_IDLE_ACK_WAIT_MS', '0'))
+        promise = os.getenv('KVMEM_LAYERWISE_PRESSURE_PROMISE', '0') == '1'
+        idle = bool((idle_ms or promise) and all(r.request_id in self.transactions for r in self.running)
+                    and not any(self._waiting_queues()))
+        if idle_ms and idle:
+            # Nothing else is schedulable this step: waiting for a plan that is
+            # already being prepared cannot delay any other request's compute.
+            wait = min(idle_ms, 200.) / 1000
+        if promise and idle:
+            # Opt-in promised ACK (pressure_promise): only when the GPU would idle.
+            meta = worker.take_schedule_completions(wait, idle=True)
+        else:
+            meta = worker.take_schedule_completions(wait) if wait else worker.take_schedule_completions()
+        if meta is None:
+            return
+        from types import SimpleNamespace
+        self.connector.update_connector_output(SimpleNamespace(
+            kv_connector_worker_meta=meta, finished_sending=None, finished_recving=None))
+
     def schedule(self, throttle_prefills=False):
+        if getattr(self, '_schedule_ack', False):
+            self._schedule_time_acks()
         if getattr(self, 'swap_controller', None) is not None:
             self.swap_controller.before_schedule()
         if getattr(self.connector, 'active_residency', None) is not None:

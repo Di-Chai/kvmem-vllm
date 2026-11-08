@@ -19,7 +19,9 @@ def require_batch_accept():
 
 def accept_buffered_batch(histories,end,count,accepted,rows,starts,logical,local_begin,masses):
     """Update staged histories together; publication remains the caller's transaction."""
-    if any(type(history) is not BufferedPrefillHistory for history in histories):
+    # DeferredFoldHistory (deferred_fold.py) forces its queued folds on access.
+    if any(type(history) is not BufferedPrefillHistory and
+           not getattr(type(history), 'deferred_fold', False) for history in histories):
         raise ValueError('Batched layer acceptance requires native buffered histories')
     # Preserve skipped/mixed sampling boundaries and malformed outer geometry's
     # scalar indexing/error order. Normal downloaded packets always batch.
@@ -72,6 +74,10 @@ class BufferedPrefillHistory(PrefillHistory):
         self.native_score_export=os.getenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT')=='1'
         if self.native_score_export and not hasattr(self._buffered_state,'scores'):
             raise ValueError('Native score export requires the rebuilt prefill state extension')
+
+    def page_count(self):
+        state = self._buffered_state
+        return state.size() if hasattr(state, 'size') else len(state.values())
 
     def scores(self):
         # Keep the qualified dictionary path by default, even in a new build.

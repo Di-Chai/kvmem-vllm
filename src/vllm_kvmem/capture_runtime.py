@@ -276,6 +276,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             raise
         from .qsa_adapter import append_qsa_captures
         captured = append_qsa_captures(self.runner, captured)
+        self._finish_stream_session(batch)
         if tuple(c.name for c in captured) != self.names:
             raise ValueError("Continuous capture missed or reordered target layers")
         if any(c.key.dtype != torch.bfloat16 for c in captured):
@@ -371,10 +372,15 @@ class CaptureRuntime(EarlyCaptureFeedback):
             packet.thinking_tokens = thinking_tokens
             packet.action_validation = getattr(action_inputs, 'validation', None)
             packet.pipeline_requests = frozenset(pipeline.intersection(packet.request_ids))
+            from .publication_trace import emit as _trace
+            _trace('packet_submitted', rids=list(packet.request_ids), tokens=t, lane=lane)
             if logical_group is not None:
                 packet.logical_group,packet.logical_slices = logical_group,logical_slices
                 self._logical_source_generation = getattr(self,'_logical_source_generation',0)+1
                 packet.source_generation = self._logical_source_generation
+                fast = getattr(getattr(self, 'runner', None), '_kvmem_layer0_fast', None)
+                if fast is not None:
+                    fast.bind_chunk(packet)
             elif logical_owners:
                 from .multiowner_prefill import attach_owner_views
                 self._logical_source_generation = getattr(self,'_logical_source_generation',0)+1
@@ -533,6 +539,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
         values = (torch.stack(vals).float() / self.scales[:, None, None, None]).clamp(-448, 448).to(torch.float8_e4m3fn)
         from .qsa_adapter import write_auxiliary_bytes
         write_auxiliary_bytes(values, captured, rows=rows, tokens=t)
+        fast = getattr(getattr(self, 'runner', None), '_kvmem_layer0_fast', None)
+        if fast is not None and n == 1 and rows is None and raw.element_size() == 1:
+            # Opt-in KVMEM_LAYER0_FAST: layer 0's archive bytes for this chunk,
+            # copied on the GPU before the download (layer0_fast).
+            fast.stage_chunk(batch.req_ids[0], raw, values, t)
         return torch.cat((header.view(torch.uint8), raw.view(torch.uint8).flatten(),
                           values.view(torch.uint8).flatten())), t
 
@@ -861,6 +872,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
         with self._publication_lock():
             self._raise_publication_error()
             self._install_terminals(request_ids, terminal_prefixes)
+            from .publication_trace import emit as _trace, enabled as _tracing
+            if _tracing():
+                _fresh = [list(p.request_ids) for p in self.queue if not p.confirmed]
+                if _fresh:
+                    _trace('packets_confirmed', packets=_fresh)
             action = getattr(self, 'action', None)
             if self.prefill_pipeline_enabled and request_ids and action is not None:
                 action.invalidate_prefill_plans(request_ids)
@@ -975,6 +991,67 @@ class CaptureRuntime(EarlyCaptureFeedback):
     def _large_pending_requests(self):
         """Publication workers still own large packets when admission overlaps."""
         return self._publication_blocked_requests(allow_pipeline=False)
+
+    def start_stream_session(self, batch):
+        """Opt-in streaming publication for one qualified coalesced owner."""
+        from .streaming_publication import enabled, StreamSession
+        previous = getattr(self, '_stream_active', None)
+        if previous is not None:
+            # A forward that never reached submit (e.g. failed) cannot publish.
+            previous.abort()
+            self._stream_active = None
+        if not enabled() or getattr(self.options, 'capture_fused_pack', False):
+            return   # The fused packer is a different kernel; keep one byte source.
+        action = getattr(self, 'action', None)
+        plans = getattr(action, 'prefill_plans', None)
+        if plans is None or plans[0] is not batch or batch.num_reqs != 1:
+            return
+        rid = batch.req_ids[0]
+        plan = plans[1].get(rid)
+        group = plan.get('logical_group') if plan is not None else None
+        block = self.config.block_tokens
+        if group is None or group.history_begin % block or group.count % block:
+            return
+        runner = self.runner
+        captures = [*(getattr(runner, '_kvmem_graph_captures', None) or ()),
+                    *(getattr(runner, '_kvmem_mtp_captures', None) or ())]
+        if (len(captures) != len(self.names) or tuple(c.name for c in captures) != tuple(self.names) or
+                getattr(runner, '_kvmem_qsa_aux_captures', ()) or
+                any(getattr(c, 'archive_value_bytes', None) is not None for c in captures)):
+            return
+        authority = self.authorities.get(rid)
+        begin, end = map(int, batch.query_start_loc_np[:2])
+        if (authority is None or authority.raw_dtype != torch.float8_e4m3fn or
+                self.raw_dtype != torch.float8_e4m3fn or end - begin != group.count):
+            return
+        session = StreamSession(self, authority, rid, group.history_begin, group.count, begin, captures)
+        self._stream_active = session
+        self.__dict__.setdefault('_stream_sessions', {})[(rid, group.history_begin)] = session
+
+    def _start_prescatter(self, packet, group, authority):
+        """Opt-in KVMEM_PUBLICATION_PRESCATTER for one logical claim (see PrescatterJob)."""
+        from .streaming_publication import prescatter_enabled, PrescatterJob, enabled as streaming
+        packet.prescatter = False
+        if (not prescatter_enabled() or streaming() or getattr(self.options, 'capture_fused_pack', False) or
+                authority.raw_dtype != torch.float8_e4m3fn or self.raw_dtype != torch.float8_e4m3fn or
+                packet.logical_payload is None or getattr(authority, '_prefill_wait', None) is not None):
+            return
+        raw, values = packet.logical_payload
+        if raw.shape[0] != len(self.names) or not raw.is_contiguous() or not values.is_contiguous():
+            return
+        job = PrescatterJob(authority, group, raw, values, getattr(authority, 'cpu_mean_index_simd', False))
+        packet.prescatter = job
+        authority._prefill_wait = job.wait_range
+
+    def _finish_stream_session(self, batch):
+        session = getattr(self, '_stream_active', None)
+        self._stream_active = None
+        if session is None:
+            return
+        if tuple(batch.req_ids) != (session.rid,):
+            session.abort()
+            return
+        session.finish_forward()
 
     def note_prefill_pipeline_forward(self, batch):
         """Nonblocking host evidence immediately before native model dispatch."""
@@ -1293,8 +1370,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
         def work():
             started=time.perf_counter()
             self._cpu_scatter_thread=get_ident()
+            from .scatter_profile import profiled
             try:
-                return self.drain(wait=True)
+                with profiled(self):
+                    return self.drain(wait=True)
             except BaseException as error:
                 with self._publication_lock():
                     self._publication_error = error
@@ -1496,8 +1575,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     continue
             packet, indices = claim
             started = time.perf_counter()
+            from .publication_trace import emit as _trace
+            _trace('claim_start', rids=[packet.request_ids[i] for i in indices], lane=packet.lane)
             try:
                 consumed = self._publish_claim(packet, indices, wait)
+                _trace('claim_end', rids=[packet.request_ids[i] for i in indices], lane=packet.lane,
+                       seconds=time.perf_counter()-started)
             except BaseException as error:
                 with condition:
                     self._publication_error = error
@@ -1660,9 +1743,24 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 packet.logical_payload = (data[header_bytes:header_bytes+raw_bytes].view(self.raw_dtype).reshape(shape),
                                           data[header_bytes+raw_bytes:].reshape(shape))
             authority = self.ensure_authority(group.request_id)
+            session = getattr(self, '_stream_sessions', {}).pop((group.request_id, group.history_begin), None)
+            if session is None and getattr(packet, 'prescatter', None) is None:
+                self._start_prescatter(packet, group, authority)
+            if session is not None:
+                if session.authority is not authority or session.count != group.count:
+                    session.abort()
+                else:
+                    import time as _time
+                    _w0 = _time.perf_counter()
+                    if session.wait_registered():
+                        packet.stream_pages = tuple(range(group.history_begin, group.history_begin+group.count,
+                                                          self.config.block_tokens))
+                    from .publication_trace import emit as _trace
+                    _trace('stream_wait', rid=group.request_id, seconds=_time.perf_counter()-_w0,
+                           pages=len(session.pages or ()))
             action = self.action
             if cursor is None:
-                epoch = action._prefill_identity(group.request_id,authority.action_history)
+                epoch = self._logical_epoch(action,group,authority)
                 cursor = packet.logical_cursor = LogicalPublicationCursor(group,packet,authority,action,
                     packet.logical_slices,owner_epoch=epoch,source_generation=packet.source_generation)
             elif cursor.authority is not authority:
@@ -1672,7 +1770,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     confirmation = packet.logical_confirmation
                 if confirmation is None:
                     raise RuntimeError('Logical publication lacks a scheduler receipt')
-                epoch = action._prefill_identity(group.request_id,authority.action_history)
+                epoch = self._logical_epoch(action,group,authority)
                 cursor.confirm(confirmation[0],owner_epoch=epoch,terminal_prefix=confirmation[1],
                                native_accepted=group.count)
                 started = time.perf_counter()
@@ -1722,11 +1820,38 @@ class CaptureRuntime(EarlyCaptureFeedback):
             with self._publication_lock():
                 getattr(self,'_archive_request_deadlines',{}).pop(frozenset(packet.request_ids),None)
             self._publication_metric('logical_prefill_physical_owners',1,lane=packet.lane)
+            job = getattr(packet, 'prescatter', None)
+            if job:
+                job.thread.join(60)
+                if getattr(authority, '_prefill_wait', None) == job.wait_range:
+                    authority._prefill_wait = None
+                packet.stream_pages = tuple(job.registered)
+                packet.prescatter = False
+            pages = getattr(packet, 'stream_pages', None)
+            if pages:
+                # Clipped/unaccepted pages were never adopted: return them.
+                authority.discard_prefilled(pages)
+                packet.stream_pages = None
             return 1
         except BaseException as error:
             if cursor is not None:
                 cursor.fail(error)
+            job = getattr(packet, 'prescatter', None)
+            if job:
+                # Stop filling pages for a failed claim; leftovers are released
+                # with the authority (discard_prefilled) like any unadopted page.
+                job.abort()
+                owner = self.authorities.get(group.request_id)
+                if owner is not None and getattr(owner, '_prefill_wait', None) == job.wait_range:
+                    owner._prefill_wait = None
             raise
+
+    @staticmethod
+    def _logical_epoch(action, group, authority):
+        identity = getattr(action, '_publication_identity', None)
+        if identity is None:
+            return action._prefill_identity(group.request_id, authority.action_history)
+        return identity(group.request_id, authority.action_history, group.history_end)
 
     def _record_logical_publication(self, packet, cursor, confirmation_step):
         """Audit each completed physical group before its final acknowledgement.

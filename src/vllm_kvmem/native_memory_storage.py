@@ -3,16 +3,35 @@
 Python holds allocation descriptors only. Large records are copied and released
 by native code without the GIL; exported reads retain actual CPU ownership.
 """
+import os
 import time
 
 from . import _native
 from .memory_storage import MemoryAllocation, MemoryTier, gather_records_native
 
 
+def payload_pool_config():
+    """Opt-in pre-faulted CPU record pool (identical bytes, different placement).
+
+    KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB: huge-page-advised slab size; 0 disables.
+    KVMEM_CPU_PAYLOAD_POOL_AHEAD: free records kept pre-faulted by a native thread.
+    """
+    chunk = os.getenv('KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB', '0')
+    ahead = os.getenv('KVMEM_CPU_PAYLOAD_POOL_AHEAD', '0')
+    if not chunk.isdigit() or not ahead.isdigit():
+        raise ValueError('CPU payload pool sizes must be non-negative integers')
+    chunk, ahead = int(chunk), int(ahead)
+    if ahead and not chunk:
+        raise ValueError('KVMEM_CPU_PAYLOAD_POOL_AHEAD requires KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB')
+    if chunk > 65536 or ahead > 1 << 20:
+        raise ValueError('CPU payload pool sizes are out of range')
+    return dict(pool_chunk_mib=chunk, pool_ahead_records=ahead) if chunk else {}
+
+
 class NativeMemoryTier(MemoryTier):
     def __init__(self, record_bytes, capacity):
         super().__init__(record_bytes, capacity)
-        self.payloads = _native.HistoricalPayloadArena(capacity, record_bytes)
+        self.payloads = _native.HistoricalPayloadArena(capacity, record_bytes, **payload_pool_config())
         self._publishing = set()
         self._failed_publications = set()
 

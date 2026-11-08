@@ -22,6 +22,9 @@ def retire_raw_cache(runner, authority):
     refresh = getattr(runner, '_kvmem_async_refresh', None)
     if refresh is not None:
         refresh.retire_namespace(authority.memory.request_id)
+    fast = getattr(runner, '_kvmem_layer0_fast', None)
+    if fast is not None:
+        fast.retire(authority.memory.request_id)
 
 
 class RawCacheIndex:

@@ -197,9 +197,12 @@ class LogicalPublicationCursor:
                 self._child = SimpleNamespace(action_inputs={self.group.request_id:
                     self.slices[self.next_index].action_packet(self.state)}, query_inputs={})
                 self.phase = 'preparing'
+                import time as _time
+                _t0 = _time.perf_counter()
                 self.prepared = self.action.prepare_accept(self._child, self.group.request_id, accepted,
                     graph=self.graph, history_begin=span.history_begin)
                 self.prepared.graph_update.detach()
+                _t1 = _time.perf_counter()
                 self.phase = 'appending'
                 begin, end = span.physical_offset, span.physical_offset+span.count
                 consumed = append_authority_batch([(self.authority, raw[:, begin:end], values[:, begin:end],
@@ -214,7 +217,11 @@ class LogicalPublicationCursor:
                 self.archive_done = True
                 self.phase = 'archive_done'
                 self.phase = 'committing'
+                _t2 = _time.perf_counter()
                 self.prepared.commit()
+                from .publication_trace import emit as _trace
+                _trace('logical_commit', rid=self.group.request_id, tokens=span.count,
+                       prepare_accept=_t1-_t0, append=_t2-_t1, commit=_time.perf_counter()-_t2)
                 self.semantic_done = True
                 self.published_history_end = self.authority.history_end
                 self.graph_binding = self.graph.binding

@@ -121,6 +121,10 @@ def _state(runner, request_id, *, deep):
     decode = pressure.decode_histories.get(request_id)
     owners = [query, pressure, refresh, authority, memory, window, frame, histories, decode]
     history_states = []
+    if histories:
+        # Deferred layer folds are applied before any state is identified.
+        from .deferred_fold import force_all
+        force_all(histories)
     for rows in (histories, decode):
         history_states.append(None if rows is None else tuple(
             _history(h) if deep else (h.end, h.samples, h.chunks) for h in rows))
