@@ -137,6 +137,16 @@ def _map_pieces(Ranges, Pieces, SEGMENTS: tl.constexpr, CONTEXT: tl.constexpr, B
     tl.store(Pieces + request * CONTEXT + token, piece + token // 16 - start // 16, mask=offset < count)
 
 
+def batched_arm():
+    """KVMEM_NATIVE_ARM_BATCHED: arm() builds its row lists in bulk and clears every
+    layer's LSE rows with one launch over a stacked buffer (same values written)."""
+    import os
+    value = os.getenv('KVMEM_NATIVE_ARM_BATCHED', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_ARM_BATCHED must be 0 or 1')
+    return value == '1'
+
+
 @triton.jit
 def _clear_lse(Lse, Meta, Control, HEADS: tl.constexpr, WIDTH: tl.constexpr, TILE: tl.constexpr):
     row, head, tile = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -144,6 +154,19 @@ def _clear_lse(Lse, Meta, Control, HEADS: tl.constexpr, WIDTH: tl.constexpr, TIL
         width = tl.load(Meta + row * 3 + 1)
         x = tile * TILE + tl.arange(0, TILE)
         tl.store(Lse + (row * HEADS + head) * WIDTH + x, -float('inf'), mask=(x < width) & (x < WIDTH))
+
+
+@triton.jit
+def _clear_lse_layers(Lse, Meta, Control, LAYER_STRIDE, TILES, HEADS: tl.constexpr, WIDTH: tl.constexpr,
+                      TILE: tl.constexpr):
+    """_clear_lse for every layer of a stacked LSE buffer (axis 2 = layer * TILES + tile)."""
+    row, head, packed = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+    layer, tile = packed // TILES, packed % TILES
+    if row < tl.load(Control):
+        width = tl.load(Meta + row * 3 + 1)
+        x = tile * TILE + tl.arange(0, TILE)
+        tl.store(Lse + layer.to(tl.int64) * LAYER_STRIDE + (row * HEADS + head) * WIDTH + x, -float('inf'),
+                 mask=(x < width) & (x < WIDTH))
 
 
 @triton.jit
@@ -413,8 +436,16 @@ class NativeAttentionStats:
         self.upload_event = None
         self.masses = {name: torch.empty((self.max_rows, self.max_segments), dtype=torch.float32, device=device)
                        for name in self.names}
-        self.lses = {name: torch.empty((self.max_rows, self.heads, self.width), dtype=torch.float32, device=device)
-                     for name in self.names}
+        self._lse_stack = None
+        if batched_arm():
+            # One allocation, per-layer contiguous views: the same bytes per layer,
+            # so arm() can clear every layer's LSE rows with a single launch.
+            self._lse_stack = torch.empty((len(self.names), self.max_rows, self.heads, self.width),
+                                          dtype=torch.float32, device=device)
+            self.lses = {name: self._lse_stack[i] for i, name in enumerate(self.names)}
+        else:
+            self.lses = {name: torch.empty((self.max_rows, self.heads, self.width), dtype=torch.float32, device=device)
+                         for name in self.names}
         self.ranges.zero_()
         self.disarm()
         _install_xqa_dispatch()
@@ -484,6 +515,13 @@ class NativeAttentionStats:
                 aligned_counts[kind + '_candidate_rows'] += n
             segments=plan.get('_segments',len(layout))
             self.slots[request_id] = first, n, segments
+            if batched_arm():
+                base = len(meta)
+                sample_ids.extend(range(base, base + n))
+                row_indices.extend(plan['begin'] + row for row in plan['rows'])
+                meta.extend([(i, pieces, segments)] * n)
+                requests.extend([i] * n)
+                continue
             for row in plan['rows']:
                 sample_ids.append(len(meta))
                 row_indices.append(plan['begin'] + row)
@@ -512,9 +550,15 @@ class NativeAttentionStats:
             self.host['selected'].numpy()[:len(meta)]=np.arange(len(meta),dtype=np.int32)
             self.selected[:len(meta)].copy_(self.host['selected'][:len(meta)],non_blocking=True)
             self.upload_event.record()
-            for lse in self.lses.values():
-                _clear_lse[(len(meta), self.heads, triton.cdiv(max(m[1] for m in meta), 256))](
-                    lse, self.meta, self.control, self.heads, self.width, 256)
+            tiles = triton.cdiv(max(m[1] for m in meta), 256)
+            if self._lse_stack is not None:
+                stack = self._lse_stack
+                _clear_lse_layers[(len(meta), self.heads, tiles * stack.shape[0])](
+                    stack, self.meta, self.control, stack.stride(0), tiles, self.heads, self.width, 256)
+            else:
+                for lse in self.lses.values():
+                    _clear_lse[(len(meta), self.heads, tiles)](
+                        lse, self.meta, self.control, self.heads, self.width, 256)
         self.plans = plans
         if getattr(self, 'static_prefill_enabled', False):
             self.static_prefill_frame, self.static_prefill_reason = static_aligned_frame(plans)

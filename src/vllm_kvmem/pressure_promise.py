@@ -88,6 +88,25 @@ def async_page_check():
     return value == '1'
 
 
+def refresh_async_page_check():
+    """KVMEM_REFRESH_ASYNC_PAGE_CHECK: the non-promise refresh path's page
+    reservation read (AsyncRefresh.step) is copied in stream order to pinned
+    memory instead of a blocking .cpu(); the refresh executor verifies it before
+    any page write (same expected rows, same error)."""
+    value = os.getenv('KVMEM_REFRESH_ASYNC_PAGE_CHECK', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_REFRESH_ASYNC_PAGE_CHECK must be 0 or 1')
+    return value == '1'
+
+
+def defer_page_check(row, expected):
+    host = torch.empty(row.shape, dtype=row.dtype, pin_memory=True)
+    host.copy_(row, non_blocking=True)
+    copied = torch.cuda.Event()
+    copied.record()
+    return expected, host, copied
+
+
 def verify_page_checks(job):
     """Producer side of KVMEM_PROMISE_ASYNC_PAGE_CHECK; runs before any page write."""
     for expected, host, copied in getattr(job, 'promise_page_checks', ()):

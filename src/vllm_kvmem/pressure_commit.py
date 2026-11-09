@@ -32,14 +32,48 @@ def _native_commit_map():
     return getattr(_native, 'commit_map', None)
 
 
-def prepare_commit(job, chosen, records, record_slots, selected_slots):
+def native_commit_table():
+    """KVMEM_PRESSURE_NATIVE_COMMIT_TABLE: build commit maps from a native identity
+    table kept with the record index. Lookups and checks run without the GIL and
+    rows are created one layer at a time (same maps, same errors)."""
+    import os
+    value = os.getenv('KVMEM_PRESSURE_NATIVE_COMMIT_TABLE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_NATIVE_COMMIT_TABLE must be 0 or 1')
+    if value != '1':
+        return None
+    from . import _native
+    return getattr(_native, 'IdentityTable', None)
+
+
+def identity_table(controller, request_id, records, record_slots):
+    """The request's identity table, extended to the sorted record index; None when off."""
+    cls = native_commit_table()
+    if cls is None:
+        return None
+    tables = controller.__dict__.setdefault('_identity_tables', {})
+    table = tables.get(request_id)
+    if table is None or not table.matches(records):
+        table = tables[request_id] = cls()
+    table.extend(records, record_slots)
+    return table
+
+
+def prepare_commit(job, chosen, records, record_slots, selected_slots, table=None):
     """Read each selected handle's generation once, away from main-thread ACK.
 
     Ranking/order remain the original preview's. The published row format is
     exactly (slot, generation, history_begin, count, dense_position).
     """
+    from .gil_gate import checkpoint
+    rid = getattr(getattr(job, 'command', None), 'request_id', None)
+    checkpoint(rid)         # opt-in KVMEM_GIL_GATE_MS (no-op on the engine thread)
     if len(chosen) != len(selected_slots) or not chosen:
         raise RuntimeError('Prepared pressure maps must cover all selected layers')
+    if table is not None:
+        maps, length = table.build([list(s) for s in selected_slots], [list(p) for p in chosen], records)
+        return PreparedPressureCommit(job.authority, job.command.request_id, job.history,
+            chosen, maps, frozenset(r.history_begin for r in chosen[0]), length)
     selected = set().union(*selected_slots)
     identities = {slot:(slot, r.handle.generation, r.history_begin, r.count)
                   for r, slot in zip(records, record_slots) if slot in selected}
@@ -48,6 +82,7 @@ def prepare_commit(job, chosen, records, record_slots, selected_slots):
     maps, lengths = [], set()
     native = _native_commit_map()
     for picked, slots in zip(chosen, selected_slots):
+        checkpoint(rid)     # per layer, so a closed gate can interleave a long build
         if native is not None:
             # Same lookups, checks, errors and rows, without a Python loop per row.
             rows, length = native(list(slots), identities, list(picked))

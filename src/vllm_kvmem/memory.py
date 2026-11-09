@@ -16,6 +16,20 @@ from . import _native
 from .config import KVMemConfig
 
 
+
+def _native_publish_selection():
+    """KVMEM_NATIVE_PUBLISH_SELECTION=1: RequestMemory._publish_selection's mapping
+    loop runs as one native call (same store calls and order)."""
+    value = os.getenv('KVMEM_NATIVE_PUBLISH_SELECTION', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_PUBLISH_SELECTION must be 0 or 1')
+    if value == '0':
+        return None
+    function = getattr(_native, 'publish_selection', None)
+    if function is None:
+        raise RuntimeError('KVMEM_NATIVE_PUBLISH_SELECTION requires a rebuilt native extension')
+    return function
+
 class Fence(Protocol):
     def query(self) -> bool: ...
 
@@ -380,12 +394,16 @@ class RequestMemory:
         if traced:
             t1 = time.perf_counter(), time.thread_time()
             stage_out, remaps = len(self._plan.stage_out), len(self._plan.remaps)
-        for slot in self._plan.stage_out:
-            self._store.working_resident(self._store.handle(slot), False)
-        for remap in self._plan.remaps:
-            handle = self._store.handle(remap.block_id)
-            self._store.working_resident(handle, True)
-            self._store.set_baked(handle.slot, remap.to_base, handle.generation)
+        native = None if traced else _native_publish_selection()
+        if native is not None and isinstance(self._store, _native.Store) and isinstance(self._plan, _native.Plan):
+            native(self._store, self._plan)   # opt-in KVMEM_NATIVE_PUBLISH_SELECTION: same calls, same order
+        else:
+            for slot in self._plan.stage_out:
+                self._store.working_resident(self._store.handle(slot), False)
+            for remap in self._plan.remaps:
+                handle = self._store.handle(remap.block_id)
+                self._store.working_resident(handle, True)
+                self._store.set_baked(handle.slot, remap.to_base, handle.generation)
         if traced:
             t2 = time.perf_counter(), time.thread_time()
         self._plan = None

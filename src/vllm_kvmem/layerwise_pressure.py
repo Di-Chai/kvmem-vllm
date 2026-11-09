@@ -56,6 +56,19 @@ def extend_records(records, origin, end, block_tokens=32):
     return result
 
 
+class _Release:
+    """Release an already acquired lock on exit (DeferredPreparedCommit.value)."""
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __enter__(self):
+        return self.lock
+
+    def __exit__(self, *exc):
+        self.lock.release()
+        return False
+
+
 class DeferredPreparedCommit:
     """Thread-safe one-shot builder for a PreparedPressureCommit.
 
@@ -101,11 +114,16 @@ class DeferredPreparedCommit:
             self._build = None
 
     def value(self):
+        from .gil_gate import engine_waiting
         selected = self._selected
         if selected is not None and not selected.is_set():
-            if not selected.wait(self.SELECTION_TIMEOUT):
-                raise RuntimeError('Lazy layer pressure selection did not finish before its maps were needed')
-        with self._lock:
+            with engine_waiting():      # opt-in gate: the engine waits on background work
+                if not selected.wait(self.SELECTION_TIMEOUT):
+                    raise RuntimeError('Lazy layer pressure selection did not finish before its maps were needed')
+        if not self._lock.acquire(blocking=False):
+            with engine_waiting():
+                self._lock.acquire()
+        with _Release(self._lock):
             if self._value is None and self._error is None:
                 try:
                     self._value = self._build()
@@ -241,9 +259,11 @@ def _drop_record_index(controller, request_id, authority=None):
     """
     cache = controller.__dict__.get('_record_index_cache', {})
     cache.pop(request_id, None)
+    controller.__dict__.get('_identity_tables', {}).pop(request_id, None)
     key = getattr(getattr(authority, 'memory', None), 'request_id', None)
     if key is not None:
         cache.pop(key, None)
+        controller.__dict__.get('_identity_tables', {}).pop(key, None)
 
 
 def record_index_aligned(controller, authority):
@@ -336,11 +356,12 @@ class LayerwisePrefillPressure:
         if self.schedule_ack and not self.pipeline_handoff:
             raise ValueError('Schedule-time pressure ACK requires the guarded early handoff')
         self.pipeline = None
+        from .pressure_key_reuse import enabled as _gpu_reuse
         if pipeline == '1':
             if (not self.single_assembly or not self.prepared_reads or not self.reuse_layer_views or
                     not query.paired_reads or not query.native_batches or
                     os.getenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0') != '0' or
-                    self.resident_values):
+                    (self.resident_values and not _gpu_reuse())):
                 raise ValueError('Pipeline requires the qualified single-assembly immutable-reader path')
             from .pressure_pipeline import PressurePipeline
             self.pipeline = PressurePipeline(self)
@@ -628,10 +649,18 @@ class LayerwisePrefillPressure:
         # uploading it. Inputs are frozen here (previous maps, histories, records,
         # mandatory set); the native picker ignores residency, so the committed
         # layer-0 host map cannot change any later layer's choice.
+        from .pressure_key_reuse import enabled as _gpu_reuse
+        # Opt-in KVMEM_LAYERWISE_PRESSURE_GPU_REUSE keeps layer-0-first with
+        # resident sources: every layer's old window comes from the frozen
+        # snapshot below, independent of the (lazy) selections themselves.
         lazy = (getattr(job, 'promised_lease', None) is not None and not decode and batched is None and
-                not capture_values and prepare_commit and getattr(self, 'deferred_maps', False) and
+                (not capture_values or _gpu_reuse()) and prepare_commit and getattr(self, 'deferred_maps', False) and
                 os.getenv('KVMEM_LAYERWISE_PRESSURE_LAYER0_FIRST') == '1')
         maps_snapshot = self.resolved_maps(rid) if lazy else None
+        eager_sources = lazy and capture_values
+        if eager_sources:
+            source_maps.extend(tuple(self._layer_records(maps_snapshot, authority, job.history, local, layer, current))
+                               for layer in range(len(histories)))
         def select_layer(layer):
             history = histories[layer]
             fused = None
@@ -707,7 +736,7 @@ class LayerwisePrefillPressure:
                     _lap('layer_native_picker')
             else:
                 mapping, candidates, candidate_slots, slots = batched[layer]
-            if capture_values:
+            if capture_values and not eager_sources:
                 source_maps.append(tuple(mapping))
             if fused is None:
                 allowed = set(candidate_slots) | mandatory_set
@@ -751,6 +780,10 @@ class LayerwisePrefillPressure:
             if len(lengths) != 1 or any(p != partial[0] for p in partial):
                 raise RuntimeError('Layer pressure cannot change native causal length or partial-block geometry')
         deferred_maps = prepare_commit and getattr(self, 'deferred_maps', False)
+        commit_table = None
+        if prepare_commit:
+            from .pressure_commit import identity_table
+            commit_table = identity_table(self, authority.memory.request_id, records, record_slots)
         if not deferred_maps:
             geometry_check()
         job.layerwise_pressure_plan = chosen, evidence
@@ -759,7 +792,8 @@ class LayerwisePrefillPressure:
             from .pressure_commit import prepare_commit as build_commit
             def build():
                 geometry_check()
-                return build_commit(job, chosen, records, record_slots, selected_slot_groups)
+                return build_commit(job, chosen, records, record_slots, selected_slot_groups,
+                                    table=commit_table)
             if lazy and len(chosen) < len(histories):
                 import threading
                 selected_all = threading.Event()
@@ -768,7 +802,7 @@ class LayerwisePrefillPressure:
         elif prepare_commit:
             from .pressure_commit import prepare_commit as build_commit
             job.layerwise_prepared_commit = build_commit(
-                job, chosen, records, record_slots, selected_slot_groups)
+                job, chosen, records, record_slots, selected_slot_groups, table=commit_table)
         _lap('geometry_check_prepared_commit')
         if lazy:
             def select_next(layer):
@@ -921,6 +955,8 @@ class LayerwisePrefillPressure:
             result = finish(runtime, rid, authority)
             controller = getattr(runtime.runner, '_kvmem_layerwise_pressure', None)
             if controller is not None:
+                from .pressure_key_reuse import forget as _forget_reuse
+                _forget_reuse(controller, rid)
                 from .layerwise_checkpoints import sessions_enabled, retire_state
                 if sessions_enabled():
                     # The terminal (M) capture runs after this finish: keep the

@@ -530,6 +530,10 @@ class AsyncRefresh:
 
     def _assemble(self,job,queries,ready):
         _entered = time.perf_counter()
+        if getattr(job, 'promise_page_checks', None) and getattr(job, 'promised_lease', None) is None:
+            # KVMEM_REFRESH_ASYNC_PAGE_CHECK: the deferred reservation read, before any page write.
+            from .pressure_promise import verify_page_checks
+            verify_page_checks(job)
         from .recall_experiment import (ACCUMULATED_ATTENTION, configured_event_method,
                                        configured_method, select_for_event)
         from .request_plan import RequestPlan, selection_config
@@ -666,6 +670,8 @@ class AsyncRefresh:
             from .async_restore import step_restore
             return step_restore(self, job)
         if job.cancelled and job.future is None:
+            from .pressure_key_reuse import cancelled as _reuse_cancelled
+            _reuse_cancelled(self.runner, job)
             self._restore_state(job)
             if job.restore_event is None:
                 job.restore_event=torch.cuda.Event();job.restore_event.record()
@@ -678,6 +684,9 @@ class AsyncRefresh:
             # A future can finish enqueueing kernels before its CUDA fence is
             # ready. Keep the sole scratch arena leased until main-thread
             # commit/close, not merely until the producer function returns.
+            from .decode_priority import should_yield
+            if should_yield(self.jobs.values(), job):
+                return False  # Opt-in: a waiting decode-stage pressure takes the lane first.
             from .async_restore import lane_busy
             multi = self._multi_lane(job)
             if multi:
@@ -765,13 +774,23 @@ class AsyncRefresh:
             if getattr(authority,'query_history',None) is not None:
                 from .query_history import begin_round
                 begin_round(self.runner,authority,rid)
+            from .pressure_promise import refresh_async_page_check, defer_page_check
+            deferred_checks=[] if refresh_async_page_check() else None
             for group,ticket in job.command.groups:
                 expansion=stored_expansions(self.runner.block_tables)[group]
                 expected=[b*expansion+p for b in ticket.original_block_ids for p in range(expansion)]
                 index=self.runner.req_states.req_id_to_index[rid]
                 count=int(self.runner.block_tables.num_blocks.np[group,index])
-                actual=self.runner.block_tables.block_tables[group].gpu[index,:count].cpu().tolist()
+                row=self.runner.block_tables.block_tables[group].gpu[index,:count]
+                if deferred_checks is not None:
+                    # Opt-in KVMEM_REFRESH_ASYNC_PAGE_CHECK: verified by _assemble
+                    # before any page write, without blocking this engine thread.
+                    deferred_checks.append(defer_page_check(row,expected))
+                    continue
+                actual=row.cpu().tolist()
                 if actual!=expected:raise ValueError('Private refresh page reservation mismatch')
+            if deferred_checks:
+                job.promise_page_checks=tuple(getattr(job,'promise_page_checks',()) or ())+tuple(deferred_checks)
             if not job.command.input_tokens and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
                 from .rolling_verification import RollingPressureOracle
                 job.pressure_oracle = RollingPressureOracle(self.runner, job)

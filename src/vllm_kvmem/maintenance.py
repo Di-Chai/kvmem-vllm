@@ -95,12 +95,16 @@ class MaintenancePolicy:
         ordinary = [j for j in pending if j.stage not in ('assembly','restore_copy') and not j.cancelled
                     and now - (j.last_progress if j.last_progress is not None else j.started) < self.aging_seconds]
         measured = bool(ordinary) and all(self.readiness_costs.get(j.command.request_id) is not None for j in ordinary)
+        from .decode_priority import enabled as _decode_first, waiting
+        decode_first = _decode_first()
         def priority(job):
             last = job.last_progress if job.last_progress is not None else job.started
             # Reap ready fences first to release scarce scratch. Polling these
             # jobs never waits for CUDA or for an unfinished producer future.
             if job.stage in ('assembly', 'restore_copy') or job.cancelled:
                 return (0, last, 0)
+            if decode_first and waiting(job):
+                return (0, last, 1)  # Opt-in KVMEM_LAYERWISE_DECODE_PRIORITY.
             if now - last >= self.aging_seconds:
                 return (1, last, 0)
             # A resident job has model_bytes == 0 until its checkpoint is

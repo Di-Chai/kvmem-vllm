@@ -4,9 +4,37 @@ Only full, scheduler-confirmed ordinary prefill chunks may extend a frame.
 The capture runtime bounds that lookahead and fences reselection/restoration;
 these frames never commit scores, parser state or an accepted history boundary.
 """
+import os
 from dataclasses import dataclass
 
 from .prefill_attention import PrefillHistory
+
+
+def native_plan_function(name):
+    """KVMEM_NATIVE_PREFILL_PLAN=1: exact C++ ports of the pure integer
+    prefill-plan helpers (frame_window_segments, logical_plan_check). They
+    return None/False for anything outside their exact int64 domain and the
+    caller then runs the original Python."""
+    value = os.getenv('KVMEM_NATIVE_PREFILL_PLAN', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_PREFILL_PLAN must be 0 or 1')
+    if value == '0':
+        return None
+    from . import _native
+    function = getattr(_native, name, None)
+    if function is None:
+        raise RuntimeError('KVMEM_NATIVE_PREFILL_PLAN requires a rebuilt native extension')
+    return function
+
+
+def frame_window_segments(records, history_begin, local_begin, count, block_tokens):
+    native = native_plan_function('frame_window_segments')
+    if native is not None:
+        result = native(records, history_begin, local_begin, count, block_tokens)
+        if result is not None:
+            return result
+    from .action_attention import window_segments
+    return window_segments(records, history_begin, local_begin, count, block_tokens)
 
 
 @dataclass(frozen=True)
@@ -38,10 +66,9 @@ class PrefillPlanFrame:
         if (history_begin != self.history_end or local_begin != self.local_end or
                 count <= 0):
             raise ValueError('Noncontiguous pipelined prefill frame')
-        from .action_attention import window_segments
         rows = SamplingSnapshot(self.state.options, self.sampled_end).rows(
             history_begin, count, local_begin)
-        starts, counts, history = window_segments(
+        starts, counts, history = frame_window_segments(
             self.records, history_begin, local_begin, count, block_tokens)
         # A committed append grows the existing partial tail in place. Keep
         # that exact record boundary for the next chunk; scoring this chunk

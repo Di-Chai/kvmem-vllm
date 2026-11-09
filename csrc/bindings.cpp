@@ -23,6 +23,8 @@
 #include "query_key_fps_cpu.hpp"
 #include "parallel_rows.hpp"
 #include <filesystem>
+#include <thread>
+#include <mutex>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -986,6 +988,395 @@ PYBIND11_MODULE(_native, m) {
         }
         return py::make_tuple(py::tuple(rows), offset);
     }, py::arg("slots"), py::arg("identities"), py::arg("picked"));
+    // pressure_resident_values.resident_bases: the same map checks and messages
+    // in the same order; the old dense base of every chosen block, or None at
+    // the first block that is not a whole archived block of the dense window.
+    // CPython API on the borrowed rows/records (no per-item pybind wrappers).
+    m.def("reuse_resident_bases", [](const py::object &mapping, const py::object &chosen,
+                                     int64_t local_tokens, int64_t block_tokens) -> py::object {
+        auto as_i64 = [](PyObject *value) {
+            const long long v = PyLong_AsLongLong(value);
+            if (v == -1 && PyErr_Occurred()) throw py::error_already_set();
+            return static_cast<int64_t>(v);
+        };
+        py::object rows_fast = py::reinterpret_steal<py::object>(
+            PySequence_Fast(mapping.ptr(), "Resident pressure source map must be a sequence"));
+        if (!rows_fast) throw py::error_already_set();
+        const Py_ssize_t rows = PySequence_Fast_GET_SIZE(rows_fast.ptr());
+        PyObject **row_items = PySequence_Fast_ITEMS(rows_fast.ptr());
+        std::unordered_map<int64_t, std::pair<int64_t, int64_t>> by_begin;
+        by_begin.reserve(static_cast<size_t>(rows) * 2 + 1);
+        int64_t cursor = 0;
+        for (Py_ssize_t i = 0; i < rows; ++i) {
+            PyObject *row = row_items[i];
+            if (!PyTuple_Check(row) || PyTuple_GET_SIZE(row) != 5)
+                throw py::value_error("Resident pressure source map rows must have five fields");
+            const auto begin = as_i64(PyTuple_GET_ITEM(row, 2)), count = as_i64(PyTuple_GET_ITEM(row, 3));
+            const auto position = as_i64(PyTuple_GET_ITEM(row, 4));
+            if (position != cursor || count <= 0 || count > block_tokens || by_begin.count(begin) ||
+                    begin < 0 || position + count > local_tokens)
+                throw py::value_error("Resident pressure source map is not a unique dense accepted window");
+            by_begin.emplace(begin, std::make_pair(count, position));
+            cursor += count;
+        }
+        if (cursor != local_tokens)
+            throw py::value_error("Resident pressure map does not cover the accepted native window");
+        py::object chosen_fast = py::reinterpret_steal<py::object>(
+            PySequence_Fast(chosen.ptr(), "Chosen pressure records must be a sequence"));
+        if (!chosen_fast) throw py::error_already_set();
+        const Py_ssize_t n = PySequence_Fast_GET_SIZE(chosen_fast.ptr());
+        PyObject **records = PySequence_Fast_ITEMS(chosen_fast.ptr());
+        py::str begin_name("history_begin"), count_name("count"), archived_name("archived");
+        auto attr_i64 = [&](PyObject *record, const py::str &name) {
+            py::object value = py::reinterpret_steal<py::object>(PyObject_GetAttr(record, name.ptr()));
+            if (!value) throw py::error_already_set();
+            return as_i64(value.ptr());
+        };
+        std::vector<int64_t> begins(static_cast<size_t>(n));
+        std::unordered_set<int64_t> seen;
+        seen.reserve(static_cast<size_t>(n) * 2 + 1);
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            begins[i] = attr_i64(records[i], begin_name);
+            seen.insert(begins[i]);
+        }
+        if (static_cast<Py_ssize_t>(seen.size()) != n) throw py::value_error("Repeated selected pressure source");
+        py::list bases(n);
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            if (attr_i64(records[i], count_name) != block_tokens) return py::none();
+            py::object archived = py::reinterpret_steal<py::object>(PyObject_GetAttr(records[i], archived_name.ptr()));
+            if (!archived) throw py::error_already_set();
+            const int truth = PyObject_IsTrue(archived.ptr());
+            if (truth < 0) throw py::error_already_set();
+            if (!truth) return py::none();
+            const auto source = by_begin.find(begins[i]);
+            if (source == by_begin.end() || source->second.first != block_tokens ||
+                    source->second.second % block_tokens)
+                return py::none();
+            PyObject *base = PyLong_FromLongLong(source->second.second);
+            if (!base) throw py::error_already_set();
+            PyList_SET_ITEM(bases.ptr(), i, base);
+        }
+        return bases;
+    }, py::arg("mapping"), py::arg("chosen"), py::arg("local_tokens"), py::arg("block_tokens"));
+    // pressure_key_reuse.plan_layer over chosen records plus assemble_reused's
+    // metadata rows: V sources/destinations of every moved block, then reused K
+    // sources, destinations, deltas, payload indices and modes (REUSE = 0).
+    // Returns (metadata int64 array, moved, reused, [(index, destination)] of
+    // reloads, new_counts, skipped); same checks and messages as plan_layer.
+    m.def("reuse_layer_plan", [](const py::object &chosen, const py::object &sources,
+                                 const py::dict &counts, int64_t limit, bool untrusted) {
+        auto as_i64 = [](PyObject *value) {
+            const long long v = PyLong_AsLongLong(value);
+            if (v == -1 && PyErr_Occurred()) throw py::error_already_set();
+            return static_cast<int64_t>(v);
+        };
+        py::object chosen_fast = py::reinterpret_steal<py::object>(
+            PySequence_Fast(chosen.ptr(), "Chosen pressure records must be a sequence"));
+        if (!chosen_fast) throw py::error_already_set();
+        py::object sources_fast = py::reinterpret_steal<py::object>(
+            PySequence_Fast(sources.ptr(), "Reuse sources must be a sequence"));
+        if (!sources_fast) throw py::error_already_set();
+        const Py_ssize_t n = PySequence_Fast_GET_SIZE(chosen_fast.ptr());
+        if (PySequence_Fast_GET_SIZE(sources_fast.ptr()) != n)
+            throw py::value_error("Reuse plan needs one source per kept block");
+        PyObject **records = PySequence_Fast_ITEMS(chosen_fast.ptr());
+        PyObject **source_items = PySequence_Fast_ITEMS(sources_fast.ptr());
+        py::str begin_name("history_begin"), count_name("count");
+        std::vector<int64_t> v_src, v_dst, k_src, k_dst, k_delta;
+        v_src.reserve(n); v_dst.reserve(n); k_src.reserve(n); k_dst.reserve(n); k_delta.reserve(n);
+        py::list reload;
+        py::dict new_counts;
+        int64_t cursor = 0, previous = 0, skipped = 0;
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            py::object begin = py::reinterpret_steal<py::object>(PyObject_GetAttr(records[i], begin_name.ptr()));
+            if (!begin) throw py::error_already_set();
+            py::object tokens = py::reinterpret_steal<py::object>(PyObject_GetAttr(records[i], count_name.ptr()));
+            if (!tokens) throw py::error_already_set();
+            const int64_t source = as_i64(source_items[i]);
+            const int64_t destination = cursor;
+            cursor += as_i64(tokens.ptr());
+            const int64_t delta = source - destination;
+            if (delta < 0 || delta < previous)
+                throw py::value_error("Pressure compaction must shift kept blocks left, non-decreasingly");
+            previous = delta;
+            int64_t count = limit;
+            if (!untrusted) {
+                PyObject *found = PyDict_GetItemWithError(counts.ptr(), begin.ptr());
+                if (!found && PyErr_Occurred()) throw py::error_already_set();
+                count = found ? as_i64(found) : 0;
+            }
+            int64_t next_count = count;
+            if (delta != 0) {
+                v_src.push_back(source);
+                v_dst.push_back(destination);
+                if (count < limit) {
+                    next_count = count + 1;
+                    k_src.push_back(source);
+                    k_dst.push_back(destination);
+                    k_delta.push_back(delta);
+                } else {
+                    next_count = 0;
+                    reload.append(py::make_tuple(i, destination));
+                }
+            } else {
+                ++skipped;
+            }
+            py::object value = py::reinterpret_steal<py::object>(PyLong_FromLongLong(next_count));
+            if (!value || PyDict_SetItem(new_counts.ptr(), begin.ptr(), value.ptr()) < 0)
+                throw py::error_already_set();
+        }
+        const size_t m = v_src.size(), r = k_src.size();
+        py::array_t<int64_t> meta(static_cast<py::ssize_t>(2 * m + 5 * r));
+        int64_t *out = meta.mutable_data();
+        for (const auto *part : {&v_src, &v_dst, &k_src, &k_dst, &k_delta}) {
+            std::copy(part->begin(), part->end(), out);
+            out += part->size();
+        }
+        for (size_t i = 0; i < r; ++i) *out++ = static_cast<int64_t>(i);
+        std::fill(out, out + r, int64_t{0});
+        return py::make_tuple(meta, m, r, reload, new_counts, skipped);
+    }, py::arg("chosen"), py::arg("sources"), py::arg("counts"), py::arg("limit"), py::arg("untrusted"));
+    // Prefill plan helpers (KVMEM_NATIVE_PREFILL_PLAN). Exact ports of the pure
+    // integer Python helpers action_attention.window_segments (over a frozen
+    // PrefillPlanFrame record tuple) and LogicalScorePlan's validation. Every
+    // value must be an exact int within +-2^61 so int64 arithmetic equals
+    // Python's; otherwise they return None/False and the caller runs Python.
+    struct SmallInts {
+        static bool get(PyObject *o, int64_t &out) {
+            const int64_t limit = int64_t{1} << 61;
+            if (!PyLong_CheckExact(o)) return false;
+            int overflow = 0;
+            const long long v = PyLong_AsLongLongAndOverflow(o, &overflow);
+            if (overflow || v > limit || v < -limit) return false;
+            out = v;
+            return true;
+        }
+        static int64_t floor_mod(int64_t a, int64_t b) {   // Python a % b, b > 0
+            const int64_t r = a % b;
+            return r < 0 ? r + b : r;
+        }
+        static py::list to_list(const std::vector<int64_t> &values) {
+            py::list out(values.size());
+            for (size_t i = 0; i < values.size(); ++i) {
+                PyObject *v = PyLong_FromLongLong(values[i]);
+                if (!v) throw py::error_already_set();
+                PyList_SET_ITEM(out.ptr(), static_cast<Py_ssize_t>(i), v);
+            }
+            return out;
+        }
+    };
+    m.def("frame_window_segments", [](py::handle records, py::handle history_begin_o, py::handle local_begin_o,
+            py::handle count_o, py::handle block_o) -> py::object {
+        int64_t history_begin, local_begin, count, block;
+        if (!PyTuple_CheckExact(records.ptr()) || !SmallInts::get(history_begin_o.ptr(), history_begin) ||
+                !SmallInts::get(local_begin_o.ptr(), local_begin) || !SmallInts::get(count_o.ptr(), count) ||
+                !SmallInts::get(block_o.ptr(), block) || block <= 0)
+            return py::none();
+        std::vector<int64_t> starts, counts, history;
+        const Py_ssize_t size = PyTuple_GET_SIZE(records.ptr());
+        starts.reserve(static_cast<size_t>(size) + 64);
+        counts.reserve(static_cast<size_t>(size) + 64);
+        history.reserve(static_cast<size_t>(size) + 64);
+        int64_t cursor = 0;
+        for (Py_ssize_t i = 0; i < size; ++i) {
+            PyObject *record = PyTuple_GET_ITEM(records.ptr(), i);
+            int64_t begin, n, position;
+            if (!PyTuple_CheckExact(record) || PyTuple_GET_SIZE(record) != 5 ||
+                    !SmallInts::get(PyTuple_GET_ITEM(record, 2), begin) ||
+                    !SmallInts::get(PyTuple_GET_ITEM(record, 3), n) ||
+                    !SmallInts::get(PyTuple_GET_ITEM(record, 4), position))
+                return py::none();
+            if (position >= local_begin) break;
+            n = std::min(n, local_begin - position);
+            if (position != cursor || n <= 0 || n > block)
+                throw py::value_error("Action window has a gap or stale dense mapping");
+            starts.push_back(cursor);
+            counts.push_back(n);
+            history.push_back(begin - SmallInts::floor_mod(begin, block));
+            cursor += n;
+        }
+        int64_t logical = history_begin + cursor - local_begin;
+        if (logical < 0) throw py::value_error("Invalid action suffix origin");
+        const int64_t stop = local_begin + count;
+        while (cursor < stop) {
+            const int64_t n = std::min(block - SmallInts::floor_mod(logical, block), stop - cursor);
+            starts.push_back(cursor);
+            counts.push_back(n);
+            history.push_back(logical - SmallInts::floor_mod(logical, block));
+            cursor += n;
+            logical += n;
+        }
+        return py::make_tuple(SmallInts::to_list(starts), SmallInts::to_list(counts), SmallInts::to_list(history));
+    }, py::arg("records"), py::arg("history_begin"), py::arg("local_begin"), py::arg("count"),
+       py::arg("block_tokens"));
+    // LogicalScorePlan.__post_init__ after its span isinstance check. Returns
+    // None (valid), the ValueError message to raise, or False (run Python).
+    m.def("logical_plan_check", [](py::handle rows, py::handle starts, py::handle counts, py::handle history,
+            py::handle block_o, py::handle span_count_o, py::handle local_end_o) -> py::object {
+        const char *names[] = {"rows", "starts", "counts", "history"};
+        PyObject *vectors[] = {rows.ptr(), starts.ptr(), counts.ptr(), history.ptr()};
+        for (int k = 0; k < 4; ++k) {
+            bool ok = PyTuple_CheckExact(vectors[k]);
+            for (Py_ssize_t i = 0; ok && i < PyTuple_GET_SIZE(vectors[k]); ++i)
+                ok = PyLong_CheckExact(PyTuple_GET_ITEM(vectors[k], i));
+            if (!ok) return py::str(std::string(names[k]) + " must be an immutable tuple of integers");
+        }
+        int64_t block, span_count, local_end;
+        if (!PyLong_CheckExact(block_o.ptr()))
+            return py::str("Logical score block size must be positive");
+        if (!SmallInts::get(block_o.ptr(), block) || !SmallInts::get(span_count_o.ptr(), span_count) ||
+                !SmallInts::get(local_end_o.ptr(), local_end))
+            return py::bool_(false);
+        if (block <= 0) return py::str("Logical score block size must be positive");
+        std::vector<int64_t> values[4];
+        for (int k = 0; k < 4; ++k) {
+            const Py_ssize_t size = PyTuple_GET_SIZE(vectors[k]);
+            values[k].resize(static_cast<size_t>(size));
+            for (Py_ssize_t i = 0; i < size; ++i)
+                if (!SmallInts::get(PyTuple_GET_ITEM(vectors[k], i), values[k][static_cast<size_t>(i)]))
+                    return py::bool_(false);
+        }
+        const auto &r = values[0], &s = values[1], &c = values[2], &h = values[3];
+        bool bad_rows = false;
+        for (size_t i = 0; i < r.size() && !bad_rows; ++i)
+            bad_rows = !(0 <= r[i] && r[i] < span_count) || (i + 1 < r.size() && r[i] >= r[i + 1]);
+        if (bad_rows) return py::str("Logical sampled rows must be increasing and inside their original span");
+        if (s.empty() || s.size() != c.size() || c.size() != h.size())
+            return py::str("Logical segment vectors must have equal nonzero lengths");
+        int64_t cursor = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] != cursor || !(0 < c[i] && c[i] <= block) || h[i] < 0 || SmallInts::floor_mod(h[i], block))
+                return py::str("Logical segments must partition the visible context with history page identities");
+            cursor += c[i];
+        }
+        if (cursor != local_end)
+            return py::str("Logical segments must cover exactly their original visible context");
+        return py::none();
+    }, py::arg("rows"), py::arg("starts"), py::arg("counts"), py::arg("history"), py::arg("block_tokens"),
+       py::arg("span_count"), py::arg("local_end"));
+    // Identity table for pressure commit maps (KVMEM_PRESSURE_NATIVE_COMMIT_TABLE):
+    // (slot, generation, history_begin, count) per accepted record, kept in the
+    // record index's sorted order and extended as records are appended. build()
+    // reproduces pressure_commit.prepare_commit's maps: the lookups, checks and
+    // offsets run without the GIL; the row tuples are created one layer at a time
+    // with the GIL briefly released between layers, so the engine thread is
+    // never held for a whole commit.
+    struct IdentityTable {
+        std::vector<uint32_t> slot;
+        std::vector<py::object> generation, begin, count;   // the records' own int objects
+        std::vector<int64_t> begin_i, count_i;
+        std::unordered_map<uint32_t, uint32_t> position;
+        py::object last;                                     // last indexed Record (prefix check)
+        std::mutex mu;                                       // extend vs. GIL-free lookups
+    };
+    py::class_<IdentityTable>(m, "IdentityTable")
+        .def(py::init<>())
+        .def("__len__", [](const IdentityTable &t) { return t.slot.size(); })
+        .def("matches", [](const IdentityTable &t, const py::list &records) {
+            // The table indexes a prefix of records (same objects, same order).
+            const size_t n = t.slot.size();
+            if (n > records.size()) return false;
+            if (n == 0) return true;
+            return records[n - 1].ptr() == t.last.ptr();
+        })
+        .def("extend", [](IdentityTable &t, const py::list &records, const py::list &slots) {
+            if (records.size() != slots.size())
+                throw py::value_error("Identity table needs one slot per record");
+            py::str generation_name("generation"), handle_name("handle"), begin_name("history_begin"),
+                count_name("count");
+            for (size_t i = t.slot.size(); i < records.size(); ++i) {
+                py::handle record = records[i];
+                py::object handle = py::reinterpret_steal<py::object>(PyObject_GetAttr(record.ptr(), handle_name.ptr()));
+                if (!handle) throw py::error_already_set();
+                py::object generation = py::reinterpret_steal<py::object>(PyObject_GetAttr(handle.ptr(), generation_name.ptr()));
+                if (!generation) throw py::error_already_set();
+                py::object begin = py::reinterpret_steal<py::object>(PyObject_GetAttr(record.ptr(), begin_name.ptr()));
+                if (!begin) throw py::error_already_set();
+                py::object count = py::reinterpret_steal<py::object>(PyObject_GetAttr(record.ptr(), count_name.ptr()));
+                if (!count) throw py::error_already_set();
+                const auto slot = slots[i].cast<uint32_t>();
+                std::lock_guard<std::mutex> lock(t.mu);
+                if (!t.position.emplace(slot, static_cast<uint32_t>(t.slot.size())).second)
+                    throw std::runtime_error("Pressure archive contains duplicate physical slots");
+                t.slot.push_back(slot);
+                t.generation.push_back(generation);
+                t.begin_i.push_back(begin.cast<int64_t>());
+                t.count_i.push_back(count.cast<int64_t>());
+                t.begin.push_back(begin);
+                t.count.push_back(count);
+                t.last = py::reinterpret_borrow<py::object>(record);
+            }
+        })
+        .def("build", [](const IdentityTable &t, const std::vector<std::vector<uint32_t>> &selected,
+                         const py::list &chosen, const py::list &records) {
+            // prepare_commit: identities of every selected slot must exist.
+            const size_t layers = selected.size();
+            if (layers != chosen.size() || layers == 0)
+                throw std::runtime_error("Prepared pressure maps must cover all selected layers");
+            std::vector<std::vector<uint32_t>> positions(layers);
+            std::vector<int64_t> lengths(layers, 0);
+            bool missing = false;
+            {
+                py::gil_scoped_release release;
+                std::lock_guard<std::mutex> lock(const_cast<IdentityTable &>(t).mu);
+                for (size_t l = 0; l < layers; ++l) {
+                    positions[l].reserve(selected[l].size());
+                    for (const auto s : selected[l]) {
+                        const auto it = t.position.find(s);
+                        if (it == t.position.end()) { missing = true; break; }
+                        positions[l].push_back(it->second);
+                        lengths[l] += t.count_i[it->second];
+                    }
+                    if (missing) break;
+                }
+            }
+            if (missing)
+                throw std::runtime_error("Selected pressure identity is missing from the accepted archive");
+            // Each layer's picked records are the indexed records at those positions.
+            for (size_t l = 0; l < layers; ++l) {
+                py::list picked = py::reinterpret_borrow<py::list>(chosen[l]);
+                if (picked.size() != positions[l].size())
+                    throw std::runtime_error("Prepared pressure map differs from the selected record order");
+                for (size_t i = 0; i < positions[l].size(); ++i) {
+                    if (picked[i].ptr() != records[positions[l][i]].ptr()) {
+                        const int differs = PyObject_RichCompareBool(
+                            py::tuple(py::make_tuple(picked[i].attr("history_begin"), picked[i].attr("count"))).ptr(),
+                            py::make_tuple(t.begin[positions[l][i]], t.count[positions[l][i]]).ptr(), Py_NE);
+                        if (differs < 0) throw py::error_already_set();
+                        if (differs)
+                            throw std::runtime_error("Prepared pressure map differs from the selected record order");
+                    }
+                }
+            }
+            py::list maps;
+            for (size_t l = 0; l < layers; ++l) {
+                const auto &pos = positions[l];
+                PyObject *rows = PyTuple_New(static_cast<Py_ssize_t>(pos.size()));
+                if (!rows) throw py::error_already_set();
+                py::object owner = py::reinterpret_steal<py::object>(rows);
+                int64_t offset = 0;
+                for (size_t i = 0; i < pos.size(); ++i) {
+                    const uint32_t p = pos[i];
+                    PyObject *slot = PyLong_FromUnsignedLong(t.slot[p]);
+                    PyObject *off = PyLong_FromLongLong(offset);
+                    if (!slot || !off) { Py_XDECREF(slot); Py_XDECREF(off); throw py::error_already_set(); }
+                    PyObject *row = PyTuple_Pack(5, slot, t.generation[p].ptr(), t.begin[p].ptr(), t.count[p].ptr(), off);
+                    Py_DECREF(slot); Py_DECREF(off);
+                    if (!row) throw py::error_already_set();
+                    PyTuple_SET_ITEM(rows, static_cast<Py_ssize_t>(i), row);
+                    offset += t.count_i[p];
+                }
+                maps.append(owner);
+                {   // let a waiting engine thread take the GIL between layers
+                    py::gil_scoped_release release;
+                    std::this_thread::yield();
+                }
+            }
+            for (size_t l = 1; l < layers; ++l)
+                if (lengths[l] != lengths[0])
+                    throw std::runtime_error("Prepared pressure maps changed the per-layer token extent");
+            return py::make_tuple(py::tuple(maps), lengths[0]);
+        }, py::arg("selected"), py::arg("chosen"), py::arg("records"));
     // all(id(r) in table for r in records)
     m.def("prepared_contains", [](const py::iterable &records, const py::dict &table) {
         for (const auto &record : records) {
@@ -2283,6 +2674,23 @@ PYBIND11_MODULE(_native, m) {
         }, py::arg("prefix"), py::arg("records"))
         .def("set_baked", &KvMemStore::set_block_baked_pos,
              py::arg("slot"), py::arg("position"), py::arg("generation"));
+
+    // RequestMemory._publish_selection's mapping loop in one call
+    // (KVMEM_NATIVE_PUBLISH_SELECTION): the same store calls in the same order
+    // as the Python loop (stage_out leaves the working set, then every remap
+    // enters it and gets its baked position), without converting the plan's
+    // vectors to Python objects. Holds the GIL like the Python loop it replaces.
+    m.def("publish_selection", [](KvMemStore &store, const KvMemPlan &plan) {
+        for (const auto slot : plan.stage_out) {
+            const auto handle = store.repository_handle(slot);
+            store.set_block_tier(handle.slot, KvTier::SSD, -1, -1, handle.generation);
+        }
+        for (const auto &remap : plan.remaps) {
+            const auto handle = store.repository_handle(remap.block_id);
+            store.set_block_tier(handle.slot, KvTier::GPU, -1, -1, handle.generation);
+            store.set_block_baked_pos(handle.slot, remap.to_base, handle.generation);
+        }
+    }, py::arg("store"), py::arg("plan"));
 
     py::class_<KvMemStore::RepositoryCheckpoint, std::shared_ptr<KvMemStore::RepositoryCheckpoint>>(
             m, "RepositoryCheckpoint")

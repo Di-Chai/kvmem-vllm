@@ -75,7 +75,8 @@ class LayerMaterialization:
 
     def wait_layer(self, index, stream):
         started = time.perf_counter()
-        with self.condition:
+        from .gil_gate import engine_waiting
+        with self.condition, engine_waiting():
             while self.events[index] is None and self.error is None:
                 # Releases the GIL; the sole existing producer supplies the
                 # event. No wait on an unrecorded event is ever submitted.
@@ -403,7 +404,8 @@ class PressurePipeline:
                 continue
             if not self.progress:
                 deadline = time.perf_counter() + max_wait_seconds
-            with self.prepared_condition:
+            from .gil_gate import engine_waiting
+            with self.prepared_condition, engine_waiting():
                 while getattr(job, 'layerwise_pipeline', None) is None:
                     if job.future.done():
                         job.future.result()  # Do not swallow preparation failures.

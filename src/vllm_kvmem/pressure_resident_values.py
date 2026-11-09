@@ -38,17 +38,32 @@ def assemble_resident_values(query,state,index,chosen,assembler,groups,total,row
     from .original_rope import enabled as original_rope
     authority=state['authority'];staging=assembler.staging;layer=assembler.layers[0]
     rid,history,local,maps=state['pressure_value_sources']
+    from .pressure_key_reuse import enabled as gpu_reuse
+    reuse=gpu_reuse()
+    # A pipelined refresh (opt-in GPU reuse only) publishes its host map at the
+    # ACK; later layers then assemble under their per-layer guards while the
+    # next forward may append accepted tokens past the old window.
+    pipelined=reuse and authority.memory._layerwise_materialization is not None
     if (state.get('assembly_arena')!='pressure' or state.get('pressure_stage')!='prefill' or
             rid!=state['request_id'] or rid!=authority.memory.request_id or
-            authority.history_end!=history or authority.memory.phase is not Phase.ASSEMBLING or
+            (authority.history_end<history if pipelined else authority.history_end!=history) or
+            (not pipelined and authority.memory.phase is not Phase.ASSEMBLING) or
             staging.owner is not assembler):
         raise ValueError('Resident V reuse escaped its suspended prefill transaction')
     if original_rope():raise ValueError('Resident pressure V currently requires qualified compact positions')
     if not query.packed_assembly or not maps:
         return None
     mapping=maps[index if index<len(maps) else 0]  # Draft uses the original layer-zero selection.
-    sources=resident_bases(chosen,mapping,local)
-    if sources is None:return None
+    if reuse:
+        from .pressure_key_reuse import resident_bases as reuse_bases
+        sources=reuse_bases(chosen,mapping,local)      # native when available, same result
+    else:
+        sources=resident_bases(chosen,mapping,local)
+    if sources is None:
+        if reuse:
+            from .pressure_key_reuse import record_stats
+            record_stats(query.pressure, fallback=1)
+        return None
     if total!=state['selected_tokens'] or total!=32*len(sources):
         raise ValueError('Resident pressure selection changed the native destination extent')
     options=query.runner._kvmem_capture_runtime.options
@@ -57,6 +72,16 @@ def assemble_resident_values(query,state,index,chosen,assembler,groups,total,row
     capacity=layer.kernel_page_table.numel()*layer.value.shape[1]
     if max((p+32 for p in sources),default=0)>capacity or total>capacity:
         raise ValueError('Resident V source/destination exceeds retained native pages')
+    if reuse:
+        # Opt-in KVMEM_LAYERWISE_PRESSURE_GPU_REUSE: K is reused on the GPU too
+        # (delta re-rotation, bounded by a per-block reuse count).
+        from .pressure_key_reuse import assemble_reused
+        owners=state['pressure_value_metadata_owners']
+        metadata_start=len(assembler._metadata_owners)
+        try:
+            return assemble_reused(query,state,index,chosen,sources,assembler,row_bytes,chunk_blocks)
+        finally:
+            owners.extend(assembler._metadata_owners[metadata_start:])
     destination=staging.value_destination(len(sources)*row_bytes)
     # The existing parent assembler retains metadata through its final fence.
     owners=state['pressure_value_metadata_owners']
@@ -67,7 +92,10 @@ def assemble_resident_values(query,state,index,chosen,assembler,groups,total,row
         bases=assembler._upload_metadata(list(range(0,total,32)))
         indices=assembler._upload_metadata(list(range(max(len(sources),chunk_blocks))))
         uploaded=chunks=inline=0
-        for cursor,group in groups:
+        from .gil_gate import chunk_checkpoint
+        for chunk_index,(cursor,group) in enumerate(groups):
+            if chunk_index:
+                chunk_checkpoint(state.get('request_id'))   # opt-in KVMEM_GIL_GATE_CHUNKS
             n=len(group);size=n*row_bytes
             if cursor%32 or any(r.count!=32 for r in group):
                 raise ValueError('Resident pressure chunk has changed geometry')

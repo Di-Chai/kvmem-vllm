@@ -48,6 +48,15 @@ class LogicalScorePlan:
         from .logical_prefill import LogicalPrefillSpan
         if not isinstance(self.span, LogicalPrefillSpan):
             raise ValueError('Logical score plan requires an immutable prefill span')
+        from .prefill_planning import native_plan_function
+        check = native_plan_function('logical_plan_check')
+        if check is not None:
+            error = check(self.rows, self.starts, self.counts, self.history, self.block_tokens,
+                          self.span.count, self.span.local_end)
+            if error is None:
+                return
+            if error is not False:
+                raise ValueError(error)
         for name in ('rows', 'starts', 'counts', 'history'):
             _integers(getattr(self, name), name)
         if type(self.block_tokens) is not int or self.block_tokens <= 0:

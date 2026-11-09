@@ -40,6 +40,8 @@ def _probe_armed(runner):
 def make_probe_runner(base):
     class KVMemProbeRunner(base):
         def load_model(self, *args, **kwargs):
+            from .gil_switch import apply as apply_gil_switch
+            apply_gil_switch()
             from .options import RuntimeOptions
             options = RuntimeOptions.from_vllm(self.vllm_config)
             from .qsa_adapter import validate_qsa_config
@@ -423,7 +425,15 @@ def make_probe_runner(base):
             return result
 
         def sample_tokens(self, grammar_output):
-            result = super().sample_tokens(grammar_output)
+            from .gil_gate import gate as _gil_gate
+            gil_gate = _gil_gate()
+            if gil_gate is not None:
+                gil_gate.open()     # the engine now blocks on the GPU's results
+            try:
+                result = super().sample_tokens(grammar_output)
+            finally:
+                if gil_gate is not None:
+                    gil_gate.end_step()  # update and schedule; reopens itself if idle
             timing = getattr(self, '_kvmem_step_timing', None)
             if timing is not None:
                 timing.end()
@@ -492,6 +502,13 @@ def make_probe_runner(base):
         def execute_model(self, scheduler_output, intermediate_tensors=None,
                           dummy_run=False, skip_attn_for_dummy_run=False,
                           is_profile=False, context_len=0, valid_dummy_state_slots=False, **kwargs):
+            if not dummy_run:
+                from .gil_gate import gate as _gil_gate
+                gil_gate = _gil_gate()
+                if gil_gate is not None:      # launch of this step's forward starts
+                    capture = getattr(self, '_kvmem_capture_runtime', None)
+                    gil_gate.begin_step(getattr(scheduler_output, 'num_scheduled_tokens', None) or (),
+                                        active=len(getattr(capture, 'authorities', None) or ()))
             try:
                 return self._kvmem_execute_model(scheduler_output, intermediate_tensors,
                     dummy_run, skip_attn_for_dummy_run, is_profile, context_len,

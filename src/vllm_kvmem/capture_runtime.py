@@ -1677,6 +1677,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             packet.graph_updates = None
 
     def _publish_claim(self, packet, indices, wait):
+        from .gil_gate import checkpoint
+        checkpoint()            # opt-in KVMEM_GIL_GATE_MS: one publication span
         try:
             if getattr(packet, 'logical_owners', None):
                 return self._publish_multiowner_claim(packet,indices,wait)
@@ -1766,7 +1768,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     graphless=getattr(self.options,'prefill_physical_graphless',False))
             elif cursor.authority is not authority:
                 raise RuntimeError('Logical publication authority was replaced')
+            from .gil_gate import checkpoint as _gil_checkpoint
             while not cursor.done:
+                # Opt-in KVMEM_GIL_GATE_MS: one child transaction (one logical
+                # span) at a time; no publication lock is held here.
+                _gil_checkpoint()
                 with self._publication_lock():
                     confirmation = packet.logical_confirmation
                 if confirmation is None:

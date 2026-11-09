@@ -537,6 +537,8 @@ def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=N
                 # Verification: the draft no longer equals the terminal pages.
                 worker.__dict__.setdefault('layerwise_draft_rebuilt', set()).add(request_id)
         install_restored(controller, request_id, checkpoint.authority, frame, histories, snapshot)
+        from .pressure_key_reuse import restored as _reuse_restored
+        _reuse_restored(controller, request_id, resident=True)
         controller.query.emit('pressure_prefix_restored', request_id=request_id,
             actual_method='resident_terminal_pages_per_layer', fallback_reason=None,
             **snapshot.evidence())

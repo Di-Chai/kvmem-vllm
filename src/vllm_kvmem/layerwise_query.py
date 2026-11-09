@@ -518,6 +518,8 @@ class LayerwiseQuery:
         The following attention runs on the consuming stream, so it requires
         the DMA event dependency rather than a host synchronization per layer.
         """
+        from .gil_gate import checkpoint
+        checkpoint(state.get('request_id'))  # opt-in KVMEM_GIL_GATE_MS: one layer (never for the step's own requests)
         from .assembly import assemble_fp8
         from .packed_assembly import read_packed_records
         from .window_assembly import NativeWindowAssembler
@@ -592,7 +594,10 @@ class LayerwiseQuery:
                     assembler, groups, total, row_bytes, chunk_blocks)
                 if reused is not None:
                     return reused
-            for cursor, group in groups:
+            from .gil_gate import chunk_checkpoint
+            for chunk_index, (cursor, group) in enumerate(groups):
+                if chunk_index:
+                    chunk_checkpoint(state.get('request_id'))   # opt-in KVMEM_GIL_GATE_CHUNKS
                 n = sum(r.count for r in group)
                 half = n * authority.shape[2] * authority.shape[3]
                 with stage('device_staging_destination', transfer_bytes=2*half):
@@ -773,6 +778,8 @@ def install_layerwise_query(runner):
     if not getattr(AsyncRefresh, '_layerwise_diagnostic_installed', False):
         assemble, report = AsyncRefresh._assemble, AsyncRefresh.report
         def assemble_with_probe(self, job, queries, ready):
+            from .gil_gate import checkpoint
+            checkpoint(job.command.request_id)   # opt-in KVMEM_GIL_GATE_MS: refresh job start
             if (getattr(self.options, 'action_profiling', False) or
                     getattr(self.runner, '_kvmem_step_timing', None) is not None):
                 self.emit(job, 'assembly_worker_started')

@@ -113,6 +113,9 @@ def _step_restore(manager, job, *, timing=None):
         resident = resident_lane(job)
         if lane_busy(manager, resident=resident):
             return False
+        from .decode_priority import should_yield
+        if not resident and should_yield(manager.jobs.values(), job):
+            return False  # Opt-in: a waiting decode-stage pressure takes the lane first.
         # Acquiring the credit later would otherwise fail after the window is
         # claimed (e.g. while a pipelined pressure refresh still owns it).
         can_acquire = getattr(getattr(manager, 'maintenance', None), 'can_acquire', None)

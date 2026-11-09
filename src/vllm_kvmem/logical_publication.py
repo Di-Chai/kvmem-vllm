@@ -239,6 +239,8 @@ class LogicalPublicationCursor:
                 self.prepared = self.action.prepare_accept(self._child, self.group.request_id, accepted,
                     graph=self.graph, history_begin=span.history_begin)
                 self.prepared.graph_update.detach()
+                from .gil_gate import checkpoint as _gil_checkpoint
+                _gil_checkpoint()   # opt-in KVMEM_GIL_GATE_MS: between prepare and append
                 _t1 = _time.perf_counter()
                 self.phase = 'appending'
                 begin, end = span.physical_offset, span.physical_offset+span.count
@@ -253,6 +255,7 @@ class LogicalPublicationCursor:
                     raise RuntimeError('Logical append consumed an invalid owner count')
                 self.archive_done = True
                 self.phase = 'archive_done'
+                _gil_checkpoint()   # opt-in KVMEM_GIL_GATE_MS: between append and commit
                 self.phase = 'committing'
                 _t2 = _time.perf_counter()
                 self.prepared.commit()
