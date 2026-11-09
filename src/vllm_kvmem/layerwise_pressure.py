@@ -61,18 +61,50 @@ class DeferredPreparedCommit:
 
     The producer builds it after its per-layer upload loop; any consumer that
     needs the maps earlier builds it itself. Errors are re-raised to every caller.
+
+    With layer-0-first (lazy) selection, ``selected`` is set once the producer
+    has selected every layer. A consumer can reach the maps before that: with
+    KVMEM_LAYER0_FAST no layer guard holds the next forward, so its capture can
+    ask for them while later layers are still being selected. It waits for the
+    selection (holding no lock) instead of building from a partial plan.
     """
-    def __init__(self, build, layer_zero_starts):
+    SELECTION_TIMEOUT = 120.
+
+    def __init__(self, build, layer_zero_starts, selected=None):
         import threading
         self._build, self._lock = build, threading.Lock()
         self._value = self._error = None
         self.layer_zero_starts = layer_zero_starts
+        self._selected = selected
 
     @property
     def ready(self):
         return self._value is not None
 
+    def release(self, error):
+        """The producer stopped before selecting every layer: fail, never block, consumers."""
+        with self._lock:
+            if self._value is None and self._error is None:
+                self._error = error
+        if self._selected is not None:
+            self._selected.set()
+
+    def discard(self):
+        """The owner finished before anyone needed these maps: drop the builder.
+
+        Its closure references the job (and through it the plan, histories and
+        source rights); dropping it breaks that reference cycle immediately.
+        """
+        with self._lock:
+            if self._value is None and self._error is None:
+                self._error = RuntimeError('Deferred pressure maps were discarded with their request')
+            self._build = None
+
     def value(self):
+        selected = self._selected
+        if selected is not None and not selected.is_set():
+            if not selected.wait(self.SELECTION_TIMEOUT):
+                raise RuntimeError('Lazy layer pressure selection did not finish before its maps were needed')
         with self._lock:
             if self._value is None and self._error is None:
                 try:
@@ -197,6 +229,21 @@ def record_index(controller, authority):
     current.log = []        # start logging appends after this full build
     cache[key] = (current, version, index, aligned)
     return index
+
+
+def _drop_record_index(controller, request_id, authority=None):
+    """Forget a finished owner's cached record index.
+
+    The cache is keyed by the authority's native namespace, which for a
+    restored session is the session's first request, not the finishing one.
+    Its Record list must not outlive the turn: it keeps retired records'
+    index storage alive, so historical GC could never release their slots.
+    """
+    cache = controller.__dict__.get('_record_index_cache', {})
+    cache.pop(request_id, None)
+    key = getattr(getattr(authority, 'memory', None), 'request_id', None)
+    if key is not None:
+        cache.pop(key, None)
 
 
 def record_index_aligned(controller, authority):
@@ -377,10 +424,54 @@ class LayerwisePrefillPressure:
             raise RuntimeError('Layer-specific physical history length differs from the native frame')
         return result
 
+    def bind_history_owner(self, rid, authority):
+        """Prune this request's layer histories whenever its authority prunes
+        retired blocks from the shared attention state (historical GC)."""
+        owners = self.__dict__.setdefault('_history_owners', {})
+        if owners.get(rid) is authority:
+            return
+        owners[rid] = authority
+        pruners = authority.__dict__.setdefault('history_pruners', [])
+        if not any(p is self for p in pruners):
+            pruners.append(self)
+
+    def prune_layer_histories(self, authority, live):
+        """The shared rule of RequestAuthority._prune_history_metadata, per layer."""
+        end = authority.history_end
+        keep = lambda key: key in live or key >= end
+        owners = self.__dict__.get('_history_owners', {})
+        from .layerwise_gc_holds import holds_of
+        retired = holds_of(self).retired
+        for rid, owner in list(owners.items()):
+            if owner is not authority:
+                continue
+            stash = retired.get(rid)
+            groups = [self.histories.get(rid), stash[1] if stash else None]
+            for histories in groups:
+                for history in histories or ():
+                    values = history.values
+                    if any(not keep(key) for key in values):
+                        history.values = {k: v for k, v in values.items() if keep(k)}
+            from .layerwise_decode import DecodeHistory
+            for table, key in ((self.decode_histories, rid),):
+                rows = table.get(key)
+                if rows:
+                    table[key] = [h if all(keep(k) for k in h.mass) else
+                                  DecodeHistory({k: v for k, v in h.mass.items() if keep(k)}, h.samples, h.end, h.chunks)
+                                  for h in rows]
+            if stash and stash[2]:
+                decode = [h if all(keep(k) for k in h.mass) else
+                          DecodeHistory({k: v for k, v in h.mass.items() if keep(k)}, h.samples, h.end, h.chunks)
+                          for h in stash[2]]
+                retired[rid] = (stash[0], stash[1], decode)
+            if rid not in self.histories and rid not in self.decode_histories and rid not in retired:
+                del owners[rid]
+
     def attach_packet(self, pending, rid, authority, starts, counts, masses):
         if len(masses.shape) != 3 or masses.shape[0] != len(self.names):
             raise RuntimeError('Missing independent prefill scores for a full-attention layer')
         self._history(rid, pending.state.options)
+        self.bind_history_owner(rid, authority)
         if pending.prefill is None:
             if not self.rolling_decode:
                 raise RuntimeError('Decode feedback requires explicit layerwise rolling mode')
@@ -475,6 +566,10 @@ class LayerwisePrefillPressure:
             mandatory=job.command.mandatory_spans).mandatory_fit(job.history, cfg)
         required = set(fit['hard_blocks'])
         _lap('plan_fit')
+        # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: no retirement for this request
+        # from the record snapshot until every layer's window is held.
+        from .layerwise_gc_holds import wait_paused as _gc_wait_paused, holds_of as _gc_holds
+        _gc_wait_paused(authority)
         index = record_index(self, authority)
         if index is None:
             records = sorted(authority.records.values(), key=lambda r:r.history_begin)
@@ -507,6 +602,17 @@ class LayerwisePrefillPressure:
         _lap('history_snapshot_check')
         current = list(authority.memory._store.working_records())
         local = sum(r[3] for r in current)
+        job.layerwise_layer0_diverged = False
+        if not decode and rid in self.maps:
+            from .layerwise_checkpoints import sessions_enabled, layer0_diverged
+            if sessions_enabled() and layer0_diverged(
+                    current, self.records(rid, authority, job.history, local, 0)):
+                # Session resumed after a probe-mode Query: layer zero's pages
+                # differ from the native frame, so the native skip hints of
+                # unmoved rows do not apply to it (as for rolling decode).
+                if not getattr(self, 'single_assembly', False):
+                    raise ValueError('A diverged layer-zero window needs single pressure assembly')
+                job.layerwise_layer0_diverged = True
         chosen, evidence, source_maps = [], [], []
         prepare_commit = not decode and getattr(self, 'prepared_commit', False)
         selected_slot_groups = []
@@ -638,6 +744,7 @@ class LayerwisePrefillPressure:
                 _lap('deferred_fold_force')
             for layer in range(len(histories)):
                 select_layer(layer)
+            _gc_holds(self).protect(rid, authority, chosen)
         def geometry_check():
             lengths = {sum(r.count for r in group) for group in chosen}
             partial = [{(r.history_begin,r.count) for r in group if r.count != 32} for group in chosen]
@@ -647,13 +754,17 @@ class LayerwisePrefillPressure:
         if not deferred_maps:
             geometry_check()
         job.layerwise_pressure_plan = chosen, evidence
+        selected_all = None
         if deferred_maps:
             from .pressure_commit import prepare_commit as build_commit
             def build():
                 geometry_check()
                 return build_commit(job, chosen, records, record_slots, selected_slot_groups)
+            if lazy and len(chosen) < len(histories):
+                import threading
+                selected_all = threading.Event()
             job.layerwise_prepared_commit = DeferredPreparedCommit(
-                build, frozenset(r.history_begin for r in chosen[0]))
+                build, frozenset(r.history_begin for r in chosen[0]), selected_all)
         elif prepare_commit:
             from .pressure_commit import prepare_commit as build_commit
             job.layerwise_prepared_commit = build_commit(
@@ -665,6 +776,9 @@ class LayerwisePrefillPressure:
                     raise RuntimeError('Lazy layer pressure selection lost its layer order')
                 select_layer(layer)
                 if len(chosen) == len(histories):
+                    _gc_holds(self).protect(rid, authority, chosen)
+                    if selected_all is not None:
+                        selected_all.set()
                     if _tr:
                         _trace('prepare_sections', rid=rid, records=len(records), layers=len(histories),
                                lazy=True, **{k: round(v, 6) for k, v in _sec.items()})
@@ -687,6 +801,15 @@ class LayerwisePrefillPressure:
             # host frame still describes its global preselection. Admit exactly
             # the independent preview; never rank stale shared-frame identities.
             job.layerwise_decode_selection = tuple(r.handle.slot for r in chosen[0])
+        else:
+            from .layerwise_checkpoints import sessions_enabled
+            if sessions_enabled():
+                # KVMEM_LAYERWISE_SESSIONS: after a decoded turn the shared
+                # control state also carries output attention, so the global
+                # pressure seed no longer equals layer zero's own prefill
+                # history. Admit exactly layer zero's selection (as rolling
+                # decode does); single-turn prefill is unchanged by this.
+                job.layerwise_decode_selection = tuple(r.handle.slot for r in chosen[0])
 
     def committed(self, job):
         rid, authority = job.command.request_id, job.authority
@@ -798,10 +921,22 @@ class LayerwisePrefillPressure:
             result = finish(runtime, rid, authority)
             controller = getattr(runtime.runner, '_kvmem_layerwise_pressure', None)
             if controller is not None:
-                controller.maps.pop(rid, None)
+                from .layerwise_checkpoints import sessions_enabled, retire_state
+                if sessions_enabled():
+                    # The terminal (M) capture runs after this finish: keep the
+                    # request's per-layer state (and window hold) until then.
+                    retire_state(controller, rid, authority)
+                    return result
+                frame = controller.maps.pop(rid, None)
+                if isinstance(frame, PendingMaps):
+                    frame.deferred.discard()          # break the builder <-> job cycle
+                frame = None
+                from .layerwise_gc_holds import holds_of
+                holds_of(controller).release(rid)
                 controller.histories.pop(rid, None)
-                controller.__dict__.get('_record_index_cache', {}).pop(rid, None)
+                _drop_record_index(controller, rid, authority)
                 controller.decode_histories.pop(rid, None)
+                controller.__dict__.get('_history_owners', {}).pop(rid, None)
             return result
         ActionRuntime.accept, ActionRuntime.finish = accept, finished
         ActionRuntime.prepare_accept = prepare_graph

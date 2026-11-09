@@ -42,6 +42,36 @@ class LogicalPublicationReceipt:
     append_requests: int = 1
 
 
+class _NoGraphUpdate:
+    """The graph half of a graphless child transaction: nothing to reserve."""
+    def detach(self): pass
+    def resume(self): pass
+    def commit(self): pass
+    def abort(self): pass
+
+
+class _NoGraph:
+    """Stand-in for an absent block graph (opt-in prefill_physical_graphless).
+
+    ``ActionRuntime.prepare_accept`` then stages and commits exactly the
+    attention-history update the graph-off ``accept`` path applies, with an
+    empty graph half. Nothing here references history records, so a deleting
+    historical GC remains free to retire them.
+    """
+    binding = None
+    accepted_through = 1 << 62
+
+    def validate_binding(self, binding):
+        if binding is not None:
+            raise RuntimeError('A graphless publication acquired a graph binding')
+
+    def prepare_accept(self, begin, end, **kwargs):
+        return _NoGraphUpdate()
+
+
+NO_GRAPH = _NoGraph()
+
+
 class LogicalPublicationCursor:
     """One owner, bounded spans, at most one reserved GraphUpdate, no new buffers.
 
@@ -54,7 +84,7 @@ class LogicalPublicationCursor:
     """
 
     def __init__(self, group, packet, authority, action_runtime, slices, *,
-                 owner_epoch, source_generation):
+                 owner_epoch, source_generation, graphless=False):
         if not isinstance(group, LogicalPrefillGroup):
             raise ValueError('Publication requires an existing logical group')
         if (type(slices) is not tuple or len(slices) != len(group.spans) or
@@ -69,6 +99,8 @@ class LogicalPublicationCursor:
             raise ValueError('Physical source generation must be a nonnegative integer')
         state = getattr(authority, 'action_history', None)
         graph = getattr(authority, 'block_graph', None)
+        if graph is None and graphless:
+            graph = NO_GRAPH
         if (state is None or getattr(state, 'prefill', None) is None or graph is None or
                 not callable(getattr(action_runtime, 'prepare_accept', None))):
             raise ValueError('Logical publication requires active prefill attention and graph transactions')
@@ -94,6 +126,11 @@ class LogicalPublicationCursor:
         if authority.history_end != group.history_begin:
             raise ValueError('Logical group does not begin at the published authority prefix')
 
+    def _current_graph(self):
+        graph = getattr(self.authority, 'block_graph', None)
+        # Explicit None test: an empty BlockGraph may be falsy.
+        return NO_GRAPH if graph is None and self.graph is NO_GRAPH else graph
+
     @property
     def done(self):
         return self.phase in ('done', 'released')
@@ -103,7 +140,7 @@ class LogicalPublicationCursor:
                 self.packet.source_generation != self.source_generation or
                 self.authority.memory.request_id != self.group.request_id or
                 self.authority.action_history is not self.state or
-                self.authority.block_graph is not self.graph or
+                self._current_graph() is not self.graph or
                 self.packet.source_released):
             raise RuntimeError('Logical publication lost its owner or physical source generation')
         self.graph.validate_binding(self.graph_binding)

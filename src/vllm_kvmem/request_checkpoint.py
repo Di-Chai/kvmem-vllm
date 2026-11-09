@@ -7,8 +7,55 @@ page leases and a complete multi-stream fence until capture has completed.
 """
 from dataclasses import dataclass
 import hashlib
+import os
 
 import torch
+
+
+def coalesced_copies():
+    """KVMEM_SWAP_COALESCED_COPY: bind each attention layer's whole cache row
+    (K and V together, physical byte order) and copy every run of adjacent rows
+    that is one contiguous region with a single copy. Same bytes, same places;
+    no GPU staging (a run is only merged when it is already contiguous)."""
+    value = os.getenv('KVMEM_SWAP_COALESCED_COPY', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_SWAP_COALESCED_COPY must be 0 or 1')
+    return value == '1'
+
+
+def physical_rows(cache):
+    """Byte rows [blocks, row_bytes] of a cache tensor in physical order.
+
+    The logical axes after the first are reordered by decreasing stride; the
+    result is a view (never a copy) and requires each row to be one dense
+    region, which holds for vLLM's block-major attention caches.
+    """
+    order = sorted(range(1, cache.ndim), key=lambda dim: -cache.stride(dim))
+    physical = cache.permute(0, *order)
+    expected = 1
+    for size, stride in reversed(list(zip(physical.shape[1:], physical.stride()[1:]))):
+        if size > 1 and stride != expected:
+            raise ValueError('Cache rows are not dense in physical order')
+        expected *= size
+    if physical.dtype != torch.uint8:
+        physical = physical.view(torch.uint8)
+    return physical.view(cache.shape[0], -1)
+
+
+def _runs(tensor, rows):
+    """(position, first row, count): ascending adjacent rows merged only when
+    their slice is one contiguous region; anything else stays one row."""
+    runs, index = [], 0
+    while index < len(rows):
+        end = index + 1
+        while end < len(rows) and rows[end] == rows[end - 1] + 1:
+            end += 1
+        if end - index > 1 and tensor[rows[index]:rows[end - 1] + 1].is_contiguous():
+            runs.append((index, rows[index], end - index))
+        else:
+            runs.extend((position, rows[position], 1) for position in range(index, end))
+        index = end
+    return runs
 
 
 @dataclass(frozen=True)
@@ -132,9 +179,21 @@ def capture_exact(identity, bindings, *, max_bytes):
     schemas, offset = [], 0
     event = torch.cuda.Event() if device.type == 'cuda' else None
     try:
+        coalesce = coalesced_copies()
         for binding in bindings:
             schemas.append(TensorSchema(binding.name, binding.tensor.dtype, binding.row_shape,
                                         len(binding.rows), offset, binding.row_bytes))
+            if coalesce:
+                for position, first, count in _runs(binding.tensor, binding.rows):
+                    start = offset + position * binding.row_bytes
+                    if count == 1:
+                        source = _row(binding.tensor, first).view(torch.uint8)
+                    else:
+                        source = binding.tensor[first:first + count].view(torch.uint8)
+                    destination = payload[start:start + count * binding.row_bytes].view(source.shape)
+                    destination.copy_(source, non_blocking=device.type == 'cuda')
+                offset += len(binding.rows) * binding.row_bytes
+                continue
             for row in binding.rows:
                 source = _row(binding.tensor, row).view(torch.uint8)
                 destination = payload[offset:offset + binding.row_bytes].view(source.shape)
@@ -180,8 +239,19 @@ def restore_exact(snapshot, identity, bindings):
     bindings, device = _validate_exact_restore(snapshot, identity, bindings)
     event = torch.cuda.Event() if device.type == 'cuda' else None
     try:
+        coalesce = coalesced_copies()
         for binding, schema in zip(bindings, snapshot.schemas):
             offset = schema.offset
+            if coalesce:
+                for position, first, count in _runs(binding.tensor, binding.rows):
+                    start = offset + position * schema.row_bytes
+                    if count == 1:
+                        destination = _row(binding.tensor, first).view(torch.uint8)
+                    else:
+                        destination = binding.tensor[first:first + count].view(torch.uint8)
+                    source = snapshot.payload[start:start + count * schema.row_bytes].view(destination.shape)
+                    destination.copy_(source, non_blocking=device.type == 'cuda')
+                continue
             for row in binding.rows:
                 destination = _row(binding.tensor, row).view(torch.uint8)
                 source = snapshot.payload[offset:offset + schema.row_bytes].view(destination.shape)
@@ -328,12 +398,18 @@ class NativeRequestCheckpointAdapter:
                 actual = tuple(kernel_table(runner, group_id, index).cpu().tolist())
                 if actual != rows:
                     raise ValueError('Native attention table differs from swap allocation')
+                coalesce = coalesced_copies()
                 for layer_name in group.layer_names:
                     module = by_native_name.get(layer_name)
                     if module is None or module.attn.kv_cache_dtype != 'fp8_e4m3':
                         raise ValueError('Native swap encountered an unqualified attention layer')
-                    for kind, tensor in zip(('key', 'value'), native_vllm_fp8_views(
-                            module.attn.kv_cache, module.num_kv_heads, module.head_dim)):
+                    views = native_vllm_fp8_views(module.attn.kv_cache, module.num_kv_heads, module.head_dim)
+                    if coalesce:
+                        # The same K and V bytes, as each kernel block's dense region.
+                        result.append(CacheRows(f'{group_id}/{layer_name}/kv',
+                                                physical_rows(module.attn.kv_cache), rows))
+                        continue
+                    for kind, tensor in zip(('key', 'value'), views):
                         result.append(CacheRows(f'{group_id}/{layer_name}/{kind}', tensor, rows))
         if len(set(allocated)) != len(allocated):
             raise ValueError('Native groups alias allocator pages')

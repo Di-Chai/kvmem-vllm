@@ -116,7 +116,11 @@ def _state(runner, request_id, *, deep):
     # Bind its identity only once it actually carries this request's state.
     if window_state is not None and not any(present for present, _ in window_state):
         window = window_state = None
-    frame = pressure.maps.get(request_id)
+    # Deferred commit maps (KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS) resolve
+    # before identification, like deferred folds below; otherwise the first
+    # use after a restore would replace this frame and fail the witness.
+    resolve = getattr(pressure, 'resolved_maps', None)
+    frame = resolve(request_id) if resolve is not None else pressure.maps.get(request_id)
     histories = pressure.histories.get(request_id)
     decode = pressure.decode_histories.get(request_id)
     owners = [query, pressure, refresh, authority, memory, window, frame, histories, decode]

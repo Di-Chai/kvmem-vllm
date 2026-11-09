@@ -304,6 +304,8 @@ class SessionWorker:
                 # its pre-selection frame/model/attention state unchanged;
                 # the previous answer's selection must not influence the next Q.
                 return
+            from .layerwise_checkpoints import refresh_committed_snapshot
+            refresh_committed_snapshot(self, request_id, checkpoint)
             self.pool.update_live_window(checkpoint)
 
     def _restore(self, request_id):
@@ -350,6 +352,9 @@ class SessionWorker:
             stage_started = now
             if direct_restore:
                 finish_direct_restore(self, request_id, checkpoint, assembler)
+            elif binding.pressure_restore:
+                from .layerwise_checkpoints import restore_pressure_sync
+                restore_pressure_sync(self, request_id, checkpoint)
             else:
                 restore_sync(self, request_id, checkpoint)
             now = time.perf_counter()
@@ -375,6 +380,8 @@ class SessionWorker:
         finally:
             assembler.close()
         self.publish_restore(request_id, authority)
+        from .layerwise_checkpoints import realign_after_restore
+        realign_after_restore(self, request_id, checkpoint)
         output = getattr(self.runner, '_kvmem_probe_output', None)
         if output is not None:
             import json
@@ -460,6 +467,19 @@ class SessionWorker:
                     'working_tokens':binding.window,'recurrent_tensors':len(recurrent),
                     'checkpoint_kind':checkpoint.kind,
                     'pressure_restore':binding.pressure_restore,'recurrent_byte_equal':True})+'\n')
+        rebuilt_draft = getattr(self, 'layerwise_draft_rebuilt', set())
+        if oracle is not None and request_id in rebuilt_draft:
+            # KVMEM_LAYERWISE_SESSIONS resident restore after a probe-mode Query:
+            # target layers keep their terminal pages; the MTP draft was rebuilt
+            # from layer zero's window, so check it against the immutable rebuild.
+            rebuilt_draft.discard(request_id)
+            width = self.runtime.heads * self.runtime.dim
+            size = working_tokens * width
+            targets = len(self.runner._kvmem_layerwise_pressure.names)
+            rebuilt = self._rebuilt_target_bytes(request_id, checkpoint.authority)
+            oracle = oracle.clone()
+            oracle[2*targets*size:] = rebuilt[2*targets*size:]
+            oracle_kind = 'native_terminal_window_with_rebuilt_draft'
         if oracle is not None:
             actual = self._target_bytes(request_id, working_tokens)
             if not torch.equal(actual, oracle):
@@ -669,17 +689,36 @@ class SessionWorker:
             retire_raw_cache(self.runner, authority)
         self._poll_evictions()
 
+    def _audit_eviction(self, namespace, blocker, note=None):
+        """Diagnostic: one line per pending eviction after 1,000, then every
+        100,000 polls; and one line when a cycle collection resolved it."""
+        counts = self.__dict__.setdefault('_eviction_polls', {})
+        count = counts[namespace] = counts.get(namespace, 0) + (note is None)
+        if note is not None or count == 1000 or count % 100000 == 0:
+            output = getattr(self.runtime, 'output', None)
+            if output is not None:
+                import json, time
+                with (output/'eviction_audit.jsonl').open('a') as stream:
+                    stream.write(json.dumps(dict(at=time.time(), namespace=list(namespace),
+                                                 polls=count, blocker=blocker, **({'resolved': note} if note else {})))+'\n')
+
     def _poll_evictions(self):
         changed = False
         for namespace, command in list(self.evictions.items()):
             checkpoint = self.pool.entries.get(namespace)
             if checkpoint is not None and not self.pool.poll_eviction(checkpoint):
+                self._audit_eviction(namespace, getattr(checkpoint, 'eviction_blocker', None))
                 continue
             ready = getattr(getattr(self.runtime, 'archive', None), 'reclamation_ready', None)
             if ready is not None and not ready():
+                self._audit_eviction(namespace, 'archive_reclamation')
                 continue
+            note = getattr(checkpoint, 'eviction_note', None) if checkpoint is not None else None
+            if note is not None:
+                self._audit_eviction(namespace, None, note=note)
             self.completed.append(SessionNotice('evicted', namespace, command.generation, ''))
             del self.evictions[namespace]
+            self.__dict__.get('_eviction_polls', {}).pop(namespace, None)
             del self.identities[namespace]
             getattr(self, 'restore_oracles', {}).pop(namespace, None)
             self._history_capacity_sent.pop(namespace, None)
@@ -748,6 +787,12 @@ class SessionWorker:
         if prompt is not None:
             frames.append(prompt)
         protected = {(slot, generation) for frame in frames for slot, generation, *_ in frame.window.records}
+        for frame in frames:
+            # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: a per-layer checkpoint holds
+            # every layer's records (layerwise_gc_holds.checkpoint_hold).
+            layerwise = getattr(frame, 'layerwise_pressure', None)
+            if getattr(layerwise, 'gc_hold', None) is not None:
+                protected.update((row[0], row[1]) for rows in layerwise.maps for row in rows)
         cfg = authority.memory.config
         for record in islice(authority.records.values(), cfg.sink_blocks):
             if record.history_begin < cfg.sink_blocks*cfg.block_tokens:

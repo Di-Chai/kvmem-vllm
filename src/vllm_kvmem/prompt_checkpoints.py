@@ -244,12 +244,17 @@ class PromptCheckpointPool:
         without rerunning selection from the older pressure frame.
         """
         self._owned(checkpoint)
-        if checkpoint.layerwise_pressure is not None:
+        from .layerwise_checkpoints import sessions_enabled
+        if checkpoint.layerwise_pressure is not None and not sessions_enabled():
             raise ValueError('Frozen layerwise P checkpoint cannot adopt a later shared window')
         if (checkpoint.phase is not CheckpointPhase.LIVE or
                 checkpoint.authority.history_end != checkpoint.position):
             raise ValueError('Window update requires the exact live checkpoint boundary')
+        # KVMEM_LAYERWISE_SESSIONS: a restored terminal (M) checkpoint adopts the
+        # realigned frame at its own, possibly partial-block, terminal boundary.
+        partial = sessions_enabled() and getattr(checkpoint, 'kind', None) == 'M'
         window = checkpoint.authority.memory.checkpoint_window(
+            **({'allow_partial': True} if partial else {}),
             **({'native_validation': True} if self.native_checkpoint_capture else {}))
         delta = (len(window.records) - len(checkpoint.window.records)) * 5 * 8
         if self.payload_bytes + delta > self.max_payload_bytes:
@@ -468,8 +473,12 @@ class PromptCheckpointPool:
             raise ValueError('No unsubmitted checkpoint import')
         if not self.model_ready(checkpoint):
             raise RuntimeError('Claimed model checkpoint payload is not ready')
-        if checkpoint.layerwise_pressure is not None and (pressure or checkpoint.claim_action_history is not None):
-            raise ValueError('Layerwise P restore cannot change its window or import future scores')
+        if checkpoint.layerwise_pressure is not None and checkpoint.claim_action_history is not None:
+            raise ValueError('Layerwise restore cannot import future scores')
+        if checkpoint.layerwise_pressure is not None and pressure:
+            from .layerwise_checkpoints import sessions_enabled
+            if not sessions_enabled():
+                raise ValueError('Layerwise P restore cannot change its window')
         if metadata_binding is not None and selection_metadata(checkpoint.authority) is not None:
             from .prompt_spans import graph_metadata
             from .block_graph import _merge_spans
@@ -590,9 +599,11 @@ class PromptCheckpointPool:
         if checkpoint.phase is not CheckpointPhase.CLOSING:
             raise ValueError('Checkpoint has not been evicted')
         if checkpoint.fence is not None and not checkpoint.fence.query():
+            checkpoint.eviction_blocker = 'fence'
             return False
         prompt = self.prompts.get(checkpoint.namespace)
         if not self.model_ready(checkpoint) or (prompt is not None and not self.model_ready(prompt)):
+            checkpoint.eviction_blocker = 'model_ready'
             return False
         # Release our prefix pins before closing. External readers still keep
         if prompt is not None and prompt is not checkpoint:
@@ -601,7 +612,19 @@ class PromptCheckpointPool:
         checkpoint.window = checkpoint.model = None
         checkpoint.tail_rollback = None
         checkpoint.tokens = b''
-        if not checkpoint.authority.close():
+        # An evicted checkpoint is never restored. Drop its per-layer snapshot
+        # (and, under KVMEM_LAYERWISE_HISTORICAL_GC, its native record hold)
+        # before closing: the authority's history scope cannot close under it.
+        checkpoint.layerwise_pressure = None
+        from .layerwise_gc_holds import drop_scope
+        dropped = drop_scope(checkpoint.authority)
+        if dropped:
+            checkpoint.eviction_dropped = dropped
+        if not checkpoint.authority.close() and not _close_after_cycle_collection(checkpoint):
+            checkpoint.eviction_blocker = ('authority:' + str(getattr(checkpoint.authority, 'close_blocker', None)) +
+                ' dropped=' + str(getattr(checkpoint, 'eviction_dropped', {})) +
+                ' readers=' + str(getattr(checkpoint.authority.archive, '_prepared_region_readers', None)) +
+                ' repo=' + _repository_stats(checkpoint.authority))
             return False
         self._remove(checkpoint)
         return True
@@ -631,3 +654,43 @@ class PromptCheckpointPool:
         checkpoint.window = checkpoint.model = checkpoint.authority = None
         checkpoint.tail_rollback = None
         checkpoint.tokens = b''
+
+
+def _repository_stats(authority):
+    """Diagnostic: native slot states and live leases of a blocked close."""
+    try:
+        stats = authority.memory.repository.stats
+        return str({key: stats[key] for key in ('capacity', 'ready', 'live', 'retired', 'releasing', 'leases')})
+    except Exception as error:
+        return repr(error)
+
+
+def _close_after_cycle_collection(checkpoint):
+    """Retry a blocked history-scope close after one cyclic garbage collection.
+
+    A native history scope closes only when no other owner references its
+    state. Holds or read rights caught in a Python reference cycle are freed
+    only by the cyclic collector, which an idle server may not run for a long
+    time. Rarely (the 64th and 1,024th failed poll, then every 65,536th),
+    collect once and retry; the collected object types are kept for audit.
+    """
+    failures = checkpoint.__dict__.get('_close_failures', 0) + 1
+    checkpoint.__dict__['_close_failures'] = failures
+    if getattr(checkpoint.authority, 'close_blocker', None) != 'history_scope' or not (
+            failures in (64, 1024) or failures % 65536 == 0):
+        return False
+    import gc
+    from collections import Counter
+    debug = gc.get_debug()
+    try:
+        gc.set_debug(gc.DEBUG_SAVEALL)
+        collected = gc.collect()
+        kinds = Counter(type(item).__name__ for item in gc.garbage)
+        gc.garbage.clear()
+    finally:
+        gc.set_debug(debug)
+    gc.collect()                  # now actually free what the audit pass saved
+    closed = checkpoint.authority.close()
+    checkpoint.eviction_note = dict(cycle_collection_at=failures, collected=collected, closed=closed,
+                                    kinds=dict(kinds.most_common(12)))
+    return closed

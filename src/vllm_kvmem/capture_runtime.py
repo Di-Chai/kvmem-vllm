@@ -1762,7 +1762,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             if cursor is None:
                 epoch = self._logical_epoch(action,group,authority)
                 cursor = packet.logical_cursor = LogicalPublicationCursor(group,packet,authority,action,
-                    packet.logical_slices,owner_epoch=epoch,source_generation=packet.source_generation)
+                    packet.logical_slices,owner_epoch=epoch,source_generation=packet.source_generation,
+                    graphless=getattr(self.options,'prefill_physical_graphless',False))
             elif cursor.authority is not authority:
                 raise RuntimeError('Logical publication authority was replaced')
             while not cursor.done:

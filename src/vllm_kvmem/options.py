@@ -360,6 +360,10 @@ class RuntimeOptions:
     assembly_fused_layers: bool = False
     flashinfer_gemm_bucket_alignment: bool = False
     prefill_physical_coalescing: bool = False
+    # Opt-in: physical coalescing with graph_mode=off (historical GC requires
+    # graphs off). Logical publication then commits each child's accepted
+    # attention through the same transaction with no graph update.
+    prefill_physical_graphless: bool = False
     prefill_physical_multi_owner: bool = False
     prefill_physical_fill_rows: bool = False
     prefill_physical_max_chunks: int = 2
@@ -393,6 +397,10 @@ class RuntimeOptions:
     request_swap_min_resident_steps: int = 32
     request_checkpoint_ssd_bytes: int = 0
     request_swap_layerwise: bool = False
+    # Opt-in: deleting historical GC together with incremental admission and
+    # exact layerwise swaps. A suspended owner keeps its per-layer window holds
+    # (KVMEM_LAYERWISE_HISTORICAL_GC), so GC cannot retire what it restores into.
+    request_swap_historical_gc: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -579,6 +587,10 @@ class RuntimeOptions:
             raise ValueError('Prefill capture ahead requires the publication pipeline and native scores')
         if type(self.prefill_physical_coalescing) is not bool:
             raise ValueError('prefill_physical_coalescing must be boolean')
+        if type(self.prefill_physical_graphless) is not bool:
+            raise ValueError('prefill_physical_graphless must be boolean')
+        if self.prefill_physical_graphless and (not self.prefill_physical_coalescing or self.graph_mode != 'off'):
+            raise ValueError('prefill_physical_graphless requires physical coalescing with graph_mode=off')
         if type(self.prefill_physical_multi_owner) is not bool:
             raise ValueError('prefill_physical_multi_owner must be boolean')
         if self.prefill_physical_multi_owner and not self.prefill_physical_coalescing:
@@ -596,10 +608,10 @@ class RuntimeOptions:
         if self.prefill_physical_coalescing:
             if not (self.request_planning and self.prefill_publication_pipeline and
                     self.prefill_native_plan_arm and self.action_native_scores == 'reuse' and
-                    self.batched_cpu_append and self.graph_mode != 'off'):
+                    self.batched_cpu_append and (self.graph_mode != 'off' or self.prefill_physical_graphless)):
                 raise ValueError('Physical prefill coalescing requires request planning, '
                                  'the publication pipeline, native plan arm, native reuse, '
-                                 'batched CPU append and an active graph')
+                                 'batched CPU append and an active graph (or prefill_physical_graphless)')
             if (self.early_capture_slot_release or self.prefill_deferred_validation or
                     self.prefill_scatter_after_target or self.offline_prefill_coalescing or
                     self.offline_phase_policy or self.prefill_batch_tokens or self.adaptive_prefill or
@@ -817,6 +829,10 @@ class RuntimeOptions:
                 not self.prefill_attention or self.pressure_policy != 'attention'):
             raise ValueError('Layerwise request swaps require incremental admission, asynchronous '
                              'refresh, CPU archive and planned cumulative-attention pressure')
+        if type(self.request_swap_historical_gc) is not bool:
+            raise ValueError('request_swap_historical_gc must be boolean')
+        if self.request_swap_historical_gc and (not self.request_swap_layerwise or self.historical_gc is None):
+            raise ValueError('request_swap_historical_gc requires layerwise request swaps and historical_gc')
         if type(self.request_checkpoint_bytes) is not int or self.request_checkpoint_bytes < 0:
             raise ValueError('request_checkpoint_bytes must be a nonnegative integer')
         if type(self.request_checkpoint_ssd_bytes) is not int or self.request_checkpoint_ssd_bytes < 0:
@@ -829,7 +845,8 @@ class RuntimeOptions:
                 raise ValueError('Incremental GPU admission requires a bounded request checkpoint pool')
             if ((self.async_refresh and not self.request_swap_layerwise) or
                     self.async_restore or self.rolling_active_window or
-                    self.active_residency_enabled or self.historical_gc is not None or self.repository_gc or
+                    self.active_residency_enabled or self.repository_gc or
+                    (self.historical_gc is not None and not self.request_swap_historical_gc) or
                     self.prefill_deferred_validation or
                     (self.prefill_physical_coalescing and not self.request_swap_layerwise) or
                     self.offline_agent_policy or self.offline_phase_policy or self.offline_prefill_coalescing or
@@ -999,6 +1016,7 @@ class RuntimeOptions:
             ('request_checkpoint_bytes', 0),
             ('request_checkpoint_ssd_bytes', 0),
             ('request_swap_layerwise', False),
+            ('request_swap_historical_gc', False),
             ('request_swap_min_resident_steps', 32),
             ('tiered_cpu_low_watermark', 0.7), ('tiered_cpu_high_watermark', 0.85),
             ('query_score_mode', 'mean_k'), ('query_window_cache_bytes', 2147483648),
@@ -1073,6 +1091,7 @@ class RuntimeOptions:
             ('assembly_fused_layers', False),
             ('flashinfer_gemm_bucket_alignment', False),
             ('prefill_physical_coalescing', False),
+            ('prefill_physical_graphless', False),
             ('prefill_physical_multi_owner', False),
             ('prefill_physical_fill_rows', False),
             ('prefill_physical_max_chunks', 2),

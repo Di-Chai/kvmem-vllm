@@ -661,7 +661,11 @@ def main(argv=None):
                 raise ValueError('Prepared pressure reads require paired reads')
             if name == 'PREPARED_READS':
                 kv = plan['profile']['kvmem']
-                if kv.get('archive_backend') != 'cpu' or kv.get('repository_gc') or kv.get('historical_gc'):
+                # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: readers hold native read
+                # rights, and every layer's window is protected from retirement.
+                historical_ok = plan['environment'].get('KVMEM_LAYERWISE_HISTORICAL_GC') == '1'
+                if (kv.get('archive_backend') != 'cpu' or kv.get('repository_gc') or
+                        (kv.get('historical_gc') and not historical_ok)):
                     raise ValueError('Prepared pressure reads currently require CPU authority without GC')
             if name == 'NATIVE_SCORE_EXPORT' and not args.layerwise_buffered_history:
                 raise ValueError('Native pressure score export requires buffered histories')

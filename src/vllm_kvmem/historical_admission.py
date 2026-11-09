@@ -338,7 +338,14 @@ class HistoricalHistoryAdmission:
 
     def snapshot(self):
         counters = self.ledger.snapshot()
+        # Same per-owner view as HistoryAdmission.snapshot: clients use it as
+        # the per-owner release ACK (an owner is released once it is absent).
+        views = [dict(key=list(key), generation=value.generation, request_id=value.request_id,
+                      phase='retiring' if key in self.ledger.retiring else 'active',
+                      bytes=value.reserved_records*self.record_bytes)
+                 for key, value in self.ledger.reservations.items()]
         return {**counters, 'capacity_bytes':self.ledger.capacity_records*self.record_bytes,
             'reserved_bytes':self.ledger.reserved_records*self.record_bytes,
             'available_bytes':counters['available_records']*self.record_bytes,
-            'last_observed_archive_bytes':self.observed_bytes, 'waiting':len(self.waiting)}
+            'last_observed_archive_bytes':self.observed_bytes, 'waiting':len(self.waiting),
+            'lease_views':views}

@@ -793,6 +793,9 @@ std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect(const std::vecto
 std::shared_ptr<void> HistoricalGcScope::protect_selection(const std::vector<Handle> &handles) {
     return protect_impl(handles, true);
 }
+std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect_current(const std::vector<Handle> &handles) {
+    return protect_impl(handles, true);
+}
 std::shared_ptr<HistoricalFrameHold> HistoricalGcScope::protect_impl(const std::vector<Handle> &handles,
                                                                   bool current) {
     if (!state_ || handles.empty()) return {};

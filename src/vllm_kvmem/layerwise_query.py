@@ -198,6 +198,11 @@ class LayerwiseQuery:
                           mandatory=job.command.mandatory_spans).mandatory_fit(job.history, cfg)
         authority = job.authority
         authority.publish_sealed(lambda: authority.archive.wait_for_capacity(.05))
+        # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: the per-layer Query windows are
+        # chosen from this snapshot during the forward; no retirement until
+        # all of them are held (released at the last layer).
+        from .layerwise_gc_holds import wait_paused as _gc_wait_paused
+        _gc_wait_paused(authority)
         with authority.index_snapshot() as (records, means):
             required = set(fit['hard_blocks'])
             pins = [r.handle.slot for r in records if r.history_begin // 32 in required]
@@ -420,6 +425,9 @@ class LayerwiseQuery:
         if state.get('no_probe') or (self.pressure is not None and self.pressure.rolling_decode):
             from .layerwise_decode import record_map
             state.setdefault('rolling_maps', []).append(record_map(chosen))
+        from .layerwise_gc_holds import scope_of as _gc_scope
+        if _gc_scope(state['authority']) is not None:
+            state.setdefault('gc_windows', []).append(tuple(chosen))
         assembly_started = time.perf_counter()
         assembly_stats = {}
         if self.mode == 'sequential':
@@ -473,6 +481,10 @@ class LayerwiseQuery:
                 commit_layer_zero(self, state)
             if self.pressure is not None and (state.get('no_probe') or self.pressure.rolling_decode):
                 self.pressure.maps[state['request_id']] = state['history'], tuple(state['rolling_maps'])
+            if state.get('gc_windows') is not None:
+                from .layerwise_gc_holds import holds_of
+                holds_of(self.pressure if self.pressure is not None else self).protect(
+                    state['request_id'], state['authority'], state['gc_windows'])
             if self.optimized:
                 # One final fence also makes the phase timing comparable to
                 # the original synchronized path; queued last-layer DMA must

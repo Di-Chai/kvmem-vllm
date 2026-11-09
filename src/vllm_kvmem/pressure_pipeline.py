@@ -7,6 +7,7 @@ views, source leases and maintenance credit survive through the actual final
 fence. Only host selection metadata is published early.
 """
 from functools import wraps
+import os
 from threading import Condition
 import time
 
@@ -457,13 +458,18 @@ class PressurePipeline:
         if lease is None or job.cancelled or not lease.dispatchable():
             return False
         if job.pressure_oracle is not None:
-            raise RuntimeError('Whole-window pressure oracle requires completed materialization')
+            # KVMEM_VERIFY_SESSION_RESTORE: the whole-window byte oracle needs
+            # completed materialization, so keep this job on the original
+            # non-pipelined completion path (the promise path declines too).
+            return False
         rid, authority = job.command.request_id, job.authority
         if rid in self.active:
             raise RuntimeError('Overlapping materializations for one owner')
         sessions = self.runner._kvmem_sessions
         if sessions is not None and not getattr(sessions.options, 'session_freeze_prompt', False):
-            raise ValueError('Pipeline qualification requires immutable prompt checkpoints')
+            from .layerwise_checkpoints import sessions_enabled
+            if not sessions_enabled():
+                raise ValueError('Pipeline qualification requires immutable prompt checkpoints')
         if sessions is not None and (rid in sessions.captures or rid in sessions.terminal_captures):
             # A checkpoint copies the whole window before entering any model
             # layer. It cannot use per-layer attention guards.
@@ -540,8 +546,21 @@ class PressurePipeline:
             refresh.emit(job, 'pipeline_completed', completion_poll=boundary or 'original', **lease.evidence())
             job.future = job.result = None
             job.layerwise_pipeline = None
+            # Every layer is selected and published: the lazy selection closure
+            # (which references this job, its histories and source records)
+            # is no longer needed. Dropping it breaks a job <-> closure cycle.
+            job.layerwise_select_layer = None
             lease.job = lease.plan = None  # Break cross-thread ownership cycles.
             del self.active[rid]
+
+
+def swaps_enabled():
+    """KVMEM_LAYERWISE_PIPELINE_SWAPS: run the pipeline with incremental GPU
+    admission and exact layerwise request swaps (default off: static only)."""
+    value = os.getenv('KVMEM_LAYERWISE_PIPELINE_SWAPS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_LAYERWISE_PIPELINE_SWAPS must be 0 or 1')
+    return value == '1'
 
 
 def pipeline_for(refresh):

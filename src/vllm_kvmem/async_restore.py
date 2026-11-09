@@ -113,6 +113,11 @@ def _step_restore(manager, job, *, timing=None):
         resident = resident_lane(job)
         if lane_busy(manager, resident=resident):
             return False
+        # Acquiring the credit later would otherwise fail after the window is
+        # claimed (e.g. while a pipelined pressure refresh still owns it).
+        can_acquire = getattr(getattr(manager, 'maintenance', None), 'can_acquire', None)
+        if can_acquire is not None and not can_acquire(job):
+            return False
         with _stage(timing, 'allocation_lease_validate'):
             lease = validate_pages(manager, command)
         if job.checkpoint is None:
@@ -209,6 +214,8 @@ def _finish_restore(manager, job, worker, rid, command, timing):
         job.authority.memory.attach_completion(assembly)
         if not job.authority.memory.commit_selection():
             raise RuntimeError('Completed restore failed to commit its exact active view')
+    from .layerwise_checkpoints import finish_async_restore, realign_after_restore
+    finish_async_restore(worker, rid, job.checkpoint, resident=command.resident)
     with _stage(timing, 'restore_byte_oracle'):
         worker._verify_restored(rid, job.checkpoint, command.resident)
     # Preserve the imported checkpoint until a newer capture replaces it. A
@@ -219,6 +226,7 @@ def _finish_restore(manager, job, worker, rid, command, timing):
         raise RuntimeError('Restored authority identity changed')
     with _stage(timing, 'publish_restore'):
         worker.publish_restore(rid, authority, retained=True)
+    realign_after_restore(worker, rid, job.checkpoint)
     worker.imports.remove(rid)
     authority._refresh_background = False
     if context.assembler is not None and not context.assembler.close():

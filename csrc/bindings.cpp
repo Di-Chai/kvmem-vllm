@@ -1812,6 +1812,7 @@ PYBIND11_MODULE(_native, m) {
     py::class_<vllm_kvmem::HistoricalFrameHold, std::shared_ptr<vllm_kvmem::HistoricalFrameHold>>(m, "HistoricalFrameHold");
     py::class_<HistoryScope, std::shared_ptr<HistoryScope>>(m, "HistoricalGcScope")
         .def("protect", &HistoryScope::protect)
+        .def("protect_current", &HistoryScope::protect_current)
         .def("admit_read", [](HistoryScope &scope, KvMemBlockHandle handle) -> py::object {
             auto admission = scope.admit(handle);
             if (!admission.lease) return py::none();

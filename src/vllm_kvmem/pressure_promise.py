@@ -81,6 +81,21 @@ def ineligible(pipeline, refresh, job, capture):
     return None
 
 
+def async_page_check():
+    value = os.getenv('KVMEM_PROMISE_ASYNC_PAGE_CHECK', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PROMISE_ASYNC_PAGE_CHECK must be 0 or 1')
+    return value == '1'
+
+
+def verify_page_checks(job):
+    """Producer side of KVMEM_PROMISE_ASYNC_PAGE_CHECK; runs before any page write."""
+    for expected, host, copied in getattr(job, 'promise_page_checks', ()):
+        copied.synchronize()
+        if host.tolist() != expected:
+            raise ValueError('Private refresh page reservation mismatch')
+
+
 def promise(pipeline, refresh, job):
     """Engine thread, before the next schedule: ACK with the fixed extent.
 
@@ -105,19 +120,44 @@ def promise(pipeline, refresh, job):
         from types import SimpleNamespace
         sessions.before_attention(SimpleNamespace(req_ids=[rid]))
     index = refresh.runner.req_states.req_id_to_index[rid]
+    try:
+        from .layer0_fast import enabled as layer0_fast_enabled
+    except ImportError:                  # runtimes that predate the fast path
+        layer0_fast_enabled = lambda: False
+    # The (disabled) layer fast path writes pages from here, before the producer
+    # runs, so it keeps the original blocking check.
+    deferred_checks = [] if async_page_check() and not layer0_fast_enabled() else None
     for group, ticket in job.command.groups:
         expansion = stored_expansions(refresh.runner.block_tables)[group]
         expected = [b*expansion+p for b in ticket.original_block_ids for p in range(expansion)]
         count = int(refresh.runner.block_tables.num_blocks.np[group, index])
-        actual = refresh.runner.block_tables.block_tables[group].gpu[index, :count].cpu().tolist()
+        row = refresh.runner.block_tables.block_tables[group].gpu[index, :count]
+        if deferred_checks is not None:
+            # Opt-in KVMEM_PROMISE_ASYNC_PAGE_CHECK: the same read, in stream order
+            # (before the scheduler's truncation on this ACK), without blocking the
+            # engine thread on the GPU's queued work. The producer verifies it
+            # before it writes any page; a mismatch fails the lease, so the next
+            # forward raises at its first guard instead of reading the window.
+            host = torch.empty(row.shape, dtype=row.dtype, pin_memory=True)
+            host.copy_(row, non_blocking=True)
+            copied = torch.cuda.Event()
+            copied.record()
+            deferred_checks.append((expected, host, copied))
+            continue
+        actual = row.cpu().tolist()
         if actual != expected:
             raise ValueError('Private refresh page reservation mismatch')
+    job.promise_page_checks = tuple(deferred_checks or ())
     policy = getattr(refresh, 'maintenance', None)
     if policy is not None and not policy.acquire(job):
         counts['declined:maintenance'] = counts.get('declined:maintenance', 0) + 1
         return False
     extent = predicted_extent(refresh, job)
     authority = capture.authorities[rid]
+    # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: request the selection pause now so
+    # the worker acknowledges it while chunk k is still being published.
+    from .layerwise_gc_holds import pause as _gc_pause
+    _gc_pause(authority)
     lease = LayerMaterialization(pipeline, job, None, pipeline.names)
     lease.promised = True
     lease.promise_extent = extent
@@ -183,6 +223,7 @@ def producer(pipeline, refresh, job, ready):
     capture = refresh.runner._kvmem_capture_runtime
     authority = job.authority
     try:
+        verify_page_checks(job)
         published = _wait_published(refresh, job, capture, authority)
         refresh.emit(job, 'pipeline_promise_published', publication_wait_seconds=published)
         # Authority half of the original 'prepare' stage.
@@ -202,6 +243,12 @@ def producer(pipeline, refresh, job, ready):
             fence.record(torch.cuda.current_stream(refresh.runner.device))
             lease.fail(error, fence)
         lease.committed.set()
+        release = getattr(getattr(job, 'layerwise_prepared_commit', None), 'release', None)
+        if release is not None:
+            # A capture waiting for this plan's lazily selected maps must fail, not hang.
+            release(error)
+        from .layerwise_gc_holds import resume as _gc_resume
+        _gc_resume(authority)         # never leave historical GC paused on failure
         raise
 
 

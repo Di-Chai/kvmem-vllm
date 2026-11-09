@@ -336,6 +336,10 @@ class RequestAuthority:
         if boundaries is not None:
             boundaries.prune(sorted((r.history_begin, r.history_begin+r.count)
                 for r in self.records.values()), future_begin=self.history_end)
+        # Per-layer attention histories (layerwise pressure) prune by the same
+        # rule, so layer zero stays identical to the shared prefill history.
+        for owner in tuple(self.__dict__.get('history_pruners', ())):
+            owner.prune_layer_histories(self, live)
 
     def poll(self):
         if self.gc is not None:
@@ -1217,9 +1221,13 @@ class RequestAuthority:
         if not historical:
             self.stop_gc()
         self.poll()
+        # Diagnostic: the first step a failed close stopped at (eviction audits).
+        self.close_blocker = 'writes' if self.writes else None
         if self.writes or not self.memory.close(background_retire=historical):
+            self.close_blocker = self.close_blocker or 'memory'
             return False
         if historical and not self.gc.close():
+            self.close_blocker = getattr(self.gc, 'close_blocker', 'historical_gc')
             return False
         all_reclaimed = True
         for records in (self.records, self.discarded_records):
@@ -1241,8 +1249,10 @@ class RequestAuthority:
                             self._resident_count -= 1
                 else:
                     all_reclaimed = False
+                    self.close_blocker = 'record_release'
         if all_reclaimed:
             if historical and not self.gc.index_released():
+                self.close_blocker = 'index_release'
                 return False
             if self._busy_record_buffers:
                 raise RuntimeError('Authority closed with live record staging')

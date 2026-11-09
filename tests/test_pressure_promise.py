@@ -350,3 +350,58 @@ def test_store_reading_planners_wait_for_the_promised_commit(monkeypatch):
     t.join()
     assert order == ['commit', 'read']
     a._await_promised_commit('other')   # No lease: no wait.
+
+
+def _async_check_fixture(monkeypatch, row):
+    import torch
+    refresh, authority = refresh_fixture()
+    p = pipeline_fixture()
+    refresh.executor = NS(submit=lambda fn, *a: Future())
+    monkeypatch.setattr(torch.cuda, 'Event', lambda: NS(record=lambda *a: None, synchronize=lambda: None))
+    monkeypatch.setattr(torch.cuda, 'current_stream', lambda *a: None)
+    monkeypatch.setattr(pressure_promise.torch, 'empty',
+                        lambda shape, dtype, pin_memory: torch.zeros(shape, dtype=dtype))
+    monkeypatch.setattr(pressure_promise, 'ineligible', lambda *a: None)
+    import vllm_kvmem.async_refresh as ar
+    monkeypatch.setattr(ar, 'stored_expansions', lambda tables: {0: 1})
+
+    class Table:
+        def __getitem__(self, key):
+            return row
+    refresh.runner.block_tables = NS(num_blocks=NS(np={(0, 0): 2}), block_tables={0: NS(gpu=Table())})
+    return refresh, p
+
+
+def test_async_page_check_defers_the_read_and_the_producer_fails_closed(monkeypatch):
+    """KVMEM_PROMISE_ASYNC_PAGE_CHECK: same reservation check, read in stream order without
+    blocking the engine thread, verified by the producer before it writes any page."""
+    import torch
+    monkeypatch.setenv('KVMEM_PROMISE_ASYNC_PAGE_CHECK', '1')
+    refresh, p = _async_check_fixture(monkeypatch, torch.tensor([1, 2], dtype=torch.int32))
+    j = job()
+    assert pressure_promise.promise(p, refresh, j)
+    assert len(j.promise_page_checks) == 1
+    pressure_promise.verify_page_checks(j)                     # the reserved pages: passes
+    j.promise_page_checks[0][1][1] = 7                         # a different page table
+    with pytest.raises(ValueError, match='reservation mismatch'):
+        pressure_promise.verify_page_checks(j)
+    lease = j.promised_lease
+    with pytest.raises(ValueError, match='reservation mismatch'):
+        pressure_promise.producer(p, refresh, j, None)         # before publication or any write
+    assert lease.error is not None and lease.committed.is_set()
+    with pytest.raises(RuntimeError, match='producer failed'):
+        lease.wait_layer(0, NS(cuda_stream=1, wait_event=lambda e: None))
+
+
+def test_page_check_stays_blocking_by_default(monkeypatch):
+    import torch
+    monkeypatch.delenv('KVMEM_PROMISE_ASYNC_PAGE_CHECK', raising=False)
+    refresh, p = _async_check_fixture(monkeypatch, torch.tensor([1, 3], dtype=torch.int32))
+    with pytest.raises(ValueError, match='reservation mismatch'):
+        pressure_promise.promise(p, refresh, job())            # caught at the ACK, as before
+    refresh, p = _async_check_fixture(monkeypatch, torch.tensor([1, 2], dtype=torch.int32))
+    j = job()
+    assert pressure_promise.promise(p, refresh, j) and j.promise_page_checks == ()
+    monkeypatch.setenv('KVMEM_PROMISE_ASYNC_PAGE_CHECK', 'yes')
+    with pytest.raises(ValueError, match='KVMEM_PROMISE_ASYNC_PAGE_CHECK'):
+        pressure_promise.promise(p, refresh, job())

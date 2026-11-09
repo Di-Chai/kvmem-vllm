@@ -747,7 +747,9 @@ class MemoryArchive(AsyncArchive):
         not reset them). Sources, keys and lease lifetimes are otherwise identical.
         """
         from .prepared_regions import PreparedRegionReader
-        if self._native_payload_arena is not None or not leases:
+        from .pressure_reader import layerwise_gc
+        arena = self._native_payload_arena is not None
+        if (arena and not layerwise_gc()) or not leases:
             raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
         if keys is None:
             keys = [self.key(namespace, lease) for lease in leases]
@@ -764,7 +766,9 @@ class MemoryArchive(AsyncArchive):
         with self._lock:
             if self._closed:
                 raise RuntimeError('Archive is closed')
-            if native is not None:
+            if arena:
+                sources = self._historical_region_sources(keys)
+            elif native is not None:
                 # Same entry checks, sources and errors in one native call.
                 with self.tier.lock:
                     sources = native(self._entries, self.tier.records, list(keys), self.record_bytes)
@@ -799,23 +803,41 @@ class MemoryArchive(AsyncArchive):
         """KVMEM_PRESSURE_READER_EXTEND: prepare_region_reader's adopt path for
         further records of the same plan (same entry checks, sources, unique
         identities and pin validity), appended to an open native reader."""
-        if self._native_payload_arena is not None or not keys or not hasattr(leases, 'valid'):
+        from .pressure_reader import layerwise_gc
+        arena = self._native_payload_arena is not None
+        if (arena and not layerwise_gc()) or not keys or not hasattr(leases, 'valid'):
             raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
         if len(keys) != len(leases) or not namespace or reader.namespace != namespace:
             raise ValueError('Prepared CPU source keys do not match their leases')
         if len(set(keys)) != len(keys) or not set(keys).isdisjoint(reader.keys):
             raise ValueError('Prepared CPU source identities must be unique')
         native = getattr(_native, 'archive_region_sources', None)
-        if native is None:
+        if native is None and not arena:
             raise RuntimeError('Prepared reader extension requires the native source export')
         with self._lock:
             if self._closed:
                 raise RuntimeError('Archive is closed')
-            with self.tier.lock:
-                sources = native(self._entries, self.tier.records, list(keys), self.record_bytes)
+            if arena:
+                sources = self._historical_region_sources(keys)
+            else:
+                with self.tier.lock:
+                    sources = native(self._entries, self.tier.records, list(keys), self.record_bytes)
             if not leases.valid():
                 raise ValueError('Stale prepared CPU source generation')
             return reader.extend(keys, sources, leases)
+
+    def _historical_region_sources(self, keys):
+        """KVMEM_LAYERWISE_HISTORICAL_GC: one native read right per published
+        record (the same rights the per-read path admits), held by the prepared
+        reader until it closes. Absent, unpublished or retired records raise
+        KeyError before any right is kept."""
+        entries = [self._entries.get(key) for key in keys]
+        if any(entry is None or not entry.ready for entry in entries):
+            raise KeyError('Prepared CPU record is absent, stale or unpublished')
+        sources = self.tier.borrow_records([entry.allocation for entry in entries])
+        if any(not source or memoryview(source).nbytes != self.record_bytes for source in sources):
+            raise ValueError('Prepared CPU regions require exact immutable record bytes')
+        return sources
 
     def _admit_read_sources(self, entries):
         if self._native_payload_arena is not None:

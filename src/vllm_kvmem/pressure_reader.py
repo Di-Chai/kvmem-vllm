@@ -7,6 +7,18 @@ import torch
 from .memory import Phase
 
 
+def layerwise_gc():
+    """Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: prepared pressure readers on a CPU
+    archive with deleting historical GC (native payload arena). The reader holds
+    one native read right per source (``HistoricalPayloadRead``) for its whole
+    plan, so a concurrent retirement cannot free or reuse those bytes before
+    the reader closes; a record retired before preparation raises KeyError."""
+    value = os.getenv('KVMEM_LAYERWISE_HISTORICAL_GC', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_LAYERWISE_HISTORICAL_GC must be 0 or 1')
+    return value == '1'
+
+
 def native_reader():
     value = os.getenv('KVMEM_PRESSURE_NATIVE_READER', '0')
     if value not in ('0', '1'):
@@ -94,7 +106,7 @@ class PressureReader:
                         raise ValueError('Stale pressure source generation')
                     leases.append(lease)
                     if source is not None:
-                        raise ValueError('Prepared pressure reads cannot bypass native payload admission')
+                        self._keep_admission_right(source)
                     seen_keys.add(key)
                     self.records[id(record)] = (record, handle, record.history_begin, len(keys))
                     keys.append(key)
@@ -178,8 +190,9 @@ class PressureReader:
         leases.extend(lease for lease, _ in admitted)
         if not all(lease for lease, _ in admitted):
             raise ValueError('Stale pressure source generation')
-        if any(source is not None for _, source in admitted):
-            raise ValueError('Prepared pressure reads cannot bypass native payload admission')
+        for _, source in admitted:
+            if source is not None:
+                self._keep_admission_right(source)
         self.records = table if table is not None else {id(r): (r, h, r.history_begin, i)
                         for i, (r, h) in enumerate(zip(records, handles))}
         keys.extend(pairs)
@@ -308,10 +321,19 @@ class PressureReader:
             raise
         return self
 
+    def _keep_admission_right(self, source):
+        # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: native payload admission hands
+        # back a GC read right with each lease; hold it with the plan (the
+        # prepared reader's own sources are separate read rights).
+        if not layerwise_gc():
+            raise ValueError('Prepared pressure reads cannot bypass native payload admission')
+        self.__dict__.setdefault('admission_rights', []).append(source)
+
     def close(self):
         if self.reader is not None and not self.reader.close():
             return False
         self.closed = True
+        self.__dict__.pop('admission_rights', None)
         return True
 
     def __exit__(self, kind, error, traceback):
@@ -322,11 +344,17 @@ class PressureReader:
 def prepare_pressure_reader(authority, plan, layers):
     archive = authority.archive
     # Independent native CPU retirement needs the existing per-copy source
-    # rights. Do not silently broaden this no-GC optimization to that backend.
+    # rights. Do not silently broaden this no-GC optimization to that backend,
+    # except under KVMEM_LAYERWISE_HISTORICAL_GC, where the reader holds those
+    # rights itself (one per source, for the plan). Repository GC stays excluded.
+    from .historical_gc import HistoricalAuthorityGc
+    gc = getattr(authority, 'gc', None)
+    historical = (layerwise_gc() and type(gc) is HistoricalAuthorityGc and
+                  getattr(archive, '_native_payload_arena', None) is not None)
     if (not getattr(archive, 'memory_only', False) or
-            getattr(authority, 'gc', None) is not None or
-            getattr(authority.memory, '_history_scope', None) is not None or
-            getattr(archive, '_native_payload_arena', None) is not None or
+            (gc is not None and not historical) or
+            (getattr(authority.memory, '_history_scope', None) is not None and not historical) or
+            (getattr(archive, '_native_payload_arena', None) is not None and not historical) or
             not hasattr(archive, 'prepare_region_reader')):
         return None
     return PressureReader(authority, plan, layers)

@@ -79,6 +79,9 @@ public:
     qw3::KvMemExecutionAdmission admit(qw3::KvMemBlockHandle) override;
     std::shared_ptr<HistoricalFrameHold> protect(const std::vector<qw3::KvMemBlockHandle> &);
     std::shared_ptr<void> protect_selection(const std::vector<qw3::KvMemBlockHandle> &) override;
+    // Same current-window holds as protect_selection, as a typed owner for
+    // engine-side frames the store does not own (layerwise per-layer windows).
+    std::shared_ptr<HistoricalFrameHold> protect_current(const std::vector<qw3::KvMemBlockHandle> &);
     bool configure_features(uint32_t layers, uint32_t kv_heads, uint32_t q_heads, uint32_t dimension);
     std::array<size_t, 4> feature_geometry() const;
     bool publish_features(const qw3::KvMemRepository::Lease &, const float *, size_t elements);

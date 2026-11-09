@@ -29,7 +29,7 @@ class Lease:
 
 
 @contextmanager
-def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2, request_id='r'):
+def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2, request_id='r', graphless=False):
     tmp_path.mkdir(parents=True, exist_ok=True)
     config = KVMemConfig(block_tokens=32, select_budget=8192, gen_budget=8192,
                         repository_blocks=1024, sink_blocks=0, recent_blocks=0)
@@ -41,7 +41,7 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
         archive.enable_history_gc(gc)
     authority = RequestAuthority(request_id, config, archive, 1, 1, 2, resident_records=256,
                                  raw_dtype=raw_dtype,mean_k_backend='qw3_cuda')
-    graph = authority.block_graph = BlockGraph('logical-owner', 32, topk=4)
+    graph = authority.block_graph = None if graphless else BlockGraph('logical-owner', 32, topk=4)
     state = authority.action_history = NS(prefill=PrefillHistory(NS(
         prefill_attention_half_life=8192, native_prefill_commit=True)), prefill_replay=None)
     action = ActionRuntime.__new__(ActionRuntime)
@@ -60,14 +60,16 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
     packet = CapturedPacket((request_id,),group.count,NS(owners=(Lease(),)),confirmed=False,
                             request_tokens=(group.count,),source_generation=9)
     cursor = LogicalPublicationCursor(group,packet,authority,action,parts,
-                                     owner_epoch=group.owner_epoch,source_generation=9)
+                                     owner_epoch=group.owner_epoch,source_generation=9,
+                                     **({'graphless': True} if graphless else {}))
     env = NS(authority=authority,archive=archive,graph=graph,state=state,action=action,
              group=group,packet=packet,cursor=cursor,parts=parts,raw=raw,values=values)
     del packet
     try:
         yield env
     finally:
-        graph.close()
+        if graph is not None:
+            graph.close()
         assert authority.flush()
         for job,_ in tuple(authority.writes): job.result(5)
         authority.poll()

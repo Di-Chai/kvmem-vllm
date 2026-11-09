@@ -359,12 +359,26 @@ class Layer0Fast:
                 not torch.equal(cpu_table[:pages], table[:pages])):
             raise RuntimeError(f'Layer {index} fast path wrote a different page table than the CPU path')
 
-    def rebuild(self, rid, authority, chosen, reader, window_blocks, chunk_blocks, first=0):
-        """Producer, after every upload: shadows of layers first..K-1 mirror their committed windows."""
-        with torch.inference_mode():
-            for index in range(first, min(self.layers, len(chosen))):
-                if not self._rebuild(rid, index, authority, chosen[index], reader, window_blocks, chunk_blocks):
-                    break
+    def rebuild_layer(self, rid, index, authority, records, reader, window_blocks, chunk_blocks):
+        """Producer, right after it uploaded layer ``index`` itself: refresh that layer's shadow.
+
+        Runs while the plan is still materializing (the forward still waits for
+        later layers), so the prepared reader is valid. A failure only drops the
+        shadow (the next refresh takes the original path); it never fails the
+        refresh it is attached to.
+        """
+        if index >= self.layers:
+            return False
+        try:
+            with torch.inference_mode():
+                return self._rebuild(rid, index, authority, records, reader, window_blocks, chunk_blocks)
+        except Exception as error:
+            self.count('rebuild_failed:' + type(error).__name__)
+            shadow = self.shadow(rid, index)
+            if shadow is not None:
+                with shadow.lock:
+                    shadow.invalidate()
+            return False
 
     def _rebuild(self, rid, index, authority, records, reader, window_blocks, chunk_blocks):
         row_bytes = BLOCK * authority.shape[2] * authority.shape[3]

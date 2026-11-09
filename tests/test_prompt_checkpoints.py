@@ -601,3 +601,70 @@ def test_retained_prompt_reimport_cannot_reuse_prior_claims_different_suffix_sco
     assert prompt.claim_action_history is None and prompt.claim_action_end == 0
     del plan
     assert pool.evict(prompt, Event(True)) and archive.close()
+
+
+def test_eviction_drops_the_layerwise_snapshot_and_its_gc_hold_before_closing(tmp_path):
+    from vllm_kvmem.layerwise_checkpoints import LayerwisePrefix
+    pool, checkpoint, authority, archive, adapter, _ = saved(tmp_path)
+    hold = type('Hold', (), {})()
+    import weakref
+    alive = weakref.ref(hold)
+    checkpoint.layerwise_pressure = LayerwisePrefix(8, ('a',), ((),), ((),), gc_hold=hold)
+    del hold
+    seen = []
+    close = authority.close
+    def closing():
+        # A history scope cannot close while any native record hold is alive.
+        seen.append(alive() is None and checkpoint.layerwise_pressure is None)
+        return close()
+    authority.close = closing
+    pool.retire(checkpoint, None)
+    assert pool.evict(checkpoint)
+    assert seen and all(seen) and archive.close()
+
+
+def test_blocked_scope_close_is_retried_after_a_cycle_collection(tmp_path):
+    from vllm_kvmem import prompt_checkpoints as pc
+    pool, checkpoint, authority, archive, adapter, _ = saved(tmp_path)
+    class Cycle:
+        pass
+    leaked = Cycle(); leaked.self = leaked            # held only by a reference cycle
+    import weakref
+    alive = weakref.ref(leaked)
+    del leaked
+    close = authority.close
+    def closing():
+        if alive() is not None:
+            authority.close_blocker = 'history_scope'
+            return False
+        return close()
+    authority.close = closing
+    checkpoint.__dict__['_close_failures'] = 63
+    pool.retire(checkpoint, None)
+    import gc
+    gc.disable()
+    try:
+        assert pool.evict(checkpoint)
+    finally:
+        gc.enable()
+    note = checkpoint.eviction_note
+    assert note['closed'] and note['cycle_collection_at'] == 64 and note['collected'] >= 2 and alive() is None
+    assert archive.close()
+
+
+@pytest.mark.parametrize('flag,kind,partial', [('1','M',True), ('1','P',False), ('0','M',False)])
+def test_restored_terminal_checkpoint_adopts_a_partial_block_window_only_with_sessions(
+        monkeypatch, tmp_path, flag, kind, partial):
+    # KVMEM_LAYERWISE_SESSIONS realigns a restored M checkpoint at its own
+    # (possibly partial-block) terminal boundary; P keeps the sealed rule.
+    monkeypatch.setenv('KVMEM_LAYERWISE_SESSIONS', flag)
+    pool, old, authority, archive, adapter, _ = saved(tmp_path)
+    calls = []
+    window = SimpleNamespace(records=())
+    memory = SimpleNamespace(checkpoint_window=lambda **kw: calls.append(kw) or window)
+    checkpoint = SimpleNamespace(kind=kind, layerwise_pressure=None, phase=CheckpointPhase.LIVE,
+        position=7, authority=SimpleNamespace(history_end=7, memory=memory),
+        window=SimpleNamespace(records=()), payload_bytes=0)
+    monkeypatch.setattr(pool, '_owned', lambda c: None)
+    pool.update_live_window(checkpoint)
+    assert calls == [{'allow_partial': True} if partial else {}] and checkpoint.window is window

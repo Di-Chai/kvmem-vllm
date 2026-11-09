@@ -49,9 +49,13 @@ def test_fast_metadata_does_not_reuse_another_layers_keys():
     assert result[1][0]==0 and pending.history[0]==0
 
 
-@pytest.mark.parametrize('stage', ['prefill', 'decode'])
+@pytest.mark.parametrize('stage', ['prefill', 'decode', 'prefill-diverged'])
 def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(monkeypatch, stage):
     import torch
+    # A session's layer zero diverged from the native frame (KVMEM_LAYERWISE_SESSIONS)
+    # rebuilds layer zero and the draft fully, as rolling decode does.
+    diverged = stage == 'prefill-diverged'
+    stage = 'prefill' if diverged else stage
     from vllm_kvmem.memory import Phase
     from vllm_kvmem import window_assembly
     from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
@@ -60,7 +64,8 @@ def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(m
     plan = NS(remaps=[NS(block_id=0,to_base=0,n_tokens=32,skip=True),
                      NS(block_id=2,to_base=32,n_tokens=32,skip=False)], total_window_tokens=64)
     authority=NS(memory=NS(phase=Phase.ASSEMBLING,_plan=plan))
-    job=NS(command=NS(request_id='r',pressure_stage=stage),layerwise_pressure_plan=(chosen,[]))
+    job=NS(command=NS(request_id='r',pressure_stage=stage),layerwise_pressure_plan=(chosen,[]),
+           layerwise_layer0_diverged=diverged)
     calls=[]
     def assemble(state,index,selected,**kwargs):
         assert state['pressure_stage'] == stage
@@ -74,12 +79,13 @@ def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(m
     monkeypatch.setattr(torch.cuda,'current_stream',lambda device:'stream')
     install_single_assembly(assembler,controller,job,('target0','target1','draft'))
     result=assembler._assemble(authority,plan)
-    skip = set() if stage == 'decode' else {0}
+    full = stage == 'decode' or diverged
+    skip = set() if full else {0}
     assert [(i,ids,k['layer_name'],k['skip_history_begins'],arena) for i,ids,k,arena in calls] == [
         (0,[0,64],'target0',skip,'pressure'),(1,[0,128],'target1',(),'pressure'),
         (2,[0,64],'draft',skip,'pressure')]
     assert (result.rebuilt_tokens,result.skipped_tokens,result.uploaded_bytes)==(
-        (64,0,192) if stage == 'decode' else (32,32,192))
+        (64,0,192) if full else (32,32,192))
     assert job.layerwise_single_assembly_done
 
 

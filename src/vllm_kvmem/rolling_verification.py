@@ -69,8 +69,11 @@ class RollingPressureOracle:
             old = self.old_native.reshape(rebuilt.shape[0], self.old_tokens, self.width)
             plan = job.result[2]
             for remap in plan.remaps:
-                if layered is not None and job.command.pressure_stage == 'decode':
-                    continue  # Rolling layered assembly rebuilds every layer.
+                if layered is not None and (job.command.pressure_stage == 'decode' or
+                                            getattr(job, 'layerwise_layer0_diverged', False)):
+                    # Rolling layered assembly rebuilds every layer; so does a
+                    # session prefill pressure from a diverged layer zero.
+                    continue
                 if not remap.skip:
                     continue
                 record = self.old_records.get(remap.block_id)

@@ -202,3 +202,14 @@ def test_maintenance_waits_for_native_cache_allocation_during_model_load(monkeyp
     refresh.initialize_cache()
     assert calls == ['allocated-geometry']  # No budget/lease reset.
     refresh.shutdown()
+
+
+def test_can_acquire_mirrors_single_lane_credit_without_side_effects():
+    # A pipelined pressure refresh keeps its credit after its ACK; a restore
+    # must see that before it claims a window, not fail at acquire time.
+    p=policy(); a,b=job('a',32),job('b',16)
+    assert p.can_acquire(a) and p.can_acquire(b) and not p.owners
+    assert p.acquire(a)
+    assert not p.can_acquire(b) and not p.acquire(b) and list(p.owners) == ['a']
+    p.release(a)
+    assert p.can_acquire(b) and p.acquire(b)

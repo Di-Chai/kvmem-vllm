@@ -106,6 +106,27 @@ class KVMemScheduler(Scheduler):
         if no_replay not in ('0', '1'):
             raise ValueError('KVMEM_PREFILL_PRESSURE_NO_REPLAY must be 0 or 1')
         self.prefill_pressure_no_replay = no_replay == '1'
+        min_decoders = os.getenv('KVMEM_PREFILL_CADENCE_MIN_DECODERS', '1')
+        if not min_decoders.isdigit() or not 1 <= int(min_decoders) <= 64:
+            raise ValueError('KVMEM_PREFILL_CADENCE_MIN_DECODERS must be an integer in [1, 64]')
+        self.prefill_cadence_min_decoders = int(min_decoders)
+        # Opt-in KVMEM_PREFILL_DECODE_SHARE: decode-only turns sized by time, not
+        # by a step count, so one setting fits short (G4K) and long (G16K) prefill
+        # steps. Replaces prefill_cadence; the minimum-decoders gate still applies.
+        share = os.getenv('KVMEM_PREFILL_DECODE_SHARE', '')
+        self.prefill_decode_share = None
+        if share:
+            try:
+                value = float(share)
+            except ValueError:
+                value = float('nan')
+            if not 0 < value <= .5:
+                raise ValueError('KVMEM_PREFILL_DECODE_SHARE must be a number in (0, 0.5]')
+            if options.prefill_cadence != 1:
+                raise ValueError('KVMEM_PREFILL_DECODE_SHARE replaces prefill_cadence; leave it at 1')
+            self.prefill_decode_share = value
+        self._share_credit = 0.
+        self._share_previous = None
         self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
@@ -1386,14 +1407,19 @@ class KVMemScheduler(Scheduler):
                     decode_query_tokens=decodes, maintenance_candidates=sorted(self._phase_maintenance),
                     observation=observation, cumulative=self.phase_policy.snapshot())) + '\n')
 
-    def _decode_ready(self, *, step=None):
+    def _decode_ready(self, *, step=None, minimum=1):
+        """Whether at least ``minimum`` running requests can take a decode step now."""
         step = self.current_step if step is None else step
-        return any(not r.is_prefill_chunk and r.num_computed_tokens >= r.num_prompt_tokens
+        blocked = getattr(self.connector, 'publication_blocked', ())
+        ready = (not r.is_prefill_chunk and r.num_computed_tokens >= r.num_prompt_tokens
             and not r.is_finished() and not r.num_in_flight_tokens
             and r.request_id not in self.transactions
-            and r.request_id not in getattr(self.connector, 'publication_blocked', ())
+            and r.request_id not in blocked
             and r.next_decode_eligible_step <= step
             for r in self.running)
+        if minimum <= 1:
+            return any(ready)
+        return sum(ready) >= minimum
 
     def _prepare_prefill_budget(self):
         budget = getattr(self, 'prefill_batch', None)
@@ -1452,15 +1478,48 @@ class KVMemScheduler(Scheduler):
         can override the request; transactions and unavailable decode work never
         justify delaying prefill. No query sizes or request ordering are changed.
         """
-        if not getattr(self, '_bounded_target', False) or getattr(self, 'prefill_cadence', 1) == 1:
+        share = getattr(self, 'prefill_decode_share', None)
+        if not getattr(self, '_bounded_target', False) or (
+                getattr(self, 'prefill_cadence', 1) == 1 and share is None):
             return False
-        mixed = (any(r.is_prefill_chunk for r in self.running) or any(self._waiting_queues())) and self._decode_ready()
+        # Opt-in KVMEM_PREFILL_CADENCE_MIN_DECODERS: a decode-only turn serves
+        # every ready decoder at about one decode step's cost, so it is only
+        # requested when at least that many requests are ready to decode.
+        minimum = getattr(self, 'prefill_cadence_min_decoders', 1)
+        mixed = ((any(r.is_prefill_chunk for r in self.running) or any(self._waiting_queues())) and
+                 self._decode_ready(minimum=minimum))
         if not mixed or self.prefill_capacity_bound:
             self._mixed_steps = 0
+            self._share_credit, self._share_previous = 0., None
             return False
-        self._mixed_steps += 1
-        throttle = self._mixed_steps % self.prefill_cadence != 0
+        if share is not None:
+            throttle = self._share_turn(share)
+        else:
+            self._mixed_steps += 1
+            throttle = self._mixed_steps % self.prefill_cadence != 0
         self._cadence_requested += int(throttle)
+        return throttle
+
+    SHARE_CREDIT_LIMIT = 1.
+
+    def _share_turn(self, share, now=None):
+        """Time-share decode turns: after a step that released prefill and took
+        P seconds (wall time to this schedule call), decoders earn
+        P * share / (1 - share) seconds of decode-only steps; each decode-only
+        step spends its own duration. A turn is requested while credit is left.
+        """
+        now = time.perf_counter() if now is None else now
+        previous = self._share_previous
+        if previous is not None:
+            started, decode_turn = previous
+            elapsed = max(0., now - started)
+            if decode_turn:
+                self._share_credit -= elapsed
+            else:
+                self._share_credit = min(self.SHARE_CREDIT_LIMIT,
+                                         self._share_credit + elapsed * share / (1 - share))
+        throttle = self._share_credit > 0
+        self._share_previous = (now, throttle)
         return throttle
 
     def _schedule_time_acks(self):

@@ -168,6 +168,9 @@ def install_single_assembly(assembler, controller, job, runtime_names):
             raise ValueError('Single pressure assembly needs the original active transaction')
         _v0 = time.perf_counter()
         chosen, _ = job.layerwise_pressure_plan
+        # Rolling decode, or a session whose layer zero diverged from the native
+        # frame after a probe-mode Query: rebuild layer zero and the draft too.
+        full_rebuild = rolling or getattr(job, 'layerwise_layer0_diverged', False)
         native_check = native_plan_check(job, chosen, plan, self.layers)
         if native_check is not None:
             # Same checks, order and messages over the plan's C++ remaps.
@@ -177,7 +180,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
             bounds = [(layer.kernel_page_table.numel() * layer.key.shape[1], layer.cos_sin.shape[0])
                       for layer in self.layers]
             skip_begins, rebuilt_tokens, skipped_tokens, partial_tokens = _native.check_pressure_plan(
-                plan, slots, counts, begins, bounds, original_rope(), bool(rolling))
+                plan, slots, counts, begins, bounds, original_rope(), bool(full_rebuild))
             _v1 = _v2 = time.perf_counter()
             skip = set(skip_begins)
             remaps = None
@@ -190,14 +193,19 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                 cursor += record.count
             if ({r.block_id for r in remaps} != set(by_slot) or
                     any(r.to_base != positions[r.block_id] for r in remaps)):
-                raise ValueError('Layer-zero selection differs from the native assembly plan')
+                planned = {r.block_id for r in remaps}
+                moved = [(by_slot[r.block_id].history_begin, r.to_base, positions[r.block_id])
+                         for r in remaps if r.block_id in positions and r.to_base != positions[r.block_id]]
+                raise ValueError('Layer-zero selection differs from the native assembly plan: '
+                    f'plan_only={len(planned - set(by_slot))} chosen_only={len(set(by_slot) - planned)} '
+                    f'moved={len(moved)} first_moved={moved[:3]} remaps={len(remaps)} chosen={len(by_slot)}')
             _v1 = time.perf_counter()
             _validate_destinations(remaps, by_slot, self.layers)
             _v2 = time.perf_counter()
             # Query may have changed layer zero without changing the shared host
             # frame. In rolling mode rebuild every target and draft layer from its
             # immutable records, so native shared-map skip hints cannot leak in.
-            skip = set() if rolling else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
+            skip = set() if full_rebuild else {by_slot[r.block_id].history_begin for r in remaps if r.skip}
         state = dict(authority=authority, request_id=job.command.request_id,
                      selected_tokens=plan.total_window_tokens, assembly_arena='pressure',
                      pressure_stage=job.command.pressure_stage,
@@ -274,6 +282,10 @@ def install_single_assembly(assembler, controller, job, runtime_names):
             reader_extend_misses = 0
             fast_future = getattr(job, 'layer0_fast', None)
             fast_result = None
+            fast_shadow = None
+            if getattr(job, 'promised_lease', None) is not None and job.command.pressure_stage == 'prefill':
+                from .layer0_fast import install
+                fast_shadow = install(controller.runner)
             for index, name in enumerate(names):
                 if (select_next is not None and len(chosen) <= index and
                         index < getattr(job, 'layerwise_layers_total', 0)):
@@ -303,6 +315,11 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                         event = torch.cuda.Event()
                         event.record(torch.cuda.current_stream(controller.runner.device))
                         lease.publish_layer(index, event)
+                    if fast_shadow is not None and index < len(chosen):
+                        # The fast path did not produce this layer: mirror the window it
+                        # just committed while the plan (and reader) are still active.
+                        fast_shadow.rebuild_layer(job.command.request_id, index, authority, records,
+                                                  reader, len(chosen[0]), fast_chunk_blocks(controller))
                 if lease is not None and index == 0 and getattr(job, 'promise_commit_after_layer0', False):
                     from .pressure_promise import commit
                     commit(pipeline, job, lease)
@@ -316,14 +333,6 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                 for key,value in stats.items():
                     if key.startswith('parent_staging_') and key.endswith('_seconds'):
                         parent_timings[key] = parent_timings.get(key,0.)+value
-            if getattr(job, 'promised_lease', None) is not None and job.command.pressure_stage == 'prefill':
-                from .layer0_fast import install
-                fast = install(controller.runner)
-                published = fast_result.published if fast_result is not None else 0
-                if fast is not None and published < fast.layers:
-                    # Off the critical path: every layer is already submitted.
-                    fast.rebuild(job.command.request_id, authority, chosen, reader,
-                                 len(chosen[0]), fast_chunk_blocks(controller), first=published)
         done = torch.cuda.Event(); done.record(torch.cuda.current_stream(controller.runner.device))
         if lease is not None:
             lease.final_event = done
@@ -336,8 +345,8 @@ def install_single_assembly(assembler, controller, job, runtime_names):
         if remaps is None:
             rebuilt, skipped = rebuilt_tokens, skipped_tokens
         else:
-            rebuilt = sum(r.n_tokens for r in remaps if rolling or not r.skip)
-            skipped = 0 if rolling else sum(r.n_tokens for r in remaps if r.skip)
+            rebuilt = sum(r.n_tokens for r in remaps if full_rebuild or not r.skip)
+            skipped = 0 if full_rebuild else sum(r.n_tokens for r in remaps if r.skip)
             partial_tokens = sum(r.n_tokens for r in remaps if not r.skip and r.n_tokens != 32)
         return AssemblyResult(done, (self, plan, authority), rebuilt, skipped, chunks,
             time.perf_counter()-started, uploaded,

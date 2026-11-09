@@ -15,6 +15,28 @@ from .cache_groups import full_attention_groups
 from .capture import capture_to, install_qwen_capture
 
 
+def _probe_armed(runner):
+    """Whether the probe's 'armed' marker exists.
+
+    Opt-in KVMEM_RUNNER_ARMED_LATCH: the marker is only ever created (by this
+    runner at the first real scheduler message, or by a launcher), never
+    removed, so once seen it stays true and later checks skip the stat().
+    """
+    if getattr(runner, '_kvmem_armed_latched', False):
+        return True
+    armed = (runner._kvmem_probe_output / 'armed').is_file()
+    if armed:
+        latch = getattr(runner, '_kvmem_armed_latch', None)
+        if latch is None:
+            value = os.getenv('KVMEM_RUNNER_ARMED_LATCH', '0')
+            if value not in ('0', '1'):
+                raise ValueError('KVMEM_RUNNER_ARMED_LATCH must be 0 or 1')
+            latch = runner._kvmem_armed_latch = value == '1'
+        if latch:
+            runner._kvmem_armed_latched = True
+    return armed
+
+
 def make_probe_runner(base):
     class KVMemProbeRunner(base):
         def load_model(self, *args, **kwargs):
@@ -493,7 +515,7 @@ def make_probe_runner(base):
             timing = getattr(self, '_kvmem_step_timing', None)
             if (timing is not None and not dummy_run and not is_profile and
                     scheduler_output.total_num_scheduled_tokens and
-                    (self._kvmem_probe_output / 'armed').is_file()):
+                    _probe_armed(self)):
                 timing.begin(getattr(scheduler_output.kv_connector_metadata, 'cost_classification', None))
             runtime = getattr(self, "_kvmem_capture_runtime", None)
             refresh = getattr(self, '_kvmem_async_refresh', None)
@@ -546,10 +568,10 @@ def make_probe_runner(base):
                     # Native warmup disables the connector and has no metadata.
                     # Arm at the first real scheduler message, before any client
                     # forward; API readiness polling must not create a capture gap.
-                    if not (self._kvmem_probe_output / 'armed').is_file():
+                    if not _probe_armed(self):
                         (self._kvmem_probe_output / 'armed').touch()
             work = getattr(self, '_kvmem_public_work', None)
-            work_armed = not dummy_run and not is_profile and (self._kvmem_probe_output / 'armed').is_file()
+            work_armed = not dummy_run and not is_profile and _probe_armed(self)
             if work is not None and work_armed:
                 from .work_counters import public_work_idle
                 # A zero-token publication/refresh turn still has live owners.
@@ -562,7 +584,7 @@ def make_probe_runner(base):
             # requests and no connector metadata. Session control starts at the
             # same explicit post-warmup boundary as accepted authority capture.
             if (not dummy_run and sessions is not None
-                    and (self._kvmem_probe_output / "armed").is_file()):
+                    and _probe_armed(self)):
                 from .connector import ControlMetadata
                 control = scheduler_output.kv_connector_metadata
                 if not isinstance(control, ControlMetadata):
@@ -584,11 +606,11 @@ def make_probe_runner(base):
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)
             if (getattr(self, "_kvmem_scheduled", False) and not dummy_run
-                    and (self._kvmem_probe_output / "armed").is_file()):
+                    and _probe_armed(self)):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 get_kv_transfer_group().runtime = self._kvmem_refresh
             if (getattr(self, "_kvmem_bounded_target", False) and not dummy_run
-                    and (self._kvmem_probe_output / "armed").is_file()):
+                    and _probe_armed(self)):
                 from vllm.distributed.kv_transfer import get_kv_transfer_group
                 connector = get_kv_transfer_group()
                 connector.session_worker = sessions
@@ -630,7 +652,7 @@ def make_probe_runner(base):
             if (dummy_run or
                     not scheduler_output.total_num_scheduled_tokens or
                     (getattr(self, "_kvmem_probe_done", True) and not self._kvmem_continuous) or
-                    not (self._kvmem_probe_output / "armed").is_file()):
+                    not _probe_armed(self)):
                 return self._kvmem_execute_public_forward(scheduler_output, observe_work=observe_work, **kwargs)
             captured = []
             if getattr(self, '_kvmem_graph', False):

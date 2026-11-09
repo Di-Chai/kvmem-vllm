@@ -9,7 +9,10 @@ class PreparedRegionReader:
 
     Construction is owned by MemoryArchive under its admission lock. The
     caller closes explicitly; archive shutdown refuses a live reader. Native
-    payload/GC archives deliberately retain their existing per-read protocol.
+    payload/GC archives retain their existing per-read protocol, except under
+    KVMEM_LAYERWISE_HISTORICAL_GC: there each source is a native read right
+    (``HistoricalPayloadRead``) held until close, which delays retirement of
+    exactly those payloads and nothing else.
     """
     def __init__(self, archive, namespace, keys, sources, leases):
         self.archive, self.namespace = archive, namespace
@@ -58,7 +61,11 @@ class PreparedRegionReader:
             from . import _native
             from .memory_storage import region_gather_parallel_min_bytes
             CPU_REGION_GATHER_PARALLEL_MIN_BYTES = region_gather_parallel_min_bytes()
-            if (not archive.memory_only or getattr(archive, '_native_payload_arena', None) is not None):
+            from .pressure_reader import layerwise_gc
+            if (not archive.memory_only or
+                    (getattr(archive, '_native_payload_arena', None) is not None and not layerwise_gc())):
+                # KVMEM_LAYERWISE_HISTORICAL_GC: the sources are read rights
+                # held by this reader, so their bytes stay immutable here.
                 raise ValueError('Prepared paired gather requires no-GC CPU authority')
             # Preserve the existing gather thresholds. Full-record fields and
             # any parallel-size region continue through the original loop.

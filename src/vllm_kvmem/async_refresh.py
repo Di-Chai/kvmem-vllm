@@ -209,7 +209,13 @@ class AsyncRefresh:
         pipeline = pipeline_for(self)
         if pipeline is not None:
             if getattr(self.options, 'gpu_memory_admission', 'static') != 'static':
-                raise ValueError('Pressure pipeline first qualifies unchanged static page allocation')
+                # Opt-in KVMEM_LAYERWISE_PIPELINE_SWAPS: incremental pages with
+                # exact layerwise request swaps. layerwise_swap.ready() refuses
+                # a swap until the pipeline has reaped the owner's lease (the
+                # promise keeps _refresh_background set until then).
+                from .pressure_pipeline import swaps_enabled
+                if not (swaps_enabled() and getattr(self.options, 'request_swap_layerwise', False)):
+                    raise ValueError('Pressure pipeline first qualifies unchanged static page allocation')
             pipeline.install()
 
     @property
@@ -718,6 +724,8 @@ class AsyncRefresh:
                     from .prefill_attention import exclude_query_replay
                     exclude_query_replay(self.runner,authority,job.command.request_id,job.history,
                         job.history+len(job.command.input_tokens),job.command.query_span is not None)
+                    from .layerwise_checkpoints import query_frame_committed
+                    query_frame_committed(self.runner,job.command.request_id)
                 self.runner._kvmem_window_adapter.commit(job.command.request_id,job.history,job.selected_tokens)
                 if self.runner._kvmem_sessions is not None:
                     self.runner._kvmem_sessions.selection_committed(job.command.request_id,job.history)

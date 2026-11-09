@@ -88,3 +88,27 @@ def test_fast_window_assembly_is_byte_identical_to_cpu_chunks(seed):
     assert torch.equal(fast_layer.value.view(torch.uint8), cpu_layer.value.view(torch.uint8))
     assert torch.equal(out_raw[:window], raw[sources]) and torch.equal(out_val[:window], val[sources])
     assert len(skip) < window                           # the case really rebuilds blocks
+
+
+def test_failed_shadow_rebuild_drops_the_shadow_and_never_raises(monkeypatch):
+    """A rebuild runs after the producer's own upload of a layer; if the plan ended
+    meanwhile (the reader refuses), the refresh must continue without a shadow."""
+    from types import SimpleNamespace as NS
+    from vllm_kvmem import layer0_fast
+    monkeypatch.setenv('KVMEM_LAYER0_FAST', '1')
+    monkeypatch.setenv('KVMEM_LAYER0_FAST_LAYERS', '2')
+    fast = layer0_fast.Layer0Fast(NS(device=torch.device('cuda')))
+    shadow = fast.shadow('r', 1, create=(torch.device('cuda'), 4, 2, 64))
+    shadow.window, shadow.chunk = (0, 32, 64, 96), (128, 2, None)
+
+    class Reader:
+        native = True
+        def contains(self, records): return True
+        def read(self, *a, **k): raise ValueError('Prepared pressure reader belongs to a different plan, owner or prefix')
+
+    authority = NS(raw_element_bytes=1, shape=(17, 32, 1, 2))
+    records = [NS(count=32, archived=True, history_begin=32 * i) for i in range(4)]
+    assert fast.rebuild_layer('r', 1, authority, records, Reader(), 4, 2) is False
+    assert shadow.window is None and shadow.chunk is None
+    assert any(k.startswith('rebuild_failed:ValueError') for k in fast.counts)
+    assert fast.rebuild_layer('r', 2, authority, records, Reader(), 4, 2) is False   # beyond K: ignored

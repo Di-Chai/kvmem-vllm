@@ -46,4 +46,7 @@ def initialize_graph_window(runner):
 def needs_refresh_batch(scheduler_output):
     from .connector import ControlMetadata
     control = scheduler_output.kv_connector_metadata
-    return isinstance(control, ControlMetadata) and any(not c.asynchronous for c in control.commands)
+    # Request swaps (SwapCommand) copy pages around the forward like an
+    # asynchronous restore; only synchronous refreshes need an eager batch.
+    return isinstance(control, ControlMetadata) and any(
+        not getattr(c, 'asynchronous', True) for c in control.commands)

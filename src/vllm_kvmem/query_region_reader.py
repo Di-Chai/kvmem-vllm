@@ -24,6 +24,11 @@ class _Source:
     payload: bytes
 
 
+def _historical_gc(authority):
+    from .historical_gc import HistoricalAuthorityGc
+    return isinstance(getattr(authority, 'gc', None), HistoricalAuthorityGc)
+
+
 class QueryRegionReader:
     """Explicitly closed, generation-bound source cache for one READY forward.
 
@@ -33,12 +38,19 @@ class QueryRegionReader:
     """
     def __init__(self, authority, *, request_generation, generation_getter):
         archive, memory = authority.archive, authority.memory
-        if (not getattr(archive, 'memory_only', False) or
+        from .pressure_reader import layerwise_gc
+        # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: historical GC with the native
+        # payload arena. Sources are then GC read rights held by this reader.
+        self.historical = (layerwise_gc() and getattr(archive, 'memory_only', False) and
+                           getattr(archive, '_native_payload_arena', None) is not None and
+                           _historical_gc(authority))
+        if not self.historical and (not getattr(archive, 'memory_only', False) or
                 getattr(archive, '_native_payload_arena', None) is not None or
                 getattr(archive, '_history_worker', None) is not None or
                 getattr(authority, 'gc', None) is not None or
                 getattr(memory, '_history_scope', None) is not None):
             raise ValueError('Lazy Query sources require immutable CPU bytes without GC')
+        self.admission_rights = []
         if type(request_generation) is not int or request_generation < 0 or not callable(generation_getter):
             raise ValueError('Lazy Query reader requires its native request generation')
         self.authority, self.archive, self.memory = authority, archive, memory
@@ -117,7 +129,9 @@ class QueryRegionReader:
                 if not lease:
                     raise ValueError('Stale lazy Query source generation')
                 if payload_right is not None:
-                    raise ValueError('Lazy Query sources cannot bypass native payload admission')
+                    if not self.historical:
+                        raise ValueError('Lazy Query sources cannot bypass native payload admission')
+                    self.admission_rights.append(payload_right)
                 if (lease.handle.slot, lease.handle.generation) != key:
                     raise ValueError('Lazy Query admission returned a foreign generation')
             archive = self.archive
@@ -129,9 +143,12 @@ class QueryRegionReader:
                 entries = [archive._entries.get(key) for key in keys]
                 if any(entry is None or not entry.ready for entry in entries):
                     raise KeyError('Lazy Query archive record is absent, stale or unpublished')
-                payloads = archive._region_sources(keys)
+                payloads = (archive._historical_region_sources(keys) if self.historical else
+                            archive._region_sources(keys))
                 if (len(payloads) != len(pending) or
-                        any(type(payload) is not bytes or len(payload) != self.record_bytes for payload in payloads)):
+                        any((memoryview(payload).nbytes if self.historical else
+                             type(payload) is bytes and len(payload)) != self.record_bytes
+                            for payload in payloads)):
                     raise ValueError('Lazy Query sources require exact immutable record bytes')
                 prepared = [_Source(key, record, record.handle, record.history_begin, lease, payload)
                     for (key, record), lease, payload in zip(pending.items(), owned, payloads)]
@@ -267,6 +284,7 @@ class QueryRegionReader:
                     source.lease.reset()
                 self.sources.clear()
                 self.by_handle.clear()
+                self.admission_rights.clear()
                 self.closed = True
                 if self.registered:
                     self.archive._prepared_region_readers -= 1

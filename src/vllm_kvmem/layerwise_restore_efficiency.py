@@ -20,6 +20,9 @@ def install_direct_restore(worker, request_id, checkpoint, assembler, plan):
         return False
     if (checkpoint.kind != 'P' or worker.bindings[request_id].pressure_restore or
             not worker.options.session_freeze_prompt or not controller.query.optimized):
+        from .layerwise_checkpoints import sessions_enabled
+        if sessions_enabled():
+            return False        # session restores use restore_sync / restore_pressure_sync
         raise ValueError('Direct layerwise restore requires the frozen optimized P path')
     names = tuple(worker.runtime.names)
     if names[:len(controller.names)] != tuple(controller.names):
@@ -80,6 +83,12 @@ def finish_direct_restore(worker, request_id, checkpoint, assembler):
         raise ValueError('Direct restore cannot publish an unfinished or foreign layer frame')
     controller.maps[request_id] = frame
     controller.histories[request_id] = histories
+    # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: the restored per-layer windows come
+    # from a held checkpoint; keep every layer's records out of retirement.
+    from .layerwise_gc_holds import holds_of
+    from .layerwise_gc_holds import wait_paused
+    wait_paused(authority)
+    holds_of(controller).protect(request_id, authority, frame[1])
     # The bound replacement closes over the original native plan. Leaving it
     # on parent makes parent -> bound method -> parent a cycle, retaining the
     # plan's checkpoint pins until an unrelated GC. An idle final owner can

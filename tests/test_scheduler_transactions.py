@@ -70,6 +70,73 @@ def test_native_prefill_cadence_releases_regularly_and_never_waits_on_unavailabl
     assert not scheduler._throttle_mixed_prefill()
 
 
+def test_prefill_cadence_minimum_decoders_gates_decode_turns():
+    """KVMEM_PREFILL_CADENCE_MIN_DECODERS: a decode turn only when enough requests decode."""
+    scheduler, request, _ = setup_scheduler()
+    scheduler._bounded_target = True
+    scheduler.prefill_cadence = 3
+    scheduler._mixed_steps = scheduler._cadence_requested = 0
+    scheduler.current_step = 7
+    scheduler.prefill_capacity_bound = False
+    request.is_prefill_chunk = False
+    other = SimpleNamespace(request_id="c", num_in_flight_tokens=0, num_prompt_tokens=64,
+                            num_computed_tokens=64, next_decode_eligible_step=7,
+                            is_finished=lambda: False, is_prefill_chunk=False)
+    prefill = SimpleNamespace(is_prefill_chunk=True)
+    scheduler.waiting = []
+    scheduler.prefill_cadence_min_decoders = 2
+    scheduler.running = [request, prefill]                  # one decoder: never throttled
+    assert [scheduler._throttle_mixed_prefill() for _ in range(6)] == [False] * 6
+    assert scheduler._cadence_requested == 0
+    scheduler.running = [request, other, prefill]           # two decoders: the usual cadence
+    assert [scheduler._throttle_mixed_prefill() for _ in range(6)] == [True, True, False] * 2
+    other.num_in_flight_tokens = 1                          # one no longer ready: released, counter reset
+    assert not scheduler._throttle_mixed_prefill() and scheduler._mixed_steps == 0
+    other.num_in_flight_tokens = 0
+    scheduler.prefill_cadence_min_decoders = 1              # default: identical to the ungated cadence
+    scheduler.running = [request, prefill]
+    assert [scheduler._throttle_mixed_prefill() for _ in range(3)] == [True, True, False]
+    assert scheduler._decode_ready() and not scheduler._decode_ready(minimum=2)
+
+
+def test_prefill_decode_share_sizes_decode_turns_by_time(monkeypatch):
+    """KVMEM_PREFILL_DECODE_SHARE: after a prefill step of P seconds, decoders get
+    decode-only turns worth P*share/(1-share) seconds; longer prefill steps earn more."""
+    scheduler, request, _ = setup_scheduler()
+    scheduler._bounded_target = True
+    scheduler.prefill_cadence = 1
+    scheduler.prefill_decode_share = .2                  # credit = P / 4
+    scheduler.prefill_cadence_min_decoders = 1
+    scheduler._share_credit, scheduler._share_previous = 0., None
+    scheduler._mixed_steps = scheduler._cadence_requested = 0
+    scheduler.current_step = 7
+    scheduler.prefill_capacity_bound = False
+    request.is_prefill_chunk = False
+    scheduler.running = [request, SimpleNamespace(is_prefill_chunk=True)]
+    scheduler.waiting = []
+    # Binary-exact times: a 1 s prefill earns 0.25 s (two 0.125 s decode turns),
+    # a 2 s prefill earns 0.5 s (four turns); prefill is released when spent.
+    clock = iter([0., 1., 1.125, 1.25, 3.25, 3.375, 3.5, 3.625, 3.75])
+    monkeypatch.setattr('vllm_kvmem.scheduler.time.perf_counter', lambda: next(clock))
+    turns = [scheduler._throttle_mixed_prefill() for _ in range(9)]
+    assert turns == [False, True, True, False, True, True, True, True, False]
+    assert scheduler._cadence_requested == 6
+    request.num_in_flight_tokens = 1                      # decoder busy: released, credit reset
+    assert not scheduler._throttle_mixed_prefill()
+    assert scheduler._share_credit == 0. and scheduler._share_previous is None
+
+
+def test_share_turn_caps_credit_and_spends_decode_time():
+    scheduler = KVMemScheduler.__new__(KVMemScheduler)
+    scheduler._share_credit, scheduler._share_previous = 0., None
+    assert scheduler._share_turn(.5, now=0.) is False     # first mixed step releases prefill
+    assert scheduler._share_turn(.5, now=10.) is True     # 10 s prefill: credit capped at 1 s
+    assert scheduler._share_credit == scheduler.SHARE_CREDIT_LIMIT
+    assert scheduler._share_turn(.5, now=10.6) is True    # 0.6 s decode turn spent: 0.4 s left
+    assert scheduler._share_turn(.5, now=11.1) is False   # 0.5 s more: credit exhausted
+    assert abs(scheduler._share_credit + .1) < 1e-9
+
+
 def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
     from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy

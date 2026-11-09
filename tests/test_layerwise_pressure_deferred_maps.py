@@ -61,3 +61,64 @@ def test_deferred_builder_runs_once_and_reraises_failures():
     for _ in range(2):
         with pytest.raises(RuntimeError, match='geometry'):
             d.value()
+
+
+def test_deferred_maps_wait_for_every_lazily_selected_layer():
+    """KVMEM_LAYER0_FAST lets the next capture ask for the maps while the producer
+    is still selecting later layers; the build must see all of them."""
+    import threading, time
+    chosen, selected = [['layer0']], threading.Event()
+    d = DeferredPreparedCommit(lambda: tuple(map(tuple, chosen)), frozenset(), selected)
+    result = {}
+    consumer = threading.Thread(target=lambda: result.setdefault('maps', d.value()))
+    consumer.start()
+    time.sleep(0.05)
+    assert consumer.is_alive() and not d.ready           # waits, holding no lock
+    for layer in range(1, 16):                            # the producer keeps selecting
+        chosen.append([f'layer{layer}'])
+    selected.set()
+    consumer.join(5)
+    assert len(result['maps']) == 16 and d.ready
+
+
+def test_deferred_maps_release_fails_waiting_consumers_and_times_out():
+    import threading
+    selected = threading.Event()
+    d = DeferredPreparedCommit(lambda: 'maps', frozenset(), selected)
+    errors = []
+    def consume():
+        try:
+            d.value()
+        except RuntimeError as error:
+            errors.append(str(error))
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    d.release(RuntimeError('producer failed'))
+    consumer.join(5)
+    assert errors == ['producer failed']
+    with pytest.raises(RuntimeError, match='producer failed'):
+        d.value()
+    stuck = DeferredPreparedCommit(lambda: 'maps', frozenset(), threading.Event())
+    stuck.SELECTION_TIMEOUT = 0.01
+    with pytest.raises(RuntimeError, match='did not finish'):
+        stuck.value()
+    built = DeferredPreparedCommit(lambda: 'maps', frozenset(), threading.Event())
+    built._selected.set()
+    assert built.value() == 'maps'
+    built.release(RuntimeError('late'))                   # after a build: no effect
+    assert built.value() == 'maps'
+
+
+def test_discarded_deferred_maps_drop_their_builder_and_refuse_late_use():
+    from vllm_kvmem.layerwise_pressure import DeferredPreparedCommit
+    import pytest as _pytest
+    built = []
+    deferred = DeferredPreparedCommit(lambda: built.append(1) or 'maps', frozenset())
+    deferred.discard()
+    assert deferred._build is None and not built
+    with _pytest.raises(RuntimeError, match='discarded with their request'):
+        deferred.value()
+    ready = DeferredPreparedCommit(lambda: 'maps', frozenset())
+    assert ready.value() == 'maps'
+    ready.discard()
+    assert ready.value() == 'maps'                    # a built value stays valid

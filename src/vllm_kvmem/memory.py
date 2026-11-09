@@ -164,14 +164,31 @@ class RequestMemory:
         self._submitted = False
         return plan
 
+    @staticmethod
+    def _plan_read(plan, handle):
+        """plan.admitted_read, except that under opt-in KVMEM_LAYERWISE_HISTORICAL_GC
+        a record outside the native (layer-0) admitted window reads by a plain pin.
+
+        Layerwise selection holds those records from retirement (paused
+        selection, then a current-window hold over every layer), and prepared
+        readers take their own GC read rights (tier.borrow_records).
+        """
+        try:
+            return plan.admitted_read(handle)
+        except ValueError:
+            from .pressure_reader import layerwise_gc
+            if not layerwise_gc():
+                raise
+            return None
+
     def admitted_read(self, handle):
         """Clone CPU/execution rights of this already admitted assembly only."""
         if self.phase is Phase.ASSEMBLING and self._plan is not None:
-            result = self._plan.admitted_read(handle)
+            result = self._plan_read(self._plan, handle)
             if result is not None:
                 return result
         if self._layerwise_materialization is not None:
-            result = self._layerwise_materialization.plan.admitted_read(handle)
+            result = self._plan_read(self._layerwise_materialization.plan, handle)
             if result is not None:
                 return result
         return self.repository.pin(handle), None
@@ -189,7 +206,7 @@ class RequestMemory:
         if self._layerwise_materialization is not None:
             plans.append(self._layerwise_materialization.plan)
         for plan in plans:
-            probe = plan.admitted_read(handles[0]) if handles else None
+            probe = self._plan_read(plan, handles[0]) if handles else None
             if probe is not None:
                 for owner in probe:
                     if owner is not None and hasattr(owner, 'reset'):
@@ -209,7 +226,7 @@ class RequestMemory:
         if self._layerwise_materialization is not None:
             plans.append(self._layerwise_materialization.plan)
         for plan in plans:
-            probe = plan.admitted_read(handles[0]) if handles else None
+            probe = self._plan_read(plan, handles[0]) if handles else None
             if probe is not None:
                 for owner in probe:
                     if owner is not None and hasattr(owner, 'reset'):

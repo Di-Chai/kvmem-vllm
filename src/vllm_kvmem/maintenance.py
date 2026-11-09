@@ -116,6 +116,21 @@ class MaintenancePolicy:
             return (2, self.estimate(job), last)
         return sorted(pending, key=priority)
 
+    def can_acquire(self, job):
+        """Side-effect-free single-lane credit check (same rule as ``acquire``).
+
+        A pipelined pressure refresh keeps its transfer credit after its ACK
+        (``job.done``) until its final materialization fence completes, so a
+        free executor lane does not imply a free transfer reservation.
+        """
+        if getattr(job.command, 'resident', False):
+            return (job.command.request_id not in self.resident_owners and
+                    len(self.resident_owners) < self.resident_slots)
+        owners = getattr(self, 'owners', None)
+        if owners is None:
+            return self.owner is None
+        return not owners
+
     def acquire(self, job, *, lanes=1):
         if getattr(job.command, 'resident', False):
             rid = job.command.request_id

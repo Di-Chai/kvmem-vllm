@@ -384,9 +384,11 @@ class HistoricalAuthorityGc:
         if not self.archive._history_background:
             self.archive._history_worker.advance()
         if not self.scope.close():
+            self.close_blocker = 'history_scope'
             return False
         for key, record in tuple(self.retired_index.items()):
             if not self.archive.retire_cpu_record(self.memory.request_id, record.handle):
+                self.close_blocker = 'retired_record_release'
                 return False
             self.defer_index(key, record)
             del self.retired_index[key]

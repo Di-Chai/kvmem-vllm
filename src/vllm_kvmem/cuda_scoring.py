@@ -78,6 +78,21 @@ def kernel():
         build_directory=str(directory), extra_cuda_cflags=['-O3'], verbose=False)
 
 
+def global_backend():
+    """Opt-in KVMEM_MEANK_GLOBAL_BACKEND for the global Query MeanK scoring.
+
+    ``tiled`` uses qw3's own scalable kernels (already used above 8192 pages) for
+    every index size. It is ~4x faster at final-Query sizes, but its per-page sums
+    differ from the fused kernel's by ~2e-4 relative (the fused kernel adds each
+    tiny term into a large FP32 total one at a time), so selections near the
+    budget boundary can change: qualify end to end before use.
+    """
+    value = os.getenv('KVMEM_MEANK_GLOBAL_BACKEND', 'legacy')
+    if value not in ('legacy', 'tiled'):
+        raise ValueError('KVMEM_MEANK_GLOBAL_BACKEND must be legacy or tiled')
+    return value
+
+
 def mean_key_scores(queries, means, eligible, *, scale=None):
     if queries.ndim != 4 or means.ndim != 4 or eligible.shape != (means.shape[1],) or eligible.dtype != torch.bool:
         raise ValueError('Invalid MeanK Query/index/mask')
@@ -93,7 +108,9 @@ def mean_key_scores(queries, means, eligible, *, scale=None):
     # and mandatory pages. Scatter scores back without changing history order.
     compact_means = means.index_select(1, indices).to(
         dtype=torch.float16, memory_format=torch.contiguous_format)
-    values = _compact_values(queries, compact_means, scale)
+    backend = global_backend()
+    values = _compact_values(queries, compact_means, scale,
+                             **({'backend': backend} if backend != 'legacy' else {}))
     scores.index_copy_(0, indices, values)
     return scores
 
