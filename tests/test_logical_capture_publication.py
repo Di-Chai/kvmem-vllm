@@ -258,13 +258,13 @@ def test_terminal_arriving_inside_final_native_append_is_checked_before_ack(tmp_
         runtime = env.runtime
         runtime.begin_step()
         original = env.authority._commit_prepared_append
-        def commit(prepared):
+        def commit(prepared, **kwargs):
             if env.authority.history_end == 2048:
                 # Simulate begin_step while the second native append has not
                 # yet made its new history prefix visible to _install_terminals.
                 runtime.runner._kvmem_logical_prefill_step = 9
                 runtime.begin_step({'r'},{'r':TerminalPrefix(2049,4096,0,'FINISHED_ABORTED')})
-            return original(prepared)
+            return original(prepared, **kwargs)
         monkeypatch.setattr(env.authority,'_commit_prepared_append',commit)
         with pytest.raises(ValueError,match='retract'):
             runtime.drain_requests({'r'},wait=True)

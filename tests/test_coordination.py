@@ -123,6 +123,59 @@ def test_preserved_session_capacity_neither_evicts_nor_runs_uncached():
     assert not ledger.commands.evictions
 
 
+def _idle(ledger, name):
+    entry = ledger.entries[('tenant', name)]
+    entry.phase, entry.request_id = 'idle', None
+    ledger.requests.pop(name, None)
+    return entry
+
+
+def _preserved(monkeypatch, capacity, flag='1'):
+    monkeypatch.setenv('KVMEM_SESSION_IDLE_LRU_EVICTION', flag)
+    return SessionLedger(capacity, 4, lambda *a: None, lambda *a: None, lambda *a: None,
+                         preserve_history=True, require_owned=True)
+
+
+def test_idle_lru_eviction_evicts_least_recently_used_idle_preserved_session(monkeypatch):
+    ledger = _preserved(monkeypatch, 2)
+    a, b, c = (request(n) for n in 'abc')
+    for r in (a, b):
+        r.prompt_token_ids = list(range(80))
+        assert ledger.lookup(r, 0) == 0
+    _idle(ledger, 'b'); _idle(ledger, 'a')
+    # a turned idle last: re-insert it as most recently used (consume does this).
+    ledger.entries[('tenant', 'a')] = ledger.entries.pop(('tenant', 'a'))
+    c.prompt_token_ids = list(range(80))
+    assert ledger.lookup(c, 0) is None
+    [eviction] = ledger.commands.evictions
+    assert eviction.namespace == ('tenant', 'b') and ledger.entries[('tenant', 'b')].phase == 'evicting'
+    assert ledger.lookup(c, 0) is None and len(ledger.commands.evictions) == 1   # waits for the worker
+    ledger.consume(SessionNotice('evicted', ('tenant', 'b'), eviction.generation, ''))
+    assert ledger.lookup(c, 0) == 0 and ('tenant', 'c') in ledger.entries
+    assert not ledger.uncached_sessions
+
+
+def test_idle_lru_eviction_never_evicts_active_sessions_or_runs_uncached(monkeypatch):
+    ledger = _preserved(monkeypatch, 1)
+    a, b = request('a'), request('b')
+    a.prompt_token_ids = b.prompt_token_ids = list(range(80))
+    assert ledger.lookup(a, 0) == 0
+    assert ledger.lookup(b, 0) is None
+    assert not ledger.commands.evictions and not ledger.uncached_sessions
+
+
+def test_idle_lru_eviction_is_opt_in_and_validated(monkeypatch):
+    ledger = _preserved(monkeypatch, 1, flag='0')
+    a, b = request('a'), request('b')
+    a.prompt_token_ids = b.prompt_token_ids = list(range(80))
+    assert ledger.lookup(a, 0) == 0
+    _idle(ledger, 'a')
+    assert ledger.lookup(b, 0) is None and not ledger.commands.evictions
+    monkeypatch.setenv('KVMEM_SESSION_IDLE_LRU_EVICTION', 'yes')
+    with pytest.raises(ValueError):
+        SessionLedger(1, 4, lambda *a: None, lambda *a: None, lambda *a: None, preserve_history=True)
+
+
 def test_impossible_full_trajectory_fails_at_startup():
     with pytest.raises(ValueError, match='one full trajectory'):
         HistoryAdmission(99, 4, 1, 100)

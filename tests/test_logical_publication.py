@@ -29,7 +29,8 @@ class Lease:
 
 
 @contextmanager
-def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2, request_id='r', graphless=False):
+def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=2, request_id='r', graphless=False,
+            namespace=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     config = KVMemConfig(block_tokens=32, select_budget=8192, gen_budget=8192,
                         repository_blocks=1024, sink_blocks=0, recent_blocks=0)
@@ -39,7 +40,7 @@ def fixture(tmp_path, *, native_history=False, raw_dtype=torch.bfloat16, chunks=
         gc.background, gc.ready_low, gc.ready_high = False, 2, 4
         gc.scan_blocks, gc.delete_blocks, gc.poll_ms = 16, 4, 1
         archive.enable_history_gc(gc)
-    authority = RequestAuthority(request_id, config, archive, 1, 1, 2, resident_records=256,
+    authority = RequestAuthority(namespace or request_id, config, archive, 1, 1, 2, resident_records=256,
                                  raw_dtype=raw_dtype,mean_k_backend='qw3_cuda')
     graph = authority.block_graph = None if graphless else BlockGraph('logical-owner', 32, topk=4)
     state = authority.action_history = NS(prefill=PrefillHistory(NS(
@@ -201,8 +202,8 @@ def test_error_after_second_archive_commit_is_permanent_and_never_replays(tmp_pa
         failure = OSError('injected '+stage)
         if stage == 'append_after_commit':
             original = env.authority._commit_prepared_append
-            def broken(prepared):
-                original(prepared)
+            def broken(prepared, **kwargs):
+                original(prepared, **kwargs)
                 raise failure
             monkeypatch.setattr(env.authority,'_commit_prepared_append',broken)
         elif stage == 'action':
@@ -243,6 +244,30 @@ def test_next_span_rechecks_owner_generation_state_and_source(tmp_path,change):
             env.cursor.advance(env.raw,env.values,owner_epoch=epoch)
         assert env.authority.history_end == 2048 and env.cursor.next_index == 1
         assert env.cursor.phase == 'failed'
+
+
+def test_restored_session_authority_keeps_its_capture_namespace(tmp_path):
+    # A restored session's authority is mapped to the new turn's request ID but
+    # keeps the archive namespace of the turn that captured it.
+    with fixture(tmp_path, namespace='captured-turn') as env:
+        assert env.authority.memory.request_id == 'captured-turn' != env.group.request_id
+        confirm(env)
+        for _ in env.group.spans:
+            assert advance(env) is not None
+        assert env.cursor.done and env.authority.history_end == env.group.count
+
+
+def test_namespace_change_after_binding_fails_closed(tmp_path):
+    with fixture(tmp_path) as env:
+        confirm(env)
+        advance(env)
+        env.authority.memory.request_id = 'another-owner'
+        try:
+            with pytest.raises(RuntimeError):
+                env.cursor.advance(env.raw,env.values,owner_epoch=env.group.owner_epoch)
+            assert env.cursor.phase == 'failed' and env.cursor.next_index == 1
+        finally:
+            env.authority.memory.request_id = env.group.request_id
 
 
 def test_one_physical_lease_survives_first_span_and_is_only_released_explicitly(tmp_path):
@@ -328,10 +353,10 @@ def test_concurrent_terminal_receipt_must_be_deferred_instead_of_reclipping_an_a
         confirm(env)
         entered,release = Event(),Event()
         original = env.authority._commit_prepared_append
-        def blocked(prepared):
+        def blocked(prepared, **kwargs):
             entered.set()
             assert release.wait(5)
-            return original(prepared)
+            return original(prepared, **kwargs)
         monkeypatch.setattr(env.authority,'_commit_prepared_append',blocked)
         with ThreadPoolExecutor(max_workers=1) as executor:
             running = executor.submit(advance,env)

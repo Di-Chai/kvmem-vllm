@@ -122,6 +122,11 @@ class LogicalPublicationCursor:
         self._payload = None
         self._pending_receipt = self._last_receipt = None
         self._lock = Lock()
+        # The archive namespace stays fixed for the cursor's lifetime. It is the
+        # request ID except for a restored session, whose authority keeps the
+        # namespace of the turn that captured it (runtime.authorities maps the
+        # new request to it; the caller resolved this authority from that map).
+        self.namespace = authority.memory.request_id
         self._validate_binding(owner_epoch)
         if authority.history_end != group.history_begin:
             raise ValueError('Logical group does not begin at the published authority prefix')
@@ -138,7 +143,7 @@ class LogicalPublicationCursor:
     def _validate_binding(self, owner_epoch):
         if (owner_epoch != self.group.owner_epoch or
                 self.packet.source_generation != self.source_generation or
-                self.authority.memory.request_id != self.group.request_id or
+                self.authority.memory.request_id != self.namespace or
                 self.authority.action_history is not self.state or
                 self._current_graph() is not self.graph or
                 self.packet.source_released):

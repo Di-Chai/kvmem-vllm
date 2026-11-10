@@ -191,6 +191,7 @@ def test_maintenance_waits_for_native_cache_allocation_during_model_load(monkeyp
     wrapper = make_probe_runner(Base)()
     wrapper._kvmem_async_refresh = refresh
     wrapper.vllm_config = object()
+    wrapper.model_config = SimpleNamespace(enforce_eager=True)
     monkeypatch.setattr('vllm_kvmem.profile_scopes.install_profile_scopes', lambda _:None)
     monkeypatch.setattr('vllm_kvmem.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw:None)
     # This fixture checks cache-allocation ordering, independently of optional

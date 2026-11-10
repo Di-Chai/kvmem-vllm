@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 import os
+import time
 
 from .prefill_attention import PrefillHistory
 
@@ -55,9 +56,51 @@ class LayerwisePrefix:
             map_sha256=hashlib.sha256(json.dumps([_identity(rows) for rows in self.maps]).encode()).hexdigest(),
             attention_sha256=hashlib.sha256(json.dumps(self.histories).encode()).hexdigest())
 
+    def evidence_resolver(self):
+        """evidence() computed when called; holds the immutable maps/histories only."""
+        position, names, maps, histories = self.position, self.names, self.maps, self.histories
+        def resolve(yield_gil=False):
+            return dict(accepted_history=position, layer_names=names,
+                layer_tokens=[sum(r[3] for r in rows) for rows in maps],
+                map_sha256=_list_sha256((_identity(rows) for rows in maps), yield_gil),
+                attention_sha256=_list_sha256(histories, yield_gil))
+        return resolve
+
 
 def _identity(rows):
     return tuple(tuple(row[2:]) for row in rows)
+
+
+def _list_sha256(items, yield_gil=False):
+    """sha256(json.dumps(list(items))) hashed one item at a time."""
+    digest, first = hashlib.sha256(b'['), True
+    for item in items:
+        digest.update((json.dumps(item) if first else ', ' + json.dumps(item)).encode())
+        first = False
+        if yield_gil:
+            time.sleep(0)  # Let the engine thread take the GIL between layers.
+    digest.update(b']')
+    return digest.hexdigest()
+
+
+def lazy_evidence():
+    """KVMEM_CHECKPOINT_LAZY_EVIDENCE: hash checkpoint evidence off the engine step.
+
+    The capture/restore row keeps its timestamps, bytes and position in
+    layerwise_query.jsonl; its digests are computed by the deferred evidence
+    writer (or at the next synchronous emit) instead of before the step runs.
+    """
+    value = os.getenv('KVMEM_CHECKPOINT_LAZY_EVIDENCE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_CHECKPOINT_LAZY_EVIDENCE must be 0 or 1')
+    return value == '1'
+
+
+def emit_prefix_evidence(query, event, snapshot, **fields):
+    if lazy_evidence():
+        query.defer_lazy(event, snapshot.evidence_resolver(), **fields)
+    else:
+        query.emit(event, **fields, **snapshot.evidence())
 
 
 def layer0_diverged(shared, layer_zero):
@@ -394,9 +437,8 @@ def restore_sync(worker, request_id, checkpoint):
     import torch
     torch.cuda.current_stream(worker.runner.device).synchronize()
     install_restored(controller, request_id, checkpoint.authority, frame, histories, snapshot)
-    controller.query.emit('pressure_prefix_restored', request_id=request_id,
-        actual_method='accumulated_attention_per_layer', fallback_reason=None,
-        **snapshot.evidence())
+    emit_prefix_evidence(controller.query, 'pressure_prefix_restored', snapshot, request_id=request_id,
+        actual_method='accumulated_attention_per_layer', fallback_reason=None)
 
 
 def require_supported_restore(worker, request_id, checkpoint, *, asynchronous=False):
@@ -539,8 +581,7 @@ def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=N
         install_restored(controller, request_id, checkpoint.authority, frame, histories, snapshot)
         from .pressure_key_reuse import restored as _reuse_restored
         _reuse_restored(controller, request_id, resident=True)
-        controller.query.emit('pressure_prefix_restored', request_id=request_id,
-            actual_method='resident_terminal_pages_per_layer', fallback_reason=None,
-            **snapshot.evidence())
+        emit_prefix_evidence(controller.query, 'pressure_prefix_restored', snapshot, request_id=request_id,
+            actual_method='resident_terminal_pages_per_layer', fallback_reason=None)
         return
     restore_sync(worker, request_id, checkpoint)

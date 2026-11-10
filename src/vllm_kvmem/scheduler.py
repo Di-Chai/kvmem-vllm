@@ -1352,7 +1352,9 @@ class KVMemScheduler(Scheduler):
                     sessions.uncached_sessions[namespace] != request.request_id or
                     entry is not None and entry.phase != 'idle' and
                     not (entry.phase == 'lookup' and entry.request_id == request.request_id) or
-                    entry is None and sessions.preserve_history and len(sessions.entries) >= sessions.capacity):
+                    entry is None and sessions.preserve_history and len(sessions.entries) >= sessions.capacity and
+                    not (getattr(sessions, 'idle_lru_eviction', False) and
+                         any(e.phase == 'idle' for e in sessions.entries.values()))):
                 continue
             history, _, _, reason = self.offline_policy._hint(request)
             if reason is not None:

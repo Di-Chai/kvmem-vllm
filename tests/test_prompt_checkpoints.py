@@ -582,6 +582,18 @@ def test_terminal_m_waits_for_retained_prompt_p_payload_before_advertising_eithe
     assert pool.evict(terminal) and pool.payload_bytes == 0 and archive.close()
 
 
+def test_layerwise_prompt_claim_rescores_instead_of_importing_terminal_scores(tmp_path):
+    # Agent turn whose verified Query starts before the terminal M: the restore
+    # falls back to P. A layerwise P cannot import M's later action scores.
+    pool, prompt, terminal, authority, archive, _ = terminal_with_prompt(tmp_path)
+    terminal.action_history = ({0: .9}, 12)
+    prompt.layerwise_pressure = SimpleNamespace()
+    assert pool.claim(prompt.namespace, 'new', list(range(20)), position=8) is prompt
+    assert prompt.claim_action_history is None and prompt.claim_action_end == 0
+    prompt.layerwise_pressure = None
+    assert pool.evict(prompt, Event(True)) and archive.close()
+
+
 def test_retained_prompt_reimport_cannot_reuse_prior_claims_different_suffix_scores(tmp_path):
     pool, prompt, terminal, authority, archive, _ = terminal_with_prompt(tmp_path)
     terminal.action_history = ({0: .9}, 12)

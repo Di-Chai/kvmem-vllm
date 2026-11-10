@@ -48,14 +48,21 @@ def serialize(record, *, yield_gil=False):
 
 
 class _Entry:
-    __slots__ = ('record', 'chunked', 'line')
+    __slots__ = ('record', 'chunked', 'line', 'resolve')
 
-    def __init__(self, record, chunked):
-        self.record, self.chunked, self.line = record, chunked, None
+    def __init__(self, record, chunked, resolve=None):
+        self.record, self.chunked, self.line, self.resolve = record, chunked, None, resolve
+
+    def resolved(self, yield_gil=False):
+        # A lazy row's trailing fields are computed here, on whichever thread
+        # writes it. The queued record itself is never mutated.
+        if self.resolve is None:
+            return self.record
+        return {**self.record, **self.resolve(yield_gil)}
 
     def text(self):
         if self.line is None:
-            self.line = serialize(self.record)
+            self.line = serialize(self.resolved())
         return self.line
 
 
@@ -71,7 +78,7 @@ class DeferredEvidence:
         self.thread.start()
         atexit.register(self._flush_at_exit)
 
-    def defer(self, record, buffered):
+    def defer(self, record, buffered, resolve=None):
         """Caller holds query._emit_lock. buffered: earlier unwritten plain rows."""
         for pending in buffered:
             self.queue.append(_Entry(pending, False))
@@ -80,7 +87,7 @@ class DeferredEvidence:
         record = dict(record)
         if type(record.get('layers')) is list:
             record['layers'] = [dict(layer) if type(layer) is dict else layer for layer in record['layers']]
-        self.queue.append(_Entry(record, True))
+        self.queue.append(_Entry(record, True, resolve))
         self.deferred += 1
         self.condition.notify_all()
 
@@ -117,7 +124,7 @@ class DeferredEvidence:
             if self.delay:
                 time.sleep(self.delay)
             try:
-                line = serialize(entry.record, yield_gil=entry.chunked)
+                line = serialize(entry.resolved(entry.chunked), yield_gil=entry.chunked)
                 with lock:
                     if not self.queue or self.queue[0] is not entry:
                         continue  # emit() already wrote it, in order.

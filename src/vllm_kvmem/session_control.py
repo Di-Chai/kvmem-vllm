@@ -6,6 +6,7 @@ Generation-qualified messages cannot release a newer incarnation of a session.
 """
 from dataclasses import dataclass, field
 import hashlib
+import os
 
 from .prompt_checkpoints import token_bytes
 
@@ -18,6 +19,15 @@ def session_namespace(session, salt):
             or len(session) > 1024 or len(salt) > 1024):
         raise ValueError('Session ID and cache salt must be strings of at most 1024 characters')
     return salt, session
+
+
+def idle_lru_eviction_enabled():
+    """KVMEM_SESSION_IDLE_LRU_EVICTION=1: a full preserve_history ledger evicts
+    its least recently used idle session instead of blocking new sessions."""
+    value = os.getenv('KVMEM_SESSION_IDLE_LRU_EVICTION', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_SESSION_IDLE_LRU_EVICTION must be 0 or 1')
+    return value == '1'
 
 
 def session_release_intent(params, session, prompt, max_tokens):
@@ -195,6 +205,7 @@ class SessionLedger:
         self.select_budget, self.gen_budget = select_budget, gen_budget
         self.hits = self.misses = self.waits = 0
         self.preserve_history = preserve_history
+        self.idle_lru_eviction = idle_lru_eviction_enabled()
         if type(require_owned) is not bool:
             raise ValueError('Owned-session requirement must be boolean')
         self.require_owned = require_owned
@@ -368,17 +379,29 @@ class SessionLedger:
             return entry.history
         self.cold_plan(request)
         if len(self.entries) >= self.capacity:
-            if self.preserve_history:
+            if self.preserve_history and not self.idle_lru_eviction:
                 # The caller must explicitly finish/release a session. Neither
                 # LRU eviction nor uncached execution preserves its history.
                 self.waits += 1
                 return None
+            # Entries are reinserted when they turn idle: the first idle entry
+            # is the least recently used one. Opt-in KVMEM_SESSION_IDLE_LRU_EVICTION
+            # applies this to preserved histories too (clients such as dsh never
+            # release a session); the evicted session's next turn is a cold prefill.
             idle = next((e for e in self.entries.values() if e.phase == 'idle'), None)
             if idle is not None:
-                self._evict(idle)
+                # Under the opt-in, one eviction at a time: the native waiting
+                # loop retries this lookup every step, and each retry must not
+                # evict another idle session before the first slot is freed.
+                if not (self.idle_lru_eviction and
+                        any(e.phase == 'evicting' for e in self.entries.values())):
+                    self._evict(idle)
                 self.waits += 1
                 return None
-            if self.require_owned:
+            if self.idle_lru_eviction and any(e.phase == 'evicting' for e in self.entries.values()):
+                self.waits += 1
+                return None
+            if self.require_owned or self.preserve_history:
                 # Graph identities cannot degrade to temporary request IDs
                 # when all owned checkpoint slots are currently leased.
                 self.waits += 1

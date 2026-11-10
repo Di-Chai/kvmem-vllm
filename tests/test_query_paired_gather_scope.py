@@ -27,9 +27,12 @@ def test_default_off_and_rejects_missing_execution_prerequisites(monkeypatch):
         LayerwiseQuery(runner())
 
 
+@pytest.mark.parametrize('inline_decode', ['0', '1'])
 @pytest.mark.parametrize('kind', ['query', 'prefill_pressure', 'decode_pressure', 'restore'])
 @pytest.mark.parametrize('enabled', [False, True])
-def test_dispatch_and_counter_are_scoped_to_public_query(monkeypatch, kind, enabled):
+def test_dispatch_and_counter_are_scoped_to_public_query(monkeypatch, kind, enabled, inline_decode):
+    # Opt-in KVMEM_DECODE_INLINE_READS: decode pressure also reads inline.
+    monkeypatch.setenv('KVMEM_DECODE_INLINE_READS', inline_decode)
     from vllm_kvmem import packed_assembly, window_assembly, layerwise_pressure_efficiency
     no_op = lambda *args: None
     stream = NS(wait_event=no_op, synchronize=no_op)
@@ -74,4 +77,4 @@ def test_dispatch_and_counter_are_scoped_to_public_query(monkeypatch, kind, enab
     assert ('paired_native' in calls[0]) is expected
     assert stats['native_paired_gather_chunks'] == int(expected)
     assert stats['paired_read_chunks'] == 1 and stats['uploaded_bytes'] == 128
-    assert calls[0]['inline_cpu'] is (kind == 'prefill_pressure')
+    assert calls[0]['inline_cpu'] is (kind == 'prefill_pressure' or (kind == 'decode_pressure' and inline_decode == '1'))

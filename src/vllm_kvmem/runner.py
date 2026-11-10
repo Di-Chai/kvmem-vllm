@@ -250,11 +250,24 @@ def make_probe_runner(base):
                 initialize_graph_window(self)
             from .profile_scopes import install_profile_scopes
             install_profile_scopes(self)
-            if not is_profiling:
-                from .options import RuntimeOptions
-                from .checkpoint_prewarm import prewarm_checkpoint_payloads
-                prewarm_checkpoint_payloads(self, RuntimeOptions.from_vllm(self.vllm_config))
+            # CUDA graph capture empties the pinned host cache when it starts,
+            # so with graphs the allocator is warmed after capture_model instead.
+            if not is_profiling and self.model_config.enforce_eager:
+                self._kvmem_prewarm_checkpoint_payloads('kv_cache_init')
             return result
+
+        def capture_model(self):
+            result = super().capture_model()
+            self._kvmem_prewarm_checkpoint_payloads('after_graph_capture')
+            return result
+
+        def _kvmem_prewarm_checkpoint_payloads(self, stage):
+            if getattr(self, '_kvmem_checkpoint_prewarmed', False):
+                return
+            self._kvmem_checkpoint_prewarmed = True
+            from .options import RuntimeOptions
+            from .checkpoint_prewarm import prewarm_checkpoint_payloads
+            prewarm_checkpoint_payloads(self, RuntimeOptions.from_vllm(self.vllm_config), stage)
 
         def finish_requests(self, scheduler_output):
             if getattr(self, '_kvmem_restore_allocations', {}).keys() & scheduler_output.finished_req_ids:

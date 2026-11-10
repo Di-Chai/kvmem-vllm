@@ -23,25 +23,83 @@ class DecodeHistory:
     chunks: int = 0
 
     def prepare(self, pending, accepted, logical, masses):
-        if not 0 <= accepted <= pending.candidate_count:
-            raise ValueError('Invalid rolling attention accepted prefix')
-        begin = pending.history_begin
-        interval = pending.state.options.action_interval
-        wanted = set(sample_rows(begin, accepted, interval))
-        indices = [i for i, row in enumerate(pending.rows)
-                   if row in wanted and begin + row >= self.end]
-        if wanted - set(pending.rows):
-            raise RuntimeError('Rolling attention omitted an accepted sampled row')
-        if not indices:
-            return self
-        values = masses.numpy() if hasattr(masses, 'numpy') else masses
-        mass, samples = _native.prepare_decode_attention(self.mass, self.samples,
-            indices, logical, values,
-            getattr(pending.state.options, 'action_commit_max_bytes', 16777216))
-        return DecodeHistory(mass, samples, begin + accepted, self.chunks + 1)
+        return _prepare_history(self, self.mass, pending, accepted, logical, masses)
 
     def scores(self):
         return {key: value / self.samples for key, value in self.mass.items()} if self.samples else {}
+
+
+def _prepare_history(history, source, pending, accepted, logical, masses):
+    """Stage the next accepted-mass state without mutating ``history``."""
+    if not 0 <= accepted <= pending.candidate_count:
+        raise ValueError('Invalid rolling attention accepted prefix')
+    begin = pending.history_begin
+    interval = pending.state.options.action_interval
+    wanted = set(sample_rows(begin, accepted, interval))
+    indices = [i for i, row in enumerate(pending.rows)
+               if row in wanted and begin + row >= history.end]
+    if wanted - set(pending.rows):
+        raise RuntimeError('Rolling attention omitted an accepted sampled row')
+    if not indices:
+        return history
+    values = masses.numpy() if hasattr(masses, 'numpy') else masses
+    cap = getattr(pending.state.options, 'action_commit_max_bytes', 16777216)
+    if mass_map_enabled():
+        if not isinstance(source, (dict, _native.DecodeMassMap)):
+            source = history.mass
+        mass_map, samples = _native.prepare_decode_attention_map(source, history.samples, indices, logical,
+                                                                 values, cap)
+        return NativeDecodeHistory(mass_map, samples, begin + accepted, history.chunks + 1)
+    if isinstance(source, _native.DecodeMassMap if hasattr(_native, 'DecodeMassMap') else ()):
+        source = history.mass
+    prepare = (_native.prepare_decode_attention_sparse if sparse_mass_enabled()
+               else _native.prepare_decode_attention)
+    mass, samples = prepare(source, history.samples, indices, logical, values, cap)
+    return DecodeHistory(mass, samples, begin + accepted, history.chunks + 1)
+
+
+class NativeDecodeHistory:
+    """DecodeHistory whose accepted mass stays in a native DecodeMassMap
+    (KVMEM_NATIVE_DECODE_MASS_MAP). ``mass`` materializes the identical dict
+    (same keys, insertion order and float values) on first use, for
+    checkpoints, swaps, historical GC and scores. Instances are never mutated."""
+
+    __hash__ = None
+
+    def __init__(self, mass_map, samples, end, chunks):
+        self._map, self._mass = mass_map, None
+        self.samples, self.end, self.chunks = samples, end, chunks
+
+    @property
+    def mass(self):
+        if self._mass is None:
+            self._mass = self._map.to_dict()
+        return self._mass
+
+    def prepare(self, pending, accepted, logical, masses):
+        return _prepare_history(self, self._map, pending, accepted, logical, masses)
+
+    def scores(self):
+        return {key: value / self.samples for key, value in self.mass.items()} if self.samples else {}
+
+    def __eq__(self, other):
+        fields = ('mass', 'samples', 'end', 'chunks')
+        if not all(hasattr(other, f) for f in fields):
+            return NotImplemented
+        return all(getattr(self, f) == getattr(other, f) for f in fields)
+
+    def __repr__(self):
+        return (f'NativeDecodeHistory(mass=<{len(self._map)} keys>, samples={self.samples}, '
+                f'end={self.end}, chunks={self.chunks})')
+
+
+def mass_map_enabled():
+    """KVMEM_NATIVE_DECODE_MASS_MAP=1: keep accepted decode mass natively."""
+    import os
+    value = os.getenv('KVMEM_NATIVE_DECODE_MASS_MAP', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_DECODE_MASS_MAP must be 0 or 1')
+    return value == '1' and hasattr(_native, 'prepare_decode_attention_map')
 
 
 def record_map(records):
@@ -52,6 +110,30 @@ def record_map(records):
     return tuple(result)
 
 
+def sparse_mass_enabled():
+    """KVMEM_NATIVE_DECODE_SPARSE_MASS=1: prepare_decode_attention_sparse, which
+    returns the same dictionary but writes only changed entries after copy()."""
+    import os
+    value = os.getenv('KVMEM_NATIVE_DECODE_SPARSE_MASS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_DECODE_SPARSE_MASS must be 0 or 1')
+    return value == '1' and hasattr(_native, 'prepare_decode_attention_sparse')
+
+
+def native_segments_enabled():
+    """KVMEM_NATIVE_DECODE_SEGMENTS=1: compute segment_identities in C++.
+
+    The native helper returns None for any input outside its exact int64 domain
+    and for every input that would raise; the Python code below then runs and
+    raises its original error. Equivalence: tests/test_native_decode_segments.py.
+    """
+    import os
+    value = os.getenv('KVMEM_NATIVE_DECODE_SEGMENTS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_DECODE_SEGMENTS must be 0 or 1')
+    return value == '1' and hasattr(_native, 'decode_segment_identities')
+
+
 def segment_identities(records, begin, local, count, starts, counts):
     """Map either split or canonically merged native partial-tail segments.
 
@@ -59,6 +141,14 @@ def segment_identities(records, begin, local, count, starts, counts):
     two window_segments entries but one native score column. A score column
     must still belong entirely to one original block in each target layer.
     """
+    if native_segments_enabled():
+        result = _native.decode_segment_identities(records, begin, local, count, starts, counts, 32)
+        if result is not None:
+            return result
+    return _segment_identities_python(records, begin, local, count, starts, counts)
+
+
+def _segment_identities_python(records, begin, local, count, starts, counts):
     from .action_attention import window_segments
     ls, lc, lh = window_segments(records, begin, local, count, 32)
     cursor = index = 0
@@ -85,13 +175,62 @@ def segment_identities(records, begin, local, count, starts, counts):
     return result
 
 
+def layer_map_enabled():
+    """KVMEM_NATIVE_DECODE_LAYER_MAP=1: per-layer decode identities straight from
+    the frozen pressure frame (parsed once per frame), without building record lists."""
+    import os
+    value = os.getenv('KVMEM_NATIVE_DECODE_LAYER_MAP', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_DECODE_LAYER_MAP must be 0 or 1')
+    return value == '1' and hasattr(_native, 'decode_identities_from_map')
+
+
+_LAYER_MAP_CACHE_LIMIT = 1024
+
+
+def _fused_identities(controller, rid, begin, local, count, starts, counts):
+    """All layers' identities via the native fused path, or None to run Python.
+
+    Equals segment_identities(controller.records(rid, authority, begin, local, layer), ...)
+    for every layer; any input the native helper cannot reproduce exactly (including
+    every error case) returns None so the original per-layer code runs and raises.
+    """
+    from .layerwise_pressure import LayerwisePrefillPressure
+    if getattr(type(controller), 'records', None) is not LayerwisePrefillPressure.records:
+        return None
+    frame = controller.resolved_maps(rid)
+    if frame is None:
+        return None
+    origin, layers = frame
+    cache = controller.__dict__.setdefault('_decode_layer_maps', {})
+    result = []
+    for layer in range(len(controller.names)):
+        records = layers[layer]
+        hit = cache.get((rid, layer))
+        if hit is None or hit[0] is not records:
+            parsed = _native.parse_layer_map(records)
+            if parsed is None:
+                return None
+            if len(cache) >= _LAYER_MAP_CACHE_LIMIT:
+                cache.clear()
+            cache[(rid, layer)] = hit = (records, parsed)
+        identities = _native.decode_identities_from_map(hit[1], origin, begin, local, count, starts, counts)
+        if identities is None:
+            return None
+        result.append(identities)
+    return result
+
+
 def attach_packet(controller, pending, rid, authority, starts, counts, masses):
     begin, count = pending.history_begin, pending.candidate_count
     local = sum(map(int, counts)) - count
-    logical = []
-    for layer in range(len(controller.names)):
-        records = controller.records(rid, authority, begin, local, layer)
-        logical.append(segment_identities(records, begin, local, count, starts, counts))
+    logical = (_fused_identities(controller, rid, begin, local, count, starts, counts)
+               if layer_map_enabled() else None)
+    if logical is None:
+        logical = []
+        for layer in range(len(controller.names)):
+            records = controller.records(rid, authority, begin, local, layer)
+            logical.append(segment_identities(records, begin, local, count, starts, counts))
     # Before the first decode refresh the shared frame still describes the
     # initial global Query preselection. Feedback must describe real layer zero.
     pending.history = logical[0]

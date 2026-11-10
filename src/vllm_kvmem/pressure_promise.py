@@ -72,13 +72,72 @@ def ineligible(pipeline, refresh, job, capture):
     if (authority is None or getattr(authority, 'query_history', None) is not None or
             authority.history_end > job.history):
         return 'authority'
-    sessions = refresh.runner._kvmem_sessions
-    if sessions is not None and (not getattr(sessions.options, 'session_freeze_prompt', False) or
-                                 rid in sessions.captures or rid in sessions.terminal_captures):
-        return 'session_checkpoint'
+    reason = session_reason(refresh.runner._kvmem_sessions, rid, job.history)
+    if reason is not None:
+        return reason
     if predicted_extent(refresh, job) is None:
         return 'extent'
     return None
+
+
+def pm_sessions():
+    """KVMEM_PROMISE_PM_SESSIONS=1: allow promised refreshes with P/M (non-frozen)
+    session checkpoints; every checkpoint first settles the owner's producer."""
+    value = os.getenv('KVMEM_PROMISE_PM_SESSIONS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PROMISE_PM_SESSIONS must be 0 or 1')
+    return value == '1'
+
+
+def session_reason(sessions, request_id, history):
+    """Why session checkpoints keep this refresh on the original path, or None."""
+    if sessions is None:
+        return None
+    if request_id in sessions.captures or request_id in sessions.terminal_captures:
+        return 'session_checkpoint'
+    if getattr(sessions.options, 'session_freeze_prompt', False):
+        return None
+    # P/M (non-frozen) checkpoints. Opt-in KVMEM_PROMISE_PM_SESSIONS: a checkpoint
+    # waits for this owner's promised producer before it copies the window
+    # (settle_before_checkpoint). Only a refresh at an existing checkpoint's
+    # position keeps the original path: the ACK's early selection_committed
+    # would snapshot a window that is not chosen yet.
+    if not pm_sessions():
+        return 'session_checkpoint'
+    if _checkpoint_at(sessions, request_id, history):
+        return 'session_checkpoint_position'
+    return None
+
+
+def _checkpoint_at(sessions, request_id, history):
+    binding = getattr(sessions, 'bindings', {}).get(request_id)
+    pool = getattr(sessions, 'pool', None)
+    checkpoint = (pool.entries.get(binding.namespace)
+                  if binding is not None and pool is not None else None)
+    return checkpoint is not None and checkpoint.position == history
+
+
+def settle_before_checkpoint(runner, request_id):
+    """Before a session checkpoint copies this owner's window: wait until its
+    promised producer has committed the selection and submitted every layer, and
+    the layers' copies are complete. The non-promised path finishes all of this
+    before the owner is scheduled again, so the captured bytes are the same."""
+    pressure = getattr(runner, '_kvmem_layerwise_pressure', None)
+    pipeline = getattr(pressure, 'pipeline', None)
+    lease = pipeline.active.get(request_id) if pipeline is not None else None
+    if lease is None or not getattr(lease, 'promised', False):
+        return False
+    from .gil_gate import engine_waiting
+    with lease.condition, engine_waiting():
+        while lease.error is None and (any(e is None for e in lease.events) or
+                                       lease.committed is None or not lease.committed.is_set()):
+            lease.condition.wait(.002)
+        if lease.error is not None:
+            raise RuntimeError('Pressure pipeline producer failed') from lease.error
+        events = list(lease.events)
+    for event in events:
+        event.synchronize()
+    return True
 
 
 def async_page_check():

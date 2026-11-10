@@ -129,9 +129,9 @@ def test_late_child_failure_poison_retains_prefix_and_whole_source(tmp_path,monk
             error=BufferError
         else:
             original=env.authority._commit_prepared_append
-            def commit(prepared):
+            def commit(prepared,**kwargs):
                 last=env.authority.history_end==stop
-                original(prepared)
+                original(prepared,**kwargs)
                 if last:raise OSError('last append committed before failure')
             monkeypatch.setattr(env.authority,'_commit_prepared_append',commit)
             error=OSError

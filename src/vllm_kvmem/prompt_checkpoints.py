@@ -408,7 +408,13 @@ class PromptCheckpointPool:
                 prompt.claim_graph_end = checkpoint.position
                 prompt.payload_bytes += prompt.claim_graph_history.bytes
                 self.payload_bytes += prompt.claim_graph_history.bytes
-            if full_prefix and checkpoint.action_history is not None:
+            # A layerwise P checkpoint holds per-layer pressure state only up to
+            # P, so M's later scores cannot be imported (prepare_claim_window
+            # rejects them). Its P..M tokens are re-prefilled and rescored, as
+            # in a changed-suffix P restore. Agent turns reach this when the
+            # verified Query lies before the previous terminal checkpoint.
+            if (full_prefix and checkpoint.action_history is not None and
+                    getattr(prompt, 'layerwise_pressure', None) is None):
                 from copy import deepcopy
                 prompt.claim_action_history=deepcopy(checkpoint.action_history)
                 prompt.claim_action_end=checkpoint.position

@@ -39,3 +39,60 @@ def test_no_gpu_data_or_snapshot_lifetime_changed(monkeypatch, tmp_path):
     runner.speculative_config.method='dflash'
     with pytest.raises(ValueError,match='MTP'):
         prewarm_checkpoint_payloads(runner,options)
+
+
+def test_session_retained_checkpoints_raise_the_concurrency_cap():
+    # pm sessions keep a prompt and a terminal checkpoint each: 2*8+1 blocks.
+    assert prewarm_count(157876224, 64, 8, 6*1024**3, 17) == (17, 256*1024**2)
+    assert prewarm_count(157876224, 12, 8, 6*1024**3, 17) == (12, 256*1024**2)
+    assert prewarm_count(157876224, 64, 8, 1024**3, 17) == (4, 256*1024**2)
+    assert prewarm_count(157876224, 64, 16, 6*1024**3, 9) == (18, 256*1024**2)
+
+
+def test_environment_overrides_the_profile_count(monkeypatch):
+    from vllm_kvmem.checkpoint_prewarm import requested_count
+    options = SimpleNamespace(checkpoint_pinned_prewarm_count=3)
+    monkeypatch.delenv('KVMEM_CHECKPOINT_PINNED_PREWARM', raising=False)
+    assert requested_count(options) == 3
+    monkeypatch.setenv('KVMEM_CHECKPOINT_PINNED_PREWARM', '17')
+    assert requested_count(options) == 17
+    monkeypatch.setenv('KVMEM_CHECKPOINT_PINNED_PREWARM', '0')
+    assert requested_count(options) == 0 and prewarm_checkpoint_payloads(None, options) is None
+    for bad in ('65', '-1', 'on', ''):
+        monkeypatch.setenv('KVMEM_CHECKPOINT_PINNED_PREWARM', bad)
+        with pytest.raises(ValueError, match='KVMEM_CHECKPOINT_PINNED_PREWARM'):
+            requested_count(options)
+
+
+@pytest.mark.parametrize('eager', [True, False])
+def test_warming_follows_the_startup_graph_capture(monkeypatch, eager):
+    # torch.cuda.graph() empties the pinned host cache on entry, so blocks
+    # warmed before the startup capture would be gone at the first checkpoint.
+    from vllm_kvmem.runner import make_probe_runner
+    events = []
+
+    class Base:
+        def initialize_kv_cache(self, is_profiling=False):
+            events.append('profile' if is_profiling else 'kv')
+
+        def capture_model(self):
+            events.append('graphs')
+            return 7
+
+    runner = make_probe_runner(Base)()
+    runner.vllm_config = object()
+    runner.model_config = SimpleNamespace(enforce_eager=eager)
+    monkeypatch.setattr('vllm_kvmem.profile_scopes.install_profile_scopes', lambda _: None)
+    monkeypatch.setattr('vllm_kvmem.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw: None)
+    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: 'options')
+    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads',
+                        lambda r, options, stage: events.append((options, stage)))
+    runner.initialize_kv_cache(is_profiling=True)
+    runner.initialize_kv_cache()
+    if eager:  # The worker skips capture_model for an eager engine.
+        assert events == ['profile', 'kv', ('options', 'kv_cache_init')]
+    else:
+        assert runner.capture_model() == 7
+        assert events == ['profile', 'kv', 'graphs', ('options', 'after_graph_capture')]
+        runner.initialize_kv_cache()
+        assert events[4:] == ['kv']  # Warmed once.

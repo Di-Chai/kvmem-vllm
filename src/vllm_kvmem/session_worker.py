@@ -255,6 +255,9 @@ class SessionWorker:
             authority = self.runtime.authorities[request_id]
             if authority.history_end != command.position:
                 raise ValueError('Prompt capture differs from accepted archive history')
+            from .pressure_promise import pm_sessions, settle_before_checkpoint
+            if pm_sessions():
+                settle_before_checkpoint(self.runner, request_id)   # opt-in KVMEM_PROMISE_PM_SESSIONS
             try:
                 checkpoint = self.pool.capture(binding.namespace, request_id, authority,
                     command.tokens or binding.tokens, self.model_adapter,
@@ -267,9 +270,11 @@ class SessionWorker:
                         binding.generation, request_id, command.position))
             else:
                 if checkpoint.layerwise_pressure is not None:
-                    self.runner._kvmem_layerwise_pressure.query.emit('pressure_prefix_captured',
+                    from .layerwise_checkpoints import emit_prefix_evidence
+                    emit_prefix_evidence(self.runner._kvmem_layerwise_pressure.query,
+                        'pressure_prefix_captured', checkpoint.layerwise_pressure,
                         request_id=request_id, actual_method='accumulated_attention_per_layer',
-                        fallback_reason=None, **checkpoint.layerwise_pressure.evidence())
+                        fallback_reason=None)
                 if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
                     self.completed.append(SessionNotice('captured', binding.namespace,
                         binding.generation, request_id, command.position))
@@ -592,6 +597,9 @@ class SessionWorker:
         if command is not None:
             if command.position != authority.history_end:
                 raise ValueError('Terminal checkpoint differs from the accepted history')
+            from .pressure_promise import pm_sessions, settle_before_checkpoint
+            if pm_sessions():
+                settle_before_checkpoint(self.runner, request_id)   # opt-in KVMEM_PROMISE_PM_SESSIONS
             if self.model_adapter is None:
                 self.model_adapter = PromptStateAdapter(self.runner)
             try:

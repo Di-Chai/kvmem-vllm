@@ -26,6 +26,19 @@ def top_set(memory, records, scores, fixed, budget, *, record_index=None):
     return selected
 
 
+
+def decode_inline_reads():
+    """Opt-in KVMEM_DECODE_INLINE_READS=1: rolling decode pressure refreshes read
+    their CPU history inline on the refresh thread (the prefill path: the same
+    archive work() and native GIL-free gather) instead of a future on the archive
+    I/O pool, whose per-chunk handoffs contend with the engine for the GIL.
+    Same bytes in the same staging slots; only the executing thread changes."""
+    import os
+    value = os.getenv('KVMEM_DECODE_INLINE_READS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_DECODE_INLINE_READS must be 0 or 1')
+    return value == '1'
+
 class LayerwiseQuery:
     def __init__(self, runner):
         self.runner = runner
@@ -170,6 +183,17 @@ class LayerwiseQuery:
             buffered = list(self.buffered_events)
             self.buffered_events.clear()
             self.deferred_writer.defer(record, buffered)
+
+    def defer_lazy(self, event, resolve, **fields):
+        """defer() for a row whose trailing fields are resolve()'s dict, computed when written."""
+        if self.deferred_writer is None:
+            return self.emit(event, **fields, **resolve())
+        self._evidence_path()
+        record = dict(event=event, mode=self.mode, at=time.time(), monotonic_at=time.perf_counter(), **fields)
+        with self._emit_lock:
+            buffered = list(self.buffered_events)
+            self.buffered_events.clear()
+            self.deferred_writer.defer(record, buffered, resolve=resolve)
 
     def prepare(self, refresh, job, queries):
         rid = job.command.request_id
@@ -578,7 +602,8 @@ class LayerwiseQuery:
                          state.get('assembly_arena') != 'pressure' and
                          'next_layer' in state and 'span' in state)
         inline_cpu = (state.get('assembly_arena') == 'pressure' and
-                      state.get('pressure_stage') == 'prefill' and
+                      (state.get('pressure_stage') == 'prefill' or
+                       state.get('pressure_stage') == 'decode' and decode_inline_reads()) and
                       getattr(authority.archive, 'memory_only', False))
         staging.claim(assembler)
         try:

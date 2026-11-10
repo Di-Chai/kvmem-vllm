@@ -183,6 +183,7 @@ def test_runner_temporary_graph_cache_then_serving_cache_has_fresh_journal(monke
         def __init__(self):
             self.__dict__.update(vars(empty_startup()))
             self._kvmem_sessions.runner = self
+            self.model_config = SimpleNamespace(enforce_eager=True)
             self.vllm_config = SimpleNamespace(kv_transfer_config=None,
                 cache_config=SimpleNamespace(cache_dtype='fp8_e4m3'))
 
