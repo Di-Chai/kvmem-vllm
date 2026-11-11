@@ -4,6 +4,7 @@ One per-request offset maps the *next dense window position* to logical history.
 Historical selected blocks may be noncontiguous; assembly owns that mapping.
 This adapter only maps newly appended tokens after an acknowledged refresh.
 """
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -51,6 +52,41 @@ def _translate(Positions, QueryStart, Offsets, SeqLens, WindowPos, WindowLens,
             tl.store(WindowPos + ids, 0, ids < PAD_TOKENS)
 
 
+@triton.jit(do_not_specialize=['NUM_TOKENS', 'PAD_TOKENS'])
+def _translate_dynamic(Positions, QueryStart, Offsets, SeqLens, WindowPos, WindowLens,
+                       NUM_TOKENS, PAD_TOKENS, BLOCK: tl.constexpr):
+    # Same program as _translate. The token counts are runtime arguments, so a
+    # new batch shape reuses the one compiled kernel.
+    req = tl.program_id(0)
+    begin = tl.load(QueryStart + req)
+    end = tl.load(QueryStart + req + 1)
+    offset = tl.load(Offsets + req)
+    length = tl.load(SeqLens + req)
+    tl.store(WindowLens + req, length - offset)
+    for start in range(begin, end, BLOCK):
+        ids = start + tl.arange(0, BLOCK)
+        pos = tl.load(Positions + ids, ids < end, other=0)
+        tl.store(WindowPos + ids, pos - offset, ids < end)
+    if req == 0:
+        for start in range(NUM_TOKENS, PAD_TOKENS, BLOCK):
+            ids = start + tl.arange(0, BLOCK)
+            tl.store(WindowPos + ids, 0, ids < PAD_TOKENS)
+
+
+def translate_dynamic():
+    """KVMEM_WINDOW_TRANSLATE_DYNAMIC=1: one position kernel for every batch shape.
+
+    _translate takes the request and token counts as compile-time constants, so
+    each new (requests, tokens, padded tokens) triple compiles a kernel on the
+    engine thread before the forward (40-76 ms). Prefill chunks that share a
+    step with decoders have a new shape nearly every step.
+    """
+    value = os.getenv('KVMEM_WINDOW_TRANSLATE_DYNAMIC', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_WINDOW_TRANSLATE_DYNAMIC must be 0 or 1')
+    return value == '1'
+
+
 @dataclass(frozen=True)
 class WindowBatch:
     positions: torch.Tensor
@@ -69,6 +105,7 @@ class WindowBatchAdapter:
         self.generations: dict[str, int] = {}
         self._generation = 0
         self.buffers = None
+        self.dynamic_translate = translate_dynamic()
 
     def reserve_graph_buffers(self, max_tokens, max_requests, device):
         """Capture-time attention lengths and RoPE positions keep stable addresses."""
@@ -153,9 +190,14 @@ class WindowBatchAdapter:
                 self.offsets_ready.record(torch.cuda.current_stream(batch.positions.device))
                 self.uploaded_offsets = offset_key
             seq_lens.zero_()
-        _translate[(batch.num_reqs,)](
-            batch.positions, batch.query_start_loc, gpu_offsets, batch.seq_lens,
-            positions, seq_lens, batch.num_reqs, batch.num_tokens,
-            batch.num_tokens_after_padding, BLOCK=128)
+        if getattr(self, 'dynamic_translate', False):
+            _translate_dynamic[(batch.num_reqs,)](
+                batch.positions, batch.query_start_loc, gpu_offsets, batch.seq_lens,
+                positions, seq_lens, batch.num_tokens, batch.num_tokens_after_padding, BLOCK=128)
+        else:
+            _translate[(batch.num_reqs,)](
+                batch.positions, batch.query_start_loc, gpu_offsets, batch.seq_lens,
+                positions, seq_lens, batch.num_reqs, batch.num_tokens,
+                batch.num_tokens_after_padding, BLOCK=128)
         lengths = WindowLengths(seq_lens, bounds, int(bounds.max().item()), positions)
         return WindowBatch(positions, {group: lengths for group in self.attention_groups})

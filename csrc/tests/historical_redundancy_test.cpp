@@ -149,7 +149,7 @@ static void factory_validation() {
     check(bool(make_historical_feature_source("redundancy",{},8)),"redundancy factory lacks source");
     check(historical_policy_detail::redundancy_config({}).query_capture_bytes==size_t(64)<<20,
           "default Query capture capacity changed");
-    for(int64_t bytes:{int64_t(1),int64_t(256)<<20}) {
+    for(int64_t bytes:{int64_t(1),int64_t(256)<<20,int64_t(1)<<30}) {
         const auto parsed=historical_policy_detail::redundancy_config({{"query_capture_bytes",bytes}});
         check(parsed.query_capture_bytes==size_t(bytes),"Query capture capacity was not preserved");
     }
@@ -160,7 +160,7 @@ static void factory_validation() {
         {{"representative_similarity",1.1}},{{"feature_cache_bytes",double(1024)}},
         {{"query_capture_bytes",true}},{{"query_capture_bytes",double(1024)}},
         {{"query_capture_bytes",int64_t(0)}},{{"query_capture_bytes",int64_t(-1)}},
-        {{"query_capture_bytes",(int64_t(256)<<20)+1}}}) {
+        {{"query_capture_bytes",(int64_t(1)<<30)+1}}}) {
         bool failed=false;try{validate_historical_kv_policy("redundancy",params);}catch(const std::invalid_argument &){failed=true;}
         check(failed,"factory accepted invalid redundancy parameter");
     }

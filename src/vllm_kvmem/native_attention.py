@@ -582,8 +582,15 @@ class NativeAttentionStats:
             if request_id not in self.slots:
                 self.request_reasons[request_id]='candidate_not_prepared'
                 continue
+            candidate=self.plans[request_id]
+            if '_layout' not in candidate and plan is candidate:
+                # An exact plan armed beside candidates (a prefill owner in a
+                # mixed batch) keeps every armed row and its own segments.
+                first,n,segments=self.slots[request_id]
+                selected.extend(range(first,first+n))
+                maximum=max(maximum,segments)
+                continue
             try:
-                candidate=self.plans[request_id]
                 if '_layout' in candidate:
                     extent=plan['local_begin']+plan['count']
                     end=int(np.searchsorted(candidate['starts'],extent-1,side='right'))

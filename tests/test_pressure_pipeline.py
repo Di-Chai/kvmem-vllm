@@ -240,3 +240,70 @@ def test_pipeline_preserves_native_piecewise_compute_graphs(monkeypatch, mode):
     else:
         assert result[0].cg_mode == getattr(CUDAGraphMode, mode) and calls == [{}]
     assert not model_runner.set_forward_context().get('skip_compiled', False)
+
+
+def _membership_pipeline(monkeypatch, flag, requests, owners=('lease',)):
+    from collections import Counter
+    if flag is None:
+        monkeypatch.delenv('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', raising=False)
+    else:
+        monkeypatch.setenv('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', flag)
+    runner = NS(_kvmem_dispatch_requests=requests, _kvmem_dispatch_relaxed=False,
+                _kvmem_native_attention=NS(counts=Counter()))
+    pipeline = PressurePipeline(NS(runner=runner))
+    for owner in owners:
+        pipeline.active[owner] = NS()
+    return pipeline, runner
+
+
+@pytest.mark.parametrize('flag,requests,owners,boundary', [
+    (None, frozenset({'decoder'}), ('lease',), True),      # Default: any lease forces Python.
+    ('0', frozenset({'decoder'}), ('lease',), True),
+    ('1', None, ('lease',), True),                         # Unannounced batch: unchanged.
+    ('1', frozenset({'decoder', 'lease'}), ('lease',), True),
+    ('1', frozenset({'decoder'}), ('other', 'decoder'), True),
+    ('1', frozenset({'decoder'}), ('lease',), False),      # No owner in the batch: graph kept.
+    ('1', frozenset({'decoder'}), (), False),
+])
+def test_dispatch_boundary_follows_batch_membership(monkeypatch, flag, requests, owners, boundary):
+    pipeline, runner = _membership_pipeline(monkeypatch, flag, requests, owners)
+    assert pipeline.needs_dispatch_boundary is boundary
+    relaxed = flag == '1' and bool(owners) and not boundary
+    assert runner._kvmem_dispatch_relaxed is relaxed
+    assert runner._kvmem_native_attention.counts['dispatch:full_graph_beside_lease'] == int(relaxed)
+
+
+def test_dispatch_members_flag_rejects_other_values(monkeypatch):
+    monkeypatch.setenv('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', 'yes')
+    with pytest.raises(ValueError, match='KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS'):
+        PressurePipeline(NS(runner=NS()))
+
+
+def test_relaxed_dispatch_fails_closed_when_batch_holds_a_lease_owner(monkeypatch):
+    pipeline, _ = _membership_pipeline(monkeypatch, '1', frozenset({'decoder'}))
+    pipeline.verify_relaxed_dispatch(NS(req_ids=['decoder']))
+    with pytest.raises(RuntimeError, match='outstanding pressure pipeline owner'):
+        pipeline.verify_relaxed_dispatch(NS(req_ids=['decoder', 'lease']))
+
+
+@pytest.mark.parametrize('member', [False, True])
+def test_full_graph_survives_a_foreign_lease_only(monkeypatch, member):
+    from vllm.config import CUDAGraphMode
+    from vllm.v1.worker.gpu import model_runner
+    from vllm_kvmem.layerwise_query import install_native_query_dispatch
+    calls = []
+    def dispatch(*args, **kwargs):
+        calls.append(kwargs.copy())
+        return NS(cg_mode=CUDAGraphMode.NONE if kwargs.get('need_eager') else CUDAGraphMode.FULL), None
+    monkeypatch.setattr(model_runner, 'dispatch_cg_and_sync_dp', dispatch)
+    monkeypatch.setattr(model_runner, 'set_forward_context', lambda *a, **k:k)
+    pipeline, runner = _membership_pipeline(monkeypatch, '1',
+        frozenset({'decoder', 'lease'} if member else {'decoder'}))
+    install_native_query_dispatch(NS(has_active=False, pressure=NS(pipeline=pipeline)))
+    result = model_runner.dispatch_cg_and_sync_dp()
+    if member:
+        assert result[0].cg_mode == CUDAGraphMode.NONE and calls == [{}, {'need_eager': True}]
+        assert not runner._kvmem_dispatch_relaxed
+    else:
+        assert result[0].cg_mode == CUDAGraphMode.FULL and calls == [{}]
+        assert runner._kvmem_dispatch_relaxed

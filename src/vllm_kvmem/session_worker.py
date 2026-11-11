@@ -8,6 +8,7 @@ from the shared authority arena; the runner must reserve room for idle authoriti
 import hashlib
 import os
 import time
+import weakref
 from collections import deque
 from itertools import islice
 
@@ -794,13 +795,25 @@ class SessionWorker:
         prompt = self.pool.prompts.get(checkpoint.namespace)
         if prompt is not None:
             frames.append(prompt)
+        from .layerwise_checkpoints import fast_state
+        if fast_state():
+            # Opt-in KVMEM_CHECKPOINT_FAST_STATE: the same count without
+            # rebuilding the frame sets on every idle-history poll.
+            protected_cpu = _protected_archived(checkpoint, frames, authority)
+            if protected_cpu is not None:
+                return allocated, protected_cpu+index_only
         protected = {(slot, generation) for frame in frames for slot, generation, *_ in frame.window.records}
         for frame in frames:
             # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: a per-layer checkpoint holds
             # every layer's records (layerwise_gc_holds.checkpoint_hold).
             layerwise = getattr(frame, 'layerwise_pressure', None)
             if getattr(layerwise, 'gc_hold', None) is not None:
-                protected.update((row[0], row[1]) for rows in layerwise.maps for row in rows)
+                # Opt-in KVMEM_CHECKPOINT_FAST_STATE: the same pairs, built
+                # once per checkpoint instead of on every idle-history poll.
+                from .layerwise_checkpoints import map_pairs
+                pairs = map_pairs(layerwise)
+                protected.update(pairs if pairs is not None else
+                                 ((row[0], row[1]) for rows in layerwise.maps for row in rows))
         cfg = authority.memory.config
         for record in islice(authority.records.values(), cfg.sink_blocks):
             if record.history_begin < cfg.sink_blocks*cfg.block_tokens:
@@ -846,3 +859,80 @@ class SessionWorker:
         self._history_idle_queued.clear()
         self._history_capacity_sent.clear()
         return True
+
+
+def _frame_pairs(frame):
+    """(slot, generation) of a frame's window and held layer maps, cached on it.
+
+    The frozenset _history_rows built from ``window.records`` and the layerwise
+    maps on every call. Valid while the frame keeps the same records tuple and
+    the same (immutable) layerwise snapshot; None when it cannot be cached.
+    """
+    store = getattr(frame, '__dict__', None)
+    window = getattr(frame, 'window', None)
+    records = getattr(window, 'records', None)
+    if store is None or type(records) is not tuple:
+        return None
+    layerwise = getattr(frame, 'layerwise_pressure', None)
+    held = getattr(layerwise, 'gc_hold', None) is not None
+    cached = store.get('_history_pairs')
+    if cached is not None and cached[0] is records and cached[2] is held and (
+            cached[1] is None if layerwise is None else
+            cached[1] is not None and cached[1]() is layerwise):
+        return cached[3]
+    pairs = {(slot, generation) for slot, generation, *_ in records}
+    if held:
+        from .layerwise_checkpoints import map_pairs
+        rows = map_pairs(layerwise)
+        pairs.update(rows if rows is not None else
+                     ((row[0], row[1]) for rows in layerwise.maps for row in rows))
+    pairs = frozenset(pairs)
+    try:
+        # A weak reference: the cache must not keep a released checkpoint's
+        # layer snapshot (and its native policy hold) alive.
+        ref = None if layerwise is None else weakref.ref(layerwise)
+    except TypeError:
+        return pairs
+    store['_history_pairs'] = (records, ref, held, pairs)
+    return pairs
+
+
+def _protected_archived(checkpoint, frames, authority):
+    """Archived records among the protected ones, as _history_rows counts them.
+
+    The count over the frames' pairs is reused while the pair sets, the record
+    dict (``records.version``) and every archived flag (``archived_epoch``)
+    are unchanged; the few sink/recent records are examined on every call.
+    None (the caller's original code runs) when a frame cannot be cached.
+    """
+    records = authority.records
+    version = getattr(records, 'version', None)
+    epoch = getattr(authority, 'archived_epoch', None)
+    store = getattr(checkpoint, '__dict__', None)
+    if version is None or epoch is None or store is None:
+        return None
+    groups = []
+    for frame in frames:
+        pairs = _frame_pairs(frame)
+        if pairs is None:
+            return None
+        groups.append(pairs)
+    cached = store.get('_history_archived')
+    if (cached is not None and cached[0] is records and cached[1] == version and cached[2] == epoch and
+            len(cached[3]) == len(groups) and all(ref() is pairs for ref, pairs in zip(cached[3], groups))):
+        base = cached[4]
+    else:
+        keys = groups[0] if len(groups) == 1 else groups[0].union(*groups[1:])
+        get = records.get
+        base = sum(record.archived for record in map(get, keys) if record is not None)
+        store['_history_archived'] = (records, version, epoch, tuple(weakref.ref(pairs) for pairs in groups), base)
+    cfg = authority.memory.config
+    extra = set()
+    for record in islice(records.values(), cfg.sink_blocks):
+        if record.history_begin < cfg.sink_blocks*cfg.block_tokens:
+            extra.add((record.handle.slot, record.handle.generation))
+    for record in islice(reversed(records.values()), cfg.recent_blocks):
+        if record.history_begin+record.count > authority.history_end-cfg.recent_blocks*cfg.block_tokens:
+            extra.add((record.handle.slot, record.handle.generation))
+    return base + sum(key in records and records[key].archived for key in extra
+                      if not any(key in pairs for pairs in groups))

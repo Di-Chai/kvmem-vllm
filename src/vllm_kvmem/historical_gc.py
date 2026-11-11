@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 # Added capacity in the two bulk and two decode D2H slots. Only relevant
 # Question rows and generated rows are transmitted, never the whole history.
 REDUNDANCY_Q_SLOT_BYTES = 64 * 1024**2
-REDUNDANCY_Q_MAX_SLOT_BYTES = 256 * 1024**2
+# One slot must hold an all-Question batch for thinking_only: 16424 tokens x
+# 4 layers x 24 heads x 256 x BF16 is 770 MiB. Host staging only.
+REDUNDANCY_Q_MAX_SLOT_BYTES = 1024**3
 REDUNDANCY_Q_MAX_SLOTS = 4
 
 

@@ -122,6 +122,8 @@ class PressurePipeline:
         self.preforward = getattr(pressure, 'pipeline_preforward', False)
         self.progress = getattr(pressure, 'pipeline_progress', False)
         self.progress_requests = None
+        self.dispatch_members = dispatch_batch_members()
+        self.fresh_handoff_wait = fresh_handoff_wait()
         self.prepared_condition = Condition()
 
     def install(self):
@@ -396,24 +398,35 @@ class PressurePipeline:
                 # the original jobs map no longer contains that done job.
                 # Preserve one copy lane also without a maintenance policy.
                 continue
+            fresh = False
             if job.stage in ('prepare', 'assembly_wait'):
                 before = job.stage
                 refresh.step(job)  # Existing publication, page, lane and byte checks.
                 refresh.emit(job, 'pipeline_handoff_prime', previous_stage=before, boundary=boundary)
+                fresh = job.stage == 'assembly'
             if job.stage != 'assembly' or job.future is None:
                 continue
             if not self.progress:
                 deadline = time.perf_counter() + max_wait_seconds
-            from .gil_gate import engine_waiting
-            with self.prepared_condition, engine_waiting():
-                while getattr(job, 'layerwise_pipeline', None) is None:
-                    if job.future.done():
-                        job.future.result()  # Do not swallow preparation failures.
-                        break
-                    remaining = deadline - time.perf_counter()
-                    if remaining <= 0:
-                        break
-                    self.prepared_condition.wait(min(.001, remaining))
+            if fresh and not self.fresh_handoff_wait:
+                # The producer was submitted in this very call: its plan takes
+                # longer than the bounded wait about half the time, and nearly
+                # always other requests can run meanwhile. Do not hold the
+                # engine; a later boundary (or the idle schedule wait, when
+                # nothing else is runnable) acknowledges the prepared plan.
+                if job.future.done():
+                    job.future.result()  # Do not swallow preparation failures.
+            else:
+                from .gil_gate import engine_waiting
+                with self.prepared_condition, engine_waiting():
+                    while getattr(job, 'layerwise_pipeline', None) is None:
+                        if job.future.done():
+                            job.future.result()  # Do not swallow preparation failures.
+                            break
+                        remaining = deadline - time.perf_counter()
+                        if remaining <= 0:
+                            break
+                        self.prepared_condition.wait(min(.001, remaining))
             dispatched = self.dispatch(refresh, job)
             refresh.emit(job, 'pipeline_handoff_attempt', dispatched=dispatched,
                 host_seconds=time.perf_counter()-started,
@@ -431,7 +444,31 @@ class PressurePipeline:
 
     @property
     def needs_dispatch_boundary(self):
-        return bool(self.active)
+        """Whether a whole-model FULL graph replay must give way to Python.
+
+        The per-layer guards wait only for leases whose owner is in the batch
+        being run. With KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS=1 a batch that
+        carries no lease owner therefore keeps its graph; without the flag, or
+        when the runner did not announce the batch, any lease forces Python.
+        """
+        if not self.active:
+            return False
+        requests = getattr(self.runner, '_kvmem_dispatch_requests', None)
+        if not self.dispatch_members or requests is None:
+            return True
+        if any(rid in requests for rid in self.active):
+            return True
+        # prepare_attn re-checks the prepared batch before the graph replays.
+        self.runner._kvmem_dispatch_relaxed = True
+        native = getattr(self.runner, '_kvmem_native_attention', None)
+        if native is not None:
+            native.counts['dispatch:full_graph_beside_lease'] += 1
+        return False
+
+    def verify_relaxed_dispatch(self, batch):
+        """Fail closed if a kept FULL graph would bypass a lease of its batch."""
+        if any(rid in self.active for rid in getattr(batch, 'req_ids', ())):
+            raise RuntimeError('A FULL graph batch contains an outstanding pressure pipeline owner')
 
     def wait_layer(self, index):
         if not self.active:
@@ -472,9 +509,12 @@ class PressurePipeline:
             from .layerwise_checkpoints import sessions_enabled
             if not sessions_enabled():
                 raise ValueError('Pipeline qualification requires immutable prompt checkpoints')
-        if sessions is not None and (rid in sessions.captures or rid in sessions.terminal_captures):
+        if sessions is not None and (rid in sessions.captures or rid in sessions.terminal_captures or
+                                     updates_live_window(sessions, rid, job.history)):
             # A checkpoint copies the whole window before entering any model
-            # layer. It cannot use per-layer attention guards.
+            # layer. It cannot use per-layer attention guards. The same holds
+            # when selection_committed below refreshes a live P/M checkpoint at
+            # this exact position (update_live_window -> checkpoint_window).
             if not lease.query():
                 if not getattr(job, 'pipeline_checkpoint_wait_reported', False):
                     refresh.emit(job, 'pipeline_checkpoint_boundary_wait')
@@ -554,6 +594,38 @@ class PressurePipeline:
             job.layerwise_select_layer = None
             lease.job = lease.plan = None  # Break cross-thread ownership cycles.
             del self.active[rid]
+
+
+def updates_live_window(sessions, request_id, history):
+    """True when selection_committed(request_id, history) will snapshot the whole
+    selected window into the live P/M checkpoint at this exact position
+    (SessionWorker.selection_committed -> update_live_window -> checkpoint_window).
+    That snapshot requires every layer to be materialized, so an early ACK must
+    wait for the whole lease, exactly like a checkpoint capture."""
+    if getattr(getattr(sessions, 'options', None), 'session_freeze_prompt', False):
+        return False   # frozen prompts never adopt a later window
+    from .pressure_promise import _checkpoint_at
+    return _checkpoint_at(sessions, request_id, history)
+
+
+def dispatch_batch_members():
+    """KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS=1: an outstanding materialization
+    forces Python execution only for batches that contain its owner. Default
+    off: any outstanding materialization disables FULL graph replay."""
+    value = os.getenv('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS must be 0 or 1')
+    return value == '1'
+
+
+def fresh_handoff_wait():
+    """KVMEM_PRESSURE_HANDOFF_FRESH_WAIT=0: post-forward does not wait for the
+    plan of a producer it has just submitted (results are identical; only the
+    boundary at which the handoff is acknowledged changes). Default 1."""
+    value = os.getenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '1')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT must be 0 or 1')
+    return value == '1'
 
 
 def swaps_enabled():

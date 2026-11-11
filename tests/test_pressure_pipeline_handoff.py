@@ -102,3 +102,73 @@ def test_lane_or_byte_admission_refusal_does_not_wait_or_force_producer():
     pipeline.prime_post_forward(refresh)
     assert job.future is None and not job.done
     assert trace[0]=='admission-deferred' and not any(x=='dispatch' for x in trace)
+
+
+class Unwaited:
+    """A condition that fails the test when anything waits on it."""
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def wait(self, *a): raise AssertionError('A just-submitted producer must not be waited for')
+
+
+def test_fresh_wait_flag_is_validated_and_defaults_to_the_bounded_wait(monkeypatch):
+    from vllm_kvmem import pressure_pipeline
+    monkeypatch.delenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', raising=False)
+    assert pressure_pipeline.fresh_handoff_wait() and handoff()[0].fresh_handoff_wait
+    monkeypatch.setenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '0')
+    assert not pressure_pipeline.fresh_handoff_wait() and not handoff()[0].fresh_handoff_wait
+    monkeypatch.setenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '2')
+    with pytest.raises(ValueError, match='FRESH_WAIT'):
+        pressure_pipeline.fresh_handoff_wait()
+
+
+def test_without_fresh_wait_a_just_submitted_producer_is_not_waited_for():
+    pipeline, refresh, job, trace = handoff()
+    pipeline.fresh_handoff_wait = False
+    def step(j):
+        trace.append('existing-step'); j.stage = 'assembly'; j.future = Future()
+    refresh.step = step
+    pipeline.dispatch = lambda r, j: False        # the plan is not prepared yet
+    pipeline.prepared_condition = Unwaited()
+    pipeline.prime_post_forward(refresh, max_wait_seconds=10.)
+    assert not job.done and not job.future.done()
+    assert trace[0] == 'existing-step' and trace[1][0] == 'pipeline_handoff_prime'
+    assert trace[-1][0] == 'pipeline_handoff_attempt'
+    assert trace[-1][1]['dispatched'] is False and trace[-1][1]['prepared'] is False
+
+
+def test_without_fresh_wait_an_already_prepared_plan_is_still_acknowledged_at_once():
+    pipeline, refresh, job, trace = handoff()     # its step publishes the plan synchronously
+    pipeline.fresh_handoff_wait = False
+    pipeline.prepared_condition = Unwaited()
+    pipeline.prime_post_forward(refresh)
+    assert job.done and trace[-1][1]['dispatched'] and trace[-1][1]['prepared']
+
+
+def test_without_fresh_wait_an_earlier_producer_keeps_the_bounded_wait(monkeypatch):
+    from vllm_kvmem import pressure_pipeline
+    pipeline, refresh, job, trace = handoff()
+    pipeline.fresh_handoff_wait = False
+    job.stage = 'assembly'; job.future = Future()   # submitted at an earlier boundary
+    now = [0.]; monkeypatch.setattr(pressure_pipeline.time, 'perf_counter', lambda: now[0])
+    waits = []
+    class Clock:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def wait(self, seconds):
+            waits.append(seconds); now[0] += .01
+            if len(waits) == 3: job.layerwise_pipeline = object()
+    pipeline.prepared_condition = Clock()
+    pipeline.prime_post_forward(refresh, max_wait_seconds=.064)
+    assert len(waits) == 3 and job.done and trace[-1][1]['dispatched']
+
+
+def test_without_fresh_wait_a_failed_just_submitted_producer_still_raises():
+    pipeline, refresh, job, trace = handoff()
+    pipeline.fresh_handoff_wait = False
+    def step(j):
+        j.stage = 'assembly'; j.future = Future(); j.future.set_exception(OSError('failed source'))
+    refresh.step = step
+    with pytest.raises(OSError, match='failed source'):
+        pipeline.prime_post_forward(refresh)
+    assert not job.done

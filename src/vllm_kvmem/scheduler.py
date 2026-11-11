@@ -127,6 +127,17 @@ class KVMemScheduler(Scheduler):
             self.prefill_decode_share = value
         self._share_credit = 0.
         self._share_previous = None
+        # Opt-in KVMEM_PREFILL_DECODE_BURST: decoders never ride prefill steps;
+        # their time share is spent in consecutive decode-only steps instead.
+        burst = os.getenv('KVMEM_PREFILL_DECODE_BURST', '0')
+        if burst not in ('0', '1'):
+            raise ValueError('KVMEM_PREFILL_DECODE_BURST must be 0 or 1')
+        if burst == '1' and self.prefill_decode_share is None:
+            raise ValueError('KVMEM_PREFILL_DECODE_BURST needs KVMEM_PREFILL_DECODE_SHARE')
+        self.prefill_decode_burst = burst == '1'
+        self._burst_active = False
+        self._burst_missed = None
+        self._burst_stats = dict(bursts=0, decode_steps=0, held_steps=0, held_decoders=0, misses=0)
         self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
@@ -484,7 +495,8 @@ class KVMemScheduler(Scheduler):
         temporary.write_text(json.dumps({"queries": self._scheduled_queries,
             "prefill_cadence": self.prefill_cadence,
             "archive_capacity_deferrals": self.archive_admission.deferred if getattr(self, 'archive_admission', None) else 0,
-            "throttle_requests": self._cadence_requested}))
+            "throttle_requests": self._cadence_requested,
+            **({"decode_burst": self._burst_stats} if getattr(self, 'prefill_decode_burst', False) else {})}))
         temporary.replace(path / 'scheduled_queries.json')
 
     def update_from_output(self, *args, **kwargs):
@@ -1484,6 +1496,8 @@ class KVMemScheduler(Scheduler):
         if not getattr(self, '_bounded_target', False) or (
                 getattr(self, 'prefill_cadence', 1) == 1 and share is None):
             return False
+        if getattr(self, 'prefill_decode_burst', False):
+            return False    # decided by _burst_begin, before the step is prepared
         # Opt-in KVMEM_PREFILL_CADENCE_MIN_DECODERS: a decode-only turn serves
         # every ready decoder at about one decode step's cost, so it is only
         # requested when at least that many requests are ready to decode.
@@ -1523,6 +1537,97 @@ class KVMemScheduler(Scheduler):
         throttle = self._share_credit > 0
         self._share_previous = (now, throttle)
         return throttle
+
+    SHARE_BURST_SECONDS = .25
+
+    def _burst_begin(self, now=None):
+        """Opt-in KVMEM_PREFILL_DECODE_BURST: keep decode rows out of prefill steps.
+
+        While a prefill can be scheduled, ready decoders no longer ride it:
+        they are held out of that step (it stays a pure prefill step) and earn
+        the usual time-share credit. Once SHARE_BURST_SECONDS is owed they take
+        consecutive decode-only steps until the credit is spent. With nothing
+        to arbitrate (no ready decoder, no schedulable prefill, capacity-bound
+        admission) scheduling is unchanged and decode steps are not charged, so
+        the share is the GPU fraction decoders are guaranteed, not a ceiling.
+        No query size, request order or selection input changes.
+        Returns (throttle, holds); the holds must be passed to _burst_end.
+        """
+        share = self.prefill_decode_share
+        step = self.current_step + 1    # native schedule increments before its checks
+        blocked = getattr(self.connector, 'publication_blocked', ())
+
+        def ready(request):
+            return (request.request_id not in self.transactions and request.request_id not in blocked
+                    and not request.is_finished() and not request.num_in_flight_tokens
+                    and request.next_decode_eligible_step <= step)
+
+        decoding = [r for r in self.running if not r.is_prefill_chunk
+                    and r.num_computed_tokens >= r.num_prompt_tokens and not r.is_finished()]
+        decoders = [r for r in decoding if ready(r)]
+        pending = [r for r in self.running if r.num_computed_tokens < r.num_prompt_tokens]
+        prefills = [r.request_id for r in pending if ready(r)]
+        waiting = self._waiting_requests()
+        if len(self.running) < self.scheduler_config.max_num_seqs:
+            prefills += [r.request_id for r in waiting]
+        now = time.perf_counter() if now is None else now
+        previous, self._share_previous = self._share_previous, None
+        if previous is not None:
+            started, decode_turn = previous
+            elapsed = max(0., now - started)
+            if decode_turn:
+                self._share_credit -= elapsed
+            else:
+                self._share_credit = min(self.SHARE_CREDIT_LIMIT,
+                                         self._share_credit + elapsed * share / (1 - share))
+        if not decoding or not (pending or waiting):
+            # One side is gone: nothing is owed. A decoder that is only busy
+            # (its own refresh, an in-flight step) keeps the credit it earned.
+            self._share_credit, self._burst_active = 0., False
+        signature = frozenset(prefills)
+        if signature != self._burst_missed:
+            self._burst_missed = None
+        if (not decoders or not prefills or self.prefill_capacity_bound or
+                self._burst_missed is not None):
+            return False, None
+        if self._burst_active:
+            self._burst_active = self._share_credit > 0
+        elif self._share_credit >= self.SHARE_BURST_SECONDS:
+            self._burst_active = True
+            self._burst_stats['bursts'] += 1
+        throttle = self._burst_active
+        self._share_previous = (now, throttle)
+        self._cadence_requested += int(throttle)
+        if throttle:
+            self._burst_stats['decode_steps'] += 1
+            return True, None
+        # The hold expires by itself at the next step; transactions that begin
+        # meanwhile save and restore it like any other eligibility step.
+        hold = step + 1
+        held = [(r, r.next_decode_eligible_step) for r in decoders]
+        for request in decoders:
+            request.next_decode_eligible_step = hold
+        self._burst_stats['held_steps'] += 1
+        self._burst_stats['held_decoders'] += len(held)
+        return False, (hold, signature, held)
+
+    def _burst_end(self, holds, output=None):
+        if holds is None:
+            return
+        hold, signature, held = holds
+        for request, previous in held:
+            if request.next_decode_eligible_step == hold:
+                request.next_decode_eligible_step = previous
+        if output is None:
+            return
+        ids = {request.request_id for request, _ in held}
+        if all(rid in ids for rid in output.num_scheduled_tokens):
+            # The prefill that justified the hold was not admitted (capacity,
+            # restore credit, a policy gate). Do not hold for this same set
+            # again, and neither earn nor spend for a step that ran nothing.
+            self._burst_missed = signature
+            self._share_previous = None
+            self._burst_stats['misses'] += 1
 
     def _schedule_time_acks(self):
         """Apply pressure handoffs that became ready after the last feedback.
@@ -1569,29 +1674,37 @@ class KVMemScheduler(Scheduler):
             self.connector.active_residency.expire()
         if getattr(self, 'offline_policy', None) is not None:
             self.offline_policy.prepare()
-        self._prepare_coalescing()
-        self._prepare_logical_prefill()
-        self._prepare_phase()
-        self._prepare_prefill_budget()
-        armed = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "armed"
-        if not getattr(self, "_bounded_target", False) and not self._probe_submitted and armed.is_file():
-            for request in self.running:
-                if request.num_computed_tokens == request.num_prompt_tokens and request.num_output_tokens:
-                    self.begin_refresh(request, request.num_computed_tokens)
-                    self._probe_submitted = True
-                    break
-        if getattr(self, '_bounded_target', False):
-            self.kv_cache_manager.begin_step()
+        holds = output = None
+        if getattr(self, 'prefill_decode_burst', False) and getattr(self, '_bounded_target', False):
+            # Before any step preparation: held decoders must reserve no rows.
+            burst, holds = self._burst_begin()
+            throttle_prefills = throttle_prefills or burst
         try:
-            output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
-        except BaseException:
-            self._reconcile_coalescing()
-            raise
-        finally:
-            if getattr(self.connector, 'restore_admission', None) is not None:
-                self.connector.restore_admission.end_step()
+            self._prepare_coalescing()
+            self._prepare_logical_prefill()
+            self._prepare_phase()
+            self._prepare_prefill_budget()
+            armed = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "armed"
+            if not getattr(self, "_bounded_target", False) and not self._probe_submitted and armed.is_file():
+                for request in self.running:
+                    if request.num_computed_tokens == request.num_prompt_tokens and request.num_output_tokens:
+                        self.begin_refresh(request, request.num_computed_tokens)
+                        self._probe_submitted = True
+                        break
             if getattr(self, '_bounded_target', False):
-                self.kv_cache_manager.end_step()
+                self.kv_cache_manager.begin_step()
+            try:
+                output = super().schedule(throttle_prefills or self._throttle_mixed_prefill())
+            except BaseException:
+                self._reconcile_coalescing()
+                raise
+            finally:
+                if getattr(self.connector, 'restore_admission', None) is not None:
+                    self.connector.restore_admission.end_step()
+                if getattr(self, '_bounded_target', False):
+                    self.kv_cache_manager.end_step()
+        finally:
+            self._burst_end(holds, output)
         self._reconcile_coalescing(output)
         self._record_coalescing(output)
         self._record_phase(output)

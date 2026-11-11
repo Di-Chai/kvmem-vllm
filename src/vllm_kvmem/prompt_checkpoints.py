@@ -25,6 +25,11 @@ class CheckpointPhase(Enum):
 def token_bytes(tokens, count, *, native=False):
     if count <= 0 or len(tokens) <= count:
         raise ValueError('Prompt checkpoint must leave at least one token for native prefill')
+    if not native and type(tokens) in (tuple, list):
+        # Opt-in KVMEM_CHECKPOINT_FAST_STATE: the same bytes and errors from
+        # the extension for callers without the native capture option.
+        from .layerwise_checkpoints import fast_state
+        native = fast_state()
     if native and type(tokens) in (tuple, list):
         from ._native import checkpoint_token_bytes
         return checkpoint_token_bytes(tokens, count)

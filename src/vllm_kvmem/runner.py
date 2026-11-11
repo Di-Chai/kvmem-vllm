@@ -197,6 +197,8 @@ def make_probe_runner(base):
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
             from .profile_scopes import install_profile_scopes
             install_profile_scopes(self)
+            from .fast_request_staging import install as install_request_staging
+            install_request_staging(self)      # opt-in KVMEM_FAST_REQUEST_STAGING
             if options.host_stage_timing:
                 from .host_trace import install_host_trace
                 install_host_trace(self, self._kvmem_probe_output)
@@ -256,9 +258,10 @@ def make_probe_runner(base):
                 self._kvmem_prewarm_checkpoint_payloads('kv_cache_init')
             return result
 
-        def capture_model(self):
-            result = super().capture_model()
-            self._kvmem_prewarm_checkpoint_payloads('after_graph_capture')
+        def capture_model(self, *args, **kwargs):
+            result = super().capture_model(*args, **kwargs)
+            if not kwargs.get('profile_only', False):
+                self._kvmem_prewarm_checkpoint_payloads('after_graph_capture')
             return result
 
         def _kvmem_prewarm_checkpoint_payloads(self, stage):
@@ -378,6 +381,9 @@ def make_probe_runner(base):
             decisions = getattr(self, '_kvmem_active_decisions', None)
             if decisions is not None and not projecting:
                 decisions.before_attention(public)
+            if getattr(self, '_kvmem_dispatch_relaxed', False):
+                self._kvmem_dispatch_relaxed = False
+                self._kvmem_layerwise_pressure.pipeline.verify_relaxed_dispatch(input_batch)
             self._kvmem_last_batch = input_batch
             self._kvmem_window_batch = None
             if self._kvmem_window_adapter is not None:
@@ -480,11 +486,18 @@ def make_probe_runner(base):
                 # replaying a public-only FULL graph is excluded for this turn.
                 kwargs['is_profile'] = True
             self._kvmem_public_action_forward = observe_work
+            # Native dispatch runs before prepare_inputs. Announce this batch's
+            # owners so an outstanding pressure pipeline of other owners need
+            # not force Python execution (KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS).
+            self._kvmem_dispatch_requests = (None if kwargs.get('dummy_run') else
+                frozenset(scheduler_output.num_scheduled_tokens))
             try:
                 try:
                     result = super().execute_model(scheduler_output, **kwargs)
                 finally:
                     self._kvmem_public_action_forward = False
+                    self._kvmem_dispatch_requests = None
+                    self._kvmem_dispatch_relaxed = False
                 state = getattr(self, 'execute_model_state', None)
                 if cobatch is not None and cobatch.frame is not None:
                     state = cobatch.complete(state)

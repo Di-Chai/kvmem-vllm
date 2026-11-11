@@ -69,15 +69,19 @@
   缓存，再扣所有可能存活 scope 的特征/Query 缓存、策略元数据和共享 Query 暂存。
   暂存保守预留 `8 × query_capture_bytes`，默认 512 MiB；不会把这些容量重复作为可准入的历史 KV。
 - Query 只传输公开问题涉及的 prefill 行和实际接受的 target decode 行。单传输槽
-  上限由 `query_capture_bytes` 指定，默认 64 MiB、允许正整数至 256 MiB，最多四槽；
+  上限由 `query_capture_bytes` 指定，默认 64 MiB、允许正整数至 1 GiB，最多四槽；
   超限使该问题观测无效，不截断后冒充完整问题。启用 `thinking_only` 时还会在启动
   检查单槽足以容纳实际 scheduler 批量上限的 BF16 Query；atomic Query 不受普通 prefill chunk 限制。
   MTP 拒绝行、未接受输入、私有重放不会进入观测。
 - Query 必须在真实前向中完整采集。工具续接仅在已验证相同问题/前缀时复用；缺少
   已缓存问题的观测时保护历史，不为了 GC 额外重放用户输入。
-- 当前明确拒绝 `offline_prefill_coalescing`、`prefill_physical_coalescing`、
-  `prefill_publication_pipeline`、`early_capture_slot_release`、`prefill_capture_ahead`
-  组合。其接受行发布生命周期需要另行验证。LRU 不增加这些限制。
+- 当前明确拒绝 `offline_prefill_coalescing`、`early_capture_slot_release`、
+  `prefill_capture_ahead` 组合。其接受行发布生命周期需要另行验证。LRU 不增加这些限制。
+- `prefill_physical_coalescing`（含 multi-owner）与 `prefill_publication_pipeline` 可以
+  同时开启（2026-11-10）。物理合并的 owner 按逻辑 span 逐段提交 KV：问题 Q 行仍随
+  同一 DMA 传输，在该 owner 最后一段提交后按实际保留前缀接受一次；Q/thinking 侧数据
+  位于 KV 平面之后，其字节数计入严格的载荷长度校验。block graph 仍须关闭，
+  因此这类 profile 使用 `graph_mode="off"` 加 `prefill_physical_graphless=true`。
 - 原有 sink/recent、checkpoint、GPU 使用中及在途读等保护仍有效。这里只删除
   满足现有机制条件的历史块；不改变 picker、KV 预算、图传播或模型采样。
 

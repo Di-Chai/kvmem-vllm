@@ -44,6 +44,7 @@ _OWNERS = {}            # id(native scope) -> owner keys currently pausing it
 def _own(scope, key, paused):
     with _LOCK:
         owners = _OWNERS.setdefault(id(scope), set())
+        held = bool(owners)
         if paused:
             owners.add(key)
         else:
@@ -51,7 +52,20 @@ def _own(scope, key, paused):
         active = bool(owners)
         if not active:
             del _OWNERS[id(scope)]
+        if held and active and _keep_request():
+            # Opt-in KVMEM_CHECKPOINT_FAST_STATE. The scope has been paused
+            # without interruption since its current request. Every native
+            # pause_policy call starts a new request and discards the worker's
+            # acknowledgement, so repeating it made each wait_paused after an
+            # early pause() sleep for another worker tick (~5 ms). One tick
+            # that saw the pause already excludes an in-flight decision.
+            return
         scope.pause_policy(active)
+
+
+def _keep_request():
+    from .layerwise_checkpoints import fast_state
+    return fast_state()
 
 
 def pause(authority, key='select'):
@@ -98,22 +112,46 @@ class CheckpointHold:
 _CHECKPOINT_HOLDS = weakref.WeakSet()
 
 
-def checkpoint_hold(authority, maps):
+def _native_handles(scope, name, pairs):
+    """(native call, its argument) protecting the given (slot, generation) pairs.
+
+    Opt-in KVMEM_SESSION_FAST_TURN: ``<name>_pairs`` takes the tuples as they
+    are; otherwise one Handle per record goes to ``<name>``.
+    """
+    from .layerwise_checkpoints import fast_turn
+    if fast_turn() and type(pairs) is list:
+        fast = getattr(scope, name + '_pairs', None)
+        if fast is not None:
+            def call(rows):
+                hold = fast(rows)
+                if hold is NotImplemented:      # not plain int tuples: the original call
+                    hold = getattr(scope, name)(_handles(rows))
+                return hold
+            return call, pairs
+    return getattr(scope, name), _handles(pairs)
+
+
+def _handles(pairs):
+    from . import _native
+    return [_native.Handle(slot, generation) for slot, generation in pairs]
+
+
+def checkpoint_hold(authority, maps, pairs=None):
     """A policy hold on every record of a stored per-layer checkpoint.
 
     Taken under a paused scope (no retirement decision in flight), from the
     live, window-held records of the capturing request. None when inactive.
+    ``pairs`` is window_handles(maps) when the caller already computed it.
     """
     scope = scope_of(authority)
     if scope is None:
         return None
-    from . import _native
-    handles = [_native.Handle(slot, generation) for slot, generation in window_handles(maps)]
+    protect, handles = _native_handles(scope, 'protect', window_handles(maps) if pairs is None else pairs)
     if not handles:
         return None
     try:
         wait_paused(authority, key='checkpoint')
-        hold = scope.protect(handles)
+        hold = protect(handles)
     finally:
         _own(scope, 'checkpoint', False)
     if hold is None:
@@ -126,6 +164,12 @@ def window_handles(groups):
 
     ``groups`` holds records (``.handle``) or map rows (slot, generation, ...).
     """
+    from .layerwise_checkpoints import fast_native
+    native = fast_native()
+    if native is not None:                 # opt-in KVMEM_CHECKPOINT_FAST_STATE
+        handles = native.unique_handles(groups, True)
+        if handles is not None:            # plain map rows only; same sorted set
+            return handles
     unique = set()
     for group in groups:
         for item in group:
@@ -154,10 +198,9 @@ class WindowHolds:
         scope = scope_of(authority)
         if scope is None:
             return False
-        from . import _native
-        handles = [_native.Handle(slot, generation) for slot, generation in window_handles(groups)]
+        protect, handles = _native_handles(scope, 'protect_current', window_handles(groups))
         try:
-            hold = scope.protect_current(handles) if handles else None
+            hold = protect(handles) if handles else None
             if handles and hold is None:
                 # The selection ran under the acknowledged pause, so every
                 # record was live; a refusal means a protocol violation.

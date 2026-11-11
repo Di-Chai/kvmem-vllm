@@ -15,8 +15,9 @@ historical GC 机制。已准入的 GPU 窗口不由策略直接释放。
 
 以下是已有合格 CPU historical GC profile 中的替换片段。生产 profile 仍须保留
 request planning、async seal/retirement、CPU history coordination、owned sessions，
-并关闭旧 `repository_gc` 和 block graph。原有 redundancy 不支持的 prefill
-publication/coalescing 组合仍然拒绝。
+并关闭旧 `repository_gc` 和 block graph。`prefill_physical_coalescing` 与
+`prefill_publication_pipeline` 可以同时开启（需 `prefill_physical_graphless=true`）；
+`offline_prefill_coalescing`、`early_capture_slot_release`、`prefill_capture_ahead` 仍然拒绝。
 
 ```json
 {
@@ -63,7 +64,7 @@ publication/coalescing 组合仍然拒绝。
 | `refresh_before_rank` | 初次 Query 评分完成后、代表优先级排序前，最多取得一次最新生成观察并补评分。 |
 | `epoch_peak` | 同一问题内保留策略已观察到的重要性峰值，按 slot/generation/feature version/question epoch 隔离。 |
 | `lru_fallback` | 冗余阶段结束并收到提交结果后，仍有容量缺口才启动真正 LRU；范围包括非 thinking 历史。 |
-| `query_capture_bytes` | 单个公开 Query 捕获槽的字节上限；默认 64 MiB，允许正整数至 256 MiB。共享 staging 预算为该值的 8 倍。 |
+| `query_capture_bytes` | 单个公开 Query 捕获槽的字节上限；默认 64 MiB，允许正整数至 1 GiB。共享 staging 预算为该值的 8 倍。 |
 
 `allow_lossy_fallback` 是旧的低重要性后备，与 `lru_fallback` 互斥。新 LRU 后备
 按最近使用时间排序，不用重要性代替冷热；它也适用于 ready-slot 预约及 Query
@@ -188,8 +189,17 @@ LRU heap 后每槽 192 bytes；thinking 分类再加每槽 512 bytes。共享 Qu
 普通 prefill chunk 限制，因此只缩小 `prefill_chunk_tokens` 不能替代这项容量检查。
 例如 4 层、24 个 Query heads、head_dim 256 的 BF16 捕获，在批量上限 4136 时
 需要 203,292,672 bytes（193.875 MiB）；可配置 `query_capture_bytes=268435456`，
-对应共享 Query staging 预留 2 GiB。未启用 thinking 的原 redundancy 保留原有行为：
+对应共享 Query staging 预留 2 GiB。物理合并 prefill 把批量上限提高到 16424 时，
+同一几何需要 807,272,448 bytes（约 770 MiB），对应预留约 6.46 GiB；这些是 pinned
+主机内存与记账预留，不占 GPU 常驻显存（bulk 传输池每槽按该上限分配，decode 传输池
+只按 decode 行数分配）。未启用 thinking 的原 redundancy 保留原有行为：
 运行时超槽上限会使该问题观测无效，并增加 `overflow_packets`，不会截断后冒充完整 Query。
+
+物理合并（`prefill_physical_coalescing`）的 owner 不下载 thinking 输入行：它前向的正是
+会话绑定里 `tokens` 在各逻辑位置上的内容（admission 已校验范围），发布端在每个逻辑
+span 提交后直接用这些 token 与位置做分类，结果与下载设备行逐值相同。设置
+`KVMEM_THINKING_SYNTH_VERIFY=1` 时仍下载设备行并逐值比对，不一致即报错；计数见
+`thinking_capture_stats` 的 `synthesized_rows` / `synthesized_verified_rows`。
 
 原生策略回归覆盖直接代表非传递性、两级 LRU、回执后重新检查压力、缺 Query、
 字节/槽位预约、shadow、一次刷新和问题 epoch 峰值。组件通过只能证明这些约束，

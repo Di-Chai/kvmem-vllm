@@ -137,6 +137,111 @@ def test_share_turn_caps_credit_and_spends_decode_time():
     assert abs(scheduler._share_credit + .1) < 1e-9
 
 
+def burst_scheduler(share=.2):
+    scheduler, decoder, _ = setup_scheduler()
+    scheduler._bounded_target = True
+    scheduler.prefill_cadence = 1
+    scheduler.prefill_decode_share = share               # .2: credit = P / 4
+    scheduler.prefill_decode_burst = True
+    scheduler.prefill_cadence_min_decoders = 2           # ignored: the share bounds the cost
+    scheduler._share_credit, scheduler._share_previous = 0., None
+    scheduler._burst_active, scheduler._burst_missed = False, None
+    scheduler._burst_stats = dict(bursts=0, decode_steps=0, held_steps=0, held_decoders=0, misses=0)
+    scheduler._mixed_steps = scheduler._cadence_requested = 0
+    scheduler.current_step = 7
+    scheduler.prefill_capacity_bound = False
+    scheduler.scheduler_config = SimpleNamespace(max_num_seqs=2)
+    decoder.is_prefill_chunk = False
+    prefill = SimpleNamespace(request_id="p", num_in_flight_tokens=0, num_prompt_tokens=64,
+                              num_computed_tokens=32, next_decode_eligible_step=0,
+                              is_finished=lambda: False, is_prefill_chunk=True)
+    scheduler.running = [decoder, prefill]
+    scheduler.waiting = []
+    return scheduler, decoder, prefill
+
+
+def ran(*ids):
+    return SimpleNamespace(num_scheduled_tokens={rid: 1 for rid in ids})
+
+
+def test_decode_burst_holds_decoders_out_of_prefill_steps_and_spends_credit_in_a_run():
+    """KVMEM_PREFILL_DECODE_BURST: prefill steps stay pure while the share accrues;
+    the decoders then take consecutive decode-only steps until it is spent."""
+    scheduler, decoder, prefill = burst_scheduler()
+    assert not scheduler._throttle_mixed_prefill()        # the burst path decides instead
+
+    def step(now):
+        throttle, holds = scheduler._burst_begin(now=now)
+        held = decoder.next_decode_eligible_step
+        scheduler._burst_end(holds, ran('a') if throttle else ran('p'))
+        assert decoder.next_decode_eligible_step == 7     # every hold is released
+        return throttle, held
+
+    assert step(0.) == (False, 9)                         # held: not eligible at step 8
+    assert step(1.) == (True, 7)                          # 1 s prefill earned 0.25 s: burst
+    assert step(1.125) == (True, 7)                       # 0.125 s left
+    assert step(1.25) == (False, 9)                       # spent: prefill again, held
+    assert step(1.75) == (False, 9)                       # 0.125 s owed: below the burst size
+    assert step(2.25) == (True, 7)                        # 0.25 s owed
+    assert scheduler._cadence_requested == 3
+    assert scheduler._burst_stats == dict(bursts=2, decode_steps=3, held_steps=3, held_decoders=3, misses=0)
+
+
+def test_decode_burst_only_arbitrates_between_ready_decoders_and_schedulable_prefill():
+    scheduler, decoder, prefill = burst_scheduler()
+    assert scheduler._burst_begin(now=0.)[1] is not None
+    decoder.next_decode_eligible_step = 7
+    scheduler.transactions['p'] = object()                # prefill owner refreshing: decode is free
+    assert scheduler._burst_begin(now=4.) == (False, None)
+    assert decoder.next_decode_eligible_step == 7 and scheduler._share_credit == 1.   # capped, kept
+    assert scheduler._burst_begin(now=5.) == (False, None) and scheduler._share_credit == 1.
+    scheduler.transactions.clear()
+    assert scheduler._burst_begin(now=6.) == (True, None)             # free steps were not charged
+    decoder.num_in_flight_tokens = 1                      # decoder busy: prefill runs, credit kept
+    assert scheduler._burst_begin(now=6.5) == (False, None) and scheduler._share_credit == .5
+    decoder.num_in_flight_tokens = 0
+    scheduler.prefill_capacity_bound = True               # native throttling is off: unchanged
+    assert scheduler._burst_begin(now=7.) == (False, None)
+    scheduler.prefill_capacity_bound = False
+    scheduler.running = [prefill]                         # no decoding request: nothing is owed
+    assert scheduler._burst_begin(now=8.) == (False, None)
+    assert scheduler._share_credit == 0. and not scheduler._burst_active
+    scheduler.running = [decoder]                         # no prefill work either
+    scheduler._share_credit = .5
+    assert scheduler._burst_begin(now=9.) == (False, None) and scheduler._share_credit == 0.
+    waiting = SimpleNamespace(request_id="w")
+    scheduler.waiting = [waiting]                         # a waiting prompt with a free slot counts
+    throttle, holds = scheduler._burst_begin(now=10.)
+    assert not throttle and holds[1] == frozenset({'w'})
+    scheduler._burst_end(holds, ran('w'))
+    scheduler.running = [decoder, prefill]                # no free slot, owner refreshing: no hold
+    scheduler.transactions['p'] = object()
+    assert scheduler._burst_begin(now=11.) == (False, None)
+
+
+def test_decode_burst_hold_survives_a_miss_and_a_transaction():
+    scheduler, decoder, prefill = burst_scheduler()
+    throttle, holds = scheduler._burst_begin(now=0.)
+    assert not throttle and decoder.next_decode_eligible_step == 9
+    scheduler._burst_end(holds, ran())                    # the prefill was not admitted
+    assert decoder.next_decode_eligible_step == 7 and scheduler._burst_stats['misses'] == 1
+    assert scheduler._burst_begin(now=1.) == (False, None)            # same set: decoders run
+    assert scheduler._share_credit == 0.                  # the empty step earned nothing
+    other = SimpleNamespace(request_id="q", num_in_flight_tokens=0, num_prompt_tokens=64,
+                            num_computed_tokens=0, next_decode_eligible_step=0,
+                            is_finished=lambda: False, is_prefill_chunk=True)
+    scheduler.running.append(other)                       # the schedulable set changed: hold again
+    throttle, holds = scheduler._burst_begin(now=2.)
+    assert not throttle and decoder.next_decode_eligible_step == 9
+    scheduler.transactions['a'] = ('command', decoder.next_decode_eligible_step)
+    decoder.next_decode_eligible_step = 2**62             # a refresh began inside the step
+    scheduler._burst_end(holds, ran('p', 'q'))
+    assert decoder.next_decode_eligible_step == 2**62     # left to the transaction
+    throttle, holds = scheduler._burst_begin(now=3.)      # exception path: output is None
+    scheduler._burst_end(holds)
+    assert holds is None                                  # (the decoder is in a transaction)
+
+
 def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
     from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy

@@ -6,6 +6,8 @@ only scheduler-confirmed rows publish mass. No draft or rejected Q contributes.
 """
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import _native
 
 
@@ -47,8 +49,11 @@ def _prepare_history(history, source, pending, accepted, logical, masses):
     if mass_map_enabled():
         if not isinstance(source, (dict, _native.DecodeMassMap)):
             source = history.mass
-        mass_map, samples = _native.prepare_decode_attention_map(source, history.samples, indices, logical,
-                                                                 values, cap)
+        # A row of the layer-batch identity array (KVMEM_NATIVE_DECODE_LAYER_BATCH)
+        # is read natively; a list goes through the original entry point.
+        prepare = (_native.prepare_decode_attention_map_targets if type(logical) is np.ndarray
+                   else _native.prepare_decode_attention_map)
+        mass_map, samples = prepare(source, history.samples, indices, logical, values, cap)
         return NativeDecodeHistory(mass_map, samples, begin + accepted, history.chunks + 1)
     if isinstance(source, _native.DecodeMassMap if hasattr(_native, 'DecodeMassMap') else ()):
         source = history.mass
@@ -185,15 +190,38 @@ def layer_map_enabled():
     return value == '1' and hasattr(_native, 'decode_identities_from_map')
 
 
+def layer_batch_enabled():
+    """KVMEM_NATIVE_DECODE_LAYER_BATCH=1: all layers' decode identities in one
+    native call, kept as one int64 [layers, columns] array that the accepted-mass
+    update reads directly (no per-layer list of Python ints). Layer 0 is also
+    returned as the usual list of ints for ``pending.history``.
+
+    Effective only together with KVMEM_NATIVE_DECODE_LAYER_MAP=1 and
+    KVMEM_NATIVE_DECODE_MASS_MAP=1, whose code it builds on. Any input the batch
+    call does not reproduce exactly returns None and the per-layer path runs.
+    Equivalence: tests/test_native_decode_segments.py.
+    """
+    import os
+    value = os.getenv('KVMEM_NATIVE_DECODE_LAYER_BATCH', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_NATIVE_DECODE_LAYER_BATCH must be 0 or 1')
+    return (value == '1' and hasattr(_native, 'decode_identities_from_maps') and
+            hasattr(_native, 'prepare_decode_attention_map_targets') and
+            layer_map_enabled() and mass_map_enabled())
+
+
 _LAYER_MAP_CACHE_LIMIT = 1024
 
 
-def _fused_identities(controller, rid, begin, local, count, starts, counts):
+def _fused_identities(controller, rid, begin, local, count, starts, counts, batch=False):
     """All layers' identities via the native fused path, or None to run Python.
 
     Equals segment_identities(controller.records(rid, authority, begin, local, layer), ...)
     for every layer; any input the native helper cannot reproduce exactly (including
     every error case) returns None so the original per-layer code runs and raises.
+
+    With ``batch`` the result is (layer-0 list, int64 [layers, columns] array)
+    from one native call, or None to run the per-layer native path.
     """
     from .layerwise_pressure import LayerwisePrefillPressure
     if getattr(type(controller), 'records', None) is not LayerwisePrefillPressure.records:
@@ -203,6 +231,24 @@ def _fused_identities(controller, rid, begin, local, count, starts, counts):
         return None
     origin, layers = frame
     cache = controller.__dict__.setdefault('_decode_layer_maps', {})
+    if batch:
+        count_layers = len(controller.names)
+        hit = cache.get((rid, None))
+        # One entry per request: the per-layer maps the arrays were parsed from
+        # (identity-checked, like the per-layer entries below) and the arrays.
+        if (hit is None or len(hit[0]) != count_layers or
+                any(hit[0][layer] is not layers[layer] for layer in range(count_layers))):
+            sources = [layers[layer] for layer in range(count_layers)]
+            parsed = []
+            for records in sources:
+                one = _native.parse_layer_map(records)
+                if one is None:
+                    return None
+                parsed.append(one)
+            if len(cache) >= _LAYER_MAP_CACHE_LIMIT:
+                cache.clear()
+            cache[(rid, None)] = hit = (sources, parsed)
+        return _native.decode_identities_from_maps(hit[1], origin, begin, local, count, starts, counts)
     result = []
     for layer in range(len(controller.names)):
         records = layers[layer]
@@ -224,8 +270,13 @@ def _fused_identities(controller, rid, begin, local, count, starts, counts):
 def attach_packet(controller, pending, rid, authority, starts, counts, masses):
     begin, count = pending.history_begin, pending.candidate_count
     local = sum(map(int, counts)) - count
-    logical = (_fused_identities(controller, rid, begin, local, count, starts, counts)
-               if layer_map_enabled() else None)
+    logical = history = None
+    if layer_batch_enabled():
+        fused = _fused_identities(controller, rid, begin, local, count, starts, counts, batch=True)
+        if fused is not None:
+            history, logical = fused
+    if logical is None and layer_map_enabled():
+        logical = _fused_identities(controller, rid, begin, local, count, starts, counts)
     if logical is None:
         logical = []
         for layer in range(len(controller.names)):
@@ -233,7 +284,7 @@ def attach_packet(controller, pending, rid, authority, starts, counts, masses):
             logical.append(segment_identities(records, begin, local, count, starts, counts))
     # Before the first decode refresh the shared frame still describes the
     # initial global Query preselection. Feedback must describe real layer zero.
-    pending.history = logical[0]
+    pending.history = logical[0] if history is None else history
     pending.layerwise_decode = controller, rid, logical, masses
     controller.decode_histories.setdefault(rid, [DecodeHistory() for _ in controller.names])
 

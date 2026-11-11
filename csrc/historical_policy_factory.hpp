@@ -69,7 +69,7 @@ inline HistoricalRedundancyConfig redundancy_config(const HistoricalPolicyParame
         else if(key=="query_segments_per_step") config.query_segments_per_step=integer(65536);
         else if(key=="feature_cache_bytes") config.feature_cache_bytes=integer(uint64_t(1)<<40);
         else if(key=="query_cache_bytes") config.query_cache_bytes=integer(uint64_t(1)<<40);
-        else if(key=="query_capture_bytes") config.query_capture_bytes=integer(uint64_t(256)<<20);
+        else if(key=="query_capture_bytes") config.query_capture_bytes=integer(uint64_t(1)<<30);
         else throw std::invalid_argument("Unknown historical_gc.policy_params.redundancy parameter: "+key);
     }
     if(!config.keep_mandatory) throw std::invalid_argument("Redundancy GC requires keep_mandatory=true");

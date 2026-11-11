@@ -373,6 +373,8 @@ def test_fused_layer_map_equals_per_layer_python(seed):
 @pytest.mark.parametrize('case', ['length', 'backwards', 'no_frame', 'numpy_ints', 'gap_column', 'list_records'])
 def test_fused_layer_map_falls_back_with_identical_errors(case, monkeypatch):
     _map()
+    # This test covers the per-layer entry; the batched one has its own file.
+    monkeypatch.setenv('KVMEM_NATIVE_DECODE_LAYER_BATCH', '0')
     rng = random.Random(3)
     c, origin, total = _controller(rng, layers=4, blocks=60)
     begin = origin + 100

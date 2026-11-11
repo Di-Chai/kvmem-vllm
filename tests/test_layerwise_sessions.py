@@ -568,3 +568,79 @@ def test_query_commit_drops_stale_layer_maps_only_with_the_flag(monkeypatch, fla
     assert ('old' in c.maps, 'p' in c.maps, discarded) == ((False, False, [True]) if flag else (True, True, []))
     assert lc.query_frame_committed(runner, 'absent') is False
     assert lc.query_frame_committed(NS(), 'old') is False
+
+
+# Historical GC retires a block while a session restore is in flight. The
+# restoring request is bound as a history owner only at install time, so the
+# authority pruned the shared prefill history alone.
+def retiring_prefix(monkeypatch):
+    import types
+    from vllm_kvmem.authority import RequestAuthority
+    sessions(monkeypatch)
+    c, a = prefix(); with_decode(c)
+    a.records[(4, 1)] = NS(history_begin=192, count=32, handle=NS(slot=4, generation=1))
+    for history in c.histories['old']:
+        history.values[192] = [0.3, 1.]
+    for history in c.decode_histories['old']:
+        history.mass[192] = 0.125
+    a.history_live = types.MethodType(RequestAuthority.history_live, a)
+    snapshot = capture(c, 'old', a, 288, terminal=True)
+    c.maps.pop('old'); c.histories.pop('old'); c.decode_histories.pop('old')
+    return c, a, snapshot
+
+
+def retire_192(a):
+    """What RequestAuthority._drain_gc does for a request without bound owners."""
+    del a.records[(4, 1)]
+    a.action_history.prefill.values = {k: v for k, v in a.action_history.prefill.values.items()
+                                       if k in a.history_live() or k >= a.history_end}
+    assert 192 not in a.action_history.prefill.values
+
+
+def test_restore_applies_a_retirement_prune_missed_before_prepare(monkeypatch):
+    c, a, snapshot = retiring_prefix(monkeypatch)
+    retire_192(a)                                    # between the claim and prepare_restore
+    chosen, frame, histories = prepare_restore(c, 'fresh', a, snapshot, options())
+    assert all(192 not in h.values for h in histories)
+    assert histories[0].snapshot() == a.action_history.prefill.snapshot()
+    assert set(histories[1].values) == {0, 128}       # live keys of other layers stay
+    install_restored(c, 'fresh', a, frame, histories, snapshot)
+    # The decode histories were unaffected by the comparison: untouched here.
+    assert capture(c, 'fresh', a, 288, committed=True).histories[0] == snapshot.histories[0][:0] + (
+        tuple(row for row in snapshot.histories[0][0] if row[0] != 192),) + snapshot.histories[0][1:]
+
+
+def test_restore_applies_a_retirement_prune_missed_between_prepare_and_install(monkeypatch):
+    c, a, snapshot = retiring_prefix(monkeypatch)
+    chosen, frame, histories = prepare_restore(c, 'fresh', a, snapshot, options())
+    assert all(192 in h.values for h in histories)
+    retire_192(a)                                    # authority.poll() inside the draft rebuild
+    install_restored(c, 'fresh', a, frame, histories, snapshot)
+    assert all(192 not in h.values for h in c.histories['fresh'])
+    assert all(192 not in h.mass for h in c.decode_histories['fresh'])
+    assert [set(h.mass) for h in c.decode_histories['fresh']] == [{0, 64}, {128}]
+    assert a.history_pruners == [c]
+    # The realign capture (the check that failed) now passes.
+    realigned = capture(c, 'fresh', a, 288, committed=True)
+    assert all(192 not in {row[0] for row in rows} for rows, *_ in realigned.histories)
+
+
+def test_restore_without_a_missed_prune_keeps_stale_keys_of_both_histories(monkeypatch):
+    c, a, snapshot = retiring_prefix(monkeypatch)
+    del a.records[(4, 1)]                            # retired, but nothing pruned yet
+    chosen, frame, histories = prepare_restore(c, 'fresh', a, snapshot, options())
+    install_restored(c, 'fresh', a, frame, histories, snapshot)
+    assert all(192 in h.values for h in c.histories['fresh'])
+    assert 192 in a.action_history.prefill.values
+
+
+def test_restore_still_refuses_scores_that_differ_beyond_a_retirement(monkeypatch):
+    c, a, snapshot = retiring_prefix(monkeypatch)
+    a.action_history.prefill.values[64] = [0.5, 1.]  # a live block's score changed
+    with pytest.raises(ValueError, match='differ from the shared checkpoint'):
+        prepare_restore(c, 'fresh', a, snapshot, options())
+    c, a, snapshot = retiring_prefix(monkeypatch)
+    chosen, frame, histories = prepare_restore(c, 'fresh', a, snapshot, options())
+    a.action_history.prefill.values.pop(192)         # pruned although the block is live
+    with pytest.raises(ValueError, match=r'layer-only keys 1, shared-only keys 0'):
+        install_restored(c, 'fresh', a, frame, histories, snapshot)

@@ -242,6 +242,9 @@ class RequestAuthority:
         # remove archived records; rewind explicitly removes its live suffix.
         self._unsubmitted: dict[tuple[int, int], Record] = {}
         self._resident_count = 0
+        # Counts archived-flag flips; with records.version it tells a reader
+        # that no record's archived state changed (session_worker._history_rows).
+        self.archived_epoch = 0
         # Reuse only temporary raw/V staging. Immutable archive bytes and each
         # record's MeanK state remain independently owned. Repeatedly freeing
         # large raw/V tensors between persistent small index allocations can
@@ -310,6 +313,13 @@ class RequestAuthority:
         if cache is not None and hasattr(cache, 'retire_records'):
             cache.retire_records(retired)
 
+    def history_live(self):
+        """History begins whose attention metadata survives a retirement prune."""
+        live = {r.history_begin for r in self.records.values()}
+        if self.memory._store is not None:
+            live.update(row[2] for row in self.memory._store.working_records())
+        return live
+
     def _prune_history_metadata(self):
         """Drop metadata only for permanently missing logical blocks.
 
@@ -319,9 +329,7 @@ class RequestAuthority:
         """
         if self.closing:
             return
-        live = {r.history_begin for r in self.records.values()}
-        if self.memory._store is not None:
-            live.update(row[2] for row in self.memory._store.working_records())
+        live = self.history_live()
         action = getattr(self, 'action_history', None)
         if action is not None:
             for name in ('scores', 'mass'):
@@ -364,6 +372,7 @@ class RequestAuthority:
                     record.digest = digests[index]
                 if not record.archived:
                     self._resident_count -= 1
+                    self.archived_epoch += 1
                     self._return_record_buffers(record)
                     newly_archived.append(record)
                 record.archived = True

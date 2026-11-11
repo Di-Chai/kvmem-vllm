@@ -183,6 +183,37 @@ def global_prefill_buffered():
     return value == '1'
 
 
+def decode_action_before_mtp():
+    """KVMEM_DECODE_ACTION_BEFORE_MTP=1: score decode rows before the MTP drafts.
+
+    Decode scoring reads only the target layers' in-forward statistics. Queued
+    behind the draft passes, its completion fence also waits for the drafts, so
+    the host cannot prepare the next step while they run. Staged first, the same
+    kernels, fence and packets finish before the drafts start; only the GPU
+    queue order changes.
+    """
+    value = os.getenv('KVMEM_DECODE_ACTION_BEFORE_MTP', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_DECODE_ACTION_BEFORE_MTP must be 0 or 1')
+    return value == '1'
+
+
+def mixed_decode_candidates():
+    """KVMEM_MIXED_DECODE_CANDIDATES=1: no pre-forward fence in mixed batches.
+
+    A batch that carries both prefill chunks and decode rows used the eager
+    planner: before the forward it waited for the GPU metadata copy and for each
+    decoder's previous packet to finish publishing, with the GPU idle. Enabled,
+    prefill owners keep their exact pipelined plans and decode rows arm the same
+    bounded geometry candidates as a pure decode batch; the parser/publication
+    fence and every coordinate check run after the forward is queued.
+    """
+    value = os.getenv('KVMEM_MIXED_DECODE_CANDIDATES', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_MIXED_DECODE_CANDIDATES must be 0 or 1')
+    return value == '1'
+
+
 def window_segments(records, history_begin, local_begin, count, block_tokens):
     """Freeze logical identities, including a partial historical tail."""
     starts=[];counts=[];history=[];cursor=0
@@ -336,6 +367,8 @@ class ActionRuntime:
         self.prefill_plan_frames = {}
         self.pipeline_requests = set()
         self._mtp_capture_frame = None
+        self.decode_before_mtp = decode_action_before_mtp()
+        self.mixed_candidates = mixed_decode_candidates()
         self._deferred_frames = []
         self.deferred_score_pool = None
         self.mtp_stage_stats = {}
@@ -455,7 +488,8 @@ class ActionRuntime:
         # not overwrite the packet associated with a public native batch.
         if getattr(self, '_mtp_capture_frame', None) is not None:
             raise RuntimeError('Action prepare cannot overwrite an unresolved MTP capture')
-        if getattr(self.options, 'prefill_action_before_mtp', False):
+        if (getattr(self.options, 'prefill_action_before_mtp', False) or
+                getattr(self, 'decode_before_mtp', False)):
             self.runtime._raise_publication_error()
         self._collect_deferred_scores()
         profiler = getattr(self, 'profile', None)
@@ -479,6 +513,9 @@ class ActionRuntime:
             # decode needs to retain overlap with prior owner publication.
             if len(batch.req_ids)>1 and self._prepare_decode_candidates(batch):
                 self.native.counts['prepare:decode_candidates'] += 1
+                return
+            if getattr(self, 'mixed_candidates', False) and self._prepare_mixed_candidates(batch):
+                self.native.counts['prepare:mixed_candidates'] += 1
                 return
             self.native.counts['prepare:eager'] += 1
             # Native QK runs before capture(). Resolve exactly the SAME scope,
@@ -899,26 +936,77 @@ class ActionRuntime:
         if (any(batch.is_prefilling_np) or not hasattr(batch,'num_computed_tokens_np') or
                 not hasattr(batch,'seq_lens_cpu_upper_bound') or self.native.disabled):
             return False
-        offsets=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'offsets',{})
-        generations=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'generations',{})
-        cache={request_id:getattr(self,'native_cache',{}).get(request_id) for request_id in batch.req_ids}
-        if any(cache[request_id] is None or cache[request_id]['generation']!=generations.get(request_id,0)
-               or cache[request_id]['offset']!=offsets.get(request_id,0) for request_id in batch.req_ids):
-            return False
         plans={}
         for i,request_id in enumerate(batch.req_ids):
-            begin,end=map(int,batch.query_start_loc_np[i:i+2])
-            h=int(batch.num_computed_tokens_np[i]);local=h-offsets.get(request_id,0)
-            extent=int(batch.seq_lens_cpu_upper_bound[i])-offsets.get(request_id,0)
-            if local<0 or extent<local+end-begin:
+            plan=self._decode_candidate(batch,i,request_id)
+            if plan is None:
                 return False
-            frozen=cache[request_id]
-            import numpy as np
-            last=int(np.searchsorted(frozen['starts'],extent-1,side='right'))-1
-            width=int(frozen['layout'][last,2]+(extent-1)//16-frozen['starts'][last]//16+1)
-            plans[request_id]=dict(index=i,begin=begin,rows=list(range(end-begin)),
-                local_begin=local,count=extent-local,starts=frozen['starts'],counts=frozen['counts'],
-                history=frozen['history'],_layout=frozen['layout'],_width=width,_segments=last+1)
+            plans[request_id]=plan
+        self.native_candidates=(batch,plans)
+        self.native.arm(plans)
+        return True
+
+    def _decode_candidate(self,batch,i,request_id):
+        """Geometry-only candidate rows of one decode owner, or None."""
+        adapter=getattr(self.runner,'_kvmem_window_adapter',None)
+        offset=getattr(adapter,'offsets',{}).get(request_id,0)
+        frozen=getattr(self,'native_cache',{}).get(request_id)
+        if (frozen is None or frozen['generation']!=getattr(adapter,'generations',{}).get(request_id,0)
+                or frozen['offset']!=offset):
+            return None
+        begin,end=map(int,batch.query_start_loc_np[i:i+2])
+        local=int(batch.num_computed_tokens_np[i])-offset
+        extent=int(batch.seq_lens_cpu_upper_bound[i])-offset
+        if local<0 or extent<local+end-begin:
+            return None
+        import numpy as np
+        last=int(np.searchsorted(frozen['starts'],extent-1,side='right'))-1
+        width=int(frozen['layout'][last,2]+(extent-1)//16-frozen['starts'][last]//16+1)
+        return dict(index=i,begin=begin,rows=list(range(end-begin)),
+            local_begin=local,count=extent-local,starts=frozen['starts'],counts=frozen['counts'],
+            history=frozen['history'],_layout=frozen['layout'],_width=width,_segments=last+1)
+
+    def _prepare_mixed_candidates(self,batch):
+        """Arm a prefill+decode batch without any pre-forward host fence.
+
+        Every prefill owner must hold the exact pipelined plan that
+        _arm_prefill_plans would arm, and every decode owner a current frozen
+        frame. capture() validates the prefill coordinates and plans the decode
+        rows behind their accepted-prefix fence, exactly as it does for a pure
+        prefill or pure decode batch. Anything else keeps the eager planner.
+        """
+        prepared=getattr(self,'prefill_plans',None)
+        metadata=self.metadata
+        if all(batch.is_prefilling_np) or not any(batch.is_prefilling_np):
+            return False
+        def skip(reason):
+            self.native.counts['mixed_skip:'+reason]+=1
+            return False
+        if (not getattr(self.options,'prefill_native_plan_arm',False) or self.native.disabled or
+                prepared is None or prepared[0] is not batch or
+                not hasattr(batch,'num_computed_tokens_np') or
+                not hasattr(batch,'seq_lens_cpu_upper_bound')):
+            return skip('unprepared')
+        if tuple(metadata.indices)!=tuple(range(len(batch.req_ids))):
+            return skip('partial_metadata')
+        plans={}
+        for i,(begin,end) in zip(metadata.indices,metadata.slices):
+            request_id=batch.req_ids[i]
+            if bool(batch.is_prefilling_np[i]):
+                plan=prepared[1].get(request_id)
+                if plan is None:
+                    return skip('prefill_unplanned')
+                if (not plan.get('pipeline',False) or plan['index']!=i or
+                        plan['begin']!=begin or plan['count']!=end-begin):
+                    return skip('prefill_plan_mismatch')
+            else:
+                plan=self._decode_candidate(batch,i,request_id)
+                if plan is None or plan['begin']!=begin or len(plan['rows'])!=end-begin:
+                    return skip('decode_frame')
+            plans[request_id]=plan
+        if sum(len(plan['rows']) for plan in plans.values())>self.native.max_rows:
+            # The exact decode scope is smaller than its candidates and may fit.
+            return skip('rows')
         self.native_candidates=(batch,plans)
         self.native.arm(plans)
         return True
@@ -1014,6 +1102,67 @@ class ActionRuntime:
                 return False
         return True
 
+    def _decode_mtp_eligible(self, captured, batch):
+        """Pure decode batches whose rows native statistics will score.
+
+        Everything submit() does before Action capture must be a no-op or be
+        repeated by the staging caller: no prefill plans, no open stream
+        session, split capture DMA (no pre-Action backpressure wait).
+        """
+        if not getattr(self, 'decode_before_mtp', False):
+            return False
+        reason = self._decode_mtp_skip(captured, batch)
+        if reason is not None:
+            self._mtp_count('decode_skip:' + reason)
+        return reason is None
+
+    def _decode_mtp_skip(self, captured, batch):
+        native, metadata = getattr(self, 'native', None), getattr(self, 'metadata', None)
+        if native is None or native.disabled or native.mode != 'reuse':
+            return 'native'
+        if not batch.req_ids or any(batch.is_prefilling_np):
+            return 'prefill'
+        if (metadata is None or metadata.batch is not batch or
+                tuple(metadata.indices) != tuple(range(batch.num_reqs))):
+            return 'metadata'
+        # prepare() leaves an empty plan table on every pure decode batch.
+        prefill = getattr(self, 'prefill_plans', None)
+        if prefill is not None and prefill[0] is batch and prefill[1]:
+            return 'prefill_plans'
+        candidates, plans = getattr(self, 'native_candidates', None), getattr(self, 'native_plans', None)
+        if not ((candidates is not None and candidates[0] is batch) or
+                (plans is not None and plans[0] is batch)):
+            return 'unprepared'
+        if (not getattr(self.runtime, 'split_capture_dma', False) or
+                getattr(self.runtime, '_stream_active', None) is not None):
+            return 'submit_work'
+        from .original_rope import enabled as original_rope
+        if original_rope():
+            return 'original_rope'
+        if (tuple(item.name for item in captured) != tuple(self.runner._kvmem_layers) or
+                not all(item.key.dtype == torch.bfloat16 for item in captured)):
+            return 'captures'
+        return None
+
+    def _stage_decode_before_mtp(self, captured, batch):
+        self.runtime._raise_publication_error()
+        # The same scheduler-confirmation fence submit() takes before capture.
+        if not self.runtime.drain_requests(tuple(batch.req_ids), wait=True):
+            raise RuntimeError('Public capture preceded scheduler confirmation')
+        profiler = getattr(self, 'profile', None)
+        trace = profiler.begin_batch(batch) if profiler is not None else None
+        frame = _MTPActionFrame(batch, tuple(captured), self.metadata,
+                               self.candidate_samples, self.packets, trace)
+        self._mtp_capture_frame = frame
+        frame.packets = self._capture(captured, batch, trace)
+        # Same rule as validate(): only a frame with native reductions needs a
+        # completion fence. It is recorded here, ahead of the draft passes.
+        if self.native.validation_dirty:
+            frame.ticket = self.native.enqueue_validation()
+            self._mtp_count('decode_fenced_batches')
+        self._mtp_count('decode_staged_batches')
+        return True
+
     def stage_before_mtp(self, captured, batch):
         """Enqueue a private complete score packet before native MTP proposal.
 
@@ -1023,6 +1172,8 @@ class ActionRuntime:
         if getattr(self, '_mtp_capture_frame', None) is not None:
             raise RuntimeError('Only one same-forward MTP score frame may be staged')
         if not self._mtp_eligible(batch):
+            if self._decode_mtp_eligible(captured, batch):
+                return self._stage_decode_before_mtp(captured, batch)
             return False
         if (tuple(item.name for item in captured) != tuple(self.runner._kvmem_layers) or
                 any(item.key.dtype != torch.bfloat16 for item in captured)):
@@ -1150,7 +1301,10 @@ class ActionRuntime:
             self._mtp_count('resolved_batches')
             return result
         started = time.perf_counter()
-        valid = self.native.resolve_validation(frame.ticket)
+        # A decode frame without native reductions carries no ticket; validate()
+        # then answers from the frame state without a fence, as unstaged capture.
+        valid = (self.native.resolve_validation(frame.ticket) if frame.ticket is not None
+                 else self.native.validate())
         self.capture_seconds += time.perf_counter()-started
         if not valid:
             # Drop every completed tentative host/event lease before acquiring
@@ -1246,6 +1400,16 @@ class ActionRuntime:
             plans={}
             for i,(begin,end) in zip(indices,slices):
                 count=end-begin;request_id=batch.req_ids[i]
+                armed=candidates[1].get(request_id)
+                if armed is not None and armed.get('pipeline',False):
+                    # Mixed batch: this prefill owner's exact plan was armed
+                    # as is; the loop below checks its captured coordinates.
+                    if (not batch.is_prefilling_np[i] or armed['index']!=i or
+                            armed['begin']!=begin or armed['count']!=count):
+                        raise RuntimeError('Pipelined prefill plan differs from the captured batch')
+                    plans[request_id]=armed
+                    cursor+=count
+                    continue
                 plan=self._plan_owner(request_id,bool(batch.is_prefilling_np[i]),
                     tokens[cursor:cursor+count],global_positions[cursor:cursor+count],
                     local_positions[cursor:cursor+count],count)

@@ -347,3 +347,64 @@ def test_native_scores_preserve_query_pressure_mandatory_and_checkpoint_policy(t
     old,new = consume(reference),consume(native)
     assert old[1:] == new[1:]
     assert new[0][0] == pytest.approx(old[0][0],abs=2e-5)
+
+
+def test_resolve_keeps_exact_plans_armed_beside_decode_candidates(tmp_path):
+    """A mixed batch arms one exact (prefill) plan and one decode candidate."""
+    import numpy as np
+    from flashinfer.decode import xqa_batch_decode_with_kv_cache
+    from vllm_kvmem.action_attention import ActionRuntime
+    from vllm_kvmem.native_attention import _active
+    from vllm_kvmem.native_attention_planning import make_decode_frame
+    bank, plan, _, _, _, _, _, (k,v), table = geometry(tmp_path, 'decode', 5)
+    name = 'model.layers.3.attn'
+    q = torch.randn(7,8,128,device='cuda',dtype=torch.bfloat16)
+    table = torch.cat((table,table.roll(2,1)),0)
+    lengths = torch.tensor([259,249],device='cuda',dtype=torch.int32)
+    cu = torch.tensor([0,5,7],device='cuda',dtype=torch.int32)
+    mask = torch.tensor([[(1<<(r+1))-1,0] for n in (5,2) for r in range(n)],device='cuda',dtype=torch.uint16)
+    second_starts = [s for s in plan['starts'] if s < 249]
+    second_counts = [b-a for a,b in zip(second_starts,second_starts[1:]+[249])]
+    exact = dict(plan,rows=[0,4],pipeline=True)
+    action = ActionRuntime.__new__(ActionRuntime)
+    action.runner = SimpleNamespace(_kvmem_window_adapter=None)
+    action.native_cache = {'b':dict(generation=0,offset=0,
+        **make_decode_frame(second_starts,second_counts,second_starts,247,247,2,bank.context,32))}
+    batch = SimpleNamespace(req_ids=['a','b'],query_start_loc_np=[0,5,7],
+        num_computed_tokens_np=[254,247],seq_lens_cpu_upper_bound=[259,249])
+    candidate = action._decode_candidate(batch,1,'b')
+    assert candidate['rows'] == [0,1] and candidate['begin'] == 5
+    bank.arm({'a':exact,'b':candidate})
+    assert bank.active_rows == 4
+    workspace = torch.zeros(32*1024*1024,device='cuda',dtype=torch.uint8)
+    token = _active.set((bank,name))
+    try:
+        xqa_batch_decode_with_kv_cache(query=q,kv_cache=(k,v),workspace_buffer=workspace,
+            block_tables=table,seq_lens=lengths,max_seq_len=259,bmm1_scale=128**-.5*.7,
+            bmm2_scale=.3,out=torch.empty_like(q),kv_layout='NHD',q_len_per_req=5,q_cu_seq_lens=cu,mask=mask)
+    finally:
+        _active.reset(token)
+    sampled = dict(index=1,begin=5,rows=[1],local_begin=247,count=2,starts=np.array(second_starts),
+        counts=np.array(second_counts),history=list(second_starts))
+    bank.resolve({'a':exact,'b':sampled})
+    assert not bank.request_reasons and bank.reduction_rows == 3
+    assert 'a' not in bank.selected_slots and bank.selected_slots['b'] == (2,1)
+    assert bank.selected[:3].tolist() == [0,1,3]
+    for i,(request,begin,n,length,rows,current) in enumerate((('a',0,5,259,[0,4],plan),
+            ('b',5,2,249,[1],dict(starts=second_starts,counts=second_counts)))):
+        actual = bank.score(name,request,False)
+        assert actual is not None,(bank.reasons,bank.counts)
+        positions = torch.arange(length,device='cuda')
+        keys = k[table[i,positions//32].long(),positions%32].float().repeat_interleave(4,1)
+        logits = torch.einsum('rhd,thd->rht',q[begin:begin+n].float(),keys)*128**-.5*.7
+        logits.masked_fill_(positions[None,None] > (length-n+torch.arange(n,device='cuda'))[:,None,None],-torch.inf)
+        p = logits.softmax(-1).mean(1)
+        expected = torch.stack([p[:,s:s+c].sum(-1) for s,c in zip(current['starts'],current['counts'])],-1)[rows]
+        assert actual.shape == expected.shape
+        torch.testing.assert_close(actual,expected,rtol=.02,atol=2e-4)
+    bank.validate()
+    assert bank.validation_failures == 0
+    # A different exact plan object was never armed: per-request fallback.
+    bank.arm({'a':exact,'b':candidate})
+    bank.resolve({'a':dict(exact),'b':sampled})
+    assert bank.request_reasons == {'a':'candidate_domain:candidate cached layout missing'}

@@ -108,13 +108,13 @@ def test_schema_defaults_independent_and_strict():
             HistoricalGcSettings(policy='redundancy', policy_params={key: value})
 
 
-@pytest.mark.parametrize('value', [1, 64*1024**2, 256*1024**2])
+@pytest.mark.parametrize('value', [1, 64*1024**2, 256*1024**2, 807272448, 1024**3])
 def test_query_capture_bytes_accepts_positive_bounded_integers(value):
     config = HistoricalGcSettings(policy='redundancy', policy_params={'query_capture_bytes': value})
     assert config.policy_params['query_capture_bytes'] == value
 
 
-@pytest.mark.parametrize('value', [True, False, 0, -1, 1.0, '67108864', None, 256*1024**2+1])
+@pytest.mark.parametrize('value', [True, False, 0, -1, 1.0, '67108864', None, 1024**3+1])
 def test_query_capture_bytes_rejects_invalid_resource_limits(value):
     with pytest.raises(ValueError, match='query_capture_bytes'):
         HistoricalGcSettings(policy='redundancy', policy_params={'query_capture_bytes': value})
@@ -239,7 +239,10 @@ def test_thinking_startup_checks_atomic_query_batch_before_allocating_slots(
     obj = CaptureRuntime(runner, tmp_path)
     assert obj.redundancy_q_slot_bytes == capacity
     row_bytes = 4*4*256*2 + (16 if thinking else 0)
-    assert allocations == [(4136*row_bytes+264+capacity, 2), (40*row_bytes+264+capacity, 2)]
+    # The decode lane carries at most max_num_seqs*decode_query_len rows, so
+    # its slots pin only that much redundancy Q, never a second Question slot.
+    decode_q = min(capacity, 40*4*24*256*2)
+    assert allocations == [(4136*row_bytes+264+capacity, 2), (40*row_bytes+264+decode_q, 2)]
 
 
 def test_exact_prefix_tool_reuse_and_rewind_invalidate_same_request():

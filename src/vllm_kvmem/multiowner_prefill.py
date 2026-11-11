@@ -86,6 +86,13 @@ def attach_owner_views(packet, plans):
             confirmed=packet.confirmed,request_tokens=(group.count,),lane=packet.lane,
             source_generation=packet.source_generation,logical_group=group,logical_slices=parts,
             action_inputs={rid:packet.action_inputs[rid]})
+        # Side-data descriptors address the shared DMA by absolute byte offset.
+        # Each owner's logical cursor accepts its own; ordinary owners keep theirs
+        # on the parent (see CaptureRuntime._publish_logical_claim).
+        child=packet.logical_owners[i]
+        for name in ('redundancy_queries','thinking_tokens','pressure_queries'):
+            rows=getattr(packet,name)
+            if rid in rows:getattr(child,name)[rid]=rows.pop(rid)
 
 
 def bind_owner_payload(runtime, parent, index):
@@ -100,7 +107,8 @@ def bind_owner_payload(runtime, parent, index):
     header_bytes=(4*n+1)*8
     raw_bytes=runtime.row_elements*t*runtime.raw_dtype.itemsize
     value_bytes=runtime.row_elements*t
-    if data.numel()!=header_bytes+raw_bytes+value_bytes:
+    value_end=header_bytes+raw_bytes+value_bytes
+    if data.numel()!=value_end+parent.aux_bytes:
         raise ValueError('Shared logical packet has an invalid byte extent')
     header=data[:header_bytes].view(torch.int64).tolist()
     starts=header[:n+1]
@@ -113,7 +121,7 @@ def bind_owner_payload(runtime, parent, index):
         raise ValueError('Shared logical owner differs from its admitted prefix')
     shape=(len(runtime.layers),t,runtime.heads,runtime.dim)
     raw=data[header_bytes:header_bytes+raw_bytes].view(runtime.raw_dtype).reshape(shape)
-    values=data[header_bytes+raw_bytes:].reshape(shape)
+    values=data[header_bytes+raw_bytes:value_end].reshape(shape)
     child.logical_payload=raw[:,begin:end],values[:,begin:end]
     return child
 

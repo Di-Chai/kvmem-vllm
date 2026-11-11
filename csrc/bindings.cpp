@@ -602,6 +602,34 @@ private:
     ssize_t block_ = 0, layers_ = 0, row_bytes_ = 0, scoring_ = 0;
 };
 
+// KVMEM_SESSION_FAST_TURN: (slot, generation) tuples to handles. False unless
+// the input is an exact list of exact 2-tuples of exact ints in range.
+static bool handles_from_pairs(const py::object &pairs, std::vector<KvMemBlockHandle> &out) {
+    if (!PyList_CheckExact(pairs.ptr())) return false;
+    const Py_ssize_t count = PyList_GET_SIZE(pairs.ptr());
+    out.reserve(static_cast<size_t>(count));
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject *row = PyList_GET_ITEM(pairs.ptr(), i);
+        if (!PyTuple_CheckExact(row) || PyTuple_GET_SIZE(row) != 2) return false;
+        PyObject *slot = PyTuple_GET_ITEM(row, 0);
+        PyObject *generation = PyTuple_GET_ITEM(row, 1);
+        if (!PyLong_CheckExact(slot) || !PyLong_CheckExact(generation)) return false;
+        int overflow = 0;
+        const long long s = PyLong_AsLongLongAndOverflow(slot, &overflow);
+        if (overflow || s < 0 || s > static_cast<long long>(UINT32_MAX)) return false;
+        const unsigned long long g = PyLong_AsUnsignedLongLong(generation);
+        if (g == static_cast<unsigned long long>(-1) && PyErr_Occurred()) {
+            PyErr_Clear();
+            return false;
+        }
+        KvMemBlockHandle handle;
+        handle.slot = static_cast<uint32_t>(s);
+        handle.generation = static_cast<uint64_t>(g);
+        out.push_back(handle);
+    }
+    return true;
+}
+
 PYBIND11_MODULE(_native, m) {
     bind_historical_thinking(m);
     m.def("checkpoint_token_bytes", [](py::object tokens, Py_ssize_t count) {
@@ -1452,6 +1480,172 @@ PYBIND11_MODULE(_native, m) {
         if (cursor != local_begin + count || index != ls.size()) return py::none();
         return SmallInts::to_list(result);
     }, py::arg("parsed"), py::arg("origin"), py::arg("history_begin"), py::arg("local_begin"), py::arg("count"),
+       py::arg("starts"), py::arg("counts"));
+    // KVMEM_NATIVE_DECODE_LAYER_BATCH: decode_identities_from_map for every
+    // layer of one request in a single call. The score columns are read once,
+    // the work vectors are reused across layers, and the identities are written
+    // into one int64 [layers, columns] array instead of one Python int list per
+    // layer. Returns (layer 0 as a list of ints, the read-only array), or None
+    // whenever decode_identities_from_map would return None for any layer or a
+    // map is not an aligned C-contiguous int64 [n, 3] array: the caller then
+    // runs the per-layer path.
+    m.def("decode_identities_from_maps", [](py::handle maps_o, py::handle origin_o, py::handle history_begin_o,
+            py::handle local_begin_o, py::handle count_o, py::handle starts_o, py::handle counts_o) -> py::object {
+        const int64_t block = 32, limit = int64_t{1} << 61;
+        int64_t origin, history_begin, local_begin, count;
+        if (!SmallInts::get(origin_o.ptr(), origin) || !SmallInts::get(history_begin_o.ptr(), history_begin) ||
+                !SmallInts::get(local_begin_o.ptr(), local_begin) || !SmallInts::get(count_o.ptr(), count))
+            return py::none();
+        if (!PyList_CheckExact(maps_o.ptr()) && !PyTuple_CheckExact(maps_o.ptr())) return py::none();
+        py::object maps = py::reinterpret_steal<py::object>(PySequence_Fast(maps_o.ptr(), "maps"));
+        if (!maps) { PyErr_Clear(); return py::none(); }
+        const Py_ssize_t layers = PySequence_Fast_GET_SIZE(maps.ptr());
+        PyObject **map_items = PySequence_Fast_ITEMS(maps.ptr());
+        if (layers <= 0) return py::none();
+        auto vector_of = [](py::handle o, std::vector<int64_t> &out) -> bool {
+            if (py::isinstance<py::array>(o)) {
+                py::array a = py::reinterpret_borrow<py::array>(o);
+                const char kind = a.dtype().kind();
+                if (a.ndim() != 1 || !(kind == 'i' || (kind == 'u' && a.itemsize() <= 4))) return false;
+                auto c = py::array_t<int64_t, py::array::c_style | py::array::forcecast>::ensure(a);
+                if (!c) { PyErr_Clear(); return false; }
+                out.assign(c.data(), c.data() + c.size());
+                return true;
+            }
+            if (!PyList_CheckExact(o.ptr()) && !PyTuple_CheckExact(o.ptr())) return false;
+            py::object fast = py::reinterpret_steal<py::object>(PySequence_Fast(o.ptr(), "segments"));
+            if (!fast) { PyErr_Clear(); return false; }
+            const Py_ssize_t n = PySequence_Fast_GET_SIZE(fast.ptr());
+            PyObject **items = PySequence_Fast_ITEMS(fast.ptr());
+            out.resize(static_cast<size_t>(n));
+            for (Py_ssize_t i = 0; i < n; ++i)
+                if (!SmallInts::get(items[i], out[static_cast<size_t>(i)])) return false;
+            return true;
+        };
+        std::vector<int64_t> starts, counts;
+        if (!vector_of(starts_o, starts) || !vector_of(counts_o, counts) || starts.size() != counts.size())
+            return py::none();
+        for (size_t i = 0; i < starts.size(); ++i)
+            if (starts[i] > limit || starts[i] < -limit || counts[i] > limit || counts[i] < -limit) return py::none();
+        if (history_begin < origin) return py::none();
+        const size_t columns = starts.size();
+        py::array_t<int64_t> out({static_cast<py::ssize_t>(layers), static_cast<py::ssize_t>(columns)});
+        int64_t *rows = out.mutable_data();
+        auto floor_div = [](int64_t a, int64_t d) { int64_t q = a / d; return (a % d != 0 && ((a < 0) != (d < 0))) ? q - 1 : q; };
+        // The three steps of decode_identities_from_map run as one pass per
+        // layer: the frame's rows are read in place (only its last row and the
+        // generated extension are materialized), window segments are produced
+        // one at a time, and each is consumed by the score-column partition.
+        // Every check of the per-layer function is still made on the same
+        // values; a failed check anywhere returns None.
+        std::vector<int64_t> eb, es, ep;
+        const int64_t stop = local_begin + count;
+        for (Py_ssize_t layer = 0; layer < layers; ++layer) {
+            if (!py::isinstance<py::array_t<int64_t>>(map_items[layer])) return py::none();
+            py::array parsed = py::reinterpret_borrow<py::array>(map_items[layer]);
+            const int need = py::array::c_style | py::detail::npy_api::NPY_ARRAY_ALIGNED_;
+            if (parsed.ndim() != 2 || parsed.shape(1) != 3 || (parsed.flags() & need) != need) return py::none();
+            // extend_records(records, origin, end=history_begin, block_tokens=32)
+            const int64_t n0 = parsed.shape(0);
+            const int64_t *src = static_cast<const int64_t *>(parsed.data());
+            int64_t cursor = 0;
+            for (int64_t i = 0; i < n0; ++i) {
+                const int64_t b = src[3*i], s = src[3*i+1], p = src[3*i+2];
+                if (b > limit || b < -limit || s > limit || s < -limit || p > limit || p < -limit) return py::none();
+                cursor += s;
+                if (cursor > limit || cursor < -limit) return py::none();
+            }
+            // Rows [0, kept) stay in the frame; its last row (the only one an
+            // extension can lengthen) and the extension rows live in eb/es/ep.
+            const int64_t kept = n0 > 0 ? n0 - 1 : 0;
+            eb.clear(); es.clear(); ep.clear();
+            if (n0 > 0) { eb.push_back(src[3*kept]); es.push_back(src[3*kept+1]); ep.push_back(src[3*kept+2]); }
+            int64_t logical = origin;
+            while (logical < history_begin) {
+                const int64_t n = std::min(block - SmallInts::floor_mod(logical, block), history_begin - logical);
+                if (!eb.empty() && eb.back() + es.back() == logical && ep.back() + es.back() == cursor &&
+                        floor_div(eb.back(), block) == floor_div(logical, block)) {
+                    es.back() += n;
+                } else {
+                    eb.push_back(logical); es.push_back(n); ep.push_back(cursor);
+                }
+                cursor += n;
+                logical += n;
+            }
+            // LayerwisePrefillPressure._layer_records length check: the sum of
+            // every row's size, which is what cursor has accumulated.
+            if (cursor != local_begin) return py::none();
+            // window_segments(records, history_begin, local_begin, count, 32),
+            // one segment per call: 1 = produced, 0 = no more, -1 = invalid.
+            const int64_t records = kept + static_cast<int64_t>(eb.size());
+            int64_t record = 0, made = 0, tail_logical = 0;
+            bool tail = false;
+            int64_t seg_start = 0, seg_size = 0, seg_block = 0;
+            auto next = [&]() -> int {
+                if (!tail) {
+                    if (record < records) {
+                        int64_t b, size, position;
+                        if (record < kept) { b = src[3*record]; size = src[3*record+1]; position = src[3*record+2]; }
+                        else { const size_t e = static_cast<size_t>(record - kept); b = eb[e]; size = es[e]; position = ep[e]; }
+                        if (position < local_begin) {
+                            const int64_t n = std::min(size, local_begin - position);
+                            if (position != made || n <= 0 || n > block) return -1;
+                            seg_start = made; seg_size = n; seg_block = b - SmallInts::floor_mod(b, block);
+                            made += n;
+                            ++record;
+                            return 1;
+                        }
+                    }
+                    tail = true;
+                    tail_logical = history_begin + made - local_begin;
+                    if (tail_logical < 0) return -1;
+                }
+                if (made < stop) {
+                    const int64_t n = std::min(block - SmallInts::floor_mod(tail_logical, block), stop - made);
+                    seg_start = made; seg_size = n; seg_block = tail_logical - SmallInts::floor_mod(tail_logical, block);
+                    made += n;
+                    tail_logical += n;
+                    return 1;
+                }
+                return 0;
+            };
+            // Partition of the native score columns (segment_identities).
+            int64_t *result = rows + static_cast<size_t>(layer) * columns;
+            int state = next();
+            if (state < 0) return py::none();
+            cursor = 0;
+            for (size_t k = 0; k < columns; ++k) {
+                const int64_t start = starts[k], seg = counts[k];
+                if (start != cursor || seg <= 0) return py::none();
+                const int64_t end = start + seg;
+                bool have = false;
+                int64_t identity = 0;
+                while (cursor < end) {
+                    if (state == 0 || !(seg_start <= cursor && cursor < seg_start + seg_size)) return py::none();
+                    if (have && identity != seg_block) return py::none();
+                    identity = seg_block;
+                    have = true;
+                    const int64_t limit_end = seg_start + seg_size;
+                    cursor = std::min(end, limit_end);
+                    if (cursor == limit_end) {
+                        state = next();
+                        if (state < 0) return py::none();
+                    }
+                }
+                result[k] = identity;
+            }
+            // Every segment was consumed (and so produced and checked).
+            if (cursor != stop || state != 0) return py::none();
+        }
+        py::list first(columns);
+        for (size_t k = 0; k < columns; ++k) {
+            PyObject *v = PyLong_FromLongLong(rows[k]);
+            if (!v) throw py::error_already_set();
+            PyList_SET_ITEM(first.ptr(), static_cast<Py_ssize_t>(k), v);
+        }
+        py::detail::array_proxy(out.ptr())->flags &= ~py::detail::npy_api::NPY_ARRAY_WRITEABLE_;
+        return py::make_tuple(first, out);
+    }, py::arg("maps"), py::arg("origin"), py::arg("history_begin"), py::arg("local_begin"), py::arg("count"),
        py::arg("starts"), py::arg("counts"));
     // LogicalScorePlan.__post_init__ after its span isinstance check. Returns
     // None (valid), the ValueError message to raise, or False (run Python).
@@ -2448,6 +2642,20 @@ PYBIND11_MODULE(_native, m) {
     py::class_<HistoryScope, std::shared_ptr<HistoryScope>>(m, "HistoricalGcScope")
         .def("protect", &HistoryScope::protect)
         .def("protect_current", &HistoryScope::protect_current)
+        // KVMEM_SESSION_FAST_TURN: protect / protect_current over a list of
+        // exact (slot, generation) int tuples, without one Handle object per
+        // record. NotImplemented for any other input (the caller then builds
+        // Handles as before, with the original errors).
+        .def("protect_pairs", [](HistoryScope &scope, const py::object &pairs) -> py::object {
+            std::vector<KvMemBlockHandle> handles;
+            if (!handles_from_pairs(pairs, handles)) return py::reinterpret_borrow<py::object>(Py_NotImplemented);
+            return py::cast(scope.protect(handles));
+        })
+        .def("protect_current_pairs", [](HistoryScope &scope, const py::object &pairs) -> py::object {
+            std::vector<KvMemBlockHandle> handles;
+            if (!handles_from_pairs(pairs, handles)) return py::reinterpret_borrow<py::object>(Py_NotImplemented);
+            return py::cast(scope.protect_current(handles));
+        })
         .def("admit_read", [](HistoryScope &scope, KvMemBlockHandle handle) -> py::object {
             auto admission = scope.admit(handle);
             if (!admission.lease) return py::none();

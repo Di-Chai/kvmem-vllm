@@ -833,6 +833,7 @@ def install_native_query_dispatch(controller):
     dispatch and its existing skip_compiled contract provide that boundary;
     normal prefill and decode retain the configured batch/compiled execution.
     """
+    from vllm.config import CUDAGraphMode
     from vllm.v1.worker.gpu import model_runner
     original_dispatch = model_runner.dispatch_cg_and_sync_dp
     original_context = model_runner.set_forward_context
@@ -843,14 +844,13 @@ def install_native_query_dispatch(controller):
         if controller.has_active:
             kwargs['need_eager'] = True
         result = original_dispatch(*args, **kwargs)
-        if pipeline is not None and pipeline.needs_dispatch_boundary:
-            from vllm.config import CUDAGraphMode
-            # Native prefill PIECEWISE graphs already exclude the opaque KV
-            # writer/attention ops. Preserve those compute graphs and shapes;
-            # only a whole-model FULL replay would bypass the per-layer waits.
-            if result[0].cg_mode == CUDAGraphMode.FULL:
-                kwargs['need_eager'] = True
-                result = original_dispatch(*args, **kwargs)
+        # Native prefill PIECEWISE graphs already exclude the opaque KV
+        # writer/attention ops. Preserve those compute graphs and shapes;
+        # only a whole-model FULL replay would bypass the per-layer waits.
+        if (pipeline is not None and result[0].cg_mode == CUDAGraphMode.FULL and
+                pipeline.needs_dispatch_boundary):
+            kwargs['need_eager'] = True
+            result = original_dispatch(*args, **kwargs)
         return result
     def context(*args, **kwargs):
         if controller.has_active:

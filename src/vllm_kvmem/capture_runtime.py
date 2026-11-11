@@ -25,6 +25,7 @@ from .transfer import PackedDownloads
 from .capture_feedback import EarlyCaptureFeedback
 from .process_memory import sample_process_memory
 from .archive_telemetry import ArchiveResourceReporter
+from .report_writer import LAZY_REPORT_INTERVAL, LatestReportWriter, lazy_archive_report, write_report
 
 
 @dataclass
@@ -71,6 +72,9 @@ class CapturedPacket:
     # Per-owner cursors borrow this packet's one DMA lease. Only the parent
     # releases it, after all ordinary and coalesced owners have completed.
     logical_owners: dict = field(default_factory=dict)
+    # Bytes of accepted side data (redundancy Q, pressure Q, thinking inputs)
+    # after this packet's header/raw/value planes; logical extent checks need it.
+    aux_bytes: int = 0
 
 
 @dataclass
@@ -108,7 +112,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
         gc = getattr(self.options, 'historical_gc', None)
         self.redundancy_enabled = gc is not None and gc.policy == 'redundancy' and gc.mode != 'off'
         self.thinking_enabled = self.redundancy_enabled and gc.policy_params.get('thinking_only', False)
-        self.thinking_capture_stats = dict(packets=0, bytes=0, accepted_rows=0)
+        self.thinking_capture_stats = dict(packets=0, bytes=0, accepted_rows=0,
+            synthesized_rows=0, synthesized_verified_rows=0)
+        # Debug only: also download the device rows of logical prefill owners and
+        # compare them with the prompt tokens their publisher reads on the CPU.
+        verify = os.getenv('KVMEM_THINKING_SYNTH_VERIFY', '0')
+        if verify not in ('0', '1'):
+            raise ValueError('KVMEM_THINKING_SYNTH_VERIFY must be 0 or 1')
+        self.thinking_synth_verify = verify == '1'
         self.thinking_layout = None
         if self.thinking_enabled:
             from vllm.tokenizers import get_tokenizer
@@ -121,10 +132,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
         q_slot_bytes = 0
         if self.redundancy_enabled:
             from .historical_gc import redundancy_layers, REDUNDANCY_Q_SLOT_BYTES
-            unsupported = ('offline_prefill_coalescing', 'prefill_physical_coalescing', 'prefill_publication_pipeline',
-                           'early_capture_slot_release', 'prefill_capture_ahead')
+            # Physical coalescing and the publication pipeline hand the side
+            # data to their logical cursors (see _publish_logical_claim).
+            unsupported = ('offline_prefill_coalescing', 'early_capture_slot_release', 'prefill_capture_ahead')
             if any(getattr(self.options, key, False) for key in unsupported):
-                raise ValueError('Redundancy Q capture does not support coalescing or early/pipelined publication')
+                raise ValueError('Redundancy Q capture does not support offline coalescing or early/ahead capture')
             self.redundancy_layers = redundancy_layers(len(runner._kvmem_layers))
             query_heads = {self.layers[i].num_heads for i in self.redundancy_layers}
             if len(query_heads) != 1:
@@ -156,6 +168,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         max_reqs = runner.vllm_config.scheduler_config.max_num_seqs
         if self.thinking_enabled:
             from .historical_feature_budget import THINKING_STAGING_BYTES
+            from .historical_gc import REDUNDANCY_Q_MAX_SLOT_BYTES
             if 256 * max_tokens > THINKING_STAGING_BYTES:
                 raise ValueError('Thinking token capture exceeds its reserved staging budget')
             required_q_bytes = max_tokens * len(self.redundancy_layers) * self.redundancy_query_heads * self.dim * 2
@@ -163,7 +176,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 raise ValueError('thinking_only requires historical_gc.policy_params.query_capture_bytes '
                     f'>= {required_q_bytes} for max_num_batched_tokens={max_tokens}; '
                     f'configured {self.redundancy_q_slot_bytes}. Increase query_capture_bytes '
-                    '(maximum 268435456 bytes) or reduce the scheduler batch limit.')
+                    f'(maximum {REDUNDANCY_Q_MAX_SLOT_BYTES} bytes) or reduce the scheduler batch limit.')
         self.thinking_max_pending_tokens = 4 * max_tokens
         thinking_row_bytes = 16 if self.thinking_enabled else 0
         self._capture_pack_cache = None
@@ -217,8 +230,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
             # Two fixed small slots, not another full-batch pool. The original
             # bulk capacity remains sufficient for an all-prefill batch.
             small_tokens = min(max_tokens, max_reqs * self.decode_capture_limit)
+            small_q_bytes = q_slot_bytes
+            if self.redundancy_enabled:
+                # This lane only carries decode rows, so its redundancy Q is
+                # bounded by them; do not pin a second pair of full Question slots.
+                decode_q = small_tokens * len(self.redundancy_layers) * self.redundancy_query_heads * self.dim * 2
+                small_q_bytes -= self.redundancy_q_slot_bytes - min(self.redundancy_q_slot_bytes, decode_q)
             self.decode_downloads = PackedDownloads(
-                small_tokens * (self.row_elements * 2 + thinking_row_bytes) + (4 * max_reqs + 1) * 8 + q_slot_bytes,
+                small_tokens * (self.row_elements * 2 + thinking_row_bytes) + (4 * max_reqs + 1) * 8 + small_q_bytes,
                 2, runner.device)
         self.resident_records = max(16, (max_tokens + self.config.block_tokens - 1) // self.config.block_tokens + 1)
         self.authorities = {}
@@ -348,6 +367,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             redundancy_queries = {}
             pressure_queries = {}
             thinking_tokens = {}
+            aux_bytes = 0
             if staged is not None:
                 payload, t, download = staged
             else:
@@ -355,11 +375,18 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 if len(pool.pending) == len(pool.buffers):
                     self.ensure_download_slot((batch.req_ids[i] for i in indices), lane=lane)
                 payload, t = self._capture_payload(captured, batch, rejected, indices)
+                base_bytes = payload.numel()
                 payload, redundancy_queries = self._capture_redundancy_queries(
                     payload, captured, batch, indices)
                 payload, pressure_queries = self._capture_pressure_queries(
                     payload, captured, batch, indices)
-                payload, thinking_tokens = self._capture_thinking_tokens(payload, batch, indices)
+                # Coalesced owners publish through logical cursors, which read
+                # their prompt inputs from the session binding on the CPU.
+                logical_ids = (frozenset(logical_owners) if logical_owners else
+                    frozenset((logical_group.request_id,)) if logical_group is not None else frozenset())
+                payload, thinking_tokens = self._capture_thinking_tokens(
+                    payload, batch, indices, logical_ids)
+                aux_bytes = payload.numel()-base_bytes
                 download = pool.download(payload)
                 if download is None:
                     raise RuntimeError("Capture queue failed to provide bounded staging after drain")
@@ -370,6 +397,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             packet.redundancy_queries = redundancy_queries
             packet.pressure_queries = pressure_queries
             packet.thinking_tokens = thinking_tokens
+            packet.aux_bytes = aux_bytes
             packet.action_validation = getattr(action_inputs, 'validation', None)
             packet.pipeline_requests = frozenset(pipeline.intersection(packet.request_ids))
             from .publication_trace import emit as _trace
@@ -636,9 +664,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
         history.accept(row['binding'], history_begin, retained, prefill=row['prefill'],
             row_offset=row['row_offset'], rows=values, overflow=row['overflow'])
 
-    def _capture_thinking_tokens(self, payload, batch, indices):
+    def _capture_thinking_tokens(self, payload, batch, indices, logical_ids=()):
         if not getattr(self, 'thinking_enabled', False):
             return payload, {}
+        verify = getattr(self, 'thinking_synth_verify', False)
         sessions = getattr(self.runner, '_kvmem_sessions', None)
         descriptors, count_total = {}, 0
         for i in indices:
@@ -650,8 +679,14 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 descriptors[rid] = dict(binding=None, count=0)
                 continue
             count = int(batch.query_start_loc_np[i+1] - batch.query_start_loc_np[i])
+            if rid in logical_ids and not verify:
+                # A logical prefill owner forwards exactly binding.tokens at its
+                # logical positions (_logical_capture_inputs bounds the extent),
+                # so its publisher needs no device rows and no payload copy.
+                descriptors[rid] = dict(binding=binding, count=count, synthesized=True)
+                continue
             descriptors[rid] = dict(binding=binding, count=count, index=i,
-                byte_offset=payload.numel() + count_total * 16)
+                byte_offset=payload.numel() + count_total * 16, synthesized=rid in logical_ids)
             count_total += count
         self.thinking_capture_stats['packets'] += 1
         if not count_total:
@@ -660,7 +695,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
         result[:payload.numel()].copy_(payload)
         positions = batch.positions[0] if batch.positions.ndim == 2 else batch.positions
         for row in descriptors.values():
-            if not row['count']:
+            if not row['count'] or 'index' not in row:
                 continue
             # CPU starts can be an adaptive-MTP upper bound. Gather from the
             # actual device start, exactly as the accepted KV/Query captures do.
@@ -683,6 +718,8 @@ class CaptureRuntime(EarlyCaptureFeedback):
             return
         if retained > row['count']:
             raise RuntimeError('Thinking token capture is shorter than its accepted KV prefix')
+        if 'byte_offset' not in row:
+            raise RuntimeError('A logical thinking descriptor reached ordinary publication')
         at = row['byte_offset']
         values = packet.download.payload[at:at + row['count'] * 16].view(torch.int64).view(2, row['count'])
         # Only this retained input prefix has KV. A newly sampled output token
@@ -692,6 +729,70 @@ class CaptureRuntime(EarlyCaptureFeedback):
         authority.thinking_history.accept(row['binding'], history_begin, retained,
             tokens, positions, authority.memory.repository)
         self.thinking_capture_stats['accepted_rows'] += retained
+
+    def _begin_logical_side_data(self, packet, authority):
+        """Before a logical owner's first append, like _copy_source_owners."""
+        group = packet.logical_group
+        rid = group.request_id
+        if getattr(self, 'pressure_query_enabled', False):
+            query = packet.pressure_queries.get(rid)
+            window = getattr(authority, 'pressure_query_window', None)
+            if query is None or window is None:
+                raise RuntimeError('Public capture lacks its accepted pressure Query metadata')
+            window.validate_epoch(query['epoch'])
+        if getattr(self, 'redundancy_enabled', False):
+            query = packet.redundancy_queries.get(rid)
+            if query is None:
+                raise RuntimeError('Public capture lacks its redundancy Q metadata')
+            if query['binding'] is not None:
+                authority.redundancy_history.begin(query['binding'], group.history_begin)
+        if getattr(self, 'thinking_enabled', False) and rid not in packet.thinking_tokens:
+            raise RuntimeError('Public capture lacks its thinking token metadata')
+
+    def _accept_logical_thinking(self, packet, authority, history_begin, accepted):
+        """Classify one committed logical span from its exact prompt inputs.
+
+        Every logical append leaves one pending thinking entry keyed by its own
+        history begin, so it is accepted per span, not per physical owner. The
+        inputs are the session binding's prompt tokens at those logical
+        positions; no device row is needed (KVMEM_THINKING_SYNTH_VERIFY=1
+        also downloads the forwarded rows and requires them to be identical).
+        """
+        if not getattr(self, 'thinking_enabled', False) or not accepted:
+            return
+        group = packet.logical_group
+        row = packet.thinking_tokens.get(group.request_id)
+        if row is None:
+            raise RuntimeError('Accepted public owner lost its thinking token descriptor')
+        binding = row['binding']
+        if binding is None:
+            return
+        end = history_begin+accepted
+        if (history_begin < group.history_begin or end > group.history_begin+row['count'] or
+                end > len(binding.tokens)):
+            raise RuntimeError('Logical thinking inputs lie outside the admitted prompt span')
+        tokens = list(binding.tokens[history_begin:end])
+        positions = range(history_begin, end)
+        if 'byte_offset' in row:
+            at, first = row['byte_offset'], history_begin-group.history_begin
+            values = packet.download.payload[at:at + row['count'] * 16].view(torch.int64).view(2, row['count'])
+            forwarded_tokens, forwarded_positions = values[:, first:first+accepted].tolist()
+            if forwarded_tokens != tokens or forwarded_positions != list(positions):
+                raise RuntimeError('Synthesized thinking inputs differ from the forwarded device rows')
+            self.thinking_capture_stats['synthesized_verified_rows'] += accepted
+        authority.thinking_history.accept(binding, history_begin, accepted,
+            tokens, positions, authority.memory.repository)
+        self.thinking_capture_stats['accepted_rows'] += accepted
+        self.thinking_capture_stats['synthesized_rows'] += accepted
+
+    def _finish_logical_side_data(self, packet, retained):
+        """After the final logical span: the owner's Question/pressure Q rows."""
+        group = packet.logical_group
+        rid = group.request_id
+        self._accept_redundancy_queries(packet, rid, group.history_begin, retained)
+        if getattr(self, 'thinking_enabled', False):
+            packet.thinking_tokens.pop(rid, None)
+        self._accept_pressure_queries(packet, rid, group.history_begin, retained)
 
     def _thinking_progress(self):
         owners = {id(owner.thinking_history): owner.thinking_history
@@ -1736,14 +1837,17 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 header_bytes = 5*8
                 raw_bytes = self.row_elements*group.count*self.raw_dtype.itemsize
                 value_bytes = self.row_elements*group.count
-                if data.numel() != header_bytes+raw_bytes+value_bytes:
+                # Accepted side data (redundancy Q, thinking inputs) follows the
+                # KV planes in the same DMA; its descriptors hold byte offsets.
+                value_end = header_bytes+raw_bytes+value_bytes
+                if data.numel() != value_end+packet.aux_bytes:
                     raise ValueError('Logical physical payload has an invalid byte extent')
                 header = data[:header_bytes].view(torch.int64).tolist()
                 if header != [0,group.count,group.history_begin,group.local_begin,0]:
                     raise ValueError('Logical physical metadata differs from the admitted non-rejected span')
                 shape = (len(self.layers),group.count,self.heads,self.dim)
                 packet.logical_payload = (data[header_bytes:header_bytes+raw_bytes].view(self.raw_dtype).reshape(shape),
-                                          data[header_bytes+raw_bytes:].reshape(shape))
+                                          data[header_bytes+raw_bytes:value_end].reshape(shape))
             authority = self.ensure_authority(group.request_id)
             session = getattr(self, '_stream_sessions', {}).pop((group.request_id, group.history_begin), None)
             if session is None and getattr(packet, 'prescatter', None) is None:
@@ -1762,6 +1866,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                            pages=len(session.pages or ()))
             action = self.action
             if cursor is None:
+                self._begin_logical_side_data(packet, authority)
                 epoch = self._logical_epoch(action,group,authority)
                 cursor = packet.logical_cursor = LogicalPublicationCursor(group,packet,authority,action,
                     packet.logical_slices,owner_epoch=epoch,source_generation=packet.source_generation,
@@ -1788,6 +1893,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
                         return 0
                     self._wait_archive_progress({group.request_id})
                     continue
+                # Side data follows its committed KV exactly as in ordinary
+                # publication: before the counters expose this child. A failure
+                # quarantines the cursor below; the prefix is never replayed.
+                self._accept_logical_thinking(packet, authority, receipt.history_begin, receipt.accepted)
+                if receipt.owner_done:
+                    self._finish_logical_side_data(packet, receipt.published_history_end-group.history_begin)
                 # Only complete child transactions reach bookkeeping. A second
                 # child failure preserves this prefix and never replays it.
                 with self._publication_lock():
@@ -2100,6 +2211,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 if getattr(self, 'cpu_mean_index_stats', None) is not None else {}),
             'prefill_action_before_mtp': getattr(self.options, 'prefill_action_before_mtp', False),
             'prefill_action_before_mtp_stats': dict(getattr(getattr(self, 'action', None), 'mtp_stage_stats', {})),
+            'decode_action_before_mtp': getattr(getattr(self, 'action', None), 'decode_before_mtp', False),
             'prefill_deferred_validation': getattr(self.options, 'prefill_deferred_validation', False),
             'prefill_scatter_after_target': getattr(self.options, 'prefill_scatter_after_target', False),
             'prefill_scatter_after_target_stats': dict(getattr(self, 'prefill_scatter_after_target_stats', {})),
@@ -2120,9 +2232,25 @@ class CaptureRuntime(EarlyCaptureFeedback):
             "retiring_requests": len(getattr(self, 'retiring', {}))}
         if self.early_capture_enabled:
             self._sample_early_publication(progress)
-        temporary = self.output / "progress.tmp"
-        temporary.write_text(json.dumps(progress, indent=2))
-        temporary.replace(self.output / "progress.json")
+        self._publish_report('progress', progress)
+
+    def _publish_report(self, name, report):
+        """Write <name>.json now, or hand the snapshot to the lazy writer."""
+        writer = self.__dict__.get('_report_writer')
+        if writer is None and lazy_archive_report():
+            writer = self._report_writer = LatestReportWriter(self.output)
+        if writer is None:
+            write_report(self.output, name, report)
+        else:                                   # opt-in KVMEM_LAZY_ARCHIVE_REPORT
+            writer.submit(name, report)
+
+    def _flush_reports(self):
+        """Shutdown: the last archive/progress state reaches the disk."""
+        if self.__dict__.get('_archive_report_skipped'):
+            self._write_archive_report(force=True)
+        writer = self.__dict__.pop('_report_writer', None)
+        if writer is not None:
+            writer.close()
 
     def archive_capacity(self):
         """Nonblocking worker feedback, including DMA not yet incorporated.
@@ -2325,6 +2453,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
 
     def shutdown_retirement(self):
         """Graceful engine shutdown drains detached work before releasing storage."""
+        try:
+            self._shutdown_retirement()
+        finally:
+            self._flush_reports()
+
+    def _shutdown_retirement(self):
         self.join_cpu_scatter()
         if getattr(self, 'fps_prebuild_manager', None) is not None:
             self.fps_prebuild_manager.close()
@@ -2355,11 +2489,26 @@ class CaptureRuntime(EarlyCaptureFeedback):
         if not self.retirement.close() or not self.archive.close():
             raise RuntimeError('Shutdown retained archive I/O or retirement jobs')
 
-    def _write_archive_report(self):
+    def _write_archive_report(self, force=False):
         reporter = getattr(self, '_archive_resource_reporter', None)
+        sessions = getattr(self.runner, '_kvmem_sessions', None)
+        if lazy_archive_report():
+            # Opt-in KVMEM_LAZY_ARCHIVE_REPORT. Engine thread only. A report is
+            # skipped only while requests are still active or retiring: every
+            # caller updates those maps first, so the call that finds the
+            # runtime idle always writes the final state.
+            now = time.monotonic()
+            busy = bool(self.authorities or self.retiring or (sessions is not None and sessions.retiring))
+            if busy and not force and now < self.__dict__.get('_archive_report_next', float('-inf')):
+                self._archive_report_skipped = self.__dict__.get('_archive_report_skipped', 0) + 1
+                self.archive_reports_skipped = self.__dict__.get('archive_reports_skipped', 0) + 1
+                if reporter is not None:
+                    reporter.publish(len(self.authorities), len(self.retiring))
+                return
+            self._archive_report_next = now + LAZY_REPORT_INTERVAL
+            self._archive_report_skipped = 0
         if reporter is not None:
             reporter.publish(len(self.authorities), len(self.retiring), force=True)
-        sessions = getattr(self.runner, '_kvmem_sessions', None)
         report = {"scope": "continuous target authority; refresh qualification is recorded separately",
                   "batches": self.batches, "completed": list(self.completed),
                   **completion_counts(self.completed),
@@ -2394,7 +2543,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
                   **self.archive.io_usage(),
                   "process_memory": sample_process_memory(),
                   "pending_downloads": self._pending_download_count()}
-        temporary = self.output / 'archive.tmp'
-        temporary.write_text(json.dumps(report, indent=2))
-        temporary.replace(self.output / 'archive.json')
+        if lazy_archive_report():
+            report['lazy_archive_reports_skipped'] = self.__dict__.get('archive_reports_skipped', 0)
+        self._publish_report('archive', report)
         self._write_progress()

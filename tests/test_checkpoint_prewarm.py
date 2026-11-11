@@ -96,3 +96,28 @@ def test_warming_follows_the_startup_graph_capture(monkeypatch, eager):
         assert events == ['profile', 'kv', 'graphs', ('options', 'after_graph_capture')]
         runner.initialize_kv_cache()
         assert events[4:] == ['kv']  # Warmed once.
+
+
+def test_graph_memory_profile_does_not_consume_checkpoint_prewarm(monkeypatch):
+    from vllm_kvmem.runner import make_probe_runner
+    events = []
+
+    class Base:
+        def capture_model(self, *, profile_only=False):
+            events.append(('capture', profile_only))
+            return 11 if profile_only else 7
+
+    runner = make_probe_runner(Base)()
+    runner.vllm_config = object()
+    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: 'options')
+    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads',
+                        lambda r, options, stage: events.append((options, stage)))
+
+    assert runner.capture_model(profile_only=True) == 11
+    assert events == [('capture', True)]
+    assert not getattr(runner, '_kvmem_checkpoint_prewarmed', False)
+    assert runner.capture_model(profile_only=False) == 7
+    assert events == [('capture', True), ('capture', False), ('options', 'after_graph_capture')]
+    assert runner.capture_model() == 7
+    assert events[-1] == ('capture', False)
+    assert len(events) == 4

@@ -435,8 +435,9 @@ class RuntimeOptions:
         if historical is not None and historical.ready_high > self.memory.repository_blocks:
             raise ValueError('historical_gc watermarks exceed repository capacity')
         if historical is not None and historical.policy == 'redundancy':
-            incompatible = ('offline_prefill_coalescing', 'prefill_physical_coalescing',
-                            'prefill_publication_pipeline', 'early_capture_slot_release',
+            # Physical coalescing and the publication pipeline carry the accepted
+            # Query/thinking side data through their logical cursors.
+            incompatible = ('offline_prefill_coalescing', 'early_capture_slot_release',
                             'prefill_capture_ahead')
             enabled = [name for name in incompatible if getattr(self, name)]
             if enabled:

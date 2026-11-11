@@ -164,6 +164,45 @@ struct MassMap {
         }
         return out;
     }
+    // KVMEM_SESSION_FAST_TURN: tuple(sorted(to_dict().items())) without the
+    // dictionary (keys are unique, index is already sorted by key).
+    py::tuple sorted_rows() const {
+        py::tuple out(index.size());
+        for (size_t i = 0; i < index.size(); ++i) {
+            PyObject* k = PyLong_FromLongLong(index[i].first);
+            PyObject* v = PyFloat_FromDouble(values[index[i].second]);
+            PyObject* row = k && v ? PyTuple_Pack(2, k, v) : nullptr;
+            Py_XDECREF(k); Py_XDECREF(v);
+            if (!row) throw py::error_already_set();
+            PyTuple_SET_ITEM(out.ptr(), static_cast<Py_ssize_t>(i), row);
+        }
+        return out;
+    }
+    // KVMEM_SESSION_FAST_TURN: from_dict(dict(rows)) for checkpoint rows, i.e.
+    // an exact tuple of exact (int, float) tuples with strictly increasing
+    // int64 keys. None for anything else; the caller keeps the dict path.
+    static py::object from_rows(const py::object& rows) {
+        if (!PyTuple_CheckExact(rows.ptr())) return py::none();
+        const Py_ssize_t count = PyTuple_GET_SIZE(rows.ptr());
+        if (static_cast<uint64_t>(count) > UINT32_MAX) return py::none();
+        MassMap out;
+        out.keys.reserve(count); out.values.reserve(count); out.index.reserve(count);
+        for (Py_ssize_t i = 0; i < count; ++i) {
+            PyObject* row = PyTuple_GET_ITEM(rows.ptr(), i);
+            if (!PyTuple_CheckExact(row) || PyTuple_GET_SIZE(row) != 2) return py::none();
+            PyObject* k = PyTuple_GET_ITEM(row, 0);
+            PyObject* v = PyTuple_GET_ITEM(row, 1);
+            if (!PyLong_CheckExact(k) || !PyFloat_CheckExact(v)) return py::none();
+            int overflow = 0;
+            const long long key = PyLong_AsLongLongAndOverflow(k, &overflow);
+            if (overflow) return py::none();
+            if (i && key <= out.keys.back()) return py::none();
+            out.index.emplace_back(key, static_cast<uint32_t>(i));
+            out.keys.push_back(key);
+            out.values.push_back(PyFloat_AS_DOUBLE(v));
+        }
+        return py::cast(std::move(out));
+    }
 };
 
 // prepare() over a MassMap (or a dict, converted at the point prepare() casts
@@ -240,13 +279,145 @@ inline py::tuple prepare_map(py::object old, size_t samples, const std::vector<s
     return py::make_tuple(py::cast(std::move(result)), samples+indices.size());
 }
 
+// KVMEM_NATIVE_DECODE_LAYER_BATCH: prepare_map() with the targets read from a
+// 1-D int64 array (one row of decode_identities_from_maps) instead of a Python
+// list. The same checks in the same order, the same sequential double
+// additions per key and the same resulting contents and insertion order.
+// Each column's place in the map is looked up once per call: by one merge walk
+// over the key-sorted index when the targets are non-decreasing, otherwise by
+// the same binary search as prepare_map().
+template<class T>
+inline double read_mass(const py::buffer_info& b, size_t row, size_t col) {
+    T value;
+    std::memcpy(&value, static_cast<const char*>(b.ptr) + static_cast<ssize_t>(row)*b.strides[0] +
+                static_cast<ssize_t>(col)*b.strides[1], sizeof(T));
+    return static_cast<double>(value);
+}
+
+template<class T>
+inline void accumulate_rows(const py::buffer_info& b, const std::vector<size_t>& indices,
+        const std::vector<int64_t>& targets, MassMap& result) {
+    const size_t columns = targets.size();
+    // slot >= 0: position of the key in the staged map; slot < 0: -(1 + id) of
+    // a key the old map does not hold (its position is assigned on first touch).
+    std::vector<int64_t> slot(columns);
+    size_t fresh = 0;
+    bool ordered = true;
+    for (size_t col = 1; col < columns && ordered; ++col) ordered = targets[col-1] <= targets[col];
+    if (ordered) {
+        const auto& index = result.index;
+        size_t at = 0;
+        for (size_t col = 0; col < columns; ++col) {
+            const int64_t key = targets[col];
+            if (col && key == targets[col-1]) { slot[col] = slot[col-1]; continue; }
+            while (at < index.size() && index[at].first < key) ++at;
+            slot[col] = at < index.size() && index[at].first == key
+                ? static_cast<int64_t>(index[at].second) : -static_cast<int64_t>(++fresh);
+        }
+    } else {
+        std::unordered_map<int64_t,int64_t> ids;
+        for (size_t col = 0; col < columns; ++col) {
+            const int64_t pos = result.find(targets[col]);
+            if (pos >= 0) { slot[col] = pos; continue; }
+            auto item = ids.emplace(targets[col], static_cast<int64_t>(fresh + 1));
+            if (item.second) ++fresh;
+            slot[col] = -item.first->second;
+        }
+    }
+    std::vector<int64_t> fresh_at(fresh, -1);
+    std::vector<std::pair<int64_t,uint32_t>> added;
+    size_t previous = 0; bool first = true;
+    for (auto row : indices) {
+        if (row >= static_cast<size_t>(b.shape[0]) || (!first && row <= previous))
+            throw std::invalid_argument("Invalid or duplicate decode accepted row index");
+        first = false; previous = row;
+        double sum = 0., correction = 0.;
+        for (size_t col = 0; col < columns; ++col) {
+            const double value = read_mass<T>(b, row, col);
+            if (!std::isfinite(value) || value < 0.)
+                throw std::invalid_argument("Action attention mass is invalid or does not sum to one");
+            const double next = sum+value;
+#if PY_VERSION_HEX >= 0x030C0000
+            correction += std::abs(sum) >= std::abs(value) ? (sum-next)+value : (value-next)+sum;
+#endif
+            sum = next;
+        }
+        sum += correction;
+        if (!std::isfinite(sum) || std::abs(sum-1.) > .005)
+            throw std::invalid_argument("Action attention mass is invalid or does not sum to one");
+        for (size_t col = 0; col < columns; ++col) {
+            const double value = read_mass<T>(b, row, col);
+            if (value == 0.) continue;
+            int64_t pos = slot[col];
+            if (pos < 0) {
+                int64_t& assigned = fresh_at[static_cast<size_t>(-pos - 1)];
+                if (assigned < 0) {
+                    // prepare(): emplace(key, 0.) then += value; first touch order.
+                    assigned = static_cast<int64_t>(result.keys.size());
+                    result.keys.push_back(targets[col]);
+                    result.values.push_back(0.);
+                    added.emplace_back(targets[col], static_cast<uint32_t>(assigned));
+                }
+                pos = assigned;
+            }
+            result.values[static_cast<size_t>(pos)] += value;
+        }
+    }
+    if (!added.empty()) {
+        std::sort(added.begin(), added.end());
+        std::vector<std::pair<int64_t,uint32_t>> merged;
+        merged.reserve(result.index.size() + added.size());
+        std::merge(result.index.begin(), result.index.end(), added.begin(), added.end(),
+            std::back_inserter(merged));
+        result.index.swap(merged);
+    }
+}
+
+inline py::tuple prepare_map_targets(py::object old, size_t samples, const std::vector<size_t>& indices,
+        py::object targets_o, py::buffer masses, size_t max_bytes) {
+    if (!py::isinstance<py::array_t<int64_t>>(targets_o))
+        throw py::type_error("Decode attention targets must be a 1-D int64 array");
+    const py::array targets_a = py::reinterpret_borrow<py::array>(targets_o);
+    if (targets_a.ndim() != 1 || !(targets_a.flags() & py::detail::npy_api::NPY_ARRAY_ALIGNED_))
+        throw py::type_error("Decode attention targets must be a 1-D int64 array");
+    std::vector<int64_t> targets(static_cast<size_t>(targets_a.shape(0)));
+    {
+        const char* base = static_cast<const char*>(targets_a.data());
+        const ssize_t stride = targets_a.strides(0);
+        for (size_t i = 0; i < targets.size(); ++i)
+            std::memcpy(&targets[i], base + static_cast<ssize_t>(i)*stride, sizeof(int64_t));
+    }
+    const auto b = masses.request();
+    const bool fp32 = b.format == py::format_descriptor<float>::format() && b.itemsize == 4;
+    const bool fp64 = b.format == py::format_descriptor<double>::format() && b.itemsize == 8;
+    if (b.ndim != 2 || (!fp32 && !fp64) || b.shape[1] != static_cast<ssize_t>(targets.size()))
+        throw std::invalid_argument("Decode attention matrix shape/dtype mismatch");
+    const bool native = py::isinstance<MassMap>(old);
+    if (!native && !py::isinstance<py::dict>(old))
+        throw py::type_error("Decode attention mass must be a dict or DecodeMassMap");
+    const size_t old_size = native ? old.cast<const MassMap&>().size() : py::len(old);
+    if (old_size > max_bytes/320 || targets.size() > max_bytes/320 ||
+            4096 + (old_size+targets.size())*320 > max_bytes)
+        throw std::length_error("Decode attention staging capacity exceeded before acceptance");
+    MassMap result = native ? old.cast<const MassMap&>() : MassMap::from_dict(old.cast<py::dict>());
+    {
+        py::gil_scoped_release release;
+        if (fp32) accumulate_rows<float>(b, indices, targets, result);
+        else accumulate_rows<double>(b, indices, targets, result);
+    }
+    return py::make_tuple(py::cast(std::move(result)), samples+indices.size());
+}
+
 inline void bind(py::module_& module) {
     module.def("prepare_decode_attention",&prepare);
     module.def("prepare_decode_attention_sparse",&prepare_sparse);
     py::class_<MassMap>(module, "DecodeMassMap")
         .def_static("from_dict", &MassMap::from_dict)
         .def("to_dict", &MassMap::to_dict)
+        .def("sorted_rows", &MassMap::sorted_rows)
+        .def_static("from_rows", &MassMap::from_rows)
         .def("__len__", &MassMap::size);
     module.def("prepare_decode_attention_map", &prepare_map);
+    module.def("prepare_decode_attention_map_targets", &prepare_map_targets);
 }
 }

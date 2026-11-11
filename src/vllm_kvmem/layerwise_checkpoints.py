@@ -26,6 +26,215 @@ def sessions_enabled():
     return value == '1'
 
 
+def fast_state():
+    """KVMEM_CHECKPOINT_FAST_STATE: O(history) checkpoint work without Python loops.
+
+    Session captures and restores validated, copied, sorted and hashed every
+    layer's map rows and one attention entry per history block in Python on the
+    engine thread. With the flag a checkpoint keeps each layer history as its
+    immutable native state, and the row checks, handle sets and evidence text
+    run in the prefill-state extension. Results, error messages and evidence
+    digests are unchanged; any input outside the plain shapes the extension
+    handles takes the original code.
+    """
+    value = os.getenv('KVMEM_CHECKPOINT_FAST_STATE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_CHECKPOINT_FAST_STATE must be 0 or 1')
+    return value == '1'
+
+
+_NATIVE = []
+
+
+def fast_native():
+    """The prefill-state extension when KVMEM_CHECKPOINT_FAST_STATE can use it."""
+    if not fast_state():
+        return None
+    if not _NATIVE:
+        try:
+            from . import _prefill_state_native as module
+        except ImportError:
+            module = None
+        if module is not None and not all(hasattr(module, name) for name in (
+                'resolve_rows', 'same_identity', 'unique_handles', 'identity_json')):
+            module = None
+        if module is not None and not hasattr(module.State, 'keys_below'):
+            module = None
+        _NATIVE.append(module)
+    return _NATIVE[0]
+
+
+def fast_turn():
+    """KVMEM_SESSION_FAST_TURN: per-turn session capture/restore work kept native.
+
+    Needs KVMEM_CHECKPOINT_FAST_STATE. Every finished turn captures an M
+    checkpoint and every next turn restores it, on the engine thread, in steps
+    where the GPU waits. With the flag:
+
+    * decode-history rows come straight from the native mass map
+      (DecodeMassMap.sorted_rows) and are restored straight into one
+      (DecodeMassMap.from_rows), without a dictionary of every attended block;
+    * GC holds pass (slot, generation) tuples to the native scope
+      (protect_pairs / protect_current_pairs) instead of one Handle object per
+      record;
+    * a capture computes the unique handle pairs of its maps once, for the hold
+      and for the session ledger's protected-row count;
+    * a capture resolves against the working records it already read.
+
+    The checkpoint contents, the held records, errors and evidence are the
+    same; inputs outside the plain shapes take the original code.
+    """
+    value = os.getenv('KVMEM_SESSION_FAST_TURN', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_SESSION_FAST_TURN must be 0 or 1')
+    return value == '1' and fast_state()
+
+
+class StateRows:
+    """A layer history's sorted (key, mass, exposure) rows, kept as its native state.
+
+    Stands in for the row tuple inside LayerwisePrefix.histories; the tuple is
+    built only when something iterates it.
+    """
+    __slots__ = ('state', '_rows')
+
+    def __init__(self, state):
+        self.state, self._rows = state, None
+
+    def rows(self):
+        if self._rows is None:
+            self._rows = self.state.rows()
+        return self._rows
+
+    def __len__(self):
+        return self.state.size()
+
+    def __iter__(self):
+        return iter(self.rows())
+
+    def __getitem__(self, index):
+        return self.rows()[index]
+
+    def __eq__(self, other):
+        if isinstance(other, StateRows):
+            return self.rows() == other.rows()
+        if isinstance(other, tuple):
+            return self.rows() == other
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.rows())
+
+    def __repr__(self):
+        return f'StateRows({len(self)} rows)'
+
+
+def _native_state(history):
+    """The history's immutable native state (queued folds applied), or None."""
+    state = getattr(history, '_buffered_state', None)
+    return state if hasattr(state, 'keys_below') else None
+
+
+def _same_scores(shared, history):
+    """shared.snapshot() == history.snapshot()."""
+    if fast_native() is not None:
+        mine, theirs = _native_state(shared), _native_state(history)
+        if mine is not None and theirs is not None:
+            return ((shared.end, shared.samples, shared.chunks) ==
+                    (history.end, history.samples, history.chunks) and mine.same_state(theirs))
+    return shared.snapshot() == history.snapshot()
+
+
+def _same_identity(first, second):
+    """_identity(first) == _identity(second)."""
+    native = fast_native()
+    same = native.same_identity(first, second) if native is not None else None
+    return _identity(first) == _identity(second) if same is None else same
+
+
+def _restored_history(controller, options, snapshot, position):
+    """A fresh layer history holding one LayerwisePrefix.histories entry."""
+    rows, end, samples, chunks = snapshot
+    if type(rows) is StateRows and type(position) is int and fast_native() is not None:
+        if end > position or not rows.state.keys_below(position):
+            raise ValueError('Layerwise restore cannot reuse future attention evidence')
+        history = controller.new_history(options)
+        from .buffered_prefill_attention import BufferedPrefillHistory
+        if (isinstance(history, BufferedPrefillHistory) and
+                type(history).restore is BufferedPrefillHistory.restore):
+            # The state restore() would rebuild from the sorted rows, shared:
+            # native states are immutable, a commit returns a new one.
+            history._buffered_state = rows.state
+            history.end, history.samples, history.chunks = end, samples, chunks
+            history.successful_buffered_restores += 1
+            return history
+    else:
+        if end > position or any(begin >= position for begin, _, _ in rows):
+            raise ValueError('Layerwise restore cannot reuse future attention evidence')
+        history = controller.new_history(options)
+    history.restore(({begin: (mass, exposure) for begin, mass, exposure in rows},
+                     end, samples, chunks), position)
+    return history
+
+
+def map_pairs(snapshot):
+    """Every (slot, generation) of a checkpoint's maps, for its lifetime.
+
+    The set session_worker._history_rows built from the rows on every poll;
+    None when the fast path is off or the rows are not plain.
+    """
+    store = getattr(snapshot, '__dict__', None)
+    cached = store.get('_map_pairs') if store is not None else None
+    if cached is None:
+        native = fast_native()
+        if native is None or store is None:
+            return None
+        cached = native.unique_handles(snapshot.maps, False)
+        if cached is None:
+            return None
+        object.__setattr__(snapshot, '_map_pairs', cached)
+    return cached
+
+
+def _maps_evidence(maps, yield_gil=False):
+    """(layer_tokens, map_sha256) of LayerwisePrefix.evidence()."""
+    native = fast_native()
+    if native is not None:
+        digest, tokens = hashlib.sha256(b'['), []
+        for rows in maps:
+            item = native.identity_json(rows)
+            if item is None:
+                break
+            digest.update(b', ' + item[0] if tokens else item[0])
+            tokens.append(item[1])
+            if yield_gil:
+                time.sleep(0)
+        else:
+            digest.update(b']')
+            return tokens, digest.hexdigest()
+    return ([sum(r[3] for r in rows) for rows in maps],
+            _list_sha256((_identity(rows) for rows in maps), yield_gil))
+
+
+def _attention_sha256(histories, yield_gil=False):
+    """_list_sha256(histories); native-state rows are serialized by the state."""
+    digest, first = hashlib.sha256(b'['), True
+    for item in histories:
+        rows = item[0] if item else None
+        if type(rows) is StateRows:
+            encode = getattr(rows.state, 'rows_json', None)
+            digest.update(b'[' if first else b', [')
+            digest.update(encode() if encode is not None else json.dumps(rows.rows()).encode())
+            digest.update((''.join(', ' + json.dumps(value) for value in item[1:]) + ']').encode())
+        else:
+            digest.update((json.dumps(item) if first else ', ' + json.dumps(item)).encode())
+        first = False
+        if yield_gil:
+            time.sleep(0)  # Let the engine thread take the GIL between layers.
+    digest.update(b']')
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class LayerwisePrefix:
     position: int
@@ -49,6 +258,8 @@ class LayerwisePrefix:
             32 + len(snapshot[0]) * 16 for snapshot in (self.decode or ()))
 
     def evidence(self):
+        if any(type(snapshot[0]) is StateRows for snapshot in self.histories):
+            return self.evidence_resolver()()
         return dict(accepted_history=self.position, layer_names=self.names,
             layer_tokens=[sum(r[3] for r in rows) for rows in self.maps],
             # Handles can change on rewind. Identity is original text plus its
@@ -60,10 +271,14 @@ class LayerwisePrefix:
         """evidence() computed when called; holds the immutable maps/histories only."""
         position, names, maps, histories = self.position, self.names, self.maps, self.histories
         def resolve(yield_gil=False):
+            if fast_state():
+                tokens, map_sha256 = _maps_evidence(maps, yield_gil)
+                return dict(accepted_history=position, layer_names=names, layer_tokens=tokens,
+                    map_sha256=map_sha256, attention_sha256=_attention_sha256(histories, yield_gil))
             return dict(accepted_history=position, layer_names=names,
                 layer_tokens=[sum(r[3] for r in rows) for rows in maps],
                 map_sha256=_list_sha256((_identity(rows) for rows in maps), yield_gil),
-                attention_sha256=_list_sha256(histories, yield_gil))
+                attention_sha256=_attention_sha256(histories, yield_gil))
         return resolve
 
 
@@ -111,7 +326,7 @@ def layer0_diverged(shared, layer_zero):
     the next pressure realigns them. Session checkpoints may be taken in between
     (KVMEM_LAYERWISE_SESSIONS). Lengths and partial-block geometry must agree.
     """
-    if _identity(shared) == _identity(layer_zero):
+    if _same_identity(shared, layer_zero):
         return False
     partial = lambda rows: tuple((r[2], r[3], r[4]) for r in rows if r[3] != 32)
     if (sum(r[3] for r in shared) != sum(r[3] for r in layer_zero) or
@@ -120,9 +335,25 @@ def layer0_diverged(shared, layer_zero):
     return True
 
 
-def _resolve(authority, maps, position, *, planned_records=None, allow_layer0_divergence=False):
+def _resolve(authority, maps, position, *, planned_records=None, allow_layer0_divergence=False,
+             want_chosen=True):
     """Resolve original coordinates against the retained immutable archive."""
     by_begin = {record.history_begin: record for record in authority.records.values()}
+    native = fast_native()
+    if native is not None:
+        block_tokens = getattr(getattr(getattr(authority, 'memory', None), 'config', None),
+                               'block_tokens', None)
+        fast = (native.resolve_rows(maps, by_begin, position, block_tokens, want_chosen)
+                if type(position) is int and type(block_tokens) is int else None)
+        if fast is not None:            # same checks and errors as the loop below
+            resolved, canonical = fast
+            shared = (tuple(authority.memory._store.working_records()) if planned_records is None
+                      else tuple(planned_records))
+            if not _same_identity(shared, canonical[0]):
+                if not allow_layer0_divergence:
+                    raise ValueError('Layerwise checkpoint differs from the native layer-zero frame')
+                layer0_diverged(shared, canonical[0])
+            return resolved, canonical
     resolved, canonical = [], []
     for rows in maps:
         chosen, mapped, seen, cursor = [], [], set(), 0
@@ -208,9 +439,17 @@ def capture(controller, request_id, authority, position, *, terminal=False, comm
             if decode is not None:
                 controller.decode_histories[request_id] = decode
             reinstated = True
+    early = False
+    if fast_state():
+        # checkpoint_hold waits for the GC worker to acknowledge its pause;
+        # asked for here, the acknowledgement arrives while the rows are built.
+        from .layerwise_gc_holds import pause, resume
+        early = pause(authority, key='checkpoint')
     try:
         return _capture(controller, request_id, authority, position, terminal=terminal, committed=committed)
     finally:
+        if early:
+            resume(authority, key='checkpoint')
         if reinstated:
             controller.maps.pop(request_id, None)
             controller.histories.pop(request_id, None)
@@ -231,15 +470,28 @@ def _capture(controller, request_id, authority, position, *, terminal=False, com
     extent = sum(r[3] for r in shared)
     maps = tuple(tuple(controller.records(request_id, authority, position, extent, i))
                  for i in range(len(controller.names)))
-    _, maps = _resolve(authority, maps, position, allow_layer0_divergence=sessions_enabled())
+    quick = fast_turn()
+    # KVMEM_SESSION_FAST_TURN: _resolve compares against the working records
+    # read above instead of reading them again (nothing ran in between).
+    _, maps = _resolve(authority, maps, position, planned_records=shared if quick else None,
+                       allow_layer0_divergence=sessions_enabled(), want_chosen=False)
     snapshots = []
+    fast = fast_native() is not None and type(position) is int
     for history in histories:
+        state = _native_state(history) if fast else None
+        if state is not None:
+            end, samples, chunks = history.end, history.samples, history.chunks
+            if end > position or not state.keys_below(position):
+                raise ValueError('Layerwise checkpoint contains future attention evidence')
+            snapshots.append((StateRows(state if state.is_sorted() else state.sorted()),
+                              end, samples, chunks))
+            continue
         values, end, samples, chunks = history.snapshot()
         if end > position or any(begin >= position for begin in values):
             raise ValueError('Layerwise checkpoint contains future attention evidence')
         snapshots.append((tuple((key, mass, exposure) for key, (mass, exposure)
                                 in sorted(values.items())), end, samples, chunks))
-    if authority.action_history.prefill.snapshot() != histories[0].snapshot():
+    if not _same_scores(authority.action_history.prefill, histories[0]):
         raise ValueError('Layerwise checkpoint differs from shared layer-zero scores')
     decode = None
     decode_histories = controller.decode_histories.get(request_id)
@@ -248,18 +500,126 @@ def _capture(controller, request_id, authority, position, *, terminal=False, com
             raise ValueError('A frozen P checkpoint cannot carry decode attention')
         if len(decode_histories) != len(controller.names):
             raise ValueError('Missing per-layer rolling decode histories')
-        decode = []
-        for history in decode_histories:
-            if history.end > position or any(begin >= position for begin in history.mass):
-                raise ValueError('Layerwise checkpoint contains future decode attention')
-            decode.append((tuple(sorted(history.mass.items())), history.samples, history.end, history.chunks))
-        decode = tuple(decode)
+        decode = _decode_snapshot(decode_histories, position)
     from .layerwise_gc_holds import checkpoint_hold
     # A diverged layer zero leaves the native frame (restored into the MTP draft
     # and, before the per-layer rebuild, every layer) outside the layer maps.
-    held = maps + ((shared,) if _identity(shared) != _identity(maps[0]) else ())
-    return LayerwisePrefix(position, tuple(controller.names), maps, tuple(snapshots),
-                           gc_hold=checkpoint_hold(authority, held), decode=decode, terminal=terminal)
+    diverged = not _same_identity(shared, maps[0])
+    held = maps + ((shared,) if diverged else ())
+    every = pairs = None
+    if quick and not diverged:
+        every, pairs = _capture_pairs(authority, maps)
+    prefix = LayerwisePrefix(position, tuple(controller.names), maps, tuple(snapshots),
+                             gc_hold=checkpoint_hold(authority, held, pairs), decode=decode, terminal=terminal)
+    if every is not None:
+        object.__setattr__(prefix, '_map_pairs', every)     # what map_pairs() would compute
+    if decode is not None and fast_state():
+        # Rows built just above: sorted (begin, mass) tuples with unique begins.
+        object.__setattr__(prefix, '_decode_sorted', True)
+    return prefix
+
+
+def _capture_pairs(authority, maps):
+    """(map_pairs value, checkpoint_hold handles) of a capture's maps, or (None, None).
+
+    One native pass over the rows (KVMEM_SESSION_FAST_TURN): the sorted unique
+    (slot, generation) of every row, and the same list without the (-1, -1)
+    placeholder, which is what window_handles(maps) returns.
+    """
+    from .layerwise_gc_holds import scope_of
+    native = fast_native()
+    if native is None or scope_of(authority) is None:
+        return None, None
+    every = native.unique_handles(maps, False)
+    if every is None:
+        return None, None
+    from bisect import bisect_left
+    index = bisect_left(every, (-1, -1))
+    if index < len(every) and every[index] == (-1, -1):
+        return every, every[:index] + every[index + 1:]
+    return every, every
+
+
+def _native_decode_rows(history):
+    """sorted(history.mass.items()) from a NativeDecodeHistory's map, cached on it."""
+    from .layerwise_decode import NativeDecodeHistory
+    if type(history) is not NativeDecodeHistory:
+        return None
+    rows = history.__dict__.get('_sorted_rows')
+    if rows is None:
+        sorted_rows = getattr(history._map, 'sorted_rows', None)
+        if sorted_rows is None:
+            return None
+        rows = history._sorted_rows = sorted_rows()       # instances are never mutated
+    return rows
+
+
+def _native_restored_decode(decode):
+    """Checkpoint decode rows restored straight into native mass maps, or None.
+
+    Equal to DecodeHistory(dict(rows), ...) followed by the conversion its
+    first prepare() performs (DecodeMassMap.from_dict).
+    """
+    from . import layerwise_decode
+    from_rows = getattr(getattr(layerwise_decode._native, 'DecodeMassMap', None), 'from_rows', None)
+    if from_rows is None or not layerwise_decode.mass_map_enabled():
+        return None
+    histories = []
+    for rows, samples, end, chunks in decode:
+        mass_map = from_rows(rows)
+        if mass_map is None:
+            return None
+        history = layerwise_decode.NativeDecodeHistory(mass_map, samples, end, chunks)
+        history._sorted_rows = rows                           # the next capture's rows
+        histories.append(history)
+    return histories
+
+
+def _decode_snapshot(decode_histories, position):
+    decode = []
+    quick = fast_state() and type(position) is int
+    for history in decode_histories:
+        rows = _decode_rows(history, position) if quick else None
+        if rows is None:
+            if history.end > position or any(begin >= position for begin in history.mass):
+                raise ValueError('Layerwise checkpoint contains future decode attention')
+            rows = tuple(sorted(history.mass.items()))
+        decode.append((rows, history.samples, history.end, history.chunks))
+    return tuple(decode)
+
+
+def _decode_rows(history, position):
+    """Sorted (begin, mass) rows of a decode history (KVMEM_CHECKPOINT_FAST_STATE).
+
+    A history restored from a checkpoint this process captured and not replaced
+    since (decode feedback and pruning create new objects) still equals the
+    rows it was built from. Otherwise the future-evidence check uses max();
+    None leaves the original expressions (and their errors) to the caller.
+    """
+    if history.end > position:
+        raise ValueError('Layerwise checkpoint contains future decode attention')
+    if fast_turn():
+        rows = _native_decode_rows(history)
+        if rows is not None:
+            if rows and rows[-1][0] >= position:
+                raise ValueError('Layerwise checkpoint contains future decode attention')
+            return rows
+    source = getattr(history, '__dict__', {}).get('_checkpoint_rows')
+    mass = history.mass
+    if source is not None and source[0] is mass and len(mass) == len(source[1]):
+        rows = source[1]
+        if rows and rows[-1][0] >= position:
+            raise ValueError('Layerwise checkpoint contains future decode attention')
+        return rows
+    if type(mass) is not dict:
+        return None
+    try:
+        late = bool(mass) and max(mass) >= position
+    except TypeError:
+        return None
+    if late:
+        raise ValueError('Layerwise checkpoint contains future decode attention')
+    return tuple(sorted(mass.items()))
 
 
 def prepare_restore(controller, request_id, authority, snapshot, options, *, planned_records=None):
@@ -278,16 +638,39 @@ def prepare_restore(controller, request_id, authority, snapshot, options, *, pla
     chosen, maps = _resolve(authority, snapshot.maps, snapshot.position, planned_records=planned_records,
                             allow_layer0_divergence=sessions_enabled())
     histories = []
-    for rows, end, samples, chunks in snapshot.histories:
-        if end > snapshot.position or any(begin >= snapshot.position for begin, _, _ in rows):
-            raise ValueError('Layerwise restore cannot reuse future attention evidence')
-        history = controller.new_history(options)
-        history.restore(({begin: (mass, exposure) for begin, mass, exposure in rows},
-                         end, samples, chunks), snapshot.position)
-        histories.append(history)
-    if authority.action_history.prefill.snapshot() != histories[0].snapshot():
-        raise ValueError('Restored layer-zero scores differ from the shared checkpoint')
+    for entry in snapshot.histories:
+        histories.append(_restored_history(controller, options, entry, snapshot.position))
+    reconcile_pruned(authority, histories)
     return chosen, (snapshot.position, maps), histories
+
+
+def reconcile_pruned(authority, histories):
+    """Apply a retirement prune that the restoring request's histories missed.
+
+    Historical GC prunes the shared prefill history as soon as a retirement
+    drains (RequestAuthority._prune_history_metadata), and with it the layer
+    histories of bound requests. A restoring request is bound only once its
+    state is installed, so a drain between the checkpoint claim and that point
+    (e.g. authority.poll() inside the draft rebuild's packed read) pruned the
+    shared history alone. The same rule is applied here; any other difference
+    is still an error. Returns the live set when a prune was applied.
+    """
+    shared = authority.action_history.prefill
+    if _same_scores(shared, histories[0]):
+        return None
+    live = getattr(authority, 'history_live', None)
+    live = live() if live is not None else None
+    if live is not None:
+        end = authority.history_end
+        for history in histories:
+            values = history.values
+            if any(key not in live and key < end for key in values):
+                history.values = {k: v for k, v in values.items() if k in live or k >= end}
+    if not _same_scores(shared, histories[0]):
+        mine, theirs = set(histories[0].values), set(shared.values)
+        raise ValueError('Restored layer-zero scores differ from the shared checkpoint '
+                         f'(layer-only keys {len(mine - theirs)}, shared-only keys {len(theirs - mine)})')
+    return live
 
 
 def restored_decode(snapshot):
@@ -297,8 +680,18 @@ def restored_decode(snapshot):
     from .layerwise_decode import DecodeHistory
     if len(snapshot.decode) != len(snapshot.names):
         raise ValueError('Layerwise checkpoint decode history count changed')
-    return [DecodeHistory(dict(rows), samples, end, chunks)
-            for rows, samples, end, chunks in snapshot.decode]
+    if getattr(snapshot, '__dict__', {}).get('_decode_sorted') and fast_turn():
+        histories = _native_restored_decode(snapshot.decode)
+        if histories is not None:
+            return histories
+    histories = [DecodeHistory(dict(rows), samples, end, chunks)
+                 for rows, samples, end, chunks in snapshot.decode]
+    if getattr(snapshot, '__dict__', {}).get('_decode_sorted') and fast_state():
+        # The next capture of an unchanged history returns these rows again.
+        for history, item in zip(histories, snapshot.decode):
+            if type(item[0]) is tuple and len(history.mass) == len(item[0]):
+                history._checkpoint_rows = (history.mass, item[0])
+    return histories
 
 
 def install_restored(controller, request_id, authority, frame, histories, snapshot):
@@ -311,6 +704,12 @@ def install_restored(controller, request_id, authority, frame, histories, snapsh
     decode = restored_decode(snapshot)
     if decode is not None:
         controller.decode_histories[request_id] = decode
+    # GPU writes since prepare_restore (per-layer and draft assembly) poll the
+    # authority; a retirement drained there pruned the shared history only.
+    live = reconcile_pruned(authority, histories)
+    prune = getattr(controller, 'prune_layer_histories', None)
+    if live is not None and prune is not None:
+        prune(authority, live)             # same rule for the decode histories
     # Opt-in KVMEM_LAYERWISE_HISTORICAL_GC: hold every restored layer window.
     # The selection pause first excludes an in-flight retirement decision.
     from .layerwise_gc_holds import holds_of, wait_paused
@@ -522,15 +921,9 @@ def restore_pressure_sync(worker, request_id, checkpoint):
             request_id in controller.query.finished):
         raise ValueError('Layerwise restore requires a fresh native request owner')
     histories = []
-    for rows, end, samples, chunks in snapshot.histories:
-        if end > snapshot.position or any(begin >= snapshot.position for begin, _, _ in rows):
-            raise ValueError('Layerwise restore cannot reuse future attention evidence')
-        history = controller.new_history(worker.options)
-        history.restore(({begin: (mass, exposure) for begin, mass, exposure in rows},
-                         end, samples, chunks), snapshot.position)
-        histories.append(history)
-    if authority.action_history.prefill.snapshot() != histories[0].snapshot():
-        raise ValueError('Restored layer-zero scores differ from the shared checkpoint')
+    for entry in snapshot.histories:
+        histories.append(_restored_history(controller, worker.options, entry, snapshot.position))
+    live = reconcile_pruned(authority, histories)
     bind = getattr(controller, 'bind_history_owner', None)
     if bind is not None:
         bind(request_id, authority)
@@ -538,6 +931,9 @@ def restore_pressure_sync(worker, request_id, checkpoint):
     decode = restored_decode(snapshot)
     if decode is not None:
         controller.decode_histories[request_id] = decode
+    prune = getattr(controller, 'prune_layer_histories', None)
+    if live is not None and prune is not None:
+        prune(authority, live)             # same rule for the decode histories
     shared = tuple(authority.memory._store.working_records())
     from .layerwise_gc_holds import holds_of, wait_paused
     wait_paused(authority)
@@ -568,17 +964,28 @@ def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=N
     if resident:
         if controller is None or snapshot is None or not sessions_enabled():
             raise ValueError('Resident layerwise import requires KVMEM_LAYERWISE_SESSIONS and its checkpoint')
-        chosen, frame, histories = prepare_restore(controller, request_id,
-            checkpoint.authority, snapshot, worker.options)
-        if layer0_diverged(tuple(checkpoint.authority.memory._store.working_records()), frame[1][0]):
-            state = dict(authority=checkpoint.authority, request_id=request_id,
-                selected_tokens=sum(r.count for r in chosen[0]), assembly_arena='layerwise')
-            if _rebuild_draft(controller, state, chosen[0]):
-                import torch
-                torch.cuda.current_stream(worker.runner.device).synchronize()
-                # Verification: the draft no longer equals the terminal pages.
-                worker.__dict__.setdefault('layerwise_draft_rebuilt', set()).add(request_id)
-        install_restored(controller, request_id, checkpoint.authority, frame, histories, snapshot)
+        early = False
+        if fast_state():
+            # install_restored waits for the GC worker to acknowledge the
+            # selection pause; asked for here, it arrives during the checks.
+            from .layerwise_gc_holds import pause, resume
+            early = pause(checkpoint.authority)
+        try:
+            chosen, frame, histories = prepare_restore(controller, request_id,
+                checkpoint.authority, snapshot, worker.options)
+            if layer0_diverged(tuple(checkpoint.authority.memory._store.working_records()), frame[1][0]):
+                state = dict(authority=checkpoint.authority, request_id=request_id,
+                    selected_tokens=sum(r.count for r in chosen[0]), assembly_arena='layerwise')
+                if _rebuild_draft(controller, state, chosen[0]):
+                    import torch
+                    torch.cuda.current_stream(worker.runner.device).synchronize()
+                    # Verification: the draft no longer equals the terminal pages.
+                    worker.__dict__.setdefault('layerwise_draft_rebuilt', set()).add(request_id)
+            install_restored(controller, request_id, checkpoint.authority, frame, histories, snapshot)
+        except BaseException:
+            if early:
+                resume(checkpoint.authority)    # install's window hold never released it
+            raise
         from .pressure_key_reuse import restored as _reuse_restored
         _reuse_restored(controller, request_id, resident=True)
         emit_prefix_evidence(controller.query, 'pressure_prefix_restored', snapshot, request_id=request_id,

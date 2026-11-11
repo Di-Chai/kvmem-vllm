@@ -75,11 +75,21 @@ def test_reservation_fails_before_capacity_can_be_overadmitted():
     assert split_historical_feature_budget(options, needed+1, 8) == (1, needed)
 
 
-@pytest.mark.parametrize('flag', ['offline_prefill_coalescing', 'prefill_physical_coalescing',
-    'prefill_publication_pipeline', 'early_capture_slot_release', 'prefill_capture_ahead'])
+@pytest.mark.parametrize('flag', ['offline_prefill_coalescing', 'early_capture_slot_release',
+    'prefill_capture_ahead'])
 def test_unqualified_publication_modes_fail_explicitly(flag):
     with pytest.raises(ValueError, match='redundancy does not yet support'):
         replace(settings(), historical_gc={'policy': 'redundancy'}, **{flag: True})
+
+
+@pytest.mark.parametrize('flag', ['prefill_physical_coalescing', 'prefill_publication_pipeline'])
+def test_logical_publication_modes_are_not_excluded_by_redundancy(flag):
+    # Their logical cursors carry the side data; only each mode's own
+    # prerequisites (unrelated to historical GC) may still reject this profile.
+    try:
+        replace(settings(), historical_gc={'policy': 'redundancy'}, **{flag: True})
+    except ValueError as error:
+        assert 'redundancy' not in str(error)
 
 
 def test_native_archive_and_scheduler_charge_identical_feature_reservations(tmp_path):
