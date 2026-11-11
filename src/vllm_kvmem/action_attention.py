@@ -54,6 +54,37 @@ class _AcceptanceParser:
         return result
 
 
+class _TwinParser:
+    """The legacy native parser plus the opt-in layerwise non-thinking sampler.
+
+    KVMEM_LAYERWISE_DECODE_SCOPE=non-thinking. Both native parsers see the same
+    verifier tokens and the same accepted prefix, so the layerwise sampler's
+    thinking and interval state advance exactly with the legacy transaction.
+    prepare/commit/state return the legacy parser's values unchanged.
+    """
+    def __init__(self, legacy, layerwise):
+        self.legacy, self.layerwise = legacy, layerwise
+        self.layerwise_mask = 0
+
+    @property
+    def state(self):
+        return self.legacy.state
+
+    def prepare(self, tokens):
+        self.layerwise_mask = self.layerwise.prepare(tokens)
+        return self.legacy.prepare(tokens)
+
+    def commit(self, accepted):
+        self.layerwise.commit(accepted)
+        return self.legacy.commit(accepted)
+
+
+def _layerwise_mask(parser):
+    """The non-thinking sample mask of the last prepare(), or None (scope 'all')."""
+    inner = parser.parser if isinstance(parser, _AcceptanceParser) else parser
+    return getattr(inner, 'layerwise_mask', None) if isinstance(inner, _TwinParser) else None
+
+
 class ActionHistory:
     def __init__(self, options, token_ids):
         self.options,self.token_ids=options,token_ids
@@ -91,6 +122,11 @@ class ActionHistory:
                 break
         self.parser=_native.ActionParser(self.options.action_scope,self.options.action_interval,
                                         self.token_ids[:4],thinking)
+        from .layerwise_decode import decode_scope, decode_interval
+        if decode_scope() == 'non-thinking':
+            # Opt-in: the layerwise rolling sampler follows the same tokens.
+            self.parser = _TwinParser(self.parser, _native.ActionParser(
+                'non-thinking', decode_interval(self.options), self.token_ids[:4], thinking))
         if (getattr(self.options, 'graph_mode', 'off') != 'off' or
                 getattr(self.options, 'action_native_decode_commit', False)):
             self.parser = _AcceptanceParser(self.parser)
@@ -1042,18 +1078,32 @@ class ActionRuntime:
             if replay and not (excluded[0] <= history_begin and history_begin+count <= excluded[1]):
                 raise RuntimeError('Prefill chunk partly overlaps a public Query replay')
             rows = state.prefill.rows(history_begin, count, local_begin, replay=replay)
+            extra = {}
+            pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+            if rows and pressure is not None and pressure.rolling_decode:
+                from .layerwise_decode import prefill_fold_enabled, prefill_thinking_rows
+                if prefill_fold_enabled():
+                    # Opt-in: these rows also score rolling decode, minus thinking.
+                    extra['prefill_thinking'] = prefill_thinking_rows(state, history_begin, tokens, rows)
         else:
             self.begin_response(state, request_id)
             mask = state.parser.prepare(tokens)
             rows = [r for r in range(count) if (mask >> r) & 1]
+            extra = {}
             pressure = getattr(self.runner, '_kvmem_layerwise_pressure', None)
             if pressure is not None and pressure.rolling_decode:
-                from .layerwise_decode import sample_rows
-                rows = sorted(set(rows) | set(sample_rows(history_begin, count, self.options.action_interval)))
+                layerwise = _layerwise_mask(state.parser)
+                if layerwise is not None:
+                    # Opt-in KVMEM_LAYERWISE_DECODE_SCOPE=non-thinking.
+                    rows = sorted(set(rows) | {r for r in range(count) if (layerwise >> r) & 1})
+                    extra['layerwise_mask'] = layerwise
+                else:
+                    from .layerwise_decode import sample_rows
+                    rows = sorted(set(rows) | set(sample_rows(history_begin, count, self.options.action_interval)))
         sources = (tuple(int(global_positions[r]) for r in rows)
                    if getattr(authority, 'block_graph', None) is not None else ())
         return dict(authority=authority, state=state, history_begin=history_begin,
-                    local_begin=local_begin, rows=rows, sources=sources)
+                    local_begin=local_begin, rows=rows, sources=sources, **extra)
 
     def _window_segments(self, authority, history_begin, local_begin, count):
         store = authority.memory._store
@@ -1596,6 +1646,11 @@ class ActionRuntime:
                 metadata=(history_begin+count,count,starts,local_begin) if prefill else None
                 pending=ActionPacket(state,rows,history,host[0] if layerwise is not None else host,event,metadata,
                     sources,history_begin,count)
+                # Opt-in layerwise rolling score sources (layerwise_decode).
+                if plan.get('layerwise_mask') is not None:
+                    pending.layerwise_mask = plan['layerwise_mask']
+                if plan.get('prefill_thinking') is not None:
+                    pending.prefill_thinking = plan['prefill_thinking']
                 if layerwise is not None:
                     layerwise.attach_packet(pending, request_id, authority, starts, counts, host)
                 packets=self._logical_packet_views(packets,request_id,plan,pending)

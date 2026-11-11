@@ -17,6 +17,11 @@ from .prefill_attention import PrefillHistory
 from .original_rope import enabled as original_rope
 
 
+def _decode_labels():
+    from .layerwise_decode import query_source_label
+    return query_source_label()
+
+
 class _LayerwiseAcceptance:
     """Publish per-layer histories only with the accepted graph transaction."""
     def __init__(self, transaction, controller, staged):
@@ -552,10 +557,23 @@ class LayerwisePrefillPressure:
                 starts, logical[layer], local, masses[layer]) for layer, history in enumerate(staged)]
         if len(set(accepted_flags)) != 1:
             raise RuntimeError('Layer attention histories disagree on accepted sampling boundary')
+        if getattr(self, 'rolling_decode', False):
+            from .layerwise_decode import prefill_fold_enabled, fold_prefill
+            if prefill_fold_enabled():
+                # Opt-in KVMEM_LAYERWISE_DECODE_PREFILL: the same accepted rows
+                # also score rolling decode; published with this transaction.
+                decode = fold_prefill(self, rid, pending, accepted, logical, masses)
+                if decode is not None:
+                    return rid, staged, None, decode
         return rid, staged
 
     def commit_accept(self, prepared):
         if prepared is not None:
+            if len(prepared) == 4:
+                rid, histories, _, decode = prepared
+                self.histories[rid] = histories
+                self.decode_histories[rid] = decode
+                return
             rid, histories = prepared[:2]
             target = self.decode_histories if len(prepared) == 3 else self.histories
             target[rid] = histories
@@ -760,7 +778,7 @@ class LayerwisePrefillPressure:
                 actual_method='accumulated_attention_per_layer', fallback_reason=None,
                 **({'pressure_selection_backend': 'native_batch_snapshot'} if batched is not None else {}),
                 **(dict(attention_state_backend='native_decode',
-                        score_scope='all_accepted_including_thinking') if decode else
+                        score_scope=_decode_labels()[1]) if decode else
                    self.history_execution(history))))
             _lap('layer_evidence')
         if lazy:
@@ -905,7 +923,7 @@ class LayerwisePrefillPressure:
         emit('pressure_selected', request_id=rid, accepted_history=job.history,
             actual_method='accumulated_attention_per_layer', event_type=job.command.pressure_stage+'_pressure',
             configured_method='accumulated_attention_per_layer',
-            query_source=('accepted_output_including_thinking' if job.command.pressure_stage == 'decode'
+            query_source=(_decode_labels()[0] if job.command.pressure_stage == 'decode'
                           else 'accepted_public_prefill'),
             thinking_at_refresh=getattr(job, 'layerwise_decode_thinking', None),
             selected_tokens=job.selected_tokens, layers=evidence, fallback_reason=None)

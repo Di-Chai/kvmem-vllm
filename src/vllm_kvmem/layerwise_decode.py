@@ -3,6 +3,8 @@
 This pressure history is independent of the legacy non-thinking action parser.
 Rows are sampled in original consumed-token coordinates, including thinking;
 only scheduler-confirmed rows publish mass. No draft or rejected Q contributes.
+Opt-in KVMEM_LAYERWISE_DECODE_SCOPE=non-thinking samples only non-thinking
+output, and KVMEM_LAYERWISE_DECODE_PREFILL=1 adds accepted prefill rows.
 """
 from dataclasses import dataclass, field
 
@@ -31,13 +33,84 @@ class DecodeHistory:
         return {key: value / self.samples for key, value in self.mass.items()} if self.samples else {}
 
 
+def decode_scope():
+    """KVMEM_LAYERWISE_DECODE_SCOPE: which accepted output tokens score rolling decode.
+
+    'all' (default): every action_interval-th accepted output token, thinking
+    included (the original rule). 'non-thinking': only accepted output outside
+    <think>...</think>, every decode_interval()-th such token, chosen by the
+    native ActionParser 'non-thinking' scope on the same verifier tokens and
+    acceptance as the legacy parser. Keys (candidates) are unchanged: every
+    accepted history block, thinking included.
+    """
+    import os
+    value = os.getenv('KVMEM_LAYERWISE_DECODE_SCOPE', 'all')
+    if value not in ('all', 'non-thinking'):
+        raise ValueError('KVMEM_LAYERWISE_DECODE_SCOPE must be all or non-thinking')
+    return value
+
+
+def decode_interval(options):
+    """KVMEM_LAYERWISE_DECODE_INTERVAL: sampling interval of the 'non-thinking'
+    scope, counted over non-thinking output tokens (default: action_interval)."""
+    import os
+    value = os.getenv('KVMEM_LAYERWISE_DECODE_INTERVAL')
+    if value is None:
+        return options.action_interval
+    if not value.isdigit() or not 1 <= int(value) <= 4096:
+        raise ValueError('KVMEM_LAYERWISE_DECODE_INTERVAL must be an integer in [1, 4096]')
+    return int(value)
+
+
+def prefill_fold_enabled():
+    """KVMEM_LAYERWISE_DECODE_PREFILL=1: accepted public-prefill attention rows
+    (tool results, user input; the rows the prefill history already samples,
+    minus rows inside <think>...</think>) also score rolling decode."""
+    import os
+    value = os.getenv('KVMEM_LAYERWISE_DECODE_PREFILL', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_LAYERWISE_DECODE_PREFILL must be 0 or 1')
+    return value == '1'
+
+
+def prefill_fold_weight(options):
+    """KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT: samples one folded prefill row
+    counts as. Default: prefill stride / decode interval (rounded, >= 1), so a
+    prefill token and a non-thinking output token weigh about the same."""
+    import os
+    value = os.getenv('KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT')
+    if value is not None:
+        if not value.isdigit() or not 1 <= int(value) <= 4096:
+            raise ValueError('KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT must be an integer in [1, 4096]')
+        return int(value)
+    stride = getattr(options, 'prefill_attention_stride', 0) or 32
+    return max(1, round(stride / decode_interval(options)))
+
+
+def query_source_label():
+    """Evidence label of the rolling decode score source."""
+    if decode_scope() == 'all':
+        return 'accepted_output_including_thinking', 'all_accepted_including_thinking'
+    if prefill_fold_enabled():
+        return 'accepted_non_thinking_output_and_prefill', 'accepted_non_thinking_and_prefill'
+    return 'accepted_non_thinking_output', 'accepted_non_thinking'
+
+
+def _wanted_rows(pending, accepted):
+    """Accepted rows this packet must fold: the non-thinking mask chosen when the
+    packet was planned, or the original every-interval rule."""
+    mask = getattr(pending, 'layerwise_mask', None)
+    if mask is not None:
+        return {row for row in range(accepted) if (mask >> row) & 1}
+    return set(sample_rows(pending.history_begin, accepted, pending.state.options.action_interval))
+
+
 def _prepare_history(history, source, pending, accepted, logical, masses):
     """Stage the next accepted-mass state without mutating ``history``."""
     if not 0 <= accepted <= pending.candidate_count:
         raise ValueError('Invalid rolling attention accepted prefix')
     begin = pending.history_begin
-    interval = pending.state.options.action_interval
-    wanted = set(sample_rows(begin, accepted, interval))
+    wanted = _wanted_rows(pending, accepted)
     indices = [i for i, row in enumerate(pending.rows)
                if row in wanted and begin + row >= history.end]
     if wanted - set(pending.rows):
@@ -301,6 +374,97 @@ def prepare_accept(controller, pending, accepted):
     return rid, staged, 'decode'
 
 
+def fold_prefill(controller, rid, pending, accepted, logical, masses):
+    """Staged decode histories with this accepted prefill chunk's rows, or None.
+
+    Opt-in KVMEM_LAYERWISE_DECODE_PREFILL. Uses the rows the prefill history
+    already sampled (no extra scoring), minus rows inside <think>...</think>
+    (``pending.prefill_thinking``, set when the chunk was planned). Like the
+    prefill history, only a fully accepted chunk counts. Each kept row is
+    validated like a decode row and counts as prefill_fold_weight() samples;
+    rows before a history's end (replays, restores) are skipped.
+    """
+    end, count = pending.prefill[0], pending.prefill[1]
+    if accepted != count or not pending.rows:
+        return None
+    begin = end - count
+    excluded = getattr(pending, 'prefill_thinking', None) or ()
+    histories = controller.decode_histories.get(rid)
+    if histories is None:
+        histories = [DecodeHistory() for _ in controller.names]
+    if len(histories) != len(controller.names) or masses.shape[0] != len(controller.names):
+        raise RuntimeError('Rolling prefill feedback belongs to a different layer domain')
+    weight = prefill_fold_weight(pending.state.options)
+    values = masses.numpy() if hasattr(masses, 'numpy') else np.asarray(masses)
+    staged, changed = [], False
+    for layer, history in enumerate(histories):
+        indices = [i for i, row in enumerate(pending.rows)
+                   if row not in excluded and begin + row >= history.end]
+        if not indices:
+            staged.append(history)
+            continue
+        rows = np.asarray(values[layer], dtype=np.float64)[indices]
+        targets = logical[layer]
+        if rows.ndim != 2 or rows.shape[1] != len(targets):
+            raise RuntimeError('Rolling prefill feedback has the wrong score geometry')
+        if (not np.isfinite(rows).all() or (rows < 0).any() or
+                (np.abs(rows.sum(axis=1) - 1.) > .005).any()):
+            raise RuntimeError('Action attention mass is invalid or does not sum to one')
+        column = rows.sum(axis=0) * weight
+        mass = dict(history.mass)
+        for key, value in zip(targets, column.tolist()):
+            if value:
+                key = int(key)
+                mass[key] = mass.get(key, 0.) + value
+        samples = history.samples + weight * len(indices)
+        if mass_map_enabled():
+            staged.append(NativeDecodeHistory(_native.DecodeMassMap.from_dict(mass), samples, end,
+                                              history.chunks + 1))
+        else:
+            staged.append(DecodeHistory(mass, samples, end, history.chunks + 1))
+        changed = True
+    if not changed:
+        return None
+    if len({(h.samples, h.end, h.chunks) for h in staged}) != 1:
+        raise RuntimeError('Rolling layers disagree on prefill acceptance')
+    return staged
+
+
+def prefill_thinking_rows(state, begin, tokens, rows):
+    """Rows of a prefill chunk at or inside <think>...</think>.
+
+    The thinking state at the chunk start is the end state of this request's
+    preceding chunk; a request's first prefill chunk starts outside thinking
+    (prompts resume at a message boundary). '<|im_start|>' resets the state,
+    as in ActionHistory.begin.
+    """
+    if not rows:
+        return frozenset()
+    ids = state.token_ids
+    think_open, think_close, header = ids[2], ids[3], ids[4]
+    states = state.__dict__.setdefault('_layerwise_prefill_thinking', {})
+    thinking = states.get(begin, False)
+    wanted, inside = set(rows), set()
+    for row, token in enumerate(tokens):
+        if token == think_open:
+            thinking = True
+            marked = True
+        elif token == think_close:
+            marked, thinking = True, False
+        elif token == header:
+            thinking = marked = False
+        else:
+            marked = thinking
+        if marked and row in wanted:
+            inside.add(row)
+    if len(states) > 16:
+        # Chunks only move forward; a re-plan of this chunk still finds `begin`.
+        for key in [key for key in states if key < begin]:
+            del states[key]
+    states[begin + len(tokens)] = thinking
+    return frozenset(inside)
+
+
 def validate_configuration(profile, *, query_mode, optimized, pressure, single_assembly, original_rope):
     kv = profile.get('kvmem', {})
     if (query_mode != 'sequential' or not optimized or not pressure or
@@ -314,3 +478,10 @@ def validate_configuration(profile, *, query_mode, optimized, pressure, single_a
         raise ValueError('Layerwise rolling requires attention pressure and retained CPU history')
     if profile.get('draft_method', 'mtp') != 'mtp':
         raise ValueError('Layerwise rolling currently requires the MTP draft contract')
+    # Opt-in score sources: reject malformed values at launch, not mid-run.
+    from types import SimpleNamespace
+    scope_options = SimpleNamespace(action_interval=kv.get('action_interval', 16),
+                                    prefill_attention_stride=kv.get('prefill_attention_stride', 32))
+    decode_scope(); decode_interval(scope_options)
+    if prefill_fold_enabled():
+        prefill_fold_weight(scope_options)

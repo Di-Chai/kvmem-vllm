@@ -415,7 +415,47 @@ def _query_reserve_final_window():
     return value == '1'
 
 
+def request_plan_cache_enabled():
+    """KVMEM_REQUEST_PLAN_CACHE=1: memoize request_plan() per request.
+
+    The scheduler resolves every scheduled request's plan about four times per
+    step (lookahead, logical-prefill budget, connector metadata, session
+    capture). Parsing grows with the bridge's locality spans, which grow with
+    the conversation, so the per-step host time grew with history. The parsed
+    RequestPlan is frozen and depends only on the payload, num_prompt_tokens,
+    block_tokens, gen_budget, max_tokens and three environment values; the
+    payload dict is replaced, never mutated (SessionLedger.set_plan). A cached
+    plan is returned only when all of these are unchanged, so results (and
+    errors, which are never cached) equal the uncached path.
+    """
+    value = os.getenv('KVMEM_REQUEST_PLAN_CACHE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_REQUEST_PLAN_CACHE must be 0 or 1')
+    return value == '1'
+
+
 def request_plan(request, block_tokens, gen_budget):
+    if not request_plan_cache_enabled():
+        return _request_plan(request, block_tokens, gen_budget)
+    params = getattr(request, 'kv_transfer_params', None) or {}
+    payload = params.get('kvmem_request_plan')
+    from .session_control import SessionLedger
+    key = (os.getenv('KVMEM_REQUEST_PLAN_CONFIG', '{}'), os.getenv('KVMEM_LAYERWISE_QUERY_MODE'),
+           os.getenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES'), block_tokens, gen_budget,
+           getattr(request, 'num_prompt_tokens', None), SessionLedger.output_tokens(request),
+           None if not isinstance(payload, dict) else tuple((k, id(v)) for k, v in payload.items()))
+    cached = getattr(request, '_kvmem_request_plan_cache', None)
+    if cached is not None and cached[0] is payload and cached[1] == key:
+        return cached[2]
+    plan = _request_plan(request, block_tokens, gen_budget)
+    try:
+        request._kvmem_request_plan_cache = (payload, key, plan)
+    except (AttributeError, TypeError):
+        pass  # objects without a __dict__ keep the uncached behavior
+    return plan
+
+
+def _request_plan(request, block_tokens, gen_budget):
     import os, json
     config = json.loads(os.getenv('KVMEM_REQUEST_PLAN_CONFIG','{}'))
     reserve = config.get('guided_reserve',0)
