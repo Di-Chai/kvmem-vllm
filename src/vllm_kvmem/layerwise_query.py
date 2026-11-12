@@ -27,6 +27,24 @@ def top_set(memory, records, scores, fixed, budget, *, record_index=None):
 
 
 
+def query_scorer(owner, options):
+    """The profile's per-layer Query scorer, or None for the built-in MeanK path."""
+    name = getattr(options, 'strategy_query_scorer', 'meank')
+    cache = owner.__dict__.setdefault('_strategy_scorers', {})
+    if name not in cache:
+        from .strategy import QUERY_SCORER, resolve
+        cache[name] = resolve(QUERY_SCORER, name)
+    return cache[name]
+
+
+def strategy_scores(scorer, state, layer_index, q, options):
+    """A strategy's scores for one layer's candidates, checked against the contract."""
+    from .strategy import QueryLayerView, check_query_scores
+    view = QueryLayerView(layer_index, state['records'], state['score_mask'], q,
+                          state.get('mean_index'), state['history'], options)
+    return list(check_query_scores(view, scorer.scores(view)))
+
+
 def decode_inline_reads():
     """Opt-in KVMEM_DECODE_INLINE_READS=1: rolling decode pressure refreshes read
     their CPU history inline on the refresh thread (the prefill path: the same
@@ -245,6 +263,9 @@ class LayerwiseQuery:
                          score_mask=score_mask, fixed=fixed,
                          budget=cfg.select_budget, history=job.history, span=job.command.query_span,
                          request_id=rid, next_layer=0, query_tokens=len(job.command.input_tokens))
+        # Strategy layer: None runs the built-in per-layer MeanK scores unchanged.
+        state['query_scorer'] = query_scorer(self, refresh.options)
+        state['trace_scores'] = getattr(refresh.options, 'strategy_trace_scores', False)
         if queries is None and not self.no_probe:
             raise ValueError('Sequential comparison requires its private Query captures')
         if queries is not None and state['old_q'].shape[0] != len(self.names):
@@ -408,7 +429,13 @@ class LayerwiseQuery:
         stage = profile.stage if profile is not None else no_stage
         records = state['records']
         started = time.perf_counter()
-        if self.prepared_index:
+        scorer = state.get('query_scorer')
+        if scorer is not None:
+            # Frozen-Query comparison is a diagnostic of the built-in scorer only.
+            compare, old_scores = False, None
+            scores = strategy_scores(scorer, state, layer_index, q,
+                                     dict(score_backend=getattr(self, 'score_backend', 'legacy')))
+        elif self.prepared_index:
             from .cuda_scoring import prepared_layer_scores
             score_backend = getattr(self, 'score_backend', 'legacy')
             score_kwargs = {} if score_backend == 'legacy' else {'backend': score_backend}
@@ -477,6 +504,19 @@ class LayerwiseQuery:
                 fresh_frozen_set_overlap=len(selected & frozen_selected)/max(1,len(selected)),
                 frozen_layer_selected_starts=([r.history_begin for r in records if r.handle.slot in frozen_selected]
                     if record_index is None else record_index.starts(frozen_selected)))
+        if scorer is not None:
+            diagnostic['query_scorer'] = scorer.name
+        if state.get('trace_scores'):
+            if layer_index == 0:
+                fixed_slots = set(state['fixed'])
+                self.emit('query_candidates', request_id=state['request_id'], budget=state['budget'],
+                          history=state['history'], selected_tokens=state['selected_tokens'],
+                          candidate_starts=[r.history_begin for r in records],
+                          candidate_counts=[r.count for r in records],
+                          eligible=[bool(e) for e in state['score_mask']],
+                          fixed_starts=sorted(r.history_begin for r in records
+                                              if r.handle.slot in fixed_slots))
+            diagnostic['candidate_scores'] = [float(v) for v in scores]
         if self.diagnostics:
             diagnostic['q_sha256'] = hashlib.sha256(
                 q.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()

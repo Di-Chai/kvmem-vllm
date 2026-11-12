@@ -82,7 +82,7 @@ Strategies in the code today:
 The throughput stack was built on the per-layer path, and the launcher rejects many combinations. A comparison today would mix strategy with code path.
 
 1. **Audit:** a matrix of strategy × pipeline feature, marking what runs, what is rejected and what silently falls back.
-2. **Interface:** scorer, selector and evictor contracts, so a strategy plugs into the fast pipeline and inherits its speed.
+2. **Interface:** scorer, picker and evictor contracts, so a strategy plugs into the fast pipeline and inherits its speed. The contract, the per-layer seams and the trace reader exist; see [layers](layering.md) for what remains.
 3. **Harness:** same inputs, same budgets (selected tokens, generation reserve, CPU history cap), same seeds.
 4. **Output:** per benchmark, a table with strategies as rows: score, whether the gold evidence was in the window (RULER, NIAH), throughput, bytes moved per refresh.
 5. **Smoke test** per strategy in CI, so none stops working unnoticed.

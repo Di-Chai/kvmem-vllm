@@ -178,6 +178,23 @@ def native_lookup_scores(history, mapping):
     return state.scores_for([row[2] for row in mapping])
 
 
+def pressure_scorer(owner, options):
+    """The profile's pressure scorer, or None for the built-in attention path."""
+    name = getattr(options, 'strategy_pressure_scorer', 'attention')
+    cache = owner.__dict__.setdefault('_strategy_scorers', {})
+    if name not in cache:
+        from .strategy import PRESSURE_SCORER, resolve
+        cache[name] = resolve(PRESSURE_SCORER, name)
+    return cache[name]
+
+
+def strategy_scores(scorer, layer, mapping, history, decode):
+    """A strategy's scores for one layer's window, checked against the contract."""
+    from .strategy import PressureLayerView, check_pressure_scores
+    view = PressureLayerView(layer, mapping, history, None, decode)
+    return list(check_pressure_scores(view, scorer.scores(view)))
+
+
 def same_snapshot(global_history, layer_zero):
     """global_history.snapshot() == layer_zero.snapshot(); opt-in native compare."""
     from .prefill_attention import PrefillHistory
@@ -584,6 +601,9 @@ class LayerwisePrefillPressure:
         decode = job.command.pressure_stage == 'decode' and self.rolling_decode
         if job.command.pressure_stage != 'prefill' and not decode:
             raise RuntimeError('This short-output experiment cannot reinterpret decode pressure')
+        # Strategy layer: None runs the built-in accumulated-attention scores unchanged.
+        scorer = pressure_scorer(self, refresh.options)
+        trace_scores = getattr(refresh.options, 'strategy_trace_scores', False)
         from .publication_trace import emit as _trace, enabled as _tracing
         _tr = _tracing()
         _sec = {}
@@ -658,6 +678,8 @@ class LayerwisePrefillPressure:
         capture_values = not decode and getattr(self, 'resident_values', False)
         batched = None
         if not decode and getattr(self, 'batch_selection', False):
+            if scorer is not None or getattr(authority.memory, 'picker', None) is not None:
+                raise ValueError('Pressure batch selection implements the attention scorer and native picker only')
             from .pressure_selection_batch import prepare_pressure_batch
             batched = prepare_pressure_batch(self, job, histories, local, by_begin,
                                              mandatory, cfg.select_budget)
@@ -687,8 +709,14 @@ class LayerwisePrefillPressure:
                            if lazy else self.records(rid, authority, job.history, local, layer))
                 _lap('layer_records_map')
                 fused = None
-                if getattr(self, 'fast_prepare', False) and native_layer_pick():
-                    looked_up = native_lookup_scores(history, mapping)
+                custom = None if scorer is None else strategy_scores(scorer, layer, mapping, history, decode)
+                traced = custom
+                # The fused native call is the native picker; another picker takes the plain path.
+                if (getattr(self, 'fast_prepare', False) and native_layer_pick() and
+                        getattr(authority.memory, 'picker', None) is None):
+                    looked_up = native_lookup_scores(history, mapping) if custom is None else custom
+                    if trace_scores and looked_up is not None:
+                        traced = looked_up
                     _lap('layer_history_scores')
                     store = authority.memory._store
                     if (looked_up is not None and hasattr(store, 'pressure_layer_pick') and
@@ -705,7 +733,7 @@ class LayerwisePrefillPressure:
                     candidates, candidate_slots, ordered_slots, picked = fused
                     _lap('layer_native_select')
                 elif getattr(self, 'fast_prepare', False):
-                    looked_up = native_lookup_scores(history, mapping)
+                    looked_up = native_lookup_scores(history, mapping) if custom is None else custom
                     if looked_up is None:
                         scores = history.scores()
                         score_of = scores.get
@@ -730,6 +758,8 @@ class LayerwisePrefillPressure:
                         supplied.append((slot, score))
                     if not positive:
                         raise RuntimeError('Layer pressure has no accepted attention; refusing a recency fallback')
+                    if trace_scores:
+                        traced = [score for _, score in supplied]
                     _lap('layer_candidates_supplied')
                 else:
                     candidates, candidate_slots = [], []
@@ -740,9 +770,14 @@ class LayerwisePrefillPressure:
                         candidates.append(entry[0])
                         candidate_slots.append(entry[1])
                     _lap('layer_candidates')
-                    scores = history.scores()
-                    _lap('layer_history_scores')
-                    supplied = [(s, scores.get(r.history_begin, 0.)) for r, s in zip(candidates, candidate_slots)]
+                    if custom is None:
+                        scores = history.scores()
+                        _lap('layer_history_scores')
+                        supplied = [(s, scores.get(r.history_begin, 0.)) for r, s in zip(candidates, candidate_slots)]
+                    else:
+                        supplied = list(zip(candidate_slots, custom))
+                    if trace_scores:
+                        traced = [score for _, score in supplied]
                     if any(not math.isfinite(s) or s < 0 for _,s in supplied):
                         raise RuntimeError('Invalid layer cumulative attention score')
                     if not any(s > 0 for _,s in supplied):
@@ -775,7 +810,10 @@ class LayerwisePrefillPressure:
                 selected_starts=[r.history_begin for r in picked], selected_tokens=sum(r.count for r in picked),
                 charged_tokens=32*len(picked), accepted_score_end=history.end,
                 query_samples=history.samples, sampled_chunks=history.chunks,
-                actual_method='accumulated_attention_per_layer', fallback_reason=None,
+                actual_method=('accumulated_attention_per_layer' if scorer is None
+                               else scorer.name + '_per_layer'), fallback_reason=None,
+                **({'candidate_scores': [float(v) for v in traced]}
+                   if trace_scores and batched is None and traced is not None else {}),
                 **({'pressure_selection_backend': 'native_batch_snapshot'} if batched is not None else {}),
                 **(dict(attention_state_backend='native_decode',
                         score_scope=_decode_labels()[1]) if decode else

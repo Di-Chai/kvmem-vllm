@@ -410,6 +410,15 @@ class RuntimeOptions:
     # exact layerwise swaps. A suspended owner keeps its per-layer window holds
     # (KVMEM_LAYERWISE_HISTORICAL_GC), so GC cannot retire what it restores into.
     request_swap_historical_gc: bool = False
+    # Strategy layer (vllm_kvmem.strategy): which blocks are retrieved or kept.
+    # These may change model output; every other field here must not. The
+    # defaults name serving's built-in code paths, which then run unchanged.
+    strategy_query_scorer: str = 'meank'
+    strategy_pressure_scorer: str = 'attention'
+    strategy_picker: str = 'native'
+    # Research only: also record every candidate's score with each per-layer
+    # decision, for offline replay (python -m vllm_kvmem.strategy.trace).
+    strategy_trace_scores: bool = False
 
     @property
     def active_residency_enabled(self):
@@ -434,6 +443,15 @@ class RuntimeOptions:
         import math
         from . import _native
         from .historical_gc import HistoricalGcSettings
+        from . import strategy as _strategy
+        for _role, _name in ((_strategy.QUERY_SCORER, self.strategy_query_scorer),
+                             (_strategy.PRESSURE_SCORER, self.strategy_pressure_scorer),
+                             (_strategy.PICKER, self.strategy_picker)):
+            if not isinstance(_name, str):
+                raise ValueError('A strategy is named by a string')
+            _strategy.get(_role, _name)
+        if type(self.strategy_trace_scores) is not bool:
+            raise ValueError('strategy_trace_scores must be true or false')
         historical = HistoricalGcSettings.parse(self.historical_gc)
         object.__setattr__(self, 'historical_gc', historical)
         if historical is not None and (self.archive_backend != 'cpu' or self.repository_gc or
@@ -1116,6 +1134,8 @@ class RuntimeOptions:
             ('prefill_physical_fill_rows', False),
             ('prefill_physical_max_chunks', 2),
             ('prefill_physical_logical_tokens', 2048),
+            ('strategy_query_scorer', 'meank'), ('strategy_pressure_scorer', 'attention'),
+            ('strategy_picker', 'native'), ('strategy_trace_scores', False),
             ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),
             ('action_profile_interval', 1), ('action_profile_max_events', 256))}
         try:

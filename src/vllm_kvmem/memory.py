@@ -69,6 +69,12 @@ class WindowCheckpoint:
 
 
 class RequestMemory:
+    # Strategy layer: None runs the native store picker unchanged. A picker from
+    # vllm_kvmem.strategy replaces only the scores-to-blocks step below.
+    picker = None
+    # Optional slot -> (history_begin, count), for pickers that use positions.
+    block_info = None
+
     def __init__(self, request_id: str, config: KVMemConfig):
         if not request_id:
             raise ValueError("request_id must be nonempty")
@@ -309,6 +315,8 @@ class RequestMemory:
         All-fit history follows the original native all-fit behavior.
         """
         self._require(Phase.READY)
+        if self.picker is not None:
+            raise ValueError('Group selection implements the native picker only')
         groups, group_scores = tuple(groups), tuple(group_scores)
         if len(groups) != len(group_scores):
             raise ValueError('Group spans and scores must have equal lengths')
@@ -341,6 +349,8 @@ class RequestMemory:
         self._require(Phase.READY)
         if any(not math.isfinite(score) for score in scores.values()):
             raise ValueError("Retrieval scores must be finite")
+        if self.picker is not None:
+            return self._strategy_pick(scores, mandatory_slots, prefill_scores, pressure_scores, max_tokens)
         handles = [self._store.handle(slot) for slot in scores]
         self._store.scores(handles, list(scores.values()))
         previous_budget = self._store.runtime_select_budget
@@ -364,6 +374,18 @@ class RequestMemory:
             if scoped_query_budget:
                 self._store.set_runtime_select_budget(previous_budget)
         return tuple(selected)
+
+    def _strategy_pick(self, scores, mandatory_slots, prefill_scores, pressure_scores, max_tokens):
+        """preview_selection through a strategy picker, checked against the contract."""
+        from .strategy import PickView, check_pick
+        if prefill_scores:
+            raise ValueError('Prefill-fused picks implement the native picker only')
+        view = PickView('pressure' if pressure_scores is not None else 'query', scores,
+                        tuple(pressure_scores) if pressure_scores is not None else (),
+                        tuple(mandatory_slots),
+                        max_tokens if max_tokens is not None else self._store.runtime_select_budget,
+                        self.block_info, self.config.block_tokens)
+        return check_pick(view, self.picker.pick(view))
 
     def commit_selection(self) -> bool:
         self._require(Phase.ASSEMBLING)

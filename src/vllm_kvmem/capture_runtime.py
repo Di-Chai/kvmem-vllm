@@ -1546,6 +1546,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
                 cpu_release_sealed_sums=getattr(self.options, 'cpu_release_sealed_sums', False),
                 query_fps_cache_fp8=getattr(self.options, 'query_fps_cache_fp8', False),
                 mean_index_stats=self.cpu_mean_index_stats)
+            picker_name = getattr(self.options, 'strategy_picker', 'native')
+            if picker_name != 'native':
+                from .strategy import PICKER, resolve
+                authority.memory.picker = resolve(PICKER, picker_name)
             authority.graph_options = self.options
             if binding is not None and getattr(self.archive, 'history_scope_metrics_path', None) is not None:
                 self.archive.set_history_scope_context(authority.memory.request_id,

@@ -518,6 +518,20 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'profile': cfg, 'vllm_argv': argv, 'environment': env}
 
 
+def validate_strategy_scope(kvmem, *, query_mode, pressure):
+    """Refuse a strategy the launched path would silently ignore.
+
+    The scorer seams are on the per-layer path. The global path still chooses
+    its scoring through query_score_mode and pressure_policy.
+    """
+    if kvmem.get('strategy_query_scorer', 'meank') != 'meank' and query_mode != 'sequential':
+        raise ValueError('strategy_query_scorer applies to sequential per-layer Query selection '
+                         '(--layerwise-query-diagnostic sequential)')
+    if kvmem.get('strategy_pressure_scorer', 'attention') != 'attention' and not pressure:
+        raise ValueError('strategy_pressure_scorer applies to per-layer pressure selection '
+                         '(--layerwise-prefill-pressure)')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path,
@@ -595,6 +609,8 @@ def main(argv=None):
         raise ValueError('Tensor-parallel serving uses global selection and native Qwen MTP')
     if args.layerwise_query_diagnostic and not profile.get('kvmem', {}).get('async_refresh', False):
         raise ValueError('Layerwise Query requires async_refresh; synchronous refresh does not invoke layerwise selection')
+    validate_strategy_scope(profile.get('kvmem', {}), query_mode=args.layerwise_query_diagnostic,
+                            pressure=args.layerwise_prefill_pressure)
     if plan['profile'].get('kvmem', {}).get('request_swap_layerwise', False):
         if (args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_query_optimized or
                 not args.layerwise_query_native_batches or not args.layerwise_prefill_pressure or
