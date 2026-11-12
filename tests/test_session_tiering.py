@@ -260,3 +260,25 @@ def test_connector_keeps_out_of_ram_sessions_in_the_vllm_waiting_queue():
     assert c.tiering_queue_waits == 2
     feed(('in', ('s', 'salt')))
     assert not c.tiering_out and not c.tiering_requested
+
+
+def test_the_ttl_timer_spills_an_idle_session_without_engine_steps():
+    import time as _time
+    tier, ex, entries = Tier(), Inline(), {}
+    t = SessionTiering(NS(tier=tier, _entries=entries), 0.05, executor=ex, timer=True)
+    try:
+        auth = session('quiet', [1, 2])
+        register(entries, tier, auth)
+        t.idle('nq', auth)                                   # turn ended; no tick() ever runs after this
+        deadline = _time.monotonic() + 3.0
+        while not ex.pending and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        assert ex.pending, 'the timer did not submit the spill'
+        assert t.take_events() == [('out', 'nq')]
+        ex.run()
+        assert len(tier.ssd) == 2                            # spilled while the engine was idle
+        assert not t.ready('nq', auth)                       # next turn: promote first
+        ex.run()
+        assert t.ready('nq', auth) and len(tier.ram) == 2 and not tier.ssd
+    finally:
+        t.close()

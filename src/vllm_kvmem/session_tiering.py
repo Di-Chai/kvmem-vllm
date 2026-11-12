@@ -15,6 +15,7 @@ busy restore lane). Partial or unarchived records always stay in RAM.
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import threading
 import time
 
 try:                                    # vLLM's logger prints in the engine process
@@ -59,7 +60,7 @@ def tiering_threads():
 
 
 class SessionTiering:
-    def __init__(self, archive, ttl_seconds, *, clock=time.monotonic, executor=None):
+    def __init__(self, archive, ttl_seconds, *, clock=time.monotonic, executor=None, timer=None):
         if not ttl_seconds > 0:
             raise ValueError('Session tiering needs a positive CPU TTL')
         tier = getattr(archive, 'tier', None)
@@ -84,6 +85,16 @@ class SessionTiering:
         # Sessions not (fully) in CPU RAM, and the 'out'/'in' transitions the
         # scheduler has not seen yet (its waiting-queue gate, tiering_queue()).
         self.out, self.events = set(), []
+        # Engine thread and the TTL timer share this state. The timer makes
+        # spills independent of engine steps: an idle server (no requests, so
+        # no steps and no tick()) still moves idle sessions to SSD on time.
+        self._lock = threading.RLock()
+        self._cond = threading.Condition(self._lock)
+        self._closing = False
+        self._timer = None
+        if timer if timer is not None else executor is None:
+            self._timer = threading.Thread(target=self._timer_loop, name='kvmem-tiering-ttl', daemon=True)
+            self._timer.start()
 
     def _allocations(self, authority):
         namespace = authority.memory.request_id
@@ -109,7 +120,8 @@ class SessionTiering:
 
     def take_events(self):
         """Engine thread: tier transitions for the scheduler (oldest first)."""
-        events, self.events = self.events, []
+        with self._lock:
+            events, self.events = self.events, []
         return events
 
     def _reap(self, namespace):
@@ -162,15 +174,53 @@ class SessionTiering:
         return count, time.perf_counter() - started, started
 
     def idle(self, namespace, authority):
-        """The session's turn finished (engine thread)."""
-        self.idle_since[namespace] = (self.clock(), authority)
+        """The session's turn finished (engine thread). Its archived records are
+        listed now, so the TTL timer never reads engine-owned state."""
+        with self._cond:
+            self.idle_since[namespace] = (self.clock(), authority, self._allocations(authority))
+            self._cond.notify()
 
     def forget(self, namespace):
         """The session was evicted: its records are released by the archive."""
-        self.idle_since.pop(namespace, None)
-        self.spilled.pop(namespace, None)
-        self.wanted.discard(namespace)
-        self._mark_in(namespace)            # gone: nothing left to wait for
+        with self._lock:
+            self.idle_since.pop(namespace, None)
+            self.spilled.pop(namespace, None)
+            self.wanted.discard(namespace)
+            self._mark_in(namespace)            # gone: nothing left to wait for
+
+    def _submit_due(self, now, *, fresh):
+        """Start at most one spill past the TTL (caller holds the lock). One
+        spill at a time, and none while a promotion runs: a promotion (a turn
+        waits on it) gets the device; spills use only its idle time. ``fresh``:
+        engine thread, re-list the records; otherwise use the idle() list."""
+        if any(kind == 'promote' or not future.done() for kind, future, _ in self.jobs.values()):
+            return False
+        for namespace, (since, authority, listed) in list(self.idle_since.items()):
+            if namespace in self.jobs or namespace in self.spilled or now - since < self.ttl:
+                continue
+            allocations = self._allocations(authority) if fresh else listed
+            del self.idle_since[namespace]
+            if allocations:
+                self.submitted[namespace] = time.perf_counter()
+                self._mark_out(namespace)
+                self.jobs[namespace] = ('spill', self.executor.submit(self._timed, self.tier.spill, allocations),
+                                        allocations)
+                return True
+        return False
+
+    def _timer_loop(self):
+        with self._cond:
+            while not self._closing:
+                busy = any(kind == 'promote' or not future.done() for kind, future, _ in self.jobs.values())
+                due = min((since + self.ttl for since, _, _ in self.idle_since.values()), default=None)
+                now = self.clock()
+                if due is None:
+                    self._cond.wait(1.0)
+                elif busy or due > now:
+                    self._cond.wait(0.05 if busy else max(0.001, due - now))
+                else:
+                    self._submit_due(now, fresh=False)
+                    self._cond.wait(0.05)
 
     def _promote(self, namespace):
         self.submitted[namespace] = time.perf_counter()
@@ -181,6 +231,10 @@ class SessionTiering:
         """The session's next turn arrived at the scheduler (engine thread,
         non-blocking): start bringing it back now. ready() still gates the
         restore, so this only moves the promotion earlier."""
+        with self._lock:
+            self._prefetch(namespace)
+
+    def _prefetch(self, namespace):
         self.idle_since.pop(namespace, None)
         job = self.jobs.get(namespace)
         if job is not None:
@@ -201,6 +255,10 @@ class SessionTiering:
 
     def tick(self):
         """Engine thread, once per step: reap jobs, start spills past the TTL."""
+        with self._lock:
+            self._tick()
+
+    def _tick(self):
         for namespace in list(self.jobs):
             self._reap(namespace)
         for namespace in list(self.wanted):
@@ -209,26 +267,15 @@ class SessionTiering:
                 if self.spilled.get(namespace):
                     self._promote(namespace)
                     self.stats['prefetched'] = self.stats.get('prefetched', 0) + 1
-        now = self.clock()
-        # One spill at a time, and none while a promotion runs: a promotion (a
-        # turn waits on it) gets the device; spills use only its idle time.
-        if any(kind == 'promote' or not future.done() for kind, future, _ in self.jobs.values()):
-            return
-        for namespace, (since, authority) in list(self.idle_since.items()):
-            if namespace in self.jobs or namespace in self.spilled or now - since < self.ttl:
-                continue
-            allocations = self._allocations(authority)
-            del self.idle_since[namespace]
-            if allocations:
-                self.submitted[namespace] = time.perf_counter()
-                self._mark_out(namespace)
-                self.jobs[namespace] = ('spill', self.executor.submit(self._timed, self.tier.spill, allocations),
-                                        allocations)
-                return
+        self._submit_due(self.clock(), fresh=True)
 
     def ready(self, namespace, authority):
         """Before a session's next turn is planned (engine thread, non-blocking).
         False while its spill or promotion is still running."""
+        with self._lock:
+            return self._ready(namespace)
+
+    def _ready(self, namespace):
         self.idle_since.pop(namespace, None)
         job = self.jobs.get(namespace)
         if job is not None and job[0] == 'spill' and job[1].cancel():
@@ -251,7 +298,8 @@ class SessionTiering:
     def ensure(self, namespace, authority):
         """Synchronous restore paths: wait for the session to be in RAM."""
         while not self.ready(namespace, authority):
-            kind, future, _ = self.jobs[namespace]
+            with self._lock:
+                kind, future, _ = self.jobs[namespace]
             future.result()
 
     def snapshot(self):
@@ -265,6 +313,11 @@ class SessionTiering:
                     promote_seconds_p50=p50(self.durations['promote']))
 
     def close(self):
+        with self._cond:
+            self._closing = True
+            self._cond.notify_all()
+        if self._timer is not None:
+            self._timer.join(timeout=5)
         self.executor.shutdown(wait=True)
         if self.promoter is not self.executor:
             self.promoter.shutdown(wait=True)
