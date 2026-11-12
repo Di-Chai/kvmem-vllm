@@ -415,6 +415,25 @@ inline void bind(py::module_& module) {
         .def_static("from_dict", &MassMap::from_dict)
         .def("to_dict", &MassMap::to_dict)
         .def("sorted_rows", &MassMap::sorted_rows)
+        // KVMEM_CHECKPOINT_CAPTURE_INDEX: max(to_dict()) without the dict, or
+        // None when empty (index is sorted by key).
+        .def("max_key", [](const MassMap& m) -> py::object {
+            if (m.index.empty()) return py::none();
+            return py::int_(m.index.back().first);
+        })
+        // KVMEM_CHECKPOINT_CAPTURE_INDEX: from_rows(sorted_rows()) without the
+        // Python rows, i.e. the same entries re-inserted in key order.
+        .def("sorted_copy", [](const MassMap& m) {
+            MassMap out;
+            out.keys.reserve(m.index.size()); out.values.reserve(m.index.size());
+            out.index.reserve(m.index.size());
+            for (size_t i = 0; i < m.index.size(); ++i) {
+                out.index.emplace_back(m.index[i].first, static_cast<uint32_t>(i));
+                out.keys.push_back(m.index[i].first);
+                out.values.push_back(m.values[m.index[i].second]);
+            }
+            return out;
+        })
         .def_static("from_rows", &MassMap::from_rows)
         .def("__len__", &MassMap::size);
     module.def("prepare_decode_attention_map", &prepare_map);

@@ -85,6 +85,27 @@ class _TailRollback:
     reclaimed: bool = False
 
 
+@dataclass(eq=False)
+class DeferredCapture:
+    """A P capture between begin_capture() and finish_capture()."""
+    namespace: object
+    request_id: str
+    authority: object
+    model_adapter: object
+    replace: bool
+    position: int
+    identity: bytes
+    model: object
+
+
+def _drop_model(model):
+    """Failure path of a deferred capture: its D2H must finish before the
+    pinned payload can return to the allocator."""
+    completion = getattr(model, 'completion', None)
+    if completion is not None:
+        completion.synchronize()
+
+
 class PromptCheckpointPool:
     def __init__(self, capacity, max_payload_bytes, *, retain_prompt=False, native_restore_frame=False,
                  native_token_identity=False, native_checkpoint_capture=False):
@@ -141,7 +162,42 @@ class PromptCheckpointPool:
 
     def capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False, terminal=False,
                 prepared_window=None):
+        previous, position, preserve, retained_bytes, identity = self._capture_prelude(
+            namespace, request_id, authority, tokens, replace=replace, terminal=terminal)
+        window, fixed, seed, action_snapshot, layerwise_snapshot, graph_snapshot = self._capture_snapshots(
+            request_id, authority, position, identity, model_adapter, terminal=terminal,
+            prepared_window=prepared_window)
+        try:
+            available = self.max_payload_bytes - retained_bytes - fixed
+            if available <= 0:
+                raise BufferError('Prompt checkpoint payload capacity is exhausted')
+            model = model_adapter.capture(request_id, position, max_bytes=available,
+                                          **({'terminal': True} if terminal else {}))
+        except BaseException:
+            if graph_snapshot is not None:
+                graph_snapshot.close()
+            raise
+        return self._capture_install(namespace, request_id, authority, window, model, identity, fixed, terminal,
+                                     previous, preserve, action_snapshot, graph_snapshot, seed, layerwise_snapshot)
+
+    def _capture_prelude(self, namespace, request_id, authority, tokens, *, replace, terminal):
+        """capture() up to the token identity: entry, boundary and payload checks."""
         self.poll_captures()
+        previous = self._capture_previous(namespace, request_id, authority, replace=replace)
+        position = authority.history_end
+        # Validate token IDs before acquiring native prefix leases or GPU copies.
+        if (type(position) is not int or position <= 0 or
+                (position % authority.memory.config.block_tokens and not terminal)):
+            raise ValueError('Prompt checkpoint requires a sealed authority boundary')
+        token_size = position * 4
+        preserve = self.retain_prompt and terminal and previous is not None and previous.kind=='P'
+        retained_bytes = self._retained_bytes(previous, preserve)
+        if token_size >= self.max_payload_bytes - retained_bytes:
+            raise BufferError('Prompt checkpoint payload capacity is exhausted')
+        identity = token_bytes(tokens, position, native=self.native_checkpoint_capture)
+        return previous, position, preserve, retained_bytes, identity
+
+    def _capture_previous(self, namespace, request_id, authority, *, replace):
         previous = self.entries.get(namespace)
         if previous is not None and not replace:
             raise ValueError('Session already owns a checkpoint; serialize its turns')
@@ -150,20 +206,17 @@ class PromptCheckpointPool:
             raise ValueError('Replacement requires the same live session authority')
         if previous is None and len(self.entries) >= self.capacity:
             raise BufferError('Prompt checkpoint entry capacity is exhausted')
-        position = authority.history_end
-        # Validate token IDs before acquiring native prefix leases or GPU copies.
-        if (type(position) is not int or position <= 0 or
-                (position % authority.memory.config.block_tokens and not terminal)):
-            raise ValueError('Prompt checkpoint requires a sealed authority boundary')
-        token_size = position * 4
-        preserve = self.retain_prompt and terminal and previous is not None and previous.kind=='P'
+        return previous
+
+    def _retained_bytes(self, previous, preserve):
         # Pending D2H still owns both buffers even if this namespace replaces
         # its snapshot. Never reuse that credit until its own event completes.
         reusable = previous and not preserve and self.model_ready(previous)
-        retained_bytes = self.payload_bytes - (previous.payload_bytes if reusable else 0)
-        if token_size >= self.max_payload_bytes - retained_bytes:
-            raise BufferError('Prompt checkpoint payload capacity is exhausted')
-        identity = token_bytes(tokens, position, native=self.native_checkpoint_capture)
+        return self.payload_bytes - (previous.payload_bytes if reusable else 0)
+
+    def _capture_snapshots(self, request_id, authority, position, identity, model_adapter, *, terminal,
+                           prepared_window, committed=False):
+        """capture()'s CPU snapshots: frame window, guided seed, action, layerwise and graph state."""
         if prepared_window is None:
             window = authority.memory.checkpoint_window(allow_partial=terminal,
                 **({'native_validation': True} if self.native_checkpoint_capture else {}))
@@ -191,23 +244,18 @@ class PromptCheckpointPool:
                 fixed += len(action_snapshot[2][0])*24+24
         from .layerwise_checkpoints import capture_for_pool
         layerwise_snapshot = capture_for_pool(model_adapter, request_id, authority,
-                                             position, terminal=terminal)
+                                             position, terminal=terminal,
+                                             **({'committed': True} if committed else {}))
         if layerwise_snapshot is not None:
             fixed += layerwise_snapshot.bytes
         graph = selection_metadata(authority)
         graph_snapshot = graph.snapshot(position) if graph is not None else None
-        try:
-            if graph_snapshot is not None:
-                fixed += graph_snapshot.bytes
-            available = self.max_payload_bytes - retained_bytes - fixed
-            if available <= 0:
-                raise BufferError('Prompt checkpoint payload capacity is exhausted')
-            model = model_adapter.capture(request_id, position, max_bytes=available,
-                                          **({'terminal': True} if terminal else {}))
-        except BaseException:
-            if graph_snapshot is not None:
-                graph_snapshot.close()
-            raise
+        if graph_snapshot is not None:
+            fixed += graph_snapshot.bytes
+        return window, fixed, seed, action_snapshot, layerwise_snapshot, graph_snapshot
+
+    def _capture_install(self, namespace, request_id, authority, window, model, identity, fixed, terminal,
+                         previous, preserve, action_snapshot, graph_snapshot, seed, layerwise_snapshot):
         checkpoint = PromptCheckpoint(namespace, request_id, authority, window,
                                       model, identity, fixed + model.bytes)
         checkpoint.kind = 'M' if terminal else 'P'
@@ -230,6 +278,56 @@ class PromptCheckpointPool:
         self.entries[namespace] = checkpoint
         self.payload_bytes += checkpoint.payload_bytes
         return checkpoint
+
+    def begin_capture(self, namespace, request_id, authority, tokens, model_adapter, *, replace=False):
+        """Opt-in KVMEM_DEFERRED_P_CAPTURE, first half of a P capture().
+
+        Runs before the request's next forward: the same entry/boundary/payload
+        checks and the model-state snapshot, whose GPU copy must precede that
+        forward. The CPU snapshots and the admission that depends on their size
+        follow in finish_capture() once the forward is enqueued.
+        """
+        previous, position, preserve, retained_bytes, identity = self._capture_prelude(
+            namespace, request_id, authority, tokens, replace=replace, terminal=False)
+        bound = self.max_payload_bytes - retained_bytes - len(identity)
+        if bound <= 0:
+            raise BufferError('Prompt checkpoint payload capacity is exhausted')
+        # An upper bound: finish_capture() applies capture()'s exact admission.
+        model = model_adapter.capture(request_id, position, max_bytes=bound)
+        return DeferredCapture(namespace, request_id, authority, model_adapter, replace, position, identity, model)
+
+    def finish_capture(self, pending, *, committed=False):
+        """Second half of a deferred P capture(); same admission and installation.
+
+        ``committed``: a selection was committed at this position after
+        begin_capture(), which capture() + selection_committed() would have
+        folded into the installed P (re-taken layerwise snapshot, adopted
+        window). Capturing now, with committed=True, yields that same state.
+        """
+        authority, position = pending.authority, pending.position
+        try:
+            if authority.history_end != position:
+                raise RuntimeError('Deferred P checkpoint authority moved before its capture')
+            previous = self._capture_previous(pending.namespace, pending.request_id, authority,
+                                              replace=pending.replace)
+            retained_bytes = self._retained_bytes(previous, False)
+            if position * 4 >= self.max_payload_bytes - retained_bytes:
+                raise BufferError('Prompt checkpoint payload capacity is exhausted')
+            window, fixed, seed, action_snapshot, layerwise_snapshot, graph_snapshot = self._capture_snapshots(
+                pending.request_id, authority, position, pending.identity, pending.model_adapter,
+                terminal=False, prepared_window=None, committed=committed)
+        except BaseException:
+            _drop_model(pending.model)
+            raise
+        available = self.max_payload_bytes - retained_bytes - fixed
+        if available <= 0 or pending.model.bytes > available:
+            if graph_snapshot is not None:
+                graph_snapshot.close()
+            _drop_model(pending.model)
+            raise BufferError('Prompt checkpoint payload capacity is exhausted')
+        return self._capture_install(pending.namespace, pending.request_id, authority, window, pending.model,
+                                     pending.identity, fixed, False, previous, False, action_snapshot,
+                                     graph_snapshot, seed, layerwise_snapshot)
 
     def drop_live(self, checkpoint):
         """Discard a snapshot while capture runtime keeps its live authority."""

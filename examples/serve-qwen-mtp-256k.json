@@ -147,7 +147,7 @@
     "query_window_cache_bytes": 12884901888,
     "graph_query_trace_max_bytes": 1073741824,
     "graph_aggregation": "sum",
-    "session_gpu_checkpoint_bytes": 2147483648,
+    "session_gpu_checkpoint_bytes": 0,
     "restore_prepare_split": true,
     "native_restore_frame": true,
     "restore_handoff_fastpath": true,

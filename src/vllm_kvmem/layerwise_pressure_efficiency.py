@@ -55,8 +55,22 @@ def packed_layer_chunk(state, layer, payload, half, cursor, records, row_bytes, 
     return True
 
 
-def assembly_groups(records, chunk_blocks, skip_history_begins=()):
-    """Keep dense destinations intact when the original plan skips a record."""
+def isolate_partial_records():
+    """Opt-in KVMEM_ASSEMBLY_ISOLATE_PARTIAL=1: a record the per-layer fast path cannot
+    read (not a full, archived block) gets a chunk of its own, so the generic all-layer
+    read covers only that record instead of the whole chunk around it. Same bytes and
+    positions; only chunk boundaries move."""
+    value = os.getenv('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_ASSEMBLY_ISOLATE_PARTIAL must be 0 or 1')
+    return value == '1'
+
+
+def assembly_groups(records, chunk_blocks, skip_history_begins=(), *, isolate=None):
+    """Keep dense destinations intact when the original plan skips a record.
+
+    ``isolate(record)`` true: that record forms its own group (dense cursors kept).
+    """
     if chunk_blocks <= 0:
         raise ValueError('Assembly chunk size must be positive')
     skip = set(skip_history_begins)
@@ -67,6 +81,10 @@ def assembly_groups(records, chunk_blocks, skip_history_begins=()):
             if group:
                 groups.append((begin, group)); group = []
             found.add(record.history_begin)
+        elif isolate is not None and isolate(record):
+            if group:
+                groups.append((begin, group)); group = []
+            groups.append((cursor, [record]))
         else:
             if not group:
                 begin = cursor

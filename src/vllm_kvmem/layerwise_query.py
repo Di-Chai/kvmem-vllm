@@ -197,8 +197,14 @@ class LayerwiseQuery:
 
     def prepare(self, refresh, job, queries):
         rid = job.command.request_id
+        # Rolling mode keeps every layer's map after the final Query (pressure.maps)
+        # and refreshes it through the per-layer pressure path. That covers decode
+        # and also the ordinary prefill that follows a mid-prompt Query: an agent
+        # Query marks the latest user message, and a cold (unrestored) prompt can
+        # carry more than G tokens of that turn's tool history after it.
         rolling_pressure = (self.pressure is not None and self.pressure.rolling_decode and
-                            job.command.selection == 'pressure' and job.command.pressure_stage == 'decode')
+                            job.command.selection == 'pressure' and
+                            job.command.pressure_stage in ('decode', 'prefill'))
         if rid in self.finished and not rolling_pressure:
             raise RuntimeError('Layerwise one-turn diagnostic prohibits another refresh')
         if job.command.selection != 'query':
@@ -543,7 +549,8 @@ class LayerwiseQuery:
         the DMA event dependency rather than a host synchronization per layer.
         """
         from .gil_gate import checkpoint
-        checkpoint(state.get('request_id'))  # opt-in KVMEM_GIL_GATE_MS: one layer (never for the step's own requests)
+        if not state.get('restore_gate_exempt', False):     # KVMEM_RESTORE_GATE_EXEMPT
+            checkpoint(state.get('request_id'))  # opt-in KVMEM_GIL_GATE_MS: one layer (never for the step's own requests)
         from .assembly import assemble_fp8
         from .packed_assembly import read_packed_records
         from .window_assembly import NativeWindowAssembler
@@ -579,21 +586,32 @@ class LayerwiseQuery:
                     raise ValueError('Borrowed pressure views escaped their prefill transaction')
                 assembler = NativeWindowAssembler.from_pressure_parent(
                     self.runner, state['request_id'], parent, layer_index, 32, read_blocks or 32)
+            elif 'borrowed_layers' in state:
+                # KVMEM_RESTORE_DIRECT_LAYERS: the restore job's lease-validated
+                # views and private tables (no per-layer table clone or GPU check).
+                assembler = NativeWindowAssembler((state['borrowed_layers'][layer_index],), 32,
+                    read_blocks or 32, staging=state['borrowed_staging'], borrowed_staging=True,
+                    raw_dtype=torch.float8_e4m3fn, lease=state['borrowed_lease'])
             else:
                 assembler = NativeWindowAssembler.from_runner(
                     self.runner, state['request_id'],
                     (self.names[layer_index] if layer_name is None else layer_name,), 32,
                     chunk_blocks=read_blocks,
-                    arena=state.get('assembly_arena', 'layerwise'))
+                    arena=state.get('assembly_arena', 'layerwise'),
+                    # KVMEM_RESTORE_DIRECT_LAYERS: the restore job's own scratch.
+                    **({'staging': state['borrowed_staging']} if 'borrowed_staging' in state else {}))
         layer, staging = assembler.layers[0], assembler.staging
         row_bytes = 32 * authority.shape[2] * authority.shape[3]
         total_raw = authority.shape[0] * row_bytes
         chunk_blocks = min(256, staging.slot_bytes // (2 * row_bytes))
         if chunk_blocks < 1:
             raise ValueError('Bounded native staging cannot hold one layer block')
-        from .layerwise_pressure_efficiency import assembly_groups
+        from .layerwise_pressure_efficiency import assembly_groups, isolate_partial_records
         with stage('assembly_groups_prepare'):
-            groups, total = assembly_groups(chosen, chunk_blocks, skip_history_begins)
+            # Opt-in: records outside the fill's fast path (below) get their own chunk.
+            isolate = ((lambda r: not (r.count == 32 and r.archived))
+                       if isolate_partial_records() else None)
+            groups, total = assembly_groups(chosen, chunk_blocks, skip_history_begins, isolate=isolate)
         uploaded_bytes = chunks = packed_chunks = paired_read_chunks = inline_read_chunks = prepared_read_chunks = 0
         native_paired_gather_chunks = 0
         # Restore and pressure also call this assembler. The candidate belongs
@@ -601,9 +619,10 @@ class LayerwiseQuery:
         paired_native = (getattr(self, 'paired_gather', False) and
                          state.get('assembly_arena') != 'pressure' and
                          'next_layer' in state and 'span' in state)
-        inline_cpu = (state.get('assembly_arena') == 'pressure' and
-                      (state.get('pressure_stage') == 'prefill' or
-                       state.get('pressure_stage') == 'decode' and decode_inline_reads()) and
+        inline_cpu = ((state.get('assembly_arena') == 'pressure' and
+                       (state.get('pressure_stage') == 'prefill' or
+                        state.get('pressure_stage') == 'decode' and decode_inline_reads()) or
+                       state.get('restore_inline_reads', False)) and   # KVMEM_RESTORE_PREPARED_READS
                       getattr(authority.archive, 'memory_only', False))
         staging.claim(assembler)
         try:
@@ -638,7 +657,8 @@ class LayerwiseQuery:
                             if prepared is not None and prepared.contains(group):
                                 from .pressure_reader import layer0_parallel_gather
                                 parallel = (layer_index == 0 and layer0_parallel_gather() and
-                                            state.get('promised_layer0', False))
+                                            state.get('promised_layer0', False) or
+                                            state.get('restore_parallel_reads', False))
                                 _,stats = prepared.read(group, regions, destination=host,
                                                         **({'parallel': True} if parallel else {}))
                             else:
@@ -655,7 +675,17 @@ class LayerwiseQuery:
                             read_packed_records(authority, handles, destination=host[half:],
                                 region=(total_raw+layer_index*row_bytes, row_bytes))
                     else:
-                        operands = authority.read_records([r.handle for r in group])
+                        cache = state.get('restore_partial_operands')
+                        if cache is None:
+                            operands = authority.read_records([r.handle for r in group])
+                        else:
+                            # Direct restore: a staged record's all-layer copy is
+                            # read once and sliced for every layer (immutable here).
+                            missing = [r for r in group if id(r) not in cache]
+                            if missing:
+                                for r, pair in zip(missing, authority.read_records([r.handle for r in missing])):
+                                    cache[id(r)] = (r, pair)
+                            operands = [cache[id(r)][1] for r in group]
                         raw = torch.cat([k[layer_index, :r.count] for r,(k,v) in zip(group,operands)])
                         values = torch.cat([v[layer_index, :r.count] for r,(k,v) in zip(group,operands)])
                         host[:half].copy_(raw.contiguous().view(torch.uint8).flatten())

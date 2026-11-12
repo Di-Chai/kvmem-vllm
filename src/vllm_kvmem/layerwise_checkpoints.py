@@ -90,6 +90,115 @@ def fast_turn():
     return value == '1' and fast_state()
 
 
+def capture_index():
+    """KVMEM_CHECKPOINT_CAPTURE_INDEX: per-capture O(history) Python work removed.
+
+    Every session P/M capture runs on the engine thread. It rebuilt a
+    {history_begin: record} dict over the whole archive for _resolve and turned
+    each layer's native decode mass map into a tuple of (key, mass) Python
+    tuples. With the flag the begin index is kept on the authority's record dict
+    and extended for appended records (anything else rebuilds it), and decode
+    rows stay native (MassRows) until something iterates them; a restore copies
+    the map in key order natively instead of rebuilding it from rows. Needs
+    KVMEM_SESSION_FAST_TURN; results and error messages are unchanged.
+    """
+    value = os.getenv('KVMEM_CHECKPOINT_CAPTURE_INDEX', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_CHECKPOINT_CAPTURE_INDEX must be 0 or 1')
+    return value == '1' and fast_turn()
+
+
+def records_by_begin(authority):
+    """{record.history_begin: record for record in authority.records.values()}.
+
+    With KVMEM_CHECKPOINT_CAPTURE_INDEX the dict is cached on the record dict
+    (VersionedRecords.begin_index) and extended from its begin_log when only
+    __setitem__ ran since: each logged key's record is added when its begin is
+    new (or maps to the same object). A key whose begin already maps to another
+    record, a missing key, or any other mutation (log reset to None) rebuilds
+    the dict, so the result always equals the comprehension, including which
+    record wins a duplicated begin.
+    """
+    current = authority.records
+    if not capture_index() or not hasattr(current, 'begin_log'):
+        return {record.history_begin: record for record in current.values()}
+    cached, log = current.begin_index, current.begin_log
+    if cached is not None:
+        version, index = cached
+        if version == current.version and log is not None and not log:
+            return index
+        if log is not None and len(log) == current.version - version:
+            additions, ok = {}, True
+            for key in log:
+                record = dict.get(current, key)
+                if record is None:
+                    ok = False
+                    break
+                begin = record.history_begin
+                old = additions.get(begin, index.get(begin))
+                if old is not None and old is not record:
+                    ok = False
+                    break
+                additions[begin] = record
+            if ok:
+                index.update(additions)
+                current.begin_log = []
+                current.begin_index = (current.version, index)
+                return index
+    index = {record.history_begin: record for record in current.values()}
+    current.begin_log = []
+    current.begin_index = (current.version, index)
+    return index
+
+
+class MassRows:
+    """A rolling decode history's sorted (key, mass) rows, kept as its native map.
+
+    Stands in for the row tuple inside LayerwisePrefix.decode
+    (KVMEM_CHECKPOINT_CAPTURE_INDEX). Native mass maps are never mutated (every
+    decode feedback builds a new one), so the map can be shared with the
+    history it came from and with the history a restore builds; the tuple is
+    built only when something iterates the rows.
+    """
+    __slots__ = ('map', '_rows')
+
+    def __init__(self, mass_map):
+        self.map, self._rows = mass_map, None
+
+    def rows(self):
+        if self._rows is None:
+            self._rows = self.map.sorted_rows()
+        return self._rows
+
+    def max_key(self):
+        return self.map.max_key()
+
+    def __len__(self):
+        return len(self.map)
+
+    def __bool__(self):
+        return len(self.map) > 0
+
+    def __iter__(self):
+        return iter(self.rows())
+
+    def __getitem__(self, index):
+        return self.rows()[index]
+
+    def __eq__(self, other):
+        if isinstance(other, MassRows):
+            return self.rows() == other.rows()
+        if isinstance(other, tuple):
+            return self.rows() == other
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self.rows())
+
+    def __repr__(self):
+        return f'MassRows({len(self)} rows)'
+
+
 class StateRows:
     """A layer history's sorted (key, mass, exposure) rows, kept as its native state.
 
@@ -338,7 +447,7 @@ def layer0_diverged(shared, layer_zero):
 def _resolve(authority, maps, position, *, planned_records=None, allow_layer0_divergence=False,
              want_chosen=True):
     """Resolve original coordinates against the retained immutable archive."""
-    by_begin = {record.history_begin: record for record in authority.records.values()}
+    by_begin = records_by_begin(authority)
     native = fast_native()
     if native is not None:
         block_tokens = getattr(getattr(getattr(authority, 'memory', None), 'config', None),
@@ -547,6 +656,10 @@ def _native_decode_rows(history):
         return None
     rows = history.__dict__.get('_sorted_rows')
     if rows is None:
+        if capture_index() and hasattr(history._map, 'sorted_copy'):
+            # KVMEM_CHECKPOINT_CAPTURE_INDEX: the same rows, built on demand.
+            rows = history._sorted_rows = MassRows(history._map)
+            return rows
         sorted_rows = getattr(history._map, 'sorted_rows', None)
         if sorted_rows is None:
             return None
@@ -566,7 +679,9 @@ def _native_restored_decode(decode):
         return None
     histories = []
     for rows, samples, end, chunks in decode:
-        mass_map = from_rows(rows)
+        # MassRows (KVMEM_CHECKPOINT_CAPTURE_INDEX): the map from_rows would
+        # rebuild from its rows (entries in key order), copied natively.
+        mass_map = rows.map.sorted_copy() if type(rows) is MassRows else from_rows(rows)
         if mass_map is None:
             return None
         history = layerwise_decode.NativeDecodeHistory(mass_map, samples, end, chunks)
@@ -601,7 +716,8 @@ def _decode_rows(history, position):
     if fast_turn():
         rows = _native_decode_rows(history)
         if rows is not None:
-            if rows and rows[-1][0] >= position:
+            last = rows.max_key() if type(rows) is MassRows else (rows[-1][0] if rows else None)
+            if last is not None and last >= position:
                 raise ValueError('Layerwise checkpoint contains future decode attention')
             return rows
     source = getattr(history, '__dict__', {}).get('_checkpoint_rows')
@@ -717,7 +833,7 @@ def install_restored(controller, request_id, authority, frame, histories, snapsh
     holds_of(controller).protect(request_id, authority, frame[1])
 
 
-def capture_for_pool(adapter, request_id, authority, position, *, terminal=False):
+def capture_for_pool(adapter, request_id, authority, position, *, terminal=False, committed=False):
     runner = getattr(adapter, 'runner', None)
     controller = getattr(runner, '_kvmem_layerwise_pressure', None)
     if controller is None:
@@ -726,7 +842,10 @@ def capture_for_pool(adapter, request_id, authority, position, *, terminal=False
     options = getattr(worker, 'options', None)
     if not sessions_enabled() and (terminal or not getattr(options, 'session_freeze_prompt', False)):
         raise ValueError('Layerwise checkpoints currently require frozen pre-Query P prefixes')
-    snapshot = capture(controller, request_id, authority, position, terminal=terminal)
+    # committed: a deferred P capture taken after a selection committed at its
+    # position (KVMEM_DEFERRED_P_CAPTURE), as refresh_committed_snapshot does.
+    snapshot = capture(controller, request_id, authority, position, terminal=terminal,
+                       **({'committed': True} if committed else {}))
     if terminal and sessions_enabled():
         # The checkpoint now holds its records; the finished request's stash goes.
         _consume_retired(controller, request_id)
@@ -943,7 +1062,7 @@ def restore_pressure_sync(worker, request_id, checkpoint):
         accepted_history=snapshot.position, selected_tokens=sum(r[3] for r in shared))
 
 
-def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=None):
+def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=None, assembler=None):
     """Per-layer completion of an asynchronous session import, on the model thread.
 
     The background import wrote one shared window into every layer (or, for a
@@ -991,4 +1110,7 @@ def finish_async_restore(worker, request_id, checkpoint, *, resident, pressure=N
         emit_prefix_evidence(controller.query, 'pressure_prefix_restored', snapshot, request_id=request_id,
             actual_method='resident_terminal_pages_per_layer', fallback_reason=None)
         return
+    from .layerwise_restore_efficiency import finish_direct_session_restore
+    if finish_direct_session_restore(worker, request_id, checkpoint, assembler):
+        return      # opt-in KVMEM_RESTORE_DIRECT_LAYERS: every layer already written
     restore_sync(worker, request_id, checkpoint)

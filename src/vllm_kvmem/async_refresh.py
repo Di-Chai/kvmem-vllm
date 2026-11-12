@@ -178,7 +178,10 @@ class AsyncRefresh:
         self.runner,self.options=runner,options
         self.original=runner.model.forward
         self.jobs={};self.cursor=0;self.deferred={}
-        self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix='kvmem-refresh')
+        from .priority_executor import PriorityExecutor, restore_first
+        # Opt-in KVMEM_RESTORE_FIRST: same single producer, queued swap-ins first.
+        self.executor=(PriorityExecutor('kvmem-refresh') if restore_first() else
+                       ThreadPoolExecutor(max_workers=1,thread_name_prefix='kvmem-refresh'))
         # Resident imports never use the shared assembly scratch. One separate
         # producer and fence-owned credit prevent a long cold KV upload from
         # stopping a ready hot session, without an unbounded DMA queue.

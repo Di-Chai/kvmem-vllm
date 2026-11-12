@@ -322,6 +322,20 @@ def _install_xqa_dispatch():
     module.get_xqa_module = dispatch
 
 
+def _batched_select():
+    """Opt-in KVMEM_NATIVE_SCORE_BATCHED_SELECT=1 (read once): see NativeAttentionStats.score."""
+    global _BATCHED_SELECT
+    if _BATCHED_SELECT is None:
+        value = os.getenv('KVMEM_NATIVE_SCORE_BATCHED_SELECT', '0')
+        if value not in ('0', '1'):
+            raise ValueError('KVMEM_NATIVE_SCORE_BATCHED_SELECT must be 0 or 1')
+        _BATCHED_SELECT = value == '1'
+    return _BATCHED_SELECT
+
+
+_BATCHED_SELECT = None
+
+
 class NativeAttentionStats:
     def __init__(self, runner, options, output):
         from . import _native
@@ -353,6 +367,7 @@ class NativeAttentionStats:
         self.prefill_source_fingerprint = None
         self.plans, self.slots = {}, {}
         self.reduced = set()
+        self._gathered = {}
         self.invalid = set()
         self.validation_failures = 0
         self.armed_rows = self.normalized_rows = 0
@@ -463,6 +478,7 @@ class NativeAttentionStats:
                 self.aligned_pieces.zero_()
         self.plans, self.slots = {}, {}
         self.reduced = set()
+        self._gathered = {}
         self.invalid = set()
         self.validation_dirty = False
         self.frame_invalid = False
@@ -956,8 +972,17 @@ class NativeAttentionStats:
         result = self.masses[name][first:first+rows, :segments]
         if request_id in self.selected_slots:
             selected_begin,selected_count=self.selected_slots[request_id]
-            result=self.masses[name][:,:segments].index_select(0,
-                self.selected[selected_begin:selected_begin+selected_count].long())
+            if _batched_select():
+                # Opt-in: gather every selected row of this layer once per frame;
+                # each request reads a view of its rows (same values, read-only).
+                gathered=self._gathered.get(name)
+                if gathered is None:
+                    gathered=self._gathered[name]=self.masses[name].index_select(0,
+                        self.selected[:self.reduction_rows].long())
+                result=gathered[selected_begin:selected_begin+selected_count,:segments]
+            else:
+                result=self.masses[name][:,:segments].index_select(0,
+                    self.selected[selected_begin:selected_begin+selected_count].long())
         # A missed producer (including a graph captured before instrumentation)
         # cannot publish uninitialized or stale mass. prepare() clears LSE before
         # every public forward, including graph replays; the initial empty rows

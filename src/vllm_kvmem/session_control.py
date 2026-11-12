@@ -128,6 +128,9 @@ class SessionCommands:
     # allowlist so the worker does not confuse them with unowned graph traffic.
     release_requests: set[str] = field(default_factory=set)
     history_capacity: list[HistoryCapacityRequest] = field(default_factory=list)
+    # Opt-in session tiering: sessions whose next turn just arrived, so the
+    # worker can start bringing them back from SSD while they queue.
+    returning: list = field(default_factory=list)
 
 
 @dataclass
@@ -469,6 +472,35 @@ class SessionLedger:
                  'allocated_records':e.allocated_records,'protected_records':e.protected_records,
                  'ready_records':e.ready_records}
                 for e in self.entries.values() if e.phase=='idle']
+
+    def snapshot_json(self):
+        """json.dumps(self.snapshot()), byte for byte, re-encoding only idle
+        entries whose fields changed (opt-in KVMEM_LIFECYCLE_SNAPSHOT_CACHE).
+
+        Every field is replaced, never mutated in place (active_records is a
+        tuple held by identity; query/mandatory are tuples compared by value).
+        """
+        import json
+        cache = self.__dict__.setdefault('_view_json', {})
+        parts, live = [], set()
+        for e in self.entries.values():
+            if e.phase != 'idle':
+                continue
+            key = (e.history, e.window, e.prefix_fingerprint(), e.query, e.mandatory, e.generation,
+                   e.allocated_records, e.protected_records, e.ready_records)
+            hit = cache.get(e.namespace)
+            if hit is None or hit[0] != key or hit[1] is not e.active_records:
+                text = json.dumps({'namespace':list(e.namespace),'history':e.history,'window':e.window,
+                    'prefix_sha256':e.prefix_fingerprint(),'query':e.query,
+                    'mandatory':e.mandatory,'generation':e.generation,'active_records':e.active_records,
+                    'allocated_records':e.allocated_records,'protected_records':e.protected_records,
+                    'ready_records':e.ready_records})
+                hit = cache[e.namespace] = (key, e.active_records, text)
+            live.add(e.namespace)
+            parts.append(hit[2])
+        for namespace in [n for n in cache if n not in live]:
+            del cache[namespace]
+        return '[' + ', '.join(parts) + ']'
 
     def owner_snapshot(self):
         """All live namespace leases, including retirement before idle publish."""

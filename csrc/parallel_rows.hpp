@@ -48,6 +48,13 @@ public:
         return *pool;
     }
 
+    // Separate workers for archive gathers (for_gather), so a swap-in copy
+    // never makes a concurrent publication call fall back to serial.
+    static Pool &gather() {
+        static Pool *pool = new Pool();
+        return *pool;
+    }
+
     // Returns false without running anything when another batch owns the pool.
     bool try_run(size_t n, size_t threads, const std::function<void(size_t)> &fn,
                  std::vector<std::exception_ptr> &errors) {
@@ -137,6 +144,38 @@ inline size_t for_rows(size_t n, const std::function<void(size_t)> &fn) {
     if (threads > 1) {
         std::vector<std::exception_ptr> errors(n);
         if (Pool::get().try_run(n, threads, fn, errors)) {
+            for (auto &error : errors)
+                if (error) std::rethrow_exception(error);
+            return threads;
+        }
+    }
+    for (size_t i = 0; i < n; ++i) fn(i);
+    return 1;
+}
+
+// Opt-in KVMEM_NATIVE_GATHER_THREADS=N (1..64, default 1): archive region
+// gathers split their records across N threads (the caller plus N-1 gather
+// workers). Each byte is copied once to the same destination offset, so the
+// result is identical to the serial loop. Capped at the core count.
+inline size_t gather_threads() {
+    const char *value = std::getenv("KVMEM_NATIVE_GATHER_THREADS");
+    if (!value || !*value) return 1;
+    char *end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end || parsed < 1 || parsed > 64)
+        throw std::invalid_argument("KVMEM_NATIVE_GATHER_THREADS must be an integer in [1, 64]");
+    const size_t cores = std::thread::hardware_concurrency();
+    const size_t requested = static_cast<size_t>(parsed);
+    return cores ? std::min(requested, cores) : requested;
+}
+
+// for_rows on the gather pool; serial when disabled, n < 2 or the pool is busy.
+inline size_t for_gather(size_t n, const std::function<void(size_t)> &fn) {
+    size_t threads = gather_threads();
+    if (threads > n) threads = n;
+    if (threads > 1) {
+        std::vector<std::exception_ptr> errors(n);
+        if (Pool::gather().try_run(n, threads, fn, errors)) {
             for (auto &error : errors)
                 if (error) std::rethrow_exception(error);
             return threads;

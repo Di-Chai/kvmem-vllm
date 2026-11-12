@@ -85,6 +85,16 @@ class _DeferredScatterStart:
     batch: object = None
 
 
+def _claim_owners(packet, indices):
+    """Request ids a publication claim publishes (for the GIL gate)."""
+    ids = getattr(packet, 'request_ids', None) or ()
+    owners = [ids[i] for i in indices if 0 <= i < len(ids)]
+    group = getattr(packet, 'logical_group', None)
+    if group is not None:
+        owners.append(group.request_id)
+    return owners
+
+
 class CaptureRuntime(EarlyCaptureFeedback):
     def __init__(self, runner, output):
         self.runner = runner
@@ -1234,7 +1244,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
                                   if i not in packet.published}
                     elif any(p.consuming for p in owned):
                         waited = time.perf_counter()
-                        condition.wait()
+                        from .gil_gate import engine_blocked
+                        with engine_blocked():  # opt-in KVMEM_GIL_GATE_DRAIN_OPEN
+                            condition.wait()
                         self._publication_metric('slot_condition_wait_seconds', time.perf_counter()-waited, lane=lane)
                         continue
                     else:
@@ -1672,7 +1684,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
                         return True
                     if not wait or unconfirmed:
                         return False
-                    condition.wait()
+                    from .gil_gate import engine_blocked
+                    with engine_blocked():  # opt-in KVMEM_GIL_GATE_DRAIN_OPEN
+                        condition.wait()
                     continue
             packet, indices = claim
             started = time.perf_counter()
@@ -1778,8 +1792,10 @@ class CaptureRuntime(EarlyCaptureFeedback):
             packet.graph_updates = None
 
     def _publish_claim(self, packet, indices, wait):
-        from .gil_gate import checkpoint
-        checkpoint()            # opt-in KVMEM_GIL_GATE_MS: one publication span
+        from .gil_gate import checkpoint_owners
+        # Opt-in KVMEM_GIL_GATE_MS: one publication span. With
+        # KVMEM_GIL_GATE_DRAIN_OPEN, owners of the launching step pass.
+        checkpoint_owners(_claim_owners(packet, indices))
         try:
             if getattr(packet, 'logical_owners', None):
                 return self._publish_multiowner_claim(packet,indices,wait)
@@ -1873,11 +1889,11 @@ class CaptureRuntime(EarlyCaptureFeedback):
                     graphless=getattr(self.options,'prefill_physical_graphless',False))
             elif cursor.authority is not authority:
                 raise RuntimeError('Logical publication authority was replaced')
-            from .gil_gate import checkpoint as _gil_checkpoint
+            from .gil_gate import checkpoint_owners as _gil_checkpoint
             while not cursor.done:
                 # Opt-in KVMEM_GIL_GATE_MS: one child transaction (one logical
                 # span) at a time; no publication lock is held here.
-                _gil_checkpoint()
+                _gil_checkpoint((group.request_id,))
                 with self._publication_lock():
                     confirmation = packet.logical_confirmation
                 if confirmation is None:
@@ -2321,7 +2337,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
                         deadline = deadlines.setdefault(frozenset(request_ids), started+30)
                 if started >= deadline:
                     raise TimeoutError('Repository GC made no append progress for 30 seconds')
-                self.gc_progress.wait(min(.05, deadline - started))
+                from .gil_gate import engine_blocked
+                with engine_blocked():  # opt-in KVMEM_GIL_GATE_DRAIN_OPEN
+                    self.gc_progress.wait(min(.05, deadline - started))
                 self.gc_progress.clear()
                 self.gc_wait_seconds += time.monotonic() - started
                 self.gc_wait_count += 1
@@ -2531,6 +2549,9 @@ class CaptureRuntime(EarlyCaptureFeedback):
                   "session_retiring_requests": len(sessions.retiring) if sessions else 0,
                   "session_restored_tokens": sessions.restored_tokens if sessions else 0,
                   "session_checkpoint_deferrals": sessions.checkpoint_deferrals if sessions else 0,
+                  "session_deferred_p_captures": getattr(sessions, 'deferred_p_captures', 0) if sessions else 0,
+                  "session_tiering": (sessions.tiering.snapshot()
+                                      if sessions is not None and getattr(sessions, 'tiering', None) else None),
                   "archive_verification": "full_checksum" if self.options.verify_archive_on_finish else "publication_only",
                   "max_concurrent_batches": self.runner.vllm_config.max_concurrent_batches,
                   "decode_query_len": self.runner.decode_query_len,

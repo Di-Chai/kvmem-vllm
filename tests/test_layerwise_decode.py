@@ -164,8 +164,14 @@ def test_finished_query_allows_only_explicit_rolling_decode():
     job = NS(command=NS(request_id='r', selection='pressure', pressure_stage='decode'))
     query.prepare(None, job, None)
     assert visited == [job]
+    # A cold prompt's tool history after a mid-prompt agent Query refreshes the
+    # same per-layer maps through prefill pressure (dsh c8 crash, 2026-11-11).
     job.command.pressure_stage = 'prefill'
+    query.prepare(None, job, None)
+    assert visited == [job, job]
+    query.pressure.rolling_decode = False
     with pytest.raises(RuntimeError, match='another refresh'): query.prepare(None, job, None)
+    query.pressure.rolling_decode = True
     job.command.selection = 'query'
     with pytest.raises(RuntimeError, match='another refresh'): query.prepare(None, job, None)
 

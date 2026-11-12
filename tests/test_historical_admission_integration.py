@@ -167,3 +167,63 @@ def test_oldest_index_only_tail_is_not_supply_and_cannot_starve_a_later_idle_vic
     assert connector.get_num_new_matched_tokens(req,0) == (None,False)
     pressure, = connector.sessions.take_commands().history_capacity
     assert pressure.namespace == peer.namespace and pressure.retained_records == 5
+
+
+def setup3(capacity=20):
+    """Room for three sessions: only the history deficit, never the ledger size, can evict."""
+    scheduler, _ = pair()
+    scheduler.sessions, _ = ledger(3)
+    scheduler.history_admission = HistoricalHistoryAdmission(capacity*24, 24, 16, 4, scheduler.sessions)
+    return scheduler
+
+
+def _fully_protected_pair(connector):
+    """Two idle sessions whose whole CPU history is protected (no reclaimable supply)."""
+    first = first_turn(connector)
+    peer = first_turn(connector, 'peer', 'other')
+    for done in (first, peer):
+        notice(connector, SessionNotice('history_capacity', done.namespace, done.generation, '',
+            history=24, ready_records=10, allocated_records=6, protected_records=6))
+    connector.sessions.take_commands()
+    return first, peer
+
+
+def _blocked_turn(connector, rid='next', session='other'):
+    req = request(rid, session=session, tokens=list(range(29)))   # a returning session's next turn
+    req.num_prompt_tokens, req.max_tokens = 29, 28
+    assert connector.get_num_new_matched_tokens(req, 0) == (None, False)
+    return req
+
+
+def test_fully_protected_deficit_defers_forever_without_the_flag(monkeypatch):
+    monkeypatch.delenv('KVMEM_SESSION_HISTORY_LRU_EVICTION', raising=False)
+    connector = setup3()
+    _fully_protected_pair(connector)
+    _blocked_turn(connector)
+    assert not connector.sessions.take_commands().evictions
+    assert connector.history_admission.snapshot()['history_evictions'] == 0
+
+
+def test_history_lru_eviction_evicts_the_oldest_idle_session_once(monkeypatch):
+    """KVMEM_SESSION_HISTORY_LRU_EVICTION: the least recently used idle session is evicted
+    through the fenced path; retries while it is evicting evict nothing else."""
+    monkeypatch.setenv('KVMEM_SESSION_HISTORY_LRU_EVICTION', '1')
+    connector = setup3()
+    first, peer = _fully_protected_pair(connector)
+    _blocked_turn(connector)
+    eviction, = connector.sessions.take_commands().evictions
+    assert eviction.namespace == first.namespace and eviction.generation == first.generation
+    _blocked_turn(connector, 'again')                    # 's' is still evicting: no second victim
+    assert not connector.sessions.take_commands().evictions
+    assert connector.history_admission.snapshot()['history_evictions'] == 1
+
+
+def test_history_lru_eviction_never_evicts_the_requesting_session(monkeypatch):
+    monkeypatch.setenv('KVMEM_SESSION_HISTORY_LRU_EVICTION', '1')
+    connector = setup3()
+    first, peer = _fully_protected_pair(connector)
+    req = request('own', session='s', tokens=list(range(29)))   # the LRU session's own next turn
+    req.num_prompt_tokens, req.max_tokens = 29, 28
+    connector.get_num_new_matched_tokens(req, 0)
+    eviction, = connector.sessions.take_commands().evictions
+    assert eviction.namespace == peer.namespace          # the next LRU idle session, not its own

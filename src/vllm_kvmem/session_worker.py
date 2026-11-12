@@ -93,6 +93,16 @@ def verify_preserved_authority(authority, timeout=180):
             lease.reset()
 
 
+def deferred_p_capture():
+    """Opt-in KVMEM_DEFERRED_P_CAPTURE=1: a P checkpoint's CPU snapshots run after
+    the next forward is enqueued (overlapping it); its model-state copy stays
+    before that forward. Same checkpoint contents and admission decisions."""
+    value = os.getenv('KVMEM_DEFERRED_P_CAPTURE', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_DEFERRED_P_CAPTURE must be 0 or 1')
+    return value == '1'
+
+
 class SessionWorker:
     def __init__(self, runner, options):
         self.runner, self.options = runner, options
@@ -119,6 +129,21 @@ class SessionWorker:
         self._history_idle = deque()
         self._history_idle_queued = set()
         self._history_capacity_sent = {}
+        self.tiering = None          # opt-in cpu_session_ttl_ms (created with the archive)
+
+    def session_tiering(self):
+        """Opt-in cpu_session_ttl_ms: CPU -> SSD tiering of idle sessions."""
+        ttl = getattr(self.options, 'cpu_session_ttl_ms', 0)
+        if not ttl:
+            return None
+        if self.tiering is None:
+            archive = getattr(self.runtime, 'archive', None)
+            if archive is None:
+                return None
+            from .session_tiering import SessionTiering
+            archive.tier.enable_spill(self.options.cpu_spill_dir, self.options.cpu_spill_max_bytes)
+            self.tiering = SessionTiering(archive, ttl / 1000)
+        return self.tiering
 
     @property
     def runtime(self):
@@ -232,7 +257,11 @@ class SessionWorker:
                 raise ValueError('Stale or duplicate terminal checkpoint command')
             self.terminal_captures[capture.request_id] = capture
 
-    def before_attention(self, batch):
+    def before_attention(self, batch, *, deferrable=False):
+        # deferrable: the runner's public-forward call, whose finish hook runs
+        # after the launch. Private maintenance forwards capture synchronously.
+        if deferrable and getattr(self, 'deferred_captures', None):
+            raise RuntimeError('A deferred P checkpoint was not finished after its forward')
         self._require_not_swapped(batch.req_ids)
         if getattr(self.options, 'async_restore', False) and self.imports.intersection(batch.req_ids):
             raise RuntimeError('Unready checkpoint restore entered a public model batch')
@@ -259,26 +288,74 @@ class SessionWorker:
             from .pressure_promise import pm_sessions, settle_before_checkpoint
             if pm_sessions():
                 settle_before_checkpoint(self.runner, request_id)   # opt-in KVMEM_PROMISE_PM_SESSIONS
+            replace = getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt
+            if deferrable and deferred_p_capture() and not getattr(self.options, 'session_freeze_prompt', False):
+                # Opt-in: the model-state copy now (it must precede this forward);
+                # the CPU snapshots in finish_deferred_captures() after the launch.
+                try:
+                    pending = self.pool.begin_capture(binding.namespace, request_id, authority,
+                        command.tokens or binding.tokens, self.model_adapter, replace=replace)
+                except BufferError:
+                    self._capture_not_admitted(binding, request_id, command)
+                else:
+                    self.__dict__.setdefault('deferred_captures', {})[request_id] = [
+                        pending, binding, command, False, self._capture_witness(request_id, authority)]
+                continue
             try:
                 checkpoint = self.pool.capture(binding.namespace, request_id, authority,
-                    command.tokens or binding.tokens, self.model_adapter,
-                    replace=getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt)
+                    command.tokens or binding.tokens, self.model_adapter, replace=replace)
             except BufferError:
-                # Cache admission failure preserves ordinary native execution.
-                self.checkpoint_deferrals += 1
-                if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
-                    self.completed.append(SessionNotice('capture_deferred', binding.namespace,
-                        binding.generation, request_id, command.position))
+                self._capture_not_admitted(binding, request_id, command)
             else:
-                if checkpoint.layerwise_pressure is not None:
-                    from .layerwise_checkpoints import emit_prefix_evidence
-                    emit_prefix_evidence(self.runner._kvmem_layerwise_pressure.query,
-                        'pressure_prefix_captured', checkpoint.layerwise_pressure,
-                        request_id=request_id, actual_method='accumulated_attention_per_layer',
-                        fallback_reason=None)
-                if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
-                    self.completed.append(SessionNotice('captured', binding.namespace,
-                        binding.generation, request_id, command.position))
+                self._capture_installed(binding, request_id, command, checkpoint)
+
+    def _capture_not_admitted(self, binding, request_id, command):
+        # Cache admission failure preserves ordinary native execution.
+        self.checkpoint_deferrals += 1
+        if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
+            self.completed.append(SessionNotice('capture_deferred', binding.namespace,
+                binding.generation, request_id, command.position))
+
+    def _capture_installed(self, binding, request_id, command, checkpoint):
+        if checkpoint.layerwise_pressure is not None:
+            from .layerwise_checkpoints import emit_prefix_evidence
+            emit_prefix_evidence(self.runner._kvmem_layerwise_pressure.query,
+                'pressure_prefix_captured', checkpoint.layerwise_pressure,
+                request_id=request_id, actual_method='accumulated_attention_per_layer',
+                fallback_reason=None)
+        if getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt:
+            self.completed.append(SessionNotice('captured', binding.namespace,
+                binding.generation, request_id, command.position))
+
+    def _capture_witness(self, request_id, authority):
+        """What a P capture reads, cheaply: an unexpected change between
+        begin_capture() and finish_capture() fails loudly instead of silently
+        capturing a different state."""
+        controller = getattr(self.runner, '_kvmem_layerwise_pressure', None)
+        maps = getattr(controller, 'maps', {}).get(request_id) if controller is not None else None
+        histories = getattr(controller, 'histories', {}).get(request_id) if controller is not None else None
+        action = getattr(authority, 'action_history', None)
+        return (authority.history_end, getattr(authority.records, 'version', None),
+                tuple(authority.memory._store.working_records()), id(maps), id(histories),
+                getattr(action, 'rounds', None), len(getattr(action, 'scores', ()) or ()))
+
+    def finish_deferred_captures(self):
+        """Opt-in KVMEM_DEFERRED_P_CAPTURE: runs once the forward that follows
+        begin_capture() is enqueued, so these CPU snapshots overlap the GPU."""
+        pending = getattr(self, 'deferred_captures', None)
+        if not pending:
+            return
+        self.deferred_captures = {}
+        self.deferred_p_captures = getattr(self, 'deferred_p_captures', 0) + len(pending)
+        for request_id, (capture, binding, command, committed, witness) in pending.items():
+            if not committed and self._capture_witness(request_id, capture.authority) != witness:
+                raise RuntimeError('Deferred P checkpoint inputs changed before its capture')
+            try:
+                checkpoint = self.pool.finish_capture(capture, committed=committed)
+            except BufferError:
+                self._capture_not_admitted(binding, request_id, command)
+            else:
+                self._capture_installed(binding, request_id, command, checkpoint)
 
     def _target_bytes(self, request_id, tokens):
         """Opt-in real-model restoration oracle; unused in ordinary serving."""
@@ -300,6 +377,12 @@ class SessionWorker:
 
     def selection_committed(self, request_id, history):
         self._require_not_swapped((request_id,))
+        deferred = getattr(self, 'deferred_captures', None)
+        if deferred and request_id in deferred and deferred[request_id][0].position == history:
+            # The P is not installed yet: finish_capture() takes it as committed,
+            # which equals capture() followed by the refresh below.
+            deferred[request_id][3] = True
+            return
         binding = self.bindings.get(request_id)
         checkpoint = self.pool.entries.get(binding.namespace) if binding is not None else None
         if checkpoint is not None and checkpoint.position == history:
@@ -323,6 +406,8 @@ class SessionWorker:
         from .window_batch import WindowBatchAdapter
         binding = self.bindings[request_id]
         checkpoint = self.pool.claim(binding.namespace, request_id, binding.tokens,position=binding.history)
+        if checkpoint is not None and self.session_tiering() is not None:
+            self.tiering.ensure(binding.namespace, checkpoint.authority)     # SSD -> CPU first
         if (checkpoint is None or checkpoint.position != binding.history or
                 (checkpoint.window.window_tokens != binding.window and not binding.pressure_restore)):
             raise ValueError('Worker cannot restore the advertised exact prompt prefix')
@@ -673,6 +758,9 @@ class SessionWorker:
                 self._history_idle_queued.add(binding.namespace)
         self.runtime.completed.append({**report, 'retirement_ack_ready_at': time.perf_counter()})
         del self.retiring[request_id]
+        tiering = self.session_tiering()
+        if tiering is not None:
+            tiering.idle(binding.namespace, checkpoint.authority)
         self.runtime._write_archive_report()
         return True
 
@@ -688,12 +776,20 @@ class SessionWorker:
         for command in commands:
             self._require_not_swapped(rid for rid, binding in self.bindings.items()
                                      if binding.namespace == command.namespace)
+            if (getattr(command, 'allow_missing', False) and command.namespace not in self.identities
+                    and command.namespace not in self.pool.entries and command.namespace not in self.evictions):
+                # This rank already retired the uncached request. The scheduler
+                # still needs its generation-qualified ACK for the common fence.
+                self.completed.append(SessionNotice('evicted', command.namespace, command.generation, ''))
+                continue
             if self.identities.get(command.namespace) != command.generation or command.namespace in self.evictions:
                 raise ValueError('Stale or duplicate session eviction')
             checkpoint = self.pool.entries[command.namespace]
             authority = checkpoint.authority
             self.evictions[command.namespace] = command
             self.pool.evict(checkpoint)
+            if self.tiering is not None:
+                self.tiering.forget(command.namespace)
             from .gpu_raw_cache import retire_raw_cache
             retire_raw_cache(self.runner, authority)
         self._poll_evictions()
@@ -735,7 +831,17 @@ class SessionWorker:
         if changed and self.runtime is not None:
             self.runtime._write_archive_report()
 
+    def returning(self, namespaces):
+        """Opt-in session tiering: these sessions' next turns arrived at the
+        scheduler; start their SSD -> CPU promotion now (same bytes, earlier)."""
+        tiering = self.session_tiering()
+        if tiering is not None:
+            for namespace in namespaces:
+                tiering.prefetch(namespace)
+
     def notices(self):
+        if self.tiering is not None:
+            self.tiering.tick()
         self.pool.poll_captures()
         self._poll_evictions()
         self._poll_idle_history()

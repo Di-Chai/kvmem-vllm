@@ -17,6 +17,9 @@ from .options import RuntimeOptions
 from .window_manager import WorkingSetManager
 from .admission import QueryPolicy
 
+# Placeholder for KVMEM_LIFECYCLE_SNAPSHOT_CACHE (spliced after json.dumps).
+_SESSION_VIEWS_SLOT = '\x00kvmem-session-views\x00'
+
 
 class _Complete:
     def query(self):
@@ -135,9 +138,21 @@ class KVMemScheduler(Scheduler):
         if burst == '1' and self.prefill_decode_share is None:
             raise ValueError('KVMEM_PREFILL_DECODE_BURST needs KVMEM_PREFILL_DECODE_SHARE')
         self.prefill_decode_burst = burst == '1'
+        # Opt-in KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS=N (size-aware burst): a
+        # hold is only worth it for large prefill work. When every schedulable
+        # prefill is an admitted request with fewer than N prompt tokens left in
+        # total (agent tool results, short user turns) and no arrival waits for
+        # admission, decoders ride the prefill step instead of being held out.
+        minimum = os.getenv('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS', '0')
+        if not minimum.isdigit() or int(minimum) > 1 << 20:
+            raise ValueError('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS must be an integer in [0, 1048576]')
+        self.prefill_burst_min_tokens = int(minimum)
+        if self.prefill_burst_min_tokens and not self.prefill_decode_burst:
+            raise ValueError('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS needs KVMEM_PREFILL_DECODE_BURST')
         self._burst_active = False
         self._burst_missed = None
-        self._burst_stats = dict(bursts=0, decode_steps=0, held_steps=0, held_decoders=0, misses=0)
+        self._burst_stats = dict(bursts=0, decode_steps=0, held_steps=0, held_decoders=0, misses=0,
+                                 ride_along=0)
         self._logical_prefill_groups = {}
         if options.prefill_batch_tokens:
             from .prefill_control import BatchPrefillBudget
@@ -313,9 +328,14 @@ class KVMemScheduler(Scheduler):
                 from .tool_grace import ToolGrace
                 tool_grace = ToolGrace(options.active_tool_grace_ms, options.active_tool_max_wait_ms,
                     output=Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'tool_grace.jsonl')
+            wait_model = None
+            if options.active_resident_victim == 'expected_wait':
+                from .residency_policy import ReturnGapModel
+                wait_model = ReturnGapModel()
             residency = ActiveResidency(self.window_managers, self.kv_cache_manager.block_pool,
                 options.active_resident_ttl_ms, options.active_resident_max_fraction,
-                pressure_only=options.active_resident_pressure_only, tool_grace=tool_grace)
+                pressure_only=options.active_resident_pressure_only, tool_grace=tool_grace,
+                victim=options.active_resident_victim, wait_model=wait_model)
             self.connector.active_residency = self.kv_cache_manager.active_residency = residency
             self.kv_cache_manager.resident_entry = self.connector.sessions.requests.get
             if tool_grace is not None:
@@ -474,11 +494,20 @@ class KVMemScheduler(Scheduler):
         if sessions is not None:
             report['sessions'] = dict(entries=len(sessions.entries), hits=sessions.hits,
                                       misses=sessions.misses, waits=sessions.waits)
-            report['session_views'] = sessions.snapshot()
+            cached_views = (os.getenv('KVMEM_LIFECYCLE_SNAPSHOT_CACHE', '0') == '1' and
+                            callable(getattr(sessions, 'snapshot_json', None)))
+            # Opt-in: the same bytes, with unchanged idle views not re-encoded.
+            report['session_views'] = _SESSION_VIEWS_SLOT if cached_views else sessions.snapshot()
             report['session_owners'] = sessions.owner_snapshot()
         path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
         temporary = path / "scheduler_resources.tmp"
-        temporary.write_text(json.dumps(report))
+        text = json.dumps(report)
+        if report.get('session_views') is _SESSION_VIEWS_SLOT:
+            slot = json.dumps(_SESSION_VIEWS_SLOT)
+            if text.count(slot) != 1:
+                raise RuntimeError('Lifecycle snapshot session-view slot is not unique')
+            text = text.replace(slot, sessions.snapshot_json(), 1)
+        temporary.write_text(text)
         temporary.replace(path / "scheduler_resources.json")
         return True
 
@@ -1567,9 +1596,13 @@ class KVMemScheduler(Scheduler):
         decoders = [r for r in decoding if ready(r)]
         pending = [r for r in self.running if r.num_computed_tokens < r.num_prompt_tokens]
         prefills = [r.request_id for r in pending if ready(r)]
+        admitted = len(prefills)
         waiting = self._waiting_requests()
         if len(self.running) < self.scheduler_config.max_num_seqs:
             prefills += [r.request_id for r in waiting]
+        minimum = getattr(self, 'prefill_burst_min_tokens', 0)
+        small = bool(minimum and prefills and admitted == len(prefills) and sum(
+            r.num_prompt_tokens - r.num_computed_tokens for r in pending if ready(r)) < minimum)
         now = time.perf_counter() if now is None else now
         previous, self._share_previous = self._share_previous, None
         if previous is not None:
@@ -1587,6 +1620,11 @@ class KVMemScheduler(Scheduler):
         signature = frozenset(prefills)
         if signature != self._burst_missed:
             self._burst_missed = None
+        if small and decoders and not self._burst_active:
+            # Size-aware burst: decoders ride this small prefill step; nothing
+            # is held, so nothing is earned (an active burst still finishes).
+            self._burst_stats['ride_along'] = self._burst_stats.get('ride_along', 0) + 1
+            return False, None
         if (not decoders or not prefills or self.prefill_capacity_bound or
                 self._burst_missed is not None):
             return False, None

@@ -106,6 +106,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.scheduler_completion = None
         options = vllm_config.kv_transfer_config.kv_connector_extra_config.get('kvmem', {})
         self.gpu_memory_admission = options.get('gpu_memory_admission', 'static')
+        from .session_tiering import tiering_prefetch
+        self.tiering_prefetch = bool(options.get('cpu_session_ttl_ms')) and tiering_prefetch()
         self.async_retirement = options.get('async_archive_retirement', False)
         self.physical_retirement = options.get('archive_backend') == 'tiered'
         repository_gc = options.get('repository_gc', False)
@@ -172,6 +174,8 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             if self.session_worker is None:
                 raise RuntimeError('Session eviction received without its worker')
             self.session_worker.evict(metadata.sessions.evictions)
+        if metadata.sessions.returning and self.session_worker is not None:
+            self.session_worker.returning(metadata.sessions.returning)
         for command in metadata.commands:
             if command.request_id in self.worker_jobs:
                 raise RuntimeError("Duplicate worker transaction")
@@ -318,19 +322,32 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
 
     def on_new_request(self, request):
         super().on_new_request(request)
+        if self.tiering_prefetch and self.sessions is not None:
+            namespace = self.sessions.namespace(request)
+            if namespace is not None and not (getattr(request, 'kv_transfer_params', None) or {}).get(
+                    'kvmem_release_session'):
+                self.sessions.commands.returning.append(namespace)
         residency = self.active_residency
-        if residency is not None and residency.tool_grace is not None:
+        model = getattr(residency, 'wait_model', None)
+        if residency is not None and (residency.tool_grace is not None or model is not None):
             namespace = self.sessions.namespace(request) if self.sessions is not None else None
             if (getattr(request, 'kv_transfer_params', None) or {}).get('kvmem_release_session'):
                 namespace = None
-            residency.tool_grace.arrival(request.request_id, namespace)
+            if residency.tool_grace is not None:
+                residency.tool_grace.arrival(request.request_id, namespace)
+            if model is not None:
+                model.arrival(namespace)      # active_resident_victim: expected_wait
 
     def request_finished_all_groups(self, request, block_ids):
         residency = self.active_residency
-        if residency is not None and residency.tool_grace is not None:
+        model = getattr(residency, 'wait_model', None)
+        if residency is not None and (residency.tool_grace is not None or model is not None):
             successful = (getattr(request, 'num_output_tokens', 0) > 0 and
                           getattr(getattr(request, 'status', None), 'name', '') != 'FINISHED_ABORTED')
-            residency.tool_grace.finished(request.request_id, successful=successful)
+            if residency.tool_grace is not None:
+                residency.tool_grace.finished(request.request_id, successful=successful)
+            if model is not None and successful and self.sessions is not None:
+                model.finished(self.sessions.namespace(request))
         self.capacity_rejections.pop(request.request_id, None)
         self.publication_blocked.discard(request.request_id)
         if self.restore_admission is not None:

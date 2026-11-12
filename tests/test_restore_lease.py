@@ -142,3 +142,30 @@ def test_generic_assembler_retains_its_gpu_table_validation():
     layer = LayerWindow(key, key.clone(), torch.zeros(16, 4), torch.tensor(1.), torch.tensor([0, 2]))
     with pytest.raises(ValueError, match='null or out-of-arena'):
         NativeWindowAssembler((layer,), 4)
+
+
+def test_direct_restore_layer_borrows_leased_view_without_gpu_validation(monkeypatch):
+    """KVMEM_RESTORE_DIRECT_LAYERS: a per-layer assembler built from the restore
+    job's own lease-validated view needs no table clone or scalar GPU check."""
+    from vllm_kvmem import window_assembly as window
+    runner, lease = allocation()
+    key = torch.zeros((16, 4, 1, 4), dtype=torch.float8_e4m3fn)
+    module = SimpleNamespace(attn=SimpleNamespace(kv_cache_dtype='fp8_e4m3', layer_name='attn',
+        kv_cache=(key, key.clone()), _k_scale=torch.tensor(1.)), num_kv_heads=1, head_dim=4,
+        rotary_emb=SimpleNamespace(cos_sin_cache=torch.zeros(64, 4)))
+    runner.model = SimpleNamespace(named_modules=lambda: [('layer', module)])
+    runner.kv_cache_config = SimpleNamespace(kv_cache_groups=[SimpleNamespace(layer_names=['gdn']),
+        SimpleNamespace(layer_names=['attn'])])
+    monkeypatch.setattr(window, 'native_vllm_fp8_views', lambda cache, *_: cache)
+    parent = window.NativeWindowAssembler.from_runner(runner, 'restore', ('layer',), 4, lease=lease)
+    monkeypatch.setattr(torch.Tensor, 'cpu', lambda *_: pytest.fail('GPU table readback'))
+    monkeypatch.setattr(torch, 'any', lambda *_: pytest.fail('GPU scalar validation'))
+    monkeypatch.setattr(torch.Tensor, 'clone', lambda *_: pytest.fail('table clone'))
+    child = window.NativeWindowAssembler((parent.layers[0],), 4, 8, staging=parent.staging,
+        borrowed_staging=True, raw_dtype=torch.bfloat16, lease=lease)
+    assert child.layers[0] is parent.layers[0] and child.staging is parent.staging
+    assert child.close()
+    runner._kvmem_restore_allocations.clear()     # a recycled allocation is still rejected
+    with pytest.raises(ValueError, match='no longer leased'):
+        window.NativeWindowAssembler((parent.layers[0],), 4, 8, staging=parent.staging,
+            borrowed_staging=True, raw_dtype=torch.bfloat16, lease=lease)

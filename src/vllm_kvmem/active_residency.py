@@ -20,6 +20,7 @@ class ActiveView:
     groups: tuple
     expires: float
     protected_until: float = 0.
+    retained_at: float = 0.
 
     @property
     def blocks(self):
@@ -28,14 +29,28 @@ class ActiveView:
 
 class ActiveResidency:
     def __init__(self, managers, pool, ttl_ms, max_fraction, *, pressure_only=False,
-                 clock=time.monotonic, tool_grace=None):
+                 clock=time.monotonic, tool_grace=None, victim='fifo', wait_model=None):
+        if victim not in ('fifo', 'expected_wait') or (victim == 'expected_wait') != (wait_model is not None):
+            raise ValueError('Expected-wait revocation needs a return-gap model (and only it)')
         self.managers, self.pool, self.clock = managers, pool, clock
+        self.victim, self.wait_model = victim, wait_model
         self.ttl = None if pressure_only else ttl_ms / 1000
         self.max_blocks = int((pool.num_gpu_blocks - 1) * max_fraction)
         self.entries = OrderedDict()
         self.hits = self.retained = self.expired = self.pressure_evictions = self.mismatches = 0
         self.reused_tokens = 0
         self.tool_grace = tool_grace
+
+    def _victim_order(self, entries):
+        """Idle views in revocation order. FIFO keeps retention order; the
+        opt-in expected-wait order revokes first the view whose session is
+        expected to stay away longest (KVMEM planner policy C2)."""
+        if self.victim == 'fifo':
+            return entries
+        now = self.clock()
+        model = self.wait_model
+        return sorted(entries, key=lambda item: -model.expected_remaining(
+            item[0], now - item[1].retained_at))
 
     def _drop(self, namespace, reason):
         view = self.entries.pop(namespace)
@@ -74,13 +89,15 @@ class ActiveResidency:
                     any(b.is_null or b.ref_cnt != 1 for b in blocks)):
                 raise ValueError('Durable active view differs from terminal native allocation')
             groups.append((group, blocks))
+        now = self.clock()
         view = ActiveView(notice.namespace, notice.generation, notice.history, notice.window,
-                          tuple(groups), float('inf') if self.ttl is None else self.clock() + self.ttl,
-                          self.tool_grace.retired(notice.namespace, notice.generation) if self.tool_grace else 0.)
+                          tuple(groups), float('inf') if self.ttl is None else now + self.ttl,
+                          self.tool_grace.retired(notice.namespace, notice.generation) if self.tool_grace else 0.,
+                          retained_at=now)
         if len(view.blocks) > self.max_blocks:
             return
         while self.entries and sum(len(v.blocks) for v in self.entries.values()) + len(view.blocks) > self.max_blocks:
-            self._drop(next(iter(self.entries)), 'pressure')
+            self._drop(self._victim_order(list(self.entries.items()))[0][0], 'pressure')
         # The native terminal free drops its original reference after this ack.
         self.pool.touch(view.blocks)
         self.entries[view.namespace] = view
@@ -103,7 +120,7 @@ class ActiveResidency:
         return view
 
     def make_room(self, required_free, *, protect=None):
-        entries = list(self.entries.items())
+        entries = self._victim_order(list(self.entries.items()))
         if self.tool_grace is not None:
             # Cold admission was checked before the native allocation loop.
             # Running growth and fairness overrides may still revoke idle KV.
@@ -152,4 +169,5 @@ class ActiveResidency:
             idle_views=len(self.entries), idle_blocks=sum(len(v.blocks) for v in self.entries.values()),
             max_blocks=self.max_blocks, retained=self.retained, hits=self.hits, reused_tokens=self.reused_tokens,
             expired=self.expired, pressure_evictions=self.pressure_evictions, mismatches=self.mismatches,
-            tool_grace=self.tool_grace.snapshot() if self.tool_grace else None)
+            tool_grace=self.tool_grace.snapshot() if self.tool_grace else None,
+            victim=self.victim, return_gaps=self.wait_model.snapshot() if self.wait_model else None)

@@ -7,6 +7,7 @@ uses borrowed buffers, immutable CPU history and its private CUDA stream.
 from dataclasses import dataclass
 from contextlib import nullcontext
 import json
+import os
 import time
 
 import torch
@@ -20,6 +21,28 @@ class RestoreContext:
     model: object
     ready: object
     stream: object = None
+
+
+def restore_stream_priority():
+    """Opt-in KVMEM_RESTORE_STREAM_PRIORITY=1: restore copies and re-RoPE kernels run on
+    a high-priority CUDA stream, so a swap-in's short kernels are not queued behind the
+    running batch's forward. Scheduling only: the same kernels and bytes."""
+    value = os.getenv('KVMEM_RESTORE_STREAM_PRIORITY', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_RESTORE_STREAM_PRIORITY must be 0 or 1')
+    if value == '0':
+        return 0
+    priority_range = getattr(torch.cuda.Stream, 'priority_range', None)
+    return priority_range()[1] if priority_range is not None else -1   # (least, greatest)
+
+
+def restore_timing_enabled():
+    """Opt-in KVMEM_RESTORE_TIMING=1 (diagnostic): async_restore.jsonl rows carry GPU
+    phase times (main-stream wait, assembly, model upload) and host copy times."""
+    value = os.getenv('KVMEM_RESTORE_TIMING', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_RESTORE_TIMING must be 0 or 1')
+    return value == '1'
 
 
 def resident_lane(job):
@@ -39,13 +62,26 @@ def copy_restore(manager, job):
     context = job.restore_context
     worker = manager.runner._kvmem_sessions
     stream = context.stream
+    timed = restore_timing_enabled()
+    copy_started = time.perf_counter()
     with torch.inference_mode(), torch.cuda.device(manager.runner.device), torch.cuda.stream(stream):
+        if timed:
+            marks = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
+            marks[0].record(stream)
         stream.wait_event(context.ready)
+        if timed:
+            marks[1].record(stream)
         assembly = context.assembler.assemble(job.authority, context.plan) if context.assembler is not None else None
+        if timed:
+            marks[2].record(stream)
         # Pinned native state code writes only this request's leased state rows
         # and acceptance counter; public batches do not contain this request.
         model = worker.model_adapter.submit_restore(context.model)
-        complete = torch.cuda.Event(); complete.record()
+        complete = torch.cuda.Event(enable_timing=timed); complete.record()
+        if timed:
+            # Opt-in diagnostic: GPU and host phase boundaries, read at finish.
+            job.restore_marks = (*marks, complete)
+            job.restore_copy_host = (copy_started, time.perf_counter())
         if assembly is None:
             from .window_assembly import AssemblyResult
             assembly = AssemblyResult(complete, (job.authority, context.plan), 0,
@@ -138,6 +174,9 @@ def _step_restore(manager, job, *, timing=None):
                 raise ValueError('Resident import requires the exact terminal checkpoint')
             job.authority = job.checkpoint.authority
             job.model_bytes = job.checkpoint.model.bytes
+        tiering = worker.session_tiering() if hasattr(worker, 'session_tiering') else None
+        if tiering is not None and not tiering.ready(binding.namespace, job.checkpoint.authority):
+            return False   # opt-in cpu_session_ttl_ms: the session is still coming back from SSD
         if job.stage == 'restore_model_prepare':
             plan = job.restore_plan
             if plan is None or job.checkpoint is None:
@@ -165,11 +204,16 @@ def _step_restore(manager, job, *, timing=None):
                 direct_pinned_reads=manager.options.direct_pinned_reads, arena='refresh', lease=lease)
         if assembler is not None:
             assembler.bandwidth_limiter = manager.maintenance.transfer_budget
+            from .layerwise_restore_efficiency import install_direct_session_restore
+            with _stage(timing, 'direct_layers_prepare'):
+                # Opt-in KVMEM_RESTORE_DIRECT_LAYERS: the job writes every layer's own window.
+                install_direct_session_restore(worker, rid, job.checkpoint, assembler, plan)
         with _stage(timing, 'prepare_stream_dependencies'):
             ready = torch.cuda.Event(); ready.record()
             stream_name = 'resident_stream' if resident else 'stream'
             if getattr(manager, stream_name, None) is None:
-                setattr(manager, stream_name, torch.cuda.Stream(device=manager.runner.device, priority=0))
+                setattr(manager, stream_name, torch.cuda.Stream(device=manager.runner.device,
+                                                                priority=restore_stream_priority()))
             stream = getattr(manager, stream_name)
         with _stage(timing, 'transfer_credit_acquire'):
             if not manager.maintenance.acquire(job):
@@ -181,7 +225,12 @@ def _step_restore(manager, job, *, timing=None):
         job.service_started = time.perf_counter()
         executor = manager.resident_executor if resident else manager.executor
         with _stage(timing, 'background_submit'):
-            job.future = executor.submit(copy_restore, manager, job)
+            from .priority_executor import restore_first
+            if restore_first() and hasattr(executor, 'submit_urgent'):
+                # Opt-in KVMEM_RESTORE_FIRST: ahead of queued refresh assemblies.
+                job.future = executor.submit_urgent(copy_restore, manager, job)
+            else:
+                job.future = executor.submit(copy_restore, manager, job)
         manager.emit(job, 'restore_submitted', model_bytes=job.model_bytes,
                      lane='resident' if resident else 'assembly')
         return True
@@ -218,7 +267,8 @@ def _finish_restore(manager, job, worker, rid, command, timing):
         if not job.authority.memory.commit_selection():
             raise RuntimeError('Completed restore failed to commit its exact active view')
     from .layerwise_checkpoints import finish_async_restore, realign_after_restore
-    finish_async_restore(worker, rid, job.checkpoint, resident=command.resident)
+    finish_async_restore(worker, rid, job.checkpoint, resident=command.resident,
+                         assembler=context.assembler)
     with _stage(timing, 'restore_byte_oracle'):
         worker._verify_restored(rid, job.checkpoint, command.resident)
     # Preserve the imported checkpoint until a newer capture replaces it. A
@@ -258,6 +308,16 @@ def _finish_restore(manager, job, worker, rid, command, timing):
         public_peer_count=len(job.peers), cancelled=job.cancelled,
         completion_poll=getattr(job, 'restore_completion_poll', None) or 'pre_forward',
         lane='resident' if resident_lane(job) else 'assembly')
+    marks = getattr(job, 'restore_marks', None)
+    if marks is not None:
+        # Opt-in KVMEM_RESTORE_TIMING: where a swap-in's latency goes.
+        sub, ready, assembled, done = marks
+        copy_started, copy_returned = job.restore_copy_host
+        row.update(timing=dict(
+            submitted=getattr(job, 'service_started', None), copy_started=copy_started,
+            copy_returned=copy_returned, gpu_wait_main_ms=sub.elapsed_time(ready),
+            gpu_assembly_ms=ready.elapsed_time(assembled), gpu_model_ms=assembled.elapsed_time(done),
+            gpu_total_ms=sub.elapsed_time(done)))
     with (manager.runner._kvmem_probe_output/'async_restore.jsonl').open('a') as f:
         f.write(json.dumps(row)+'\n')
     job.restore_context = job.checkpoint = job.future = job.result = None

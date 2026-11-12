@@ -27,7 +27,9 @@ def test_off_by_default_and_validated(monkeypatch):
     gil_gate.checkpoint()                       # no-op
     with gil_gate.engine_waiting():
         pass
-    for bad in ('0', '1001', 'x', '-1'):
+    monkeypatch.setenv('KVMEM_GIL_GATE_MS', '0')    # =0 overrides the default-on table: off
+    assert gil_gate.configured() is None and gil_gate.gate() is None
+    for bad in ('1001', 'x', '-1', '0,5'):
         monkeypatch.setenv('KVMEM_GIL_GATE_MS', bad)
         with pytest.raises(ValueError):
             gil_gate.configured()
@@ -125,3 +127,91 @@ def test_chunk_checkpoint_is_opt_in(monkeypatch):
     import pytest
     with pytest.raises(ValueError):
         gil_gate.chunk_checkpoint('r')
+
+
+def test_drain_open_is_opt_in_and_validated(monkeypatch):
+    monkeypatch.setenv('KVMEM_GIL_GATE_MS', '50')
+    monkeypatch.delenv('KVMEM_GIL_GATE_DRAIN_OPEN', raising=False)
+    g = gil_gate.gate()
+    g.close()
+    with gil_gate.engine_blocked():
+        assert not g.event.is_set()                 # off: the gate stays closed
+    g.begin_step(['a', 'b'])
+    started = time.perf_counter()
+    run_in_thread(lambda: gil_gate.checkpoint_owners(['a']))
+    assert time.perf_counter() - started > .04      # off: plain checkpoint, parked
+    monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', 'x')
+    with pytest.raises(ValueError):
+        gil_gate.drain_open_enabled()
+
+
+def test_engine_blocked_opens_then_restores_and_ignores_other_threads(monkeypatch):
+    monkeypatch.setenv('KVMEM_GIL_GATE_MS', '1000')
+    monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', '1')
+    g = gil_gate.gate()
+    g.close()
+    with gil_gate.engine_blocked():
+        assert g.event.is_set()
+        started = time.perf_counter()
+        run_in_thread(gil_gate.checkpoint)          # background runs while the engine waits
+        assert time.perf_counter() - started < .1
+    assert not g.event.is_set() and g.blocked_opens == 1
+    g.open()                                        # an open gate is left open
+    with gil_gate.engine_blocked():
+        pass
+    assert g.event.is_set() and g.blocked_opens == 1
+    g.close()
+
+    def other():
+        with gil_gate.engine_blocked():
+            return g.event.is_set()
+    assert run_in_thread(other) is False            # only the engine thread opens
+
+
+def test_launching_step_owners_are_never_parked(monkeypatch):
+    monkeypatch.setenv('KVMEM_GIL_GATE_MS', '200')
+    monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', '1')
+    g = gil_gate.gate()
+    g.begin_step(['a', 'b'])
+    assert not g.event.is_set()
+    started = time.perf_counter()
+    run_in_thread(lambda: gil_gate.checkpoint_owners(['z', 'b']))
+    assert time.perf_counter() - started < .1 and g.owner_passes == 1
+    started = time.perf_counter()
+    run_in_thread(lambda: gil_gate.checkpoint_owners(['z']))
+    assert time.perf_counter() - started > .15 and g.parked == 1
+
+
+def test_engine_drain_wait_opens_the_gate(monkeypatch):
+    """CaptureRuntime.drain_requests(wait=True) on the engine thread: a parked
+    publisher proceeds, and the gate is closed again afterwards."""
+    from vllm_kvmem.capture_runtime import CaptureRuntime
+    monkeypatch.setenv('KVMEM_GIL_GATE_MS', '1000')
+    monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', '1')
+    g = gil_gate.gate()
+    g.begin_step(['x'])                             # launching another request's step
+    condition = threading.Condition()
+    state = {'published': False}
+
+    class Fake:
+        def _publication_lock(self):
+            return condition
+
+        def _raise_publication_error(self):
+            pass
+
+        def _claim_publications(self, wanted, wait):
+            return None, not state['published'], False
+
+    def publisher():
+        gil_gate.checkpoint_owners(['a'])           # parked until the engine waits
+        with condition:
+            state['published'] = True
+            condition.notify_all()
+    t = threading.Thread(target=publisher)
+    started = time.perf_counter()
+    t.start()
+    assert CaptureRuntime.drain_requests(Fake(), ['a'], wait=True) is True
+    t.join(5)
+    assert time.perf_counter() - started < .5 and g.blocked_opens >= 1
+    assert not g.event.is_set()                     # the launch continues with the gate closed

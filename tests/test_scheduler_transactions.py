@@ -147,6 +147,7 @@ def burst_scheduler(share=.2):
     scheduler._share_credit, scheduler._share_previous = 0., None
     scheduler._burst_active, scheduler._burst_missed = False, None
     scheduler._burst_stats = dict(bursts=0, decode_steps=0, held_steps=0, held_decoders=0, misses=0)
+    scheduler.prefill_burst_min_tokens = 0
     scheduler._mixed_steps = scheduler._cadence_requested = 0
     scheduler.current_step = 7
     scheduler.prefill_capacity_bound = False
@@ -240,6 +241,31 @@ def test_decode_burst_hold_survives_a_miss_and_a_transaction():
     throttle, holds = scheduler._burst_begin(now=3.)      # exception path: output is None
     scheduler._burst_end(holds)
     assert holds is None                                  # (the decoder is in a transaction)
+
+
+def test_size_aware_burst_lets_decoders_ride_small_admitted_prefills():
+    """KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS: below the threshold nothing is held or earned;
+    at or above it, and for arrivals waiting for admission, the burst policy is unchanged."""
+    scheduler, decoder, prefill = burst_scheduler()
+    scheduler.prefill_burst_min_tokens = 33               # the prefill has 32 tokens left
+    assert scheduler._burst_begin(now=0.) == (False, None)
+    assert decoder.next_decode_eligible_step == 7 and scheduler._share_credit == 0.
+    assert scheduler._burst_begin(now=1.) == (False, None) and scheduler._share_credit == 0.
+    assert scheduler._burst_stats['ride_along'] == 2 and scheduler._burst_stats['held_steps'] == 0
+    scheduler.prefill_burst_min_tokens = 32               # not below the threshold: held as before
+    throttle, holds = scheduler._burst_begin(now=2.)
+    assert not throttle and decoder.next_decode_eligible_step == 9
+    scheduler._burst_end(holds, ran('p'))
+    scheduler.prefill_burst_min_tokens = 1 << 20
+    scheduler.running = [decoder]                         # an arrival waiting for admission: held
+    scheduler.scheduler_config = SimpleNamespace(max_num_seqs=4)
+    scheduler.waiting = [SimpleNamespace(request_id="w")]
+    throttle, holds = scheduler._burst_begin(now=2.1)     # 0.1 s of prefill: no burst owed yet
+    assert not throttle and holds[1] == frozenset({'w'})
+    scheduler._burst_end(holds, ran('w'))
+    scheduler.waiting, scheduler.running = [], [decoder, prefill]
+    scheduler._burst_active, scheduler._share_credit = True, .5   # an active burst finishes first
+    assert scheduler._burst_begin(now=3.1) == (True, None)
 
 
 def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatch):

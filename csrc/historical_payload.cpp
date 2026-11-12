@@ -18,7 +18,7 @@ namespace vllm_kvmem {
 namespace {
 constexpr unsigned shift = 60;
 constexpr uint64_t refs_mask = (uint64_t{1} << shift) - 1;
-enum class Phase : uint64_t { Empty, Initializing, Live, Retired, Releasing };
+enum class Phase : uint64_t { Empty, Initializing, Live, Retired, Releasing, Spilled };
 constexpr uint64_t control(Phase p, uint64_t refs = 0) { return (uint64_t(p) << shift) | refs; }
 Phase phase(uint64_t value) { return Phase(value >> shift); }
 uint64_t refs(uint64_t value) { return value & refs_mask; }
@@ -177,6 +177,7 @@ struct HistoricalPayloadArena::Shared {
     std::atomic<uint64_t> used_slots{0}, used_bytes{0}, retired_bytes{0}, readers{0};
     std::atomic<uint64_t> released_slots{0}, released_bytes{0}, last_release_thread{0}, writers{0};
     std::atomic<uint64_t> external_owners{0}, external_bytes{0}, external_released_bytes{0};
+    std::atomic<uint64_t> spilled_slots{0}, spilled_bytes{0};
     std::atomic<ExternalOwner::Node *> external_pending{nullptr};
     ExternalOwner::Node *external_local = nullptr; // Sole reclaimer ownership.
     uint32_t cursor = 0; // Exclusive reclaimer ownership, not a foreground lock.
@@ -186,6 +187,21 @@ struct HistoricalPayloadArena::Shared {
 
     void mark_retired(uint32_t slot) {
         dirty[slot / 64].fetch_or(uint64_t{1} << (slot % 64), std::memory_order_release);
+    }
+
+    // Spilled -> Retired (no CPU bytes). Accounting is restored to the resident
+    // form first so release_one's single accounting path stays balanced.
+    bool retire_spilled(uint32_t slot) {
+        auto &entry = entries[slot];
+        auto expected = control(Phase::Spilled);
+        if (!entry.control.compare_exchange_strong(expected, control(Phase::Retired),
+                std::memory_order_acq_rel, std::memory_order_acquire)) return false;
+        used_bytes.fetch_add(config.record_bytes, std::memory_order_relaxed);
+        spilled_slots.fetch_sub(1, std::memory_order_relaxed);
+        spilled_bytes.fetch_sub(config.record_bytes, std::memory_order_relaxed);
+        retired_bytes.fetch_add(config.record_bytes, std::memory_order_relaxed);
+        mark_retired(slot);
+        return true;
     }
 
     bool release_one(uint32_t slot) {
@@ -247,6 +263,8 @@ struct HistoricalPayloadArena::Shared {
                             std::memory_order_acq_rel, std::memory_order_acquire)) {
                     retired_bytes.fetch_add(config.record_bytes, std::memory_order_relaxed);
                     mark_retired(slot);
+                } else if (phase(prior) == Phase::Spilled) {
+                    retire_spilled(slot);
                 }
             }
         }
@@ -485,6 +503,11 @@ HistoricalPayloadArena::RetireResult HistoricalPayloadArena::retire(Handle h) {
     if (h.slot >= shared->config.capacity || !h.generation) return RetireResult::StaleHandle;
     auto &entry = shared->entries[h.slot];
     auto prior = entry.control.load(std::memory_order_acquire);
+    if (phase(prior) == Phase::Spilled) {
+        if (entry.generation.load(std::memory_order_relaxed) != h.generation)
+            return RetireResult::StaleHandle;
+        return shared->retire_spilled(h.slot) ? RetireResult::Committed : RetireResult::Retry;
+    }
     for (unsigned attempt = 0; attempt < 16; ++attempt) {
         if (phase(prior) != Phase::Live && phase(prior) != Phase::Retired)
             return RetireResult::StaleHandle;
@@ -512,6 +535,74 @@ HistoricalPayloadArena::RetireResult HistoricalPayloadArena::retire(Handle h) {
     return RetireResult::Retry;
 }
 
+bool HistoricalPayloadArena::spill(Handle h) {
+    auto shared = shared_;
+    if (h.slot >= shared->config.capacity || !h.generation ||
+            shared->closing.load(std::memory_order_acquire)) return false;
+    auto &entry = shared->entries[h.slot];
+    auto expected = control(Phase::Live);               // no readers
+    if (!entry.control.compare_exchange_strong(expected, control(Phase::Initializing),
+            std::memory_order_acq_rel, std::memory_order_acquire)) return false;
+    if (entry.generation.load(std::memory_order_relaxed) != h.generation) {
+        entry.control.store(control(Phase::Live), std::memory_order_release);
+        return false;
+    }
+    entry.payload.reset();
+    shared->used_bytes.fetch_sub(shared->config.record_bytes, std::memory_order_relaxed);
+    shared->spilled_slots.fetch_add(1, std::memory_order_relaxed);
+    shared->spilled_bytes.fetch_add(shared->config.record_bytes, std::memory_order_relaxed);
+    entry.control.store(control(Phase::Spilled), std::memory_order_release);
+    return true;
+}
+
+bool HistoricalPayloadArena::restore(Handle h, const Segment *segments, size_t count) {
+    auto shared = shared_;
+    size_t bytes = 0;
+    if (!segments || !count)
+        throw std::invalid_argument("Historical CPU restore requires source segments");
+    for (size_t i = 0; i < count; ++i) {
+        if ((segments[i].size && !segments[i].data) ||
+                segments[i].size > shared->config.record_bytes - bytes)
+            throw std::invalid_argument("Invalid historical CPU restore segment extent");
+        bytes += segments[i].size;
+    }
+    if (h.slot >= shared->config.capacity || !h.generation || bytes != shared->config.record_bytes)
+        throw std::invalid_argument("Invalid historical CPU payload restore");
+    auto &entry = shared->entries[h.slot];
+    auto expected = control(Phase::Spilled);
+    if (!entry.control.compare_exchange_strong(expected, control(Phase::Initializing),
+            std::memory_order_acq_rel, std::memory_order_acquire)) return false;
+    if (entry.generation.load(std::memory_order_relaxed) != h.generation) {
+        entry.control.store(control(Phase::Spilled), std::memory_order_release);
+        return false;
+    }
+    try {
+        Payload payload = shared->pool ? Payload(shared->pool->acquire(), PayloadFree{shared->pool.get()})
+                                       : Payload(std::make_unique<uint8_t[]>(bytes).release(), PayloadFree{});
+        size_t offset = 0;
+        for (size_t i = 0; i < count; ++i) {
+            if (segments[i].size) std::memcpy(payload.get() + offset, segments[i].data, segments[i].size);
+            offset += segments[i].size;
+        }
+        entry.payload = std::move(payload);
+    } catch (...) {
+        entry.control.store(control(Phase::Spilled), std::memory_order_release);
+        throw;
+    }
+    shared->used_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    shared->spilled_slots.fetch_sub(1, std::memory_order_relaxed);
+    shared->spilled_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+    entry.control.store(control(Phase::Live), std::memory_order_release);
+    return true;
+}
+
+bool HistoricalPayloadArena::spilled(Handle h) const {
+    if (h.slot >= shared_->config.capacity || !h.generation) return false;
+    auto &entry = shared_->entries[h.slot];
+    return phase(entry.control.load(std::memory_order_acquire)) == Phase::Spilled &&
+        entry.generation.load(std::memory_order_relaxed) == h.generation;
+}
+
 bool HistoricalPayloadArena::reclaimed(Handle h) const {
     return h.slot < shared_->config.capacity && h.generation &&
         shared_->entries[h.slot].released_generation.load(std::memory_order_acquire) >= h.generation;
@@ -527,6 +618,7 @@ HistoricalPayloadArena::Stats HistoricalPayloadArena::stats() const {
     LOAD(used_slots); LOAD(used_bytes); LOAD(retired_bytes); LOAD(readers);
     LOAD(released_slots); LOAD(released_bytes); LOAD(last_release_thread);
     LOAD(external_owners); LOAD(external_bytes); LOAD(external_released_bytes);
+    LOAD(spilled_slots); LOAD(spilled_bytes);
 #undef LOAD
     if (shared_->pool) {
         result.pool_hits = shared_->pool->hits();

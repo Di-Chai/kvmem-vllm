@@ -351,7 +351,10 @@ def wait_committed(pipeline, rid, timeout=600.):
     lease = pipeline.active.get(rid) if pipeline is not None else None
     if lease is None or not getattr(lease, 'promised', False):
         return None
-    if not lease.committed.wait(timeout):
+    from .gil_gate import engine_blocked
+    with engine_blocked():      # opt-in KVMEM_GIL_GATE_DRAIN_OPEN (engine thread only)
+        committed = lease.committed.wait(timeout)
+    if not committed:
         raise TimeoutError('Promised refresh did not commit its host maps')
     if lease.error is not None:
         raise RuntimeError('Promised pressure refresh failed') from lease.error

@@ -284,7 +284,7 @@ class NativeWindowAssembler:
     def __init__(self, layers: tuple[LayerWindow, ...], block_tokens: int, chunk_blocks=32, packed=False,
                  direct_pinned_reads=False, *, staging=None, raw_cache=None, reuse_resident_v=False,
                  value_capacity_bytes=None, lease=None, raw_dtype=torch.bfloat16, read_prefetch=False,
-                 fused_layers=False, _validated_parent=None):
+                 fused_layers=False, _validated_parent=None, borrowed_staging=False):
         if not layers or min(block_tokens, chunk_blocks) <= 0:
             raise ValueError("Invalid native assembly geometry")
         device = layers[0].key.device
@@ -332,13 +332,20 @@ class NativeWindowAssembler:
         self.raw_dtype = raw_dtype
         raw_element_bytes = raw_dtype.itemsize
         slot_bytes = len(layers) * heads * dim * block_tokens * chunk_blocks * (raw_element_bytes + 1)
-        if staging is not None and (staging.slot_bytes != slot_bytes or staging.device != device):
+        if borrowed_staging:
+            # A per-layer assembly inside another assembly's transaction (async
+            # session restore, KVMEM_RESTORE_DIRECT_LAYERS): any larger scratch
+            # serves it; chunks are sized from staging.slot_bytes by the caller.
+            if (staging is None or staging.slot_bytes < slot_bytes or staging.device != device or
+                    reuse_resident_v or raw_cache is not None):
+                raise ValueError('Borrowed assembly staging cannot hold this geometry')
+        elif staging is not None and (staging.slot_bytes != slot_bytes or staging.device != device):
             raise ValueError("Shared assembly staging geometry changed")
         self._shared_staging = staging is not None
         if value_capacity_bytes is None:
             value_capacity_bytes=(len(layers)*heads*dim*min(l.kernel_page_table.numel()*l.value.shape[1]
                 for l in layers)) if reuse_resident_v else 0
-        if staging is not None and staging.value_capacity_bytes!=value_capacity_bytes:
+        if staging is not None and not borrowed_staging and staging.value_capacity_bytes!=value_capacity_bytes:
             raise ValueError('Shared resident V staging geometry changed')
         self.staging = staging if staging is not None else _AssemblyStaging(slot_bytes, device,value_capacity_bytes)
         self._metadata_owners = []
@@ -406,7 +413,7 @@ class NativeWindowAssembler:
 
     @classmethod
     def from_runner(cls, runner, request_id, layer_names, block_tokens=128, chunk_blocks=None, packed=False,
-                    direct_pinned_reads=False, *, arena='main', lease=None, staging_lane=0):
+                    direct_pinned_reads=False, *, arena='main', lease=None, staging_lane=0, staging=None):
         if type(staging_lane) is not int or staging_lane < 0 or staging_lane and arena != 'refresh':
             raise ValueError('Separate staging lanes are only defined for refresh assembly')
         if getattr(runner, '_kvmem_qsa_layers', None):
@@ -454,7 +461,11 @@ class NativeWindowAssembler:
         if staging_lane and (getattr(runner, cache_name, None) is not None or
                              getattr(options, 'gpu_raw_k_cache_bytes', 0)):
             raise ValueError('A shared GPU raw-K cache cannot serve concurrent refresh lanes')
-        staging = getattr(runner, staging_name, None)
+        borrowed = staging is not None   # the caller's transaction scratch (restore direct layers)
+        if borrowed and (direct_pinned_reads or staging_lane):
+            raise ValueError('Borrowed staging serves plain per-layer assembly only')
+        if not borrowed:
+            staging = getattr(runner, staging_name, None)
         raw_cache = getattr(runner, cache_name, None)
         if direct_pinned_reads and options is not None and options.gpu_raw_k_cache_bytes and raw_cache is None:
             from .gpu_raw_cache import GpuRawCache
@@ -474,7 +485,8 @@ class NativeWindowAssembler:
                             if options is not None and options.reuse_resident_v else 0), lease=lease,
                         raw_dtype=torch.float8_e4m3fn,
                         read_prefetch=getattr(options, 'assembly_read_prefetch', False),
-                        fused_layers=getattr(options, 'assembly_fused_layers', False))
+                        fused_layers=getattr(options, 'assembly_fused_layers', False),
+                        **({'borrowed_staging': True} if borrowed else {}))
         if staging is None:
             # Publish shared scratch only after all geometry/ownership checks
             # pass; an invalid first request must not poison the runner pool.

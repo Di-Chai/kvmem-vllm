@@ -292,6 +292,15 @@ class RuntimeOptions:
     active_resident_max_fraction: float = 0.5
     active_tool_grace_ms: float = 0.0
     active_tool_max_wait_ms: float = 15000.0
+    # Which idle active view to revoke first: 'fifo' (oldest retained) or
+    # 'expected_wait' (longest expected remaining tool wait, learned from
+    # observed return gaps). Scheduling only: pages and bytes are unchanged.
+    active_resident_victim: str = 'fifo'
+    # Opt-in CPU -> SSD session tiering: idle sessions' archived records move to
+    # SSD after this many ms (0: off) and come back before their next turn.
+    cpu_session_ttl_ms: float = 0.0
+    cpu_spill_dir: str = ''
+    cpu_spill_max_bytes: int = 0
     maintenance_transfer_bytes_per_second: int = 0
     maintenance_transfer_burst_bytes: int = 67108864
     offline_agent_policy: bool = False
@@ -708,6 +717,14 @@ class RuntimeOptions:
             raise ValueError('Invalid tool grace or maximum queue wait')
         if self.active_tool_grace_ms and not self.active_resident_pressure_only:
             raise ValueError('Tool grace requires pressure-only active residency')
+        if self.active_resident_victim not in ('fifo', 'expected_wait'):
+            raise ValueError("active_resident_victim must be 'fifo' or 'expected_wait'")
+        if (type(self.cpu_session_ttl_ms) not in (int, float) or not math.isfinite(self.cpu_session_ttl_ms) or
+                self.cpu_session_ttl_ms < 0):
+            raise ValueError('cpu_session_ttl_ms must be a finite non-negative number')
+        if self.cpu_session_ttl_ms and (not self.cpu_spill_dir or type(self.cpu_spill_max_bytes) is not int or
+                                        self.cpu_spill_max_bytes <= 0 or self.archive_backend != 'cpu'):
+            raise ValueError('Session tiering needs cpu_spill_dir, cpu_spill_max_bytes and the CPU archive')
         if self.active_residency_enabled and (not self.async_restore or not self.session_capture_terminal):
             raise ValueError('Idle active residency requires exact terminal capture and async restore')
         if (type(self.prefill_batch_tokens) is not int or self.prefill_batch_tokens < 0 or
@@ -1061,6 +1078,8 @@ class RuntimeOptions:
             ('prefill_batch_tokens', 0), ('prefill_request_tokens', 0), ('active_resident_ttl_ms', 0.0),
             ('active_resident_pressure_only', False),
             ('active_tool_grace_ms', 0.0), ('active_tool_max_wait_ms', 15000.0),
+            ('active_resident_victim', 'fifo'),
+            ('cpu_session_ttl_ms', 0.0), ('cpu_spill_dir', ''), ('cpu_spill_max_bytes', 0),
             ('active_resident_max_fraction', 0.5), ('maintenance_transfer_bytes_per_second', 0),
             ('maintenance_transfer_burst_bytes', 67108864), ('offline_agent_policy', False),
             ('offline_prefill_coalescing', False), ('offline_prefill_max_tokens', 4096),

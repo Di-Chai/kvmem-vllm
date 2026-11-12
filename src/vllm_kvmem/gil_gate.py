@@ -89,6 +89,42 @@ class Gate:
         self.parked += 1
         self.parked_seconds += time.perf_counter() - started
 
+    def checkpoint_owners(self, request_ids):
+        """checkpoint() for work that publishes these owners: never parked when
+        one of them is in the step being launched (its forward waits for it)."""
+        batch = self.batch
+        if batch and not self.event.is_set():
+            for request_id in request_ids:
+                if request_id in batch:
+                    self.owner_passes += 1
+                    return
+        self.checkpoint()
+
+    owner_passes = 0
+    blocked_opens = 0
+
+    class _Blocked:
+        """Engine blocked on a background condition: open the gate meanwhile and
+        restore the closed state afterwards (unlike _Waiting, which re-closes
+        only for a launching step and so suits waits inside the launch)."""
+        __slots__ = ('gate', 'opened')
+
+        def __init__(self, gate):
+            self.gate, self.opened = gate, False
+
+        def __enter__(self):
+            gate = self.gate
+            if gate.engine is not None and threading.get_ident() == gate.engine and not gate.event.is_set():
+                self.opened = True
+                gate.blocked_opens += 1
+                gate.event.set()
+
+        def __exit__(self, *exc):
+            gate = self.gate
+            if self.opened and gate.depth == 0:
+                gate.event.clear()
+            return False
+
     class _Waiting:
         def __init__(self, gate):
             self.gate = gate
@@ -113,9 +149,10 @@ class Gate:
 
 
 def configured():
-    """KVMEM_GIL_GATE_MS='max_wait[,schedule_hold]' in ms (hold default 20)."""
+    """KVMEM_GIL_GATE_MS='max_wait[,schedule_hold]' in ms (hold default 20).
+    '' or '0' turns the gate off (the default-on table is overridden with =0)."""
     value = os.getenv('KVMEM_GIL_GATE_MS', '')
-    if value == '':
+    if value in ('', '0'):
         return None
     parts = value.split(',')
     if (len(parts) > 2 or not all(p.isdigit() for p in parts) or not 1 <= int(parts[0]) <= 1000 or
@@ -155,6 +192,39 @@ _NULL = _Null()
 def engine_waiting():
     g = _gate if _gate is not None else gate()
     return g.engine_waiting() if g is not None else _NULL
+
+
+def drain_open_enabled():
+    """Opt-in KVMEM_GIL_GATE_DRAIN_OPEN=1 (with the gate on): an engine-thread
+    drain_requests(wait=True) opens the gate while it waits, and publication of
+    an owner in the step being launched is never parked. Without it the engine
+    can wait on a publication that is itself parked on the closed gate (up to
+    KVMEM_GIL_GATE_MS per logical span). Scheduling only: same work, same order."""
+    value = os.getenv('KVMEM_GIL_GATE_DRAIN_OPEN', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_GIL_GATE_DRAIN_OPEN must be 0 or 1')
+    return value == '1'
+
+
+def engine_blocked():
+    """Context for an engine-thread wait on a background condition (opt-in
+    KVMEM_GIL_GATE_DRAIN_OPEN): opens a closed gate meanwhile, then restores it."""
+    g = _gate if _gate is not None else gate()
+    if g is None or not drain_open_enabled():
+        return _NULL
+    return Gate._Blocked(g)
+
+
+def checkpoint_owners(request_ids):
+    """checkpoint() for the publication of these owners (opt-in
+    KVMEM_GIL_GATE_DRAIN_OPEN: owners of the launching step pass)."""
+    g = _gate if _gate is not None else gate()
+    if g is None:
+        return
+    if drain_open_enabled():
+        g.checkpoint_owners(request_ids)
+    else:
+        g.checkpoint()
 
 
 def chunk_checkpoint(request_id=None):

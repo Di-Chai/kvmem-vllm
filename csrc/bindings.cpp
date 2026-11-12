@@ -22,6 +22,7 @@
 #include "action_window_segments.hpp"
 #include "query_key_fps_cpu.hpp"
 #include "parallel_rows.hpp"
+#include "session_spill.hpp"
 #include <filesystem>
 #include <thread>
 #include <mutex>
@@ -2280,12 +2281,33 @@ PYBIND11_MODULE(_native, m) {
             }
         }
         size_t copied = 0;
+        // Opt-in KVMEM_NATIVE_GATHER_THREADS: disjoint record ranges in parallel
+        // (raw pointers only; the exports above outlive every copy).
+        const size_t threads = kvmem_parallel::gather_threads();
         {
             py::gil_scoped_release release;
-            for (size_t i = begin; i < end; ++i) {
-                if (const char *source = pointers[i - begin]) {
-                    std::memcpy(static_cast<char *>(target.ptr) + i * length, source, length);
-                    copied += length;
+            constexpr size_t kRows = 8;
+            const size_t count = end - begin;
+            if (threads > 1 && count > kRows) {
+                std::atomic<size_t> total{0};
+                kvmem_parallel::for_gather((count + kRows - 1) / kRows, [&](size_t task) {
+                    const size_t lo = begin + task * kRows, hi = std::min(end, lo + kRows);
+                    size_t local = 0;
+                    for (size_t i = lo; i < hi; ++i) {
+                        if (const char *source = pointers[i - begin]) {
+                            std::memcpy(static_cast<char *>(target.ptr) + i * length, source, length);
+                            local += length;
+                        }
+                    }
+                    total.fetch_add(local);
+                });
+                copied = total.load();
+            } else {
+                for (size_t i = begin; i < end; ++i) {
+                    if (const char *source = pointers[i - begin]) {
+                        std::memcpy(static_cast<char *>(target.ptr) + i * length, source, length);
+                        copied += length;
+                    }
                 }
             }
         }
@@ -2509,6 +2531,19 @@ PYBIND11_MODULE(_native, m) {
                 {static_cast<py::ssize_t>(o.bytes)}, {1});
         })
         .def_property_readonly("completion", [](const NativeIndexOwner &o) { return o.owner->completion(); });
+    m.def("flush_spill_ranges", [](const std::vector<int> &fds, const std::vector<uint64_t> &offsets,
+                                   size_t record_bytes) {
+        if (fds.size() != offsets.size()) throw std::invalid_argument("flush_spill_ranges needs one offset per fd");
+        py::gil_scoped_release no_gil;
+        vllm_kvmem::session_spill::flush_ranges(fds.data(), offsets.data(), fds.size(), record_bytes);
+    });
+    m.def("record_digest", [](py::buffer source) {
+        auto view = source.request();
+        if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
+            throw std::invalid_argument("record_digest requires contiguous bytes");
+        py::gil_scoped_release no_gil;
+        return vllm_kvmem::session_spill::xxh64(view.ptr, static_cast<size_t>(view.size));
+    });
     py::class_<PayloadArena::Handle>(m, "HistoricalPayloadHandle")
         .def(py::init<uint32_t, uint64_t>())
         .def_readonly("slot", &PayloadArena::Handle::slot)
@@ -2582,6 +2617,58 @@ PYBIND11_MODULE(_native, m) {
         })
         .def("retire", &PayloadArena::retire)
         .def("reclaimed", &PayloadArena::reclaimed)
+        // Opt-in session tiering (CPU TTL to SSD): drop / restore CPU bytes, same handle.
+        .def("spill", [](PayloadArena &arena, PayloadArena::Handle handle) {
+            py::gil_scoped_release no_gil;
+            return arena.spill(handle);
+        })
+        .def("restore", [](PayloadArena &arena, PayloadArena::Handle handle, py::buffer source) {
+            auto view = source.request();
+            if (view.ndim != 1 || view.itemsize != 1 || view.strides[0] != 1)
+                throw std::invalid_argument("Historical restore requires contiguous one-dimensional bytes");
+            const PayloadArena::Segment segment{view.ptr, static_cast<size_t>(view.size)};
+            py::gil_scoped_release no_gil;
+            return arena.restore(handle, &segment, 1);
+        })
+        .def("spilled", &PayloadArena::spilled)
+        // Batched session-tiering I/O (one GIL release per batch; see session_spill.hpp).
+        .def("write_records", [](const PayloadArena &arena, const std::vector<PayloadArena::Handle> &handles,
+                                 const std::vector<int> &fds, const std::vector<uint64_t> &offsets,
+                                 bool drop_cache) {
+            const size_t n = handles.size();
+            if (fds.size() != n || offsets.size() != n)
+                throw std::invalid_argument("write_records needs one fd and offset per record");
+            std::vector<uint8_t> written(n);
+            std::vector<uint64_t> digests(n);
+            {
+                py::gil_scoped_release no_gil;
+                vllm_kvmem::session_spill::write_records(arena, handles.data(), fds.data(), offsets.data(), n,
+                                                         written.data(), digests.data(), drop_cache);
+            }
+            std::vector<bool> ok(written.begin(), written.end());
+            return py::make_tuple(ok, digests);
+        }, py::arg("handles"), py::arg("fds"), py::arg("offsets"), py::arg("drop_cache") = false)
+        .def("read_records", [](PayloadArena &arena, const std::vector<PayloadArena::Handle> &handles,
+                                const std::vector<int> &fds, const std::vector<uint64_t> &offsets,
+                                const std::vector<uint64_t> &digests, bool drop_cache) {
+            const size_t n = handles.size();
+            if (fds.size() != n || offsets.size() != n || digests.size() != n)
+                throw std::invalid_argument("read_records needs one fd, offset and digest per record");
+            std::vector<uint8_t> restored(n);
+            {
+                py::gil_scoped_release no_gil;
+                vllm_kvmem::session_spill::read_records(arena, handles.data(), fds.data(), offsets.data(),
+                                                        digests.data(), n, restored.data(), drop_cache);
+            }
+            return std::vector<bool>(restored.begin(), restored.end());
+        }, py::arg("handles"), py::arg("fds"), py::arg("offsets"), py::arg("digests"),
+           py::arg("drop_cache") = false)
+        .def("spill_many", [](PayloadArena &arena, const std::vector<PayloadArena::Handle> &handles) {
+            std::vector<bool> out(handles.size());
+            py::gil_scoped_release no_gil;
+            for (size_t i = 0; i < handles.size(); ++i) out[i] = arena.spill(handles[i]);
+            return out;
+        })
         .def("advance", [](PayloadArena &arena) {
             py::gil_scoped_release no_gil;
             return arena.advance();
@@ -2596,6 +2683,7 @@ PYBIND11_MODULE(_native, m) {
             PAYLOAD_STAT(last_release_thread);
             PAYLOAD_STAT(external_owners); PAYLOAD_STAT(external_bytes); PAYLOAD_STAT(external_released_bytes);
             PAYLOAD_STAT(pool_hits); PAYLOAD_STAT(pool_misses); PAYLOAD_STAT(pool_reserved_bytes);
+            PAYLOAD_STAT(spilled_slots); PAYLOAD_STAT(spilled_bytes);
 #undef PAYLOAD_STAT
             return result;
         });

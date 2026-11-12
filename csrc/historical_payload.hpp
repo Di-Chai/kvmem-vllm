@@ -38,6 +38,7 @@ public:
         uint64_t last_release_thread = 0;
         uint64_t external_owners = 0, external_bytes = 0, external_released_bytes = 0;
         uint64_t pool_hits = 0, pool_misses = 0, pool_reserved_bytes = 0;
+        uint64_t spilled_slots = 0, spilled_bytes = 0;
     };
     // C-only storage deleters (e.g. native index arrays). The last
     // foreground owner enqueues; only the arena worker invokes the deleter.
@@ -95,6 +96,13 @@ public:
     size_t record_bytes() const;
     RetireResult retire(Handle);
     bool reclaimed(Handle) const;
+    // Opt-in session tiering (CPU TTL to SSD). The caller keeps an external
+    // copy of the bytes. spill: a Live record with no readers drops its CPU
+    // bytes but keeps its handle (false when busy, stale or closing).
+    // restore: the identical bytes come back under the same handle.
+    bool spill(Handle);
+    bool restore(Handle, const Segment *, size_t);
+    bool spilled(Handle) const;
     Stats stats() const;
     // Sole native reclaimer (or deterministic test driver); no Python callback.
     size_t advance();

@@ -74,7 +74,7 @@ class VersionedRecords(dict):
     Behaves exactly like a dict; ``version`` changes on every insert/remove so
     per-refresh indexes (sorted records, slots) can be reused while unchanged.
     """
-    __slots__ = ('version', 'log')
+    __slots__ = ('version', 'log', 'begin_log', 'begin_index')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -82,15 +82,30 @@ class VersionedRecords(dict):
         # Keys set since the index consumer last reset it; None after any
         # other kind of mutation (the consumer then rebuilds from scratch).
         self.log = None
+        # The same for a second, independent consumer: the checkpoint capture's
+        # {history_begin: record} index (layerwise_checkpoints.records_by_begin,
+        # KVMEM_CHECKPOINT_CAPTURE_INDEX), cached here as (version, dict).
+        self.begin_log = None
+        self.begin_index = None
 
     def _changed(self):
         self.version += 1
         self.log = None
+        # Drop the cached begin index with its record references: a removed
+        # record must die now (its native index owner gates GC index release).
+        self.begin_log = self.begin_index = None
 
     def __setitem__(self, key, value):
         self.version += 1
         if self.log is not None:
             self.log.append(key)
+        if self.begin_log is not None:
+            # Only new keys extend the begin index; replacing a key's record
+            # would leave the old record's begin behind, so it forces a rebuild.
+            if dict.__contains__(self, key):
+                self.begin_log = self.begin_index = None
+            else:
+                self.begin_log.append(key)
         super().__setitem__(key, value)
 
     def __delitem__(self, key):

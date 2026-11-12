@@ -373,7 +373,13 @@ def make_probe_runner(base):
                 public = fork.public_batch(public)
             sessions = getattr(self, '_kvmem_sessions', None)
             if sessions is not None and not projecting:
-                sessions.before_attention(public)
+                # Only the public forward's own prepare_attn may defer P captures
+                # (its finish hook follows the launch); private forwards may not.
+                if getattr(self, '_kvmem_public_prepare', False):
+                    self._kvmem_public_prepare = False
+                    sessions.before_attention(public, deferrable=True)
+                else:
+                    sessions.before_attention(public)
             if getattr(self, '_kvmem_bounded_target', False) and not projecting:
                 from .native_state import canonicalize_before_non_speculative_batch, initialize_cold_single_token_state
                 initialize_cold_single_token_state(self, public)
@@ -493,8 +499,10 @@ def make_probe_runner(base):
                 frozenset(scheduler_output.num_scheduled_tokens))
             try:
                 try:
+                    self._kvmem_public_prepare = not kwargs.get('dummy_run') and not kwargs.get('is_profile')
                     result = super().execute_model(scheduler_output, **kwargs)
                 finally:
+                    self._kvmem_public_prepare = False
                     self._kvmem_public_action_forward = False
                     self._kvmem_dispatch_requests = None
                     self._kvmem_dispatch_relaxed = False
@@ -517,6 +525,11 @@ def make_probe_runner(base):
                     # packet here cannot compete with its first kernel launches.
                     runtime.resume_prefill_scatter(after_target=True,
                         batch=state.input_batch if fresh else None)
+                sessions = getattr(self, '_kvmem_sessions', None)
+                if sessions is not None and getattr(sessions, 'deferred_captures', None):
+                    # Opt-in KVMEM_DEFERRED_P_CAPTURE: the target forward is enqueued;
+                    # the P checkpoints' CPU snapshots now overlap it.
+                    sessions.finish_deferred_captures()
                 return result
             except BaseException as error:
                 if cobatch is not None:

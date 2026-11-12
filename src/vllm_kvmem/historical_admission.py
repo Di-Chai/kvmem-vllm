@@ -5,6 +5,21 @@ whose readers or cleanup still own capacity. Pending GC bytes are never credit.
 Only a fenced worker settlement can replace a running turn's reservation.
 """
 from dataclasses import dataclass
+import os
+
+
+def history_lru_eviction_enabled():
+    """KVMEM_SESSION_HISTORY_LRU_EVICTION=1: a CPU history deficit that idle
+    sessions' unprotected records cannot cover evicts the least recently used
+    idle session (fenced, one at a time) instead of deferring every turn
+    forever. Without it a host budget filled by parked sessions whose whole
+    history is protected (short histories: the per-layer checkpoint windows
+    cover almost all of it) blocks every returning turn. The evicted session's
+    next turn is a cold prefill."""
+    value = os.getenv('KVMEM_SESSION_HISTORY_LRU_EVICTION', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_SESSION_HISTORY_LRU_EVICTION must be 0 or 1')
+    return value == '1'
 
 
 def _extent(*values):
@@ -185,6 +200,7 @@ class HistoricalHistoryAdmission:
         self.requests, self.waiting = {}, set()
         self.observed_bytes = 0
         self._pressure_requests, self._sent_pressure = {}, {}
+        self.history_evictions = 0
 
     def _proposal(self, request):
         from .coordination import HistoryAdmission
@@ -258,8 +274,29 @@ class HistoricalHistoryAdmission:
                 previous = demands.get(victim, (state.generation, 0, None))
                 demands[victim] = (state.generation, previous[1], state.allocated_records-reclaim)
                 deficit -= reclaim
+        if deficit and history_lru_eviction_enabled():
+            self._evict_idle(key)
         self._pressure_requests[request.request_id] = demands
         self._publish_pressure()
+
+    def _evict_idle(self, requester):
+        """Opt-in KVMEM_SESSION_HISTORY_LRU_EVICTION: evict the least recently
+        used idle session holding CPU history (never the requester's own). The
+        ledger's insertion order is its idle LRU order; one fenced eviction at a
+        time, since the waiting loop retries every step and the first eviction's
+        records return only with its worker ACK."""
+        entries = self.sessions.entries
+        if any(entry.phase == 'evicting' for entry in entries.values()):
+            return
+        for namespace, entry in list(entries.items()):
+            key = ('session', *namespace)
+            state = self.ledger.snapshots.get(key)
+            if (key == requester or entry.phase != 'idle' or key in self.ledger.reservations or
+                    state is None or not state.allocated_records):
+                continue
+            self.sessions._evict(entry)
+            self.history_evictions += 1
+            return
 
     def _publish_pressure(self):
         if self.sessions is None:
@@ -348,4 +385,4 @@ class HistoricalHistoryAdmission:
             'reserved_bytes':self.ledger.reserved_records*self.record_bytes,
             'available_bytes':counters['available_records']*self.record_bytes,
             'last_observed_archive_bytes':self.observed_bytes, 'waiting':len(self.waiting),
-            'lease_views':views}
+            'history_evictions':self.history_evictions, 'lease_views':views}

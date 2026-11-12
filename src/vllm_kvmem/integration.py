@@ -13,6 +13,9 @@ def register_plugin() -> None:
         from .qsa_config_compat import enable
         enable()
     if os.getenv('KVMEM_SERVING') == '1':
+        import sys
+        from .defaults import summary
+        print(summary(), file=sys.stderr, flush=True)
         from .compat import enable_label_logprobs
         enable_label_logprobs()
         if os.getenv('KVMEM_LOGICAL_KV_CAPACITY') == '1':

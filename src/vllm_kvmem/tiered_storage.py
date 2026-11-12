@@ -44,9 +44,13 @@ class _Segment:
 class _SegmentStore:
     """Extent capacity grows by segments; payload files grow only on write."""
 
-    def __init__(self, directory, record_bytes, max_bytes, segment_bytes):
+    def __init__(self, directory, record_bytes, max_bytes, segment_bytes, *, drop_cache=False):
         self.directory = Path(directory)
         self.record_bytes = record_bytes
+        # drop_cache: written and read records leave the page cache (flush()
+        # writes them back first), so spilled bytes really leave RAM instead of
+        # sitting dirty for up to vm.dirty_expire_centisecs.
+        self.drop_cache = drop_cache and hasattr(os, 'posix_fadvise')
         self.capacity = max_bytes // record_bytes
         self.segment_records = max(1, segment_bytes // record_bytes)
         self.segments = {}
@@ -78,6 +82,10 @@ class _SegmentStore:
                 except BaseException:
                     os.close(fd)
                     raise
+                if self.drop_cache:
+                    # Records are read whole and once: readahead would only
+                    # pull neighbouring records back into the page cache.
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
                 seg = _Segment(fd, path, count, list(reversed(range(count))), {})
                 self.segments[sid] = seg
                 self._reserved_records += count
@@ -113,6 +121,10 @@ class _SegmentStore:
                     seg.file_bytes = max(seg.file_bytes, slot*self.record_bytes + done)
                     self.peak_file_bytes = max(self.peak_file_bytes,
                                               sum(s.file_bytes for s in self.segments.values()))
+            if self.drop_cache:
+                # Starts write-back of this record now (dirty pages are only
+                # dropped once clean; flush() finishes the job).
+                os.posix_fadvise(seg.fd, slot*self.record_bytes, self.record_bytes, os.POSIX_FADV_DONTNEED)
             return location
         except BaseException:
             if location is not None:
@@ -152,9 +164,107 @@ class _SegmentStore:
                     self.read_bytes += len(data)
             if digest.digest() != location.digest:
                 raise OSError('Tiered SSD record checksum mismatch')
-
+            if self.drop_cache:
+                os.posix_fadvise(fd, location.slot*self.record_bytes, self.record_bytes, os.POSIX_FADV_DONTNEED)
         finally:
             data = destination = None
+
+    # Batched native I/O (session tiering): the store hands out extents and
+    # file descriptors; vllm_kvmem._native moves the bytes without the GIL.
+    def reserve(self, count):
+        """Allocate up to ``count`` extents; fewer when the byte quota is
+        exhausted. Returns [(segment, slot, generation, fd, offset)]."""
+        out = []
+        for _ in range(count):
+            try:
+                sid, seg, slot, generation = self._allocate()
+            except OSError as error:
+                if 'quota exhausted' not in str(error):
+                    raise
+                break
+            out.append((sid, slot, generation, seg.fd, slot*self.record_bytes))
+        return out
+
+    def commit(self, extents, digests):
+        """Natively written extents become locations (accounting included)."""
+        out = []
+        with self._lock:
+            for (sid, slot, generation, fd, offset), digest in zip(extents, digests):
+                seg = self.segments[sid]
+                seg.file_bytes = max(seg.file_bytes, offset + self.record_bytes)
+                self.syscalls += 1
+                self.write_bytes += self.record_bytes
+                out.append(_DiskRecord(sid, slot, generation, digest))
+            self.peak_file_bytes = max(self.peak_file_bytes, sum(s.file_bytes for s in self.segments.values()))
+        return out
+
+    def abandon(self, extents):
+        for sid, slot, generation, _, _ in extents:
+            self.release(_DiskRecord(sid, slot, generation, None))
+
+    def open_targets(self, locations):
+        """Duplicated fds (one per segment) and offsets for reading
+        ``locations``, so a concurrent release cannot close a file under a
+        native read. Extents released meanwhile are skipped. Returns
+        (dups, valid indices, fds, offsets); close dups with close_targets()."""
+        dups, valid, fds, offsets = {}, [], [], []
+        try:
+            with self._lock:
+                if self._close_error is not None:
+                    raise RuntimeError('Tiered SSD close failed') from self._close_error
+                for index, location in enumerate(locations):
+                    seg = self.segments.get(location.segment)
+                    if seg is None or seg.closing or seg.records.get(location.slot) != location.generation:
+                        continue
+                    if location.segment not in dups:
+                        dups[location.segment] = os.dup(seg.fd)
+                    valid.append(index)
+                    fds.append(dups[location.segment])
+                    offsets.append(location.slot*self.record_bytes)
+                self.syscalls += len(valid)
+                self.read_bytes += len(valid)*self.record_bytes
+        except BaseException:
+            self.close_targets(list(dups.values()))
+            raise
+        return list(dups.values()), valid, fds, offsets
+
+    @staticmethod
+    def close_targets(dups):
+        for fd in dups:
+            os.close(fd)
+
+    def flush(self, locations):
+        """Wait until ``locations`` are on the device, then drop their pages
+        from the page cache (no-op unless drop_cache)."""
+        if not self.drop_cache or not locations:
+            return
+        from . import _native
+        native = getattr(_native, 'flush_spill_ranges', None)
+        if native is not None:
+            fds, offsets = [], []
+            with self._lock:
+                for location in locations:
+                    seg = self.segments.get(location.segment)
+                    if seg is not None and not seg.closing and seg.records.get(location.slot) == location.generation:
+                        fds.append(seg.fd)
+                        offsets.append(location.slot*self.record_bytes)
+            native(fds, offsets, self.record_bytes)
+            return
+        by_segment = {}
+        with self._lock:
+            for location in locations:
+                seg = self.segments.get(location.segment)
+                if seg is not None and not seg.closing and seg.records.get(location.slot) == location.generation:
+                    by_segment.setdefault(location.segment, (seg, []))[1].append(location.slot)
+        for seg, slots in by_segment.values():
+            try:
+                os.fdatasync(seg.fd)
+                for slot in slots:
+                    os.posix_fadvise(seg.fd, slot*self.record_bytes, self.record_bytes, os.POSIX_FADV_DONTNEED)
+            except OSError:
+                if seg.closing:                 # released concurrently: nothing left to drop
+                    continue
+                raise
 
     def release(self, location):
         with self._lock:
