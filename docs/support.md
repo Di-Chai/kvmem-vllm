@@ -13,7 +13,7 @@ has been tested.
 | vLLM 0.30.0 | Actual-model serving, MTP/DFlash experiments and the recorded long-history throughput run | Individual profiles and experiments have separate evidence |
 | vLLM 0.32.0 | Actual-model eager MTP and native SystemOne checks | These checks do not establish compiled-graph parity for every older benchmark |
 | Other vLLM releases / upstream main | Interface and source checks where supported | Source CI is not GPU model qualification; unsupported structures fail explicitly |
-| GPU setup | One NVIDIA RTX PRO 6000 Blackwell Server Edition, CUDA 13.0 environment | Multi-GPU, tensor-parallel and other GPU families are not established by these runs |
+| GPU setup | One NVIDIA RTX PRO 6000 Blackwell Server Edition, or two NVIDIA A800-SXM4-80GB GPUs for Qwen3.8-27B GPTQ native MTP with TP=2 | The A800 configuration uses pure head-sharded TP and global selection. See [tensor-parallel serving](serving.md#tensor-parallel-qwen-mtp). |
 | Model family | Tested Qwen hybrid GDN 27B checkpoints | A safetensors loader accepting a configuration does not qualify another architecture |
 | Weights | Tested ModelOpt mixed NVFP4/FP8 safetensors and historical GGUF Q8_0 | The GGUF path has additional pinned-plugin and kernel requirements |
 | Attention KV | Native FP8 E4M3 layouts; immutable raw K/V history and model-state restoration | Other KV codecs, scales or recurrent layouts need separate adapters and validation |

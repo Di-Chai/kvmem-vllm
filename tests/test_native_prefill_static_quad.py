@@ -13,6 +13,20 @@ from test_native_prefill_static_aligned import dispatch_fixture
 ROOT = Path(__file__).resolve().parents[1] / 'src/vllm_kvmem'
 
 
+@pytest.mark.parametrize('aligned', [False, True])
+def test_default_quad_only_applies_to_static_aligned_profiles(monkeypatch, tmp_path, aligned):
+    from vllm_kvmem import defaults, native_attention as attn
+    monkeypatch.setenv('KVMEM_LEGACY_DEFAULTS', '0')
+    monkeypatch.delenv('KVMEM_NATIVE_PREFILL_STATIC_QUAD', raising=False)
+    monkeypatch.setenv('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED', '1')
+    monkeypatch.setattr(attn, 'statistic_layer_names', lambda *_: ([], []))
+    monkeypatch.setattr(attn.torch.cuda, 'get_device_capability', lambda: (8, 0))
+    assert 'KVMEM_NATIVE_PREFILL_STATIC_QUAD' not in defaults.DEFAULTS
+    bank = attn.NativeAttentionStats(NS(model=NS(named_modules=lambda: ())),
+        NS(action_native_scores='reuse', action_native_prefill_static_aligned=aligned), tmp_path)
+    assert bank.static_quad_enabled is aligned
+
+
 def test_option_is_default_off_strict_and_requires_static_aligned():
     assert not RuntimeOptions.from_vllm(config({})).action_native_prefill_static_quad
     payload = dict(action_native_prefill_static_aligned=True, action_native_scores='reuse',

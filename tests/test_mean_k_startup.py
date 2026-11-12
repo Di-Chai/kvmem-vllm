@@ -32,14 +32,13 @@ def startup_runner(monkeypatch, tmp_path, *, serving, backend, loader):
     monkeypatch.setattr(mtp, 'install_mtp_runtime', lambda _: None)
     monkeypatch.setattr(scopes, 'install_profile_scopes', lambda _: calls.append('model-ready'))
     monkeypatch.setattr(scoring, 'kernel', lambda: loader(calls))
-    options = SimpleNamespace(mean_k_backend=backend, step_latency_interval=0,
-        cpu_history_coordination=False, repository_gc=False, nvme_preallocate=False,
-        nvme_max_bytes=0, archive_io_max_bytes=0, session_capacity=0)
+    options = RuntimeOptions(mean_k_backend=backend, step_latency_interval=0)
     monkeypatch.setattr(RuntimeOptions, 'from_vllm', classmethod(lambda cls, _: options))
     runner = runner_module.make_probe_runner(Native)()
-    runner.model = object()
+    runner.model = SimpleNamespace(named_modules=lambda: ())
     runner.model_config = SimpleNamespace(enforce_eager=True)
-    runner.vllm_config = SimpleNamespace(parallel_config=SimpleNamespace(tensor_parallel_size=1))
+    runner.vllm_config = SimpleNamespace(model_config=runner.model_config,
+        parallel_config=SimpleNamespace(tensor_parallel_size=1))
     runner.speculative_config = None
     return runner, calls
 

@@ -118,3 +118,11 @@ def test_capture_owner_plans_with_decode_row(monkeypatch, tmp_path):
             capture_owner_plans(r, inputs, mixed_batch)
         monkeypatch.setenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '1')
         assert set(capture_owner_plans(r, inputs, mixed_batch)) == {'r', 's'}
+
+
+def test_default_decode_coalescing_requires_a_physical_multi_owner_profile(monkeypatch):
+    from vllm_kvmem.multiowner_prefill import coalesce_with_decode
+    monkeypatch.setenv('KVMEM_LEGACY_DEFAULTS', '0')
+    monkeypatch.delenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', raising=False)
+    assert not coalesce_with_decode(available=False)
+    assert coalesce_with_decode(available=True)

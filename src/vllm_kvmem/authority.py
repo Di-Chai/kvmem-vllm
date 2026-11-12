@@ -252,6 +252,9 @@ class RequestAuthority:
             raise ValueError("Archive record format does not match model geometry")
         self.resident_records = resident_records
         self.records: dict[tuple[int, int], Record] = VersionedRecords()
+        from .tensor_parallel import active
+        if active():
+            self.memory.tp_records = self.records
         # These contain only live, not-yet-published generations, so ordinary
         # decode bookkeeping does not grow with archived history. GC can only
         # remove archived records; rewind explicitly removes its live suffix.
@@ -1028,6 +1031,7 @@ class RequestAuthority:
         if self.mean_k_backend == 'qw3_cuda':
             from .cuda_scoring import mean_key_scores
         from .graph_integration import query_snapshot, score_and_select
+        from .tensor_parallel import mean_head_scores, verify_query_domain
         with self.index_snapshot() as (records, means), (
                 nullcontext(None) if observe_only else query_snapshot(self)) as graph_snapshot:
             # MTP records travel with target KV but never alter MeanK scoring.
@@ -1043,6 +1047,7 @@ class RequestAuthority:
                     tuple(slot for slot, _ in mandatory), max_tokens) as frame:
                 score_mask = frame.score_mask
                 transport_mask = frame.transport_mask
+                verify_query_domain(self.memory.request_id, records, score_mask, queries.shape[1])
                 eligible = torch.tensor(score_mask, dtype=torch.bool, device=queries.device)
                 mean_scores = None
                 if self.query_score_mode == 'overlap_16_8':
@@ -1051,20 +1056,22 @@ class RequestAuthority:
                         raise ValueError('16/8 window mode is qualified for the public Query only')
                     values, stats = score_authority_windows(self, records, queries, means, score_mask)
                     self.query_window_stats = stats
-                    scores = values.cpu().tolist()
+                    scores = mean_head_scores(values).cpu().tolist()
                 elif self.query_score_mode == 'key_fps_4':
                     from .query_key_fps import score_authority_fps
                     if guided_pressure:
                         raise ValueError('4-Key FPS mode is qualified for the public Query only')
                     values, stats = score_authority_fps(self, records, queries, means, score_mask)
                     self.query_key_fps_stats = stats
-                    scores = values.cpu().tolist()
+                    scores = mean_head_scores(values).cpu().tolist()
                     if getattr(getattr(self, 'graph_options', None), 'query_mean_quota_fraction', 0):
                         mean_started = time.perf_counter()
-                        mean_scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+                        mean_scores = mean_head_scores(mean_key_scores(
+                            queries, means.to(queries.device), eligible)).cpu().tolist()
                         stats['mean_quota_scoring_seconds'] = time.perf_counter()-mean_started
                 else:
-                    scores = mean_key_scores(queries, means.to(queries.device), eligible).cpu().tolist()
+                    scores = mean_head_scores(mean_key_scores(
+                        queries, means.to(queries.device), eligible)).cpu().tolist()
             # index_snapshot retains the same generation-qualified records
             # through the remaining synchronous picker/assembly preparation.
             self.query_score_domain = dict(version=SCORE_DOMAIN_VERSION,

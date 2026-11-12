@@ -322,6 +322,21 @@ def nvfp4_profile(tmp_path, quant=None):
     return cfg
 
 
+def test_tensor_parallel_mtp_launch(tmp_path, capsys):
+    from vllm_kvmem.serve import main
+    cfg = nvfp4_profile(tmp_path)
+    cfg.update(draft_method='mtp', draft_tokens=4)
+    path = tmp_path/'tp.json'
+    path.write_text(json.dumps(cfg))
+    main(['--config', str(path), '--run-dir', str(tmp_path/'run'), '--dry-run', '-tp', '2'])
+    plan = json.loads(capsys.readouterr().out)
+    assert plan['profile']['tensor_parallel_size'] == 2
+    assert plan['environment']['KVMEM_GIL_GATE_DRAIN_OPEN'] == '0'
+    argv = plan['vllm_argv']
+    assert argv[argv.index('--tensor-parallel-size')+1] == '2'
+    assert json.loads(argv[argv.index('--speculative-config')+1])['num_speculative_tokens'] == 4
+
+
 @pytest.mark.parametrize('quant', [
     {'quant_method': 'modelopt', 'quant_algo': 'NVFP4'},
     {'quant_method': 'modelopt', 'quantization': {'quant_algo': 'NVFP4'}},

@@ -337,6 +337,8 @@ _BATCHED_SELECT = None
 
 
 class NativeAttentionStats:
+    fa2_only = False
+
     def __init__(self, runner, options, output):
         from . import _native
         self.options = options
@@ -354,8 +356,10 @@ class NativeAttentionStats:
             raise ValueError('Static aligned FA2 cannot combine runtime aligned pieces or CTA gate')
         # Same host qualification and outputs; only the sampled-row capture
         # inside the static FA2 kernel uses the quad reduce-scatter variant.
-        flag = os.getenv('KVMEM_NATIVE_PREFILL_STATIC_QUAD',
-                         '1' if getattr(options, 'action_native_prefill_static_quad', False) else '0')
+        from .defaults import legacy
+        default_quad = getattr(options, 'action_native_prefill_static_quad', False) or (
+            self.static_prefill_enabled and not legacy())
+        flag = os.getenv('KVMEM_NATIVE_PREFILL_STATIC_QUAD', '1' if default_quad else '0')
         if flag not in ('0', '1'):
             raise ValueError('KVMEM_NATIVE_PREFILL_STATIC_QUAD must be 0 or 1')
         self.static_quad_enabled = flag == '1'
@@ -386,15 +390,18 @@ class NativeAttentionStats:
         layers = [modules[name] for name in producer_names]
         self.names = [layer.attn.layer_name for layer in layers]
         self.decode_names = {modules[name].attn.layer_name for name in decode_names}
-        # KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED=1 reproduces exactly the
-        # non-sm12x behaviour on any GPU, to qualify the portable fallbacks.
         # `unavailable`: this platform (GPU architecture or installed attention
         # sources) cannot run the overlay at all. Portable consumers may then
         # use the reference scorer instead of failing (action_attention).
         self.unavailable = False
-        if (torch.cuda.get_device_capability()[0] != 12 or
-                os.getenv('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED') == '1'):
+        capability = torch.cuda.get_device_capability()
+        self.fa2_only = capability == (8, 0)
+        if os.getenv('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED') == '1':
+            # Frozen campaigns use this switch to reproduce the original fallback receipt.
             self.disabled = 'unsupported_architecture_requires_sm12x'
+        elif not self.fa2_only and capability[0] != 12:
+            self.disabled = 'unsupported_architecture_requires_sm80_or_sm12x'
+        if self.disabled:
             self.unavailable = True
             return
         try:
@@ -463,7 +470,8 @@ class NativeAttentionStats:
                          for name in self.names}
         self.ranges.zero_()
         self.disarm()
-        _install_xqa_dispatch()
+        if not self.fa2_only:
+            _install_xqa_dispatch()
         for layer in layers:
             self._wrap(layer.attn.impl, layer.attn.layer_name)
 
@@ -684,6 +692,77 @@ class NativeAttentionStats:
             return 'sliding_window'
         return None
 
+    def _fa2_stats_module(self, wrapper, name, layer, phase, q_dtype, dim, out_dtype, attn_metadata, row_offset):
+        # Both source-pinned wrappers call FA2 paged_run with the same 16 base
+        # arguments and effective QK scale. Decode uses a noncausal mask for
+        # one query at the end of its KV prefix and a causal mask for MTP.
+        unsupported = f'unsupported_{phase}_backend_or_mask'
+        if (getattr(wrapper, '_backend', None) != 'fa2' or
+                getattr(wrapper, '_jit_module', None) is not None or
+                q_dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn)):
+            return None, unsupported
+        if phase == 'decode':
+            if (not getattr(wrapper, 'use_tensor_cores', False) or
+                    wrapper._q_len_per_req < 1 or wrapper._window_right != 0):
+                return None, unsupported
+        elif wrapper._custom_mask_buf is not None or not wrapper._causal:
+            return None, unsupported
+        if (wrapper._pos_encoding_mode != 'NONE' or wrapper._window_left != -1 or
+                wrapper._logits_soft_cap not in (0, None) or dim > 256 or
+                (self.fa2_only and getattr(wrapper, '_cached_kv_data_type', None) != torch.float8_e4m3fn)):
+            return None, unsupported
+        # Unquantized Q must have the same scale domain as the sampled scorer.
+        if q_dtype in (torch.bfloat16, torch.float16) and getattr(layer, '_q_scale_float', 1.0) != 1.0:
+            return None, 'q_scale_domain_mismatch'
+        geometry = (q_dtype, torch.float8_e4m3fn,
+                    out_dtype, wrapper._paged_kv_indptr_buf.dtype, dim)
+        aligned_enabled = getattr(self, 'aligned_prefill_enabled', False)
+        module_key = geometry + ('aligned16',) if aligned_enabled else geometry
+        cta_gate = getattr(self, 'cta_gate_enabled', False)
+        if cta_gate:
+            module_key += ('cta_gate',)
+        built = self.prefill_modules.get(module_key)
+        if built is None:
+            if torch.cuda.is_current_stream_capturing():
+                raise UnsupportedNativeStats('prefill_specialization_not_warmed')
+            build_options = {}
+            if aligned_enabled:
+                build_options['aligned_pieces'] = True
+            if cta_gate:
+                build_options['cta_gate'] = True
+            built = prefill_module(self.directory, *geometry, **build_options)
+            self.prefill_modules[module_key] = built
+
+        def paged_run(*run_args):
+            # Original FA2 ABI: 16 common parameters, then optional
+            # mask/ALiBi fields, softcap and the effective QK scale.
+            tensors = (self.rows, self.requests, self.pieces, self.lses[name])
+            if aligned_enabled:
+                tensors += (self.aligned_pieces,)
+                self.aligned_prefill_counts['prefill_dispatch_calls'] += 1
+            if cta_gate:
+                self.cta_gate_counts['prefill_dispatch_calls'] += 1
+            selected_module = built
+            if phase == 'prefill' and getattr(self, 'static_prefill_enabled', False):
+                reason = self._static_prefill_qualification(wrapper, run_args, attn_metadata)
+                if reason is None:
+                    quad = getattr(self, 'static_quad_enabled', False)
+                    static_key = geometry + ('static_aligned16',) + (('quad_store',) if quad else ())
+                    selected_module = self.prefill_modules.get(static_key)
+                    if selected_module is None:
+                        try:
+                            selected_module = prefill_module(self.directory, *geometry,
+                                static_aligned=True, **({'quad_store': True} if quad else {}))
+                            self.prefill_modules[static_key] = selected_module
+                        except (UnsupportedNativeStats, RuntimeError) as error:
+                            reason = 'build:' + str(error).splitlines()[0][:160]
+                            selected_module = built
+                self.static_prefill_counts[
+                    'static_dispatch_calls' if reason is None else 'generic_dispatch:' + reason] += 1
+            selected_module.paged_run(*run_args[:16], *tensors,
+                self.context, self.width, row_offset, run_args[23])
+        return SimpleNamespace(paged_run=paged_run), None
+
     def _wrap(self, impl, name):
         original = impl.forward
 
@@ -691,86 +770,46 @@ class NativeAttentionStats:
         def forward(layer, query, key, value, kv_cache, attn_metadata, output, *args, **kwargs):
             if attn_metadata is None:
                 return original(layer, query, key, value, kv_cache, attn_metadata, output, *args, **kwargs)
-            wrapper = getattr(getattr(attn_metadata, 'prefill', None), 'wrapper', None)
-            saved = None
-            if wrapper is not None:
-                # FA2 applies q_scale even to unquantized Q; the legacy scorer
-                # only applies it for FP8 Q. That is a domain change, rather
-                # than tensor-core rounding, and must use the legacy fallback.
-                if (attn_metadata.q_data_type_prefill in (torch.bfloat16,torch.float16) and
-                        getattr(layer,'_q_scale_float',1.0) != 1.0):
-                    self.reasons[name, 'prefill'] = 'q_scale_domain_mismatch'
-                elif (wrapper._backend != 'fa2' or wrapper._custom_mask_buf is not None or
-                        wrapper._pos_encoding_mode != 'NONE' or not wrapper._causal or
-                        wrapper._window_left != -1 or wrapper._logits_soft_cap not in (0, None) or
-                        query.shape[-1] > 256):
-                    self.reasons[name, 'prefill'] = 'unsupported_prefill_backend_or_mask'
-                else:
-                    try:
-                        geometry = (attn_metadata.q_data_type_prefill, torch.float8_e4m3fn,
-                                    output.dtype, wrapper._paged_kv_indptr_buf.dtype, query.shape[-1])
-                        aligned_enabled = getattr(self, 'aligned_prefill_enabled', False)
-                        module_key = geometry + ('aligned16',) if aligned_enabled else geometry
-                        cta_gate = getattr(self, 'cta_gate_enabled', False)
-                        if cta_gate:
-                            module_key += ('cta_gate',)
-                        built = self.prefill_modules.get(module_key)
-                        if built is None:
-                            if torch.cuda.is_current_stream_capturing():
-                                raise UnsupportedNativeStats('prefill_specialization_not_warmed')
-                            build_options = {}
-                            if aligned_enabled:
-                                build_options['aligned_pieces'] = True
-                            if cta_gate:
-                                build_options['cta_gate'] = True
-                            built = prefill_module(self.directory, *geometry, **build_options)
-                            self.prefill_modules[module_key] = built
-                        saved = wrapper._cached_module
+            # vLLM puts the native decode rows first; MTP verification may
+            # instead be scheduled in the FA2 prefill suffix. The logical
+            # prompt/decode label does not establish which wrapper produced a row.
+            prefix = getattr(attn_metadata, 'num_decode_tokens', 0)
+            prefill = getattr(attn_metadata, 'prefill', None)
+            parts = []
+            if self.fa2_only and prefix:
+                parts.append(('decode', getattr(attn_metadata, 'decode', None), 0))
+            if prefill is not None:
+                parts.append(('prefill', prefill, prefix))
 
-                        def paged_run(*run_args):
-                            # Original FA2 ABI: 16 common parameters, then optional
-                            # mask/ALiBi fields, softcap and the effective QK scale.
-                            tensors = (self.rows, self.requests, self.pieces, self.lses[name])
-                            if aligned_enabled:
-                                tensors += (self.aligned_pieces,)
-                                self.aligned_prefill_counts['prefill_dispatch_calls'] += 1
-                            if cta_gate:
-                                self.cta_gate_counts['prefill_dispatch_calls'] += 1
-                            selected_module = built
-                            if getattr(self, 'static_prefill_enabled', False):
-                                reason = self._static_prefill_qualification(wrapper, run_args, attn_metadata)
-                                if reason is None:
-                                    quad = getattr(self, 'static_quad_enabled', False)
-                                    static_key = geometry + ('static_aligned16',) + (('quad_store',) if quad else ())
-                                    selected_module = self.prefill_modules.get(static_key)
-                                    if selected_module is None:
-                                        try:
-                                            selected_module = prefill_module(self.directory, *geometry,
-                                                static_aligned=True, **({'quad_store': True} if quad else {}))
-                                            self.prefill_modules[static_key] = selected_module
-                                        except (UnsupportedNativeStats, RuntimeError) as error:
-                                            reason = 'build:' + str(error).splitlines()[0][:160]
-                                            selected_module = built
-                                self.static_prefill_counts[
-                                    'static_dispatch_calls' if reason is None else 'generic_dispatch:' + reason] += 1
-                            selected_module.paged_run(*run_args[:16], *tensors,
-                                self.context, self.width, attn_metadata.num_decode_tokens, run_args[23])
-                        wrapper._cached_module = SimpleNamespace(paged_run=paged_run)
-                        self.reasons[name, 'prefill'] = None
-                    except (UnsupportedNativeStats, RuntimeError) as error:
-                        self.reasons[name, 'prefill'] = 'prefill_build:' + str(error).splitlines()[0][:160]
-            # The bank normalizes all sampled owners together. Mixed batches
-            # therefore need producers on every instrumented layer, including
-            # decode rows; missing unused rows would invalidate the whole bank.
-            # ActionRuntime still consumes only the original decode layer set.
-            token = _active.set((self, name))
+            saved = []
+            bank_reason = None if parts else 'backend_not_observed'
+            token = _active.set(None if self.fa2_only else (self, name))
             try:
-                result = original(layer, query, key, value, kv_cache, attn_metadata, output, *args, **kwargs)
+                for phase, metadata, offset in parts:
+                    wrapper = getattr(metadata, 'wrapper', None)
+                    q_dtype = getattr(attn_metadata, 'q_data_type_' + phase, None)
+                    try:
+                        module, reason = self._fa2_stats_module(wrapper, name, layer, phase, q_dtype,
+                            query.shape[-1], output.dtype, attn_metadata, offset)
+                    except (UnsupportedNativeStats, RuntimeError) as error:
+                        module, reason = None, 'prefill_build:' + str(error).splitlines()[0][:160]
+                    bank_reason = bank_reason or reason
+                    self.reasons[name, phase] = reason
+                    if module is not None:
+                        saved.append((wrapper, wrapper._cached_module))
+                        wrapper._cached_module = module
+                if self.fa2_only:
+                    # The bank reduces all sampled owners together. Advertise both
+                    # logical phases only when all physical rows can produce scores.
+                    prefill_dtype = getattr(attn_metadata, 'q_data_type_prefill', None)
+                    if getattr(attn_metadata, 'q_data_type_decode', prefill_dtype) != prefill_dtype:
+                        bank_reason = 'q_scale_domain_mismatch'
+                    self.reasons[name, 'prefill'] = self.reasons[name, 'decode'] = bank_reason
+                return original(layer, query, key, value, kv_cache, attn_metadata, output, *args, **kwargs)
             finally:
                 _active.reset(token)
-                if saved is not None:
-                    wrapper._cached_module = saved
-            return result
+                for wrapper, previous in reversed(saved):
+                    wrapper._cached_module = previous
         impl.forward = forward
 
     def _check_detached_validation(self, *, allow_submitted=False):

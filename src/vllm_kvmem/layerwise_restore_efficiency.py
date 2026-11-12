@@ -155,9 +155,10 @@ def install_direct_session_restore(worker, request_id, checkpoint, assembler, pl
     if assembler is None or not direct_session_restore():
         return False
     from .layerwise_checkpoints import sessions_enabled
+    from .tensor_parallel import active as tp_active
     controller = getattr(worker.runner, '_kvmem_layerwise_pressure', None)
     snapshot = getattr(checkpoint, 'layerwise_pressure', None)
-    if (controller is None or snapshot is None or not sessions_enabled() or
+    if (controller is None or snapshot is None or not sessions_enabled() or tp_active() or
             worker.bindings[request_id].pressure_restore or
             getattr(worker.runner, '_kvmem_qsa_layers', None)):
         return False

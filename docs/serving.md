@@ -41,6 +41,37 @@ The bundled default (`serve` without `--config`) is a separate, historical
 DFlash2 profile with machine-specific paths. These new examples do not change
 that runtime default.
 
+## Tensor-parallel Qwen MTP
+
+The [dual-A800 serving profile](../examples/serve-qwen-mtp-tp2-a800.json)
+configures TP=2 and up to 32 requests for Qwen3.8-27B GPTQ-Int4, BF16
+activations, FP8 E4M3 KV and native MTP4. Copy it and set `model`, `tokenizer`
+and `hf_config_path` to the local checkpoint. The launcher also accepts
+`-tp 2` as an override. Set `kvmem.query_replay_cobatch` to `false` so the two workers
+enter private Query forwards together. Use static GPU admission, retained
+CPU history and synchronous vLLM scheduling. Each worker owns 12 query heads,
+two KV heads and its target, draft and recurrent-state shards.
+TP workers use the ordinary publication gate. The launcher sets
+`KVMEM_GIL_GATE_DRAIN_OPEN=0` for TP, so a local engine wait does not admit
+its own archive publisher ahead of the other rank. The per-session lifecycle
+snapshot cache remains available.
+Other TP sizes require even, disjoint partitions of both Q and KV heads. The
+GPU serving and throughput measurements here cover TP=2.
+[Dual-A800 throughput and correctness results](tensor-parallel-a800.md)
+
+```sh
+vllm-kvmem serve --config local-tp-profile.json --run-dir runs/tp2
+```
+
+K and G count logical tokens for each request. A K of 36,864 and G of 16,384
+have the same meaning at TP=1 and TP=2. The workers combine attention masses
+across heads, agree on historical token ranges, then map them to their own KV
+slots. The scheduler waits for both workers before publishing a rebuilt window.
+CPU archive and session checkpoint byte limits apply per worker. If a full
+checkpoint pool lets only one worker retain a newer session checkpoint, the
+scheduler evicts that session's shards on both workers. A later turn can
+recompute the prompt after both evictions finish.
+
 ## Understand the memory budgets
 
 `max_model_len` is the request's logical position limit. It is not a promise that

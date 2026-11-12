@@ -319,6 +319,11 @@ class AsyncRefresh:
             if job.done and rid not in self.deferred:
                 del self.jobs[rid]
         jobs=list(self.jobs.values())
+        if getattr(getattr(getattr(self.runner, 'vllm_config', None), 'parallel_config', None),
+                   'tensor_parallel_size', 1) > 1:
+            from .tensor_parallel import pump_refresh
+            pump_refresh(self, ready_requests)
+            return
         if getattr(self, 'cobatch', None) is not None:
             self.cobatch.begin_turn(ready_requests)
         if not jobs:return
@@ -708,7 +713,8 @@ class AsyncRefresh:
             job.stage='assembly'
             job.lane=lane
             if lane == 0:
-                job.future=self.executor.submit(self._assemble,job,*job.assembly_inputs)
+                from .tensor_parallel import submit_transfer
+                job.future=submit_transfer(self.executor,self._assemble,job,*job.assembly_inputs)
             else:
                 job.future=self._executor_for(lane).submit(self._assemble_in_lane,lane,job,*job.assembly_inputs)
             job.assembly_inputs=None

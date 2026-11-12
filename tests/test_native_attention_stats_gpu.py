@@ -13,7 +13,9 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1' or not t
 
 def geometry(tmp_path, phase, qlen=5, dim=128, heads=8, kvheads=2, scale=.7, page=32, qscale=1.):
     from flashinfer import BatchPrefillWithPagedKVCacheWrapper
-    from flashinfer.decode import xqa_batch_decode_with_kv_cache
+    from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper, xqa_batch_decode_with_kv_cache
+    if phase == 'decode' and torch.cuda.get_device_capability()[0] != 12:
+        pytest.skip('This fixture exercises the SM12x XQA decode producer')
     torch.manual_seed(192)
     length = 259
     physical = (length+page-1)//page + 2
@@ -33,10 +35,16 @@ def geometry(tmp_path, phase, qlen=5, dim=128, heads=8, kvheads=2, scale=.7, pag
         wrapper.plan(qo, kv, table[0, :kv[-1].item()], torch.tensor([length%page], device='cuda', dtype=torch.int32),
             heads, kvheads, dim, page, causal=True, sm_scale=dim**-.5,
             q_data_type=q.dtype, kv_data_type=k.dtype)
+    elif phase == 'fa2-decode':
+        wrapper = BatchDecodeWithPagedKVCacheWrapper(workspace, 'NHD', use_tensor_cores=True, backend='fa2')
+        pages = (length+page-1)//page
+        wrapper.plan(torch.tensor([0, pages], device='cuda', dtype=torch.int32), table[0, :pages],
+            torch.tensor([length%page], device='cuda', dtype=torch.int32), heads, kvheads, dim, page,
+            sm_scale=dim**-.5, q_data_type=q.dtype, kv_data_type=k.dtype, q_len_per_req=qlen)
 
     class Impl:
         def forward(self, layer, query, key, value, kv_cache, meta, output):
-            if phase == 'prefill':
+            if wrapper is not None:
                 return wrapper.run(query, (k, v), q_scale=qscale, k_scale=scale, v_scale=.3, out=output)
             return xqa_batch_decode_with_kv_cache(query=query, kv_cache=(k,v), workspace_buffer=workspace,
                 block_tables=table, seq_lens=lengths,
@@ -53,8 +61,10 @@ def geometry(tmp_path, phase, qlen=5, dim=128, heads=8, kvheads=2, scale=.7, pag
         action_native_max_bytes=64*1024*1024, memory=SimpleNamespace(select_budget=512, gen_budget=128, block_tokens=32))
     bank = NativeAttentionStats(runner, options, tmp_path)
     assert bank.disabled is None
-    meta = SimpleNamespace(prefill=SimpleNamespace(wrapper=wrapper) if wrapper else None,
-        q_data_type_prefill=q.dtype, num_decode_tokens=0 if wrapper else qlen, lengths=lengths)
+    meta = SimpleNamespace(prefill=SimpleNamespace(wrapper=wrapper) if phase=='prefill' else None,
+        decode=SimpleNamespace(wrapper=wrapper) if phase=='fa2-decode' else None,
+        q_data_type_prefill=q.dtype, q_data_type_decode=q.dtype,
+        num_decode_tokens=0 if phase=='prefill' else qlen, lengths=lengths)
     # Nonaligned logical segments, partial tail and noncontiguous physical pages.
     starts = [0, 32, 37] + list(range(64, length, 32))
     counts = [b-a for a,b in zip(starts, starts[1:]+[length])]
@@ -107,6 +117,49 @@ def test_unquantized_prefill_q_scale_domain_mismatch_is_explicit_fallback(tmp_pa
     assert bank.score('model.layers.3.attn','r',True) is None
     assert bank.counts['fallback:prefill:q_scale_domain_mismatch'] == 1
     torch.testing.assert_close(output,meta.baseline(),rtol=0,atol=0)
+
+
+def test_sm80_mtp_can_consume_fa2_scores_only_for_a_covered_batch(tmp_path):
+    if torch.cuda.get_device_capability() != (8, 0):
+        pytest.skip('SM80 FA2 MTP verification')
+    bank, plan, execute, oracle, _, meta, _, *_ = geometry(tmp_path, 'prefill', 5)
+    name = 'model.layers.3.attn'
+    bank.arm({'r': plan})
+    execute()
+    torch.testing.assert_close(bank.score(name, 'r', False), oracle(), rtol=.02, atol=2e-4)
+    # The next forward has no instrumented FA2 wrapper. An earlier MTP result
+    # must not be used for these rows, even on the same request and layer.
+    meta.prefill = None
+    bank.arm({'r': plan})
+    execute()
+    assert bank.score(name, 'r', False) is None
+    assert bank.counts['fallback:decode:backend_not_observed'] == 1
+
+
+@pytest.mark.parametrize('qlen', [1, 5])
+def test_sm80_tensor_core_decode_and_prefill_use_correct_packed_rows(tmp_path, qlen):
+    if torch.cuda.get_device_capability() != (8, 0):
+        pytest.skip('SM80 FA2 mixed-batch statistics')
+    _, dec_plan, _, dec_oracle, dec_q, dec_meta, *_ = geometry(tmp_path, 'fa2-decode', qlen)
+    bank, pre_plan, _, pre_oracle, pre_q, pre_meta, *_ = geometry(tmp_path, 'prefill', 7)
+    name = 'model.layers.3.attn'
+    query = torch.cat([dec_q, pre_q])
+    baseline = torch.cat([dec_meta.baseline(), pre_meta.baseline()])
+
+    def mixed_forward(layer, q, key, value, kv_cache, metadata, out):
+        out[:qlen].copy_(dec_meta.baseline())
+        out[qlen:].copy_(pre_meta.baseline())
+        return out
+
+    impl = SimpleNamespace(forward=mixed_forward)
+    bank._wrap(impl, name)
+    meta = SimpleNamespace(prefill=pre_meta.prefill, decode=dec_meta.decode,
+        q_data_type_prefill=query.dtype, q_data_type_decode=query.dtype, num_decode_tokens=qlen)
+    bank.arm({'decode': dec_plan, 'prefill': dict(pre_plan, begin=qlen, index=1, rows=[1, 5])})
+    actual = impl.forward(SimpleNamespace(_q_scale_float=1.), query, None, None, None, meta, torch.empty_like(query))
+    torch.testing.assert_close(actual, baseline, rtol=0, atol=0)
+    torch.testing.assert_close(bank.score(name, 'decode', False), dec_oracle(), rtol=.02, atol=2e-4)
+    torch.testing.assert_close(bank.score(name, 'prefill', True), pre_oracle()[[1, 5]], rtol=.02, atol=2e-4)
 
 
 def test_deferred_missing_producer_cannot_publish_stale_graph_mass(tmp_path):

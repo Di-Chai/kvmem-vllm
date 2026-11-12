@@ -79,18 +79,32 @@ class ControlCompletions(KVConnectorWorkerMetadata):
     publication_blocked: set[str] = field(default_factory=set)
     # Opt-in session tiering: ('out'|'in', namespace) CPU-residency transitions.
     tiering: list = field(default_factory=list)
+    # Opt-in KVMEM_HELD_P_CAPTURE: held final pieces whose P capture finished.
+    held_captures_done: list = field(default_factory=list)
 
     systemone_notices: list = field(default_factory=list)
+    shards: dict[int, 'ControlCompletions'] | None = None
 
     def aggregate(self, other):
-        raise RuntimeError("Working-set control currently requires a single worker rank")
+        if (not isinstance(other, ControlCompletions) or not self.shards or not other.shards
+                or self.shards.keys() & other.shards.keys()):
+            raise ValueError('Invalid or duplicate tensor-parallel connector feedback')
+        return ControlCompletions(shards=self.shards | other.shards)
 
 
 class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
     def __init__(self, vllm_config, role, kv_cache_config):
         super().__init__(vllm_config, role, kv_cache_config)
-        if vllm_config.parallel_config.tensor_parallel_size != 1:
-            raise ValueError("Working-set control currently qualifies TP=1")
+        from .tensor_parallel import validate_parallelism
+        size = validate_parallelism(vllm_config.parallel_config)
+        self.tp_rank = self.tp_feedback = None
+        if size > 1:
+            if role == KVConnectorRole.SCHEDULER:
+                from .tp_feedback import TensorParallelFeedback
+                self.tp_feedback = TensorParallelFeedback(size)
+            else:
+                from vllm.distributed import get_tp_group
+                self.tp_rank = get_tp_group().rank_in_group
         self.systemone_pool = None
         self.systemone_worker = None
         self.commands = []
@@ -149,6 +163,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.publication_snapshot = None
         self.publication_sequence = 0
         self.publication_blocked = set()
+        self.held_captures = set()      # opt-in KVMEM_HELD_P_CAPTURE (scheduler side)
         self.publication_live = None
         if (self.bounded_target and role == KVConnectorRole.SCHEDULER
                 and kv_cache_config is not None and os.getenv('KVMEM_RUNNER_PROBE_DIR')):
@@ -262,12 +277,15 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         fork_notices = self.systemone_worker.take_notices() if self.systemone_worker is not None else []
         tiering = getattr(self.session_worker, 'tiering', None) if self.session_worker is not None else None
         tier_events = tiering.take_events() if tiering is not None else []
-        if not fork_notices and not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None and not tier_events:
+        take_held = getattr(self.session_worker, 'take_held_done', None) if self.session_worker is not None else None
+        held_done = take_held() if take_held is not None else []
+        if not fork_notices and not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None and not tier_events and not held_done:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
         result.systemone_notices = fork_notices
         result.sessions = notices
         result.tiering = tier_events
+        result.held_captures_done = held_done
         result.step_timings = timings
         result.restore_timings = restores
         if publication is not None:
@@ -281,19 +299,29 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             result.archive_capacity = capacity
         self.worker_completions = []
         self.worker_selected_windows = {}
-        return result
+        return result if self.tp_rank is None else ControlCompletions(shards={self.tp_rank: result})
 
     def update_connector_output(self, connector_output):
         metadata = connector_output.kv_connector_worker_meta
         if metadata is not None:
             if not isinstance(metadata, ControlCompletions):
                 raise TypeError("Unexpected worker completion metadata")
+            if self.tp_feedback is not None:
+                if not metadata.shards:
+                    raise ValueError('Missing tensor-parallel worker identity')
+                metadata = self.tp_feedback.collect(metadata.shards, self.pending)
             if metadata.publication_sequence is not None:
                 if metadata.publication_sequence <= self.publication_sequence:
                     raise ValueError('Stale publication readiness feedback')
                 self.publication_sequence = metadata.publication_sequence
                 live = self.publication_live() if self.publication_live is not None else metadata.publication_blocked
                 self.publication_blocked = set(metadata.publication_blocked).intersection(live)
+            held = getattr(self, 'held_captures', None)
+            if held:
+                # A held final piece stays out of batches until its worker
+                # capture is reported, whatever the publication snapshot says.
+                held.difference_update(getattr(metadata, 'held_captures_done', ()) or ())
+                self.publication_blocked |= held
             if metadata.step_timings and self.scheduler_step_feedback is not None:
                 self.scheduler_step_feedback(metadata.step_timings)
             if self.tiering_queue:
@@ -366,6 +394,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                 model.finished(self.sessions.namespace(request))
         self.capacity_rejections.pop(request.request_id, None)
         self.publication_blocked.discard(request.request_id)
+        getattr(self, 'held_captures', set()).discard(request.request_id)
         if self.restore_admission is not None:
             # Return a provisional hot view before SessionLedger aborts import
             # preparation. Allocated permits survive cancellation until ACK.

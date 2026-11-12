@@ -42,11 +42,8 @@ class NativeRecurrentState:
         config = runner.vllm_config
         if config.cache_config.mamba_cache_mode != "none" or config.cache_config.enable_prefix_caching:
             raise ValueError("Native GDN replay currently requires non-prefix-cached 'none' state layout")
-        parallel = config.parallel_config
-        if any(getattr(parallel, name, 1) != 1 for name in (
-                "tensor_parallel_size", "pipeline_parallel_size", "decode_context_parallel_size",
-                "prefill_context_parallel_size")):
-            raise ValueError("Native GDN replay currently requires a single worker rank")
+        from .tensor_parallel import validate_parallelism
+        validate_parallelism(config.parallel_config)
         if getattr(runner.model_state, "recoverssm", None) is not None:
             raise ValueError("RecoverSSM state is not part of the qualified replay schema")
         self.runner = runner

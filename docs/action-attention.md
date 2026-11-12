@@ -90,8 +90,12 @@ The elastic launcher forwards the same options. It remains experimental and
 default off; measured gains, cold-start costs and qualification limits are recorded
 in the qualification report linked below.
 
-The initial adapter supports the source-pinned FlashInfer FA2 prefill and SM12x
-warp-specialized XQA decode paths, including packed, ragged MTP verification.
+The adapter supports source-pinned FlashInfer FA2 on SM80 (A800) and SM12x.
+On SM80, both the causal prefill wrapper and the tensor-core decode wrapper
+can produce scores from the FA2 softmax. This includes MTP verification rows
+routed through prefill. A mixed batch uses the row offset of each wrapper.
+SM12x also supports warp-specialized XQA decode, including packed, ragged MTP
+verification.
 It builds isolated copies of FlashInfer sources; it does not edit installed
 packages. Unsupported versions/backends/layouts, unwarmed graph specializations,
 capacity overflow and missing/invalid native results fall back to the sampler.

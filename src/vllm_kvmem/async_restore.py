@@ -225,12 +225,13 @@ def _step_restore(manager, job, *, timing=None):
         job.service_started = time.perf_counter()
         executor = manager.resident_executor if resident else manager.executor
         with _stage(timing, 'background_submit'):
+            from .tensor_parallel import submit_transfer
             from .priority_executor import restore_first
             if restore_first() and hasattr(executor, 'submit_urgent'):
                 # Opt-in KVMEM_RESTORE_FIRST: ahead of queued refresh assemblies.
                 job.future = executor.submit_urgent(copy_restore, manager, job)
             else:
-                job.future = executor.submit(copy_restore, manager, job)
+                job.future = submit_transfer(executor, copy_restore, manager, job)
         manager.emit(job, 'restore_submitted', model_bytes=job.model_bytes,
                      lane='resident' if resident else 'assembly')
         return True

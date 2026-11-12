@@ -140,7 +140,7 @@ class HistoryAdmission:
             return
         if lease.request_id != notice.request_id or lease.phase != 'retiring':
             raise ValueError('CPU history retirement belongs to another request')
-        if notice.history:
+        if notice.history or getattr(notice, 'discard_shards', False):
             # Keep the high-water reservation: a P fallback or an in-flight
             # immutable version must never be mistaken for reclaimed storage.
             if self.extent_bytes(notice.history) > lease.bytes:

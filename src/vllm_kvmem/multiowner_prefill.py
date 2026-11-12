@@ -40,11 +40,14 @@ def owner_chunk_allocations(owners, native_rows, logical_tokens, maximum, *, rot
     return tuple(result)
 
 
-def coalesce_with_decode():
-    """Opt-in: logical owners may share a step with ordinary decode rows."""
-    value=os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE','0')
+def coalesce_with_decode(available=True):
+    """Logical owners may share a step with ordinary decode rows."""
+    from .defaults import legacy
+    value=os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '1' if available and not legacy() else '0')
     if value not in ('0','1'):
         raise ValueError('KVMEM_PREFILL_COALESCE_WITH_DECODE must be 0 or 1')
+    if value == '1' and not available:
+        raise ValueError('Coalescing with decode rows requires multi-owner physical prefill')
     return value=='1'
 
 

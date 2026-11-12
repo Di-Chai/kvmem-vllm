@@ -67,7 +67,8 @@ def geometry(tmp_path, sizes, prefix=4096):
               heads=heads, kvheads=kvheads, dim=dim, page=page, prefix=prefix, count=count, offsets=offsets)
 
 
-@pytest.mark.parametrize('sizes', [(1024, 1024, 1024, 224), (1024, 1024, 32), (2048, 2048, 2048, 992)])
+@pytest.mark.parametrize('sizes', [(1024, 1024, 1024, 224), (1024, 1024, 32),
+                                   (2048, 2048, 2048, 992), (2048, 2048, 1024)])
 def test_partial_final_span_scores_match_standalone_step_and_oracle(tmp_path, sizes):
     env = geometry(tmp_path, list(sizes))
     chunk = sizes[0]

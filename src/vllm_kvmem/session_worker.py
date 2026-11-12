@@ -272,6 +272,9 @@ class SessionWorker:
             raise RuntimeError('Prompt checkpoint has no accepted authority runtime')
         if not self.runtime.drain_requests(selected, wait=True):
             raise RuntimeError('Prompt checkpoint preceded scheduler publication confirmation')
+        _marks = getattr(self.runner, '_kvmem_step_timing', None)
+        if _marks is not None:
+            _marks.mark('sess_drain')
         if self.model_adapter is None:
             self.model_adapter = PromptStateAdapter(self.runner)
         for request_id in batch.req_ids:
@@ -281,33 +284,39 @@ class SessionWorker:
             command = self.captures.pop(request_id, None)
             if command is None:
                 continue
-            binding = self.bindings[request_id]
-            authority = self.runtime.authorities[request_id]
-            if authority.history_end != command.position:
-                raise ValueError('Prompt capture differs from accepted archive history')
-            from .pressure_promise import pm_sessions, settle_before_checkpoint
-            if pm_sessions():
-                settle_before_checkpoint(self.runner, request_id)   # opt-in KVMEM_PROMISE_PM_SESSIONS
-            replace = getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt
-            if deferrable and deferred_p_capture() and not getattr(self.options, 'session_freeze_prompt', False):
-                # Opt-in: the model-state copy now (it must precede this forward);
-                # the CPU snapshots in finish_deferred_captures() after the launch.
-                try:
-                    pending = self.pool.begin_capture(binding.namespace, request_id, authority,
-                        command.tokens or binding.tokens, self.model_adapter, replace=replace)
-                except BufferError:
-                    self._capture_not_admitted(binding, request_id, command)
-                else:
-                    self.__dict__.setdefault('deferred_captures', {})[request_id] = [
-                        pending, binding, command, False, self._capture_witness(request_id, authority)]
-                continue
+            self._take_capture(request_id, command, deferrable, _marks)
+
+    def _take_capture(self, request_id, command, deferrable, _marks=None):
+        """One P capture of a drained request (before_attention, held captures)."""
+        binding = self.bindings[request_id]
+        authority = self.runtime.authorities[request_id]
+        if authority.history_end != command.position:
+            raise ValueError('Prompt capture differs from accepted archive history')
+        from .pressure_promise import pm_sessions, settle_before_checkpoint
+        if pm_sessions():
+            settle_before_checkpoint(self.runner, request_id)   # opt-in KVMEM_PROMISE_PM_SESSIONS
+        replace = getattr(self.options, 'session_capture_decode', False) or self.pool.retain_prompt
+        if deferrable and deferred_p_capture() and not getattr(self.options, 'session_freeze_prompt', False):
+            # Opt-in: the model-state copy now (it must precede this forward);
+            # the CPU snapshots in finish_deferred_captures() after the launch.
             try:
-                checkpoint = self.pool.capture(binding.namespace, request_id, authority,
+                pending = self.pool.begin_capture(binding.namespace, request_id, authority,
                     command.tokens or binding.tokens, self.model_adapter, replace=replace)
             except BufferError:
                 self._capture_not_admitted(binding, request_id, command)
             else:
-                self._capture_installed(binding, request_id, command, checkpoint)
+                self.__dict__.setdefault('deferred_captures', {})[request_id] = [
+                    pending, binding, command, False, self._capture_witness(request_id, authority)]
+            return
+        try:
+            checkpoint = self.pool.capture(binding.namespace, request_id, authority,
+                command.tokens or binding.tokens, self.model_adapter, replace=replace)
+        except BufferError:
+            self._capture_not_admitted(binding, request_id, command)
+        else:
+            if _marks is not None:
+                _marks.mark('sess_capture')
+            self._capture_installed(binding, request_id, command, checkpoint)
 
     def _capture_not_admitted(self, binding, request_id, command):
         # Cache admission failure preserves ordinary native execution.
@@ -356,6 +365,48 @@ class SessionWorker:
                 self._capture_not_admitted(binding, request_id, command)
             else:
                 self._capture_installed(binding, request_id, command, checkpoint)
+
+    def finish_held_captures(self, scheduled, finished=()):
+        """Opt-in KVMEM_HELD_P_CAPTURE: the P captures of held final pieces.
+
+        The runner calls this once the step's forward is enqueued, so the
+        capture overlaps the GPU instead of delaying a batch launch. A held
+        request is in no batch until its capture is reported, so its accepted
+        history, model state and frames are exactly what its own final piece
+        would have captured before its forward; the capture call is the same.
+        """
+        held = [request_id for request_id, command in self.captures.items()
+                if getattr(command, 'held', False) and request_id not in scheduled]
+        if not held:
+            return
+        done = self.__dict__.setdefault('held_done', [])
+        authorities = getattr(self.runtime, 'authorities', {}) if self.runtime is not None else {}
+        live = []
+        for request_id in held:
+            if request_id in finished or request_id not in self.bindings or request_id not in authorities:
+                self.captures.pop(request_id)      # cancelled before its final piece ran
+                done.append(request_id)
+            else:
+                live.append(request_id)
+        if not live:
+            return
+        self._require_not_swapped(live)
+        if not self.runtime.drain_requests(live, wait=True):
+            return      # an unconfirmed sample: the piece stays held, the next step retries
+        if self.model_adapter is None:
+            self.model_adapter = PromptStateAdapter(self.runner)
+        for request_id in live:
+            self._take_capture(request_id, self.captures.pop(request_id), False)
+            done.append(request_id)
+        self.held_p_captures = getattr(self, 'held_p_captures', 0) + len(live)
+
+    def take_held_done(self):
+        """Held final pieces whose capture finished (or that were cancelled)."""
+        done = getattr(self, 'held_done', None)
+        if not done:
+            return []
+        self.held_done = []
+        return done
 
     def _target_bytes(self, request_id, tokens):
         """Opt-in real-model restoration oracle; unused in ordinary serving."""

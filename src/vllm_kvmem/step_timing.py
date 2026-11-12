@@ -5,6 +5,11 @@ import math
 import time
 
 
+def _marks_enabled():
+    import os
+    return os.getenv('KVMEM_STEP_MARKS', '0') == '1'
+
+
 class StepTiming:
     def __init__(self, interval, output, *, event_factory=None, clock=time.monotonic):
         if event_factory is None:
@@ -32,6 +37,18 @@ class StepTiming:
         self.active = dict(sequence=self.sequence, call_index=self.calls, start=start, model=model, end=end,
                            started_at=self.clock(), prefill_tokens=0, decode_requests=0,
                            cost_classification=dict(cost_classification or {}))
+
+    def mark(self, name):
+        """Opt-in KVMEM_STEP_MARKS=1: host milliseconds since this step began
+        (cheap, untraced), written with the row as marks[name]."""
+        if self.active is not None and _marks_enabled():
+            self.active.setdefault('marks', {})[name] = round((self.clock() - self.active['started_at']) * 1000, 3)
+
+    def add(self, name, seconds):
+        """Opt-in KVMEM_STEP_MARKS=1: accumulate a span (ms) into spans[name]."""
+        if self.active is not None and _marks_enabled():
+            spans = self.active.setdefault('spans', {})
+            spans[name] = round(spans.get(name, 0.0) + seconds * 1000, 3)
 
     def classify(self, batch):
         if self.active is not None:

@@ -29,7 +29,7 @@ DEFAULTS = {
     'draft_quantization': None,
     'profiler_config': None,
     'cudagraph_capture_sizes': None,
-    'max_num_seqs': 4, 'max_num_batched_tokens': 4224,
+    'max_num_seqs': 4, 'max_num_batched_tokens': 4224, 'tensor_parallel_size': 1,
     'long_prefill_token_threshold': 1024, 'gpu_memory_utilization': .72,
     'kv_cache_memory_bytes': None,
     'max_model_len': 262144, 'q8_tensorcore': False,
@@ -182,6 +182,10 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     for name in ('max_num_seqs', 'max_num_batched_tokens', 'max_model_len', 'port'):
         if type(cfg[name]) is not int or cfg[name] <= 0:
             raise ValueError(f'{name} must be a positive integer')
+    if type(cfg['tensor_parallel_size']) is not int or cfg['tensor_parallel_size'] < 1:
+        raise ValueError('tensor_parallel_size must be a positive integer')
+    if cfg['tensor_parallel_size'] > 1 and (is_gguf or cfg['draft_method'] != 'mtp'):
+        raise ValueError('Tensor-parallel serving requires a native safetensors MTP model')
     # Explicit Query planning resolves this native threshold to zero. Saved
     # resolved profiles must remain valid inputs to the launcher.
     if type(cfg['long_prefill_token_threshold']) is not int or cfg['long_prefill_token_threshold'] < 0:
@@ -211,6 +215,9 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     options = RuntimeOptions.from_vllm(SimpleNamespace(
         kv_transfer_config=SimpleNamespace(kv_connector_extra_config=transfer['kv_connector_extra_config']),
         cache_config=SimpleNamespace(cache_dtype='fp8_e4m3')))
+    if cfg['tensor_parallel_size'] > 1:
+        from .tensor_parallel import validate_worker_options
+        validate_worker_options(options)
     if (cfg['kv_cache_memory_bytes'] is not None and
             (type(cfg['kv_cache_memory_bytes']) is not int or cfg['kv_cache_memory_bytes'] <= 0)):
         raise ValueError('kv_cache_memory_bytes must be a positive integer or null')
@@ -352,6 +359,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         '--language-model-only', *loader_args,
         '--kv-cache-dtype', 'fp8_e4m3', '--max-model-len', str(cfg['max_model_len']),
         '--max-num-seqs', str(cfg['max_num_seqs']), '--max-num-batched-tokens', str(cfg['max_num_batched_tokens']),
+        '--tensor-parallel-size', str(cfg['tensor_parallel_size']),
         '--gpu-memory-utilization', str(utilization), '--no-enable-prefix-caching',
         '--generation-config', 'vllm',
         '--long-prefill-token-threshold', str(cfg['long_prefill_token_threshold']), '--no-async-scheduling',
@@ -366,6 +374,8 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         'KVMEM_BOUNDED_TARGET': '1', 'KVMEM_WINDOW_METADATA': '1',
         'KVMEM_DRAFT_LOAD_COMPAT': '1', 'VLLM_USE_V2_MODEL_RUNNER': '1',
         'VLLM_PLUGINS': 'gguf,kvmem' if is_gguf else 'kvmem'}
+    if cfg['tensor_parallel_size'] > 1:
+        env['KVMEM_GIL_GATE_DRAIN_OPEN'] = '0'
     if cfg['kv_cache_memory_bytes'] is not None:
         argv.extend(['--kv-cache-memory-bytes', str(cfg['kv_cache_memory_bytes'])])
     if options.flashinfer_gemm_bucket_alignment:
@@ -512,6 +522,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path,
         help='Explicit JSON profile; omit for the bundled DFlash2 k7 / GPU .80 agent profile')
+    parser.add_argument('-tp', '--tensor-parallel-size', type=int,
+        help='Override the tensor-parallel size of the serving profile')
     parser.add_argument('--run-dir', type=Path, required=True, help='New owned telemetry/archive directory')
     parser.add_argument('--dry-run', action='store_true', help='Validate local inputs and print the exact launch without importing vLLM')
     parser.add_argument('--systemone-fork', action='store_true', help='Reserve shared-prefix System One observation branches (eager)')
@@ -576,7 +588,11 @@ def main(argv=None):
     else:
         source = args.config.expanduser().resolve()
         profile, base = json.loads(source.read_text()), source.parent
+    if args.tensor_parallel_size is not None:
+        profile['tensor_parallel_size'] = args.tensor_parallel_size
     plan = build_launch(profile, base, run_dir)
+    if plan['profile'].get('tensor_parallel_size', 1) > 1 and (args.layerwise_query_diagnostic or args.systemone_fork):
+        raise ValueError('Tensor-parallel serving uses global selection and native Qwen MTP')
     if args.layerwise_query_diagnostic and not profile.get('kvmem', {}).get('async_refresh', False):
         raise ValueError('Layerwise Query requires async_refresh; synchronous refresh does not invoke layerwise selection')
     if plan['profile'].get('kvmem', {}).get('request_swap_layerwise', False):

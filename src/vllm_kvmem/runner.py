@@ -43,7 +43,12 @@ def make_probe_runner(base):
             from .gil_switch import apply as apply_gil_switch
             apply_gil_switch()
             from .options import RuntimeOptions
+            from .tensor_parallel import validate_parallelism
             options = RuntimeOptions.from_vllm(self.vllm_config)
+            tp_size = validate_parallelism(getattr(self.vllm_config, 'parallel_config', None))
+            if tp_size > 1:
+                from .tensor_parallel import validate_worker_options
+                validate_worker_options(options)
             from .qsa_adapter import validate_qsa_config
             qsa = validate_qsa_config(self.vllm_config, options)
             if qsa:
@@ -87,9 +92,10 @@ def make_probe_runner(base):
                     raise ValueError('KVMem capture requires qualified native compilation/graphs and synchronous batches')
                 if self._kvmem_native_compilation and getattr(self.speculative_config, 'method', None) != 'mtp':
                     raise ValueError('Compiled KVMem capture currently qualifies native Qwen MTP only')
-            if self.vllm_config.parallel_config.tensor_parallel_size != 1:
-                raise ValueError("Probe currently qualifies single-rank execution only")
             self._kvmem_layers = install_qwen_capture(self.model)
+            from .tensor_parallel import configure_worker
+            modules = dict(self.model.named_modules()) if tp_size > 1 else {}
+            configure_worker(self.vllm_config, (modules[name] for name in self._kvmem_layers))
             if os.getenv('KVMEM_LAYERWISE_QUERY_MODE'):
                 from .layerwise_query import install_layerwise_query
                 install_layerwise_query(self)
@@ -109,6 +115,12 @@ def make_probe_runner(base):
             self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
             self._kvmem_probe_done = self._kvmem_serving
             self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+            if tp_size > 1:
+                from vllm.distributed import get_tp_group
+                rank = get_tp_group().rank_in_group
+                if rank:
+                    self._kvmem_probe_output = self._kvmem_probe_output / f'tp-rank-{rank}'
+                    self._kvmem_probe_output.mkdir(parents=True, exist_ok=True)
             if options.flashinfer_gemm_bucket_alignment:
                 from .flashinfer_gemm_buckets import install_flashinfer_gemm_bucket_alignment
                 install_flashinfer_gemm_bucket_alignment(self, options, self._kvmem_probe_output)
@@ -304,7 +316,11 @@ def make_probe_runner(base):
                     if work is not None:
                         work.poll(force=True, flush=True)
                 finally:
-                    super().shutdown()
+                    from .tensor_parallel import close_worker
+                    try:
+                        close_worker()
+                    finally:
+                        super().shutdown()
 
         def _kvmem_refresh(self, command):
             from .refresh_probe import rebuild_native_batch
@@ -372,6 +388,9 @@ def make_probe_runner(base):
             if fork is not None:
                 public = fork.public_batch(public)
             sessions = getattr(self, '_kvmem_sessions', None)
+            _marks = getattr(self, '_kvmem_step_timing', None) if not projecting else None
+            if _marks is not None:
+                _marks.mark('prepare_attn')
             if sessions is not None and not projecting:
                 # Only the public forward's own prepare_attn may defer P captures
                 # (its finish hook follows the launch); private forwards may not.
@@ -384,9 +403,13 @@ def make_probe_runner(base):
                 from .native_state import canonicalize_before_non_speculative_batch, initialize_cold_single_token_state
                 initialize_cold_single_token_state(self, public)
                 canonicalize_before_non_speculative_batch(self, public)
+            if _marks is not None:
+                _marks.mark('sessions')
             decisions = getattr(self, '_kvmem_active_decisions', None)
             if decisions is not None and not projecting:
                 decisions.before_attention(public)
+            if _marks is not None:
+                _marks.mark('decisions')
             if getattr(self, '_kvmem_dispatch_relaxed', False):
                 self._kvmem_dispatch_relaxed = False
                 self._kvmem_layerwise_pressure.pipeline.verify_relaxed_dispatch(input_batch)
@@ -395,20 +418,30 @@ def make_probe_runner(base):
             if self._kvmem_window_adapter is not None:
                 window = self._kvmem_window_adapter.prepare(input_batch)
                 self._kvmem_window_batch = window
+                if _marks is not None:
+                    _marks.mark('window')
                 if window is not None:
                     active_groups = set(full_attention_groups(self.kv_cache_config))
                     if active_groups != set(window.groups):
                         raise ValueError("Window mapping must cover exactly the full-attention cache groups")
                     result = super().prepare_attn(replace(input_batch, positions=window.positions))
+                    if _marks is not None:
+                        _marks.mark('attn_meta')
                     if not projecting:
                         self._kvmem_prepare_action_metadata(public, window.positions[:public.num_tokens_after_padding])
+                    if _marks is not None:
+                        _marks.mark('action')
                     timing = getattr(self, '_kvmem_step_timing', None)
                     if timing is not None and not projecting:
                         timing.model_begin(public, self._kvmem_window_adapter.offsets)
                     return result
             result = super().prepare_attn(input_batch)
+            if _marks is not None:
+                _marks.mark('attn_meta')
             if not projecting:
                 self._kvmem_prepare_action_metadata(public, input_batch.positions[:public.num_tokens_after_padding])
+            if _marks is not None:
+                _marks.mark('action')
             timing = getattr(self, '_kvmem_step_timing', None)
             if timing is not None and not projecting:
                 timing.model_begin(public)
@@ -530,6 +563,12 @@ def make_probe_runner(base):
                     # Opt-in KVMEM_DEFERRED_P_CAPTURE: the target forward is enqueued;
                     # the P checkpoints' CPU snapshots now overlap it.
                     sessions.finish_deferred_captures()
+                if (sessions is not None and getattr(sessions, 'captures', None) and
+                        not kwargs.get('dummy_run') and hasattr(sessions, 'finish_held_captures')):
+                    # Opt-in KVMEM_HELD_P_CAPTURE: held final pieces' P captures
+                    # overlap this forward; the scheduler then releases them.
+                    sessions.finish_held_captures(scheduler_output.num_scheduled_tokens,
+                                                  scheduler_output.finished_req_ids)
                 return result
             except BaseException as error:
                 if cobatch is not None:
@@ -608,6 +647,8 @@ def make_probe_runner(base):
                 # sample. Install EOS/cancel clipping before publication, while
                 # leaving unrelated request writers free to continue.
                 runtime.begin_step(scheduler_output.finished_req_ids, terminal)
+                if timing is not None:
+                    timing.mark('begin_step')
             if not dummy_run and refresh is not None:
                 scheduler_output = refresh.defer_terminals(scheduler_output)
             if not dummy_run and runtime is not None:
@@ -635,6 +676,8 @@ def make_probe_runner(base):
                 # all turns continue polling completion without synchronizing.
                 request_ids = getattr(getattr(self, 'req_states', None), 'req_id_to_index', ())
                 work.poll(flush=public_work_idle(scheduler_output, request_ids))
+            if timing is not None:
+                timing.mark('work_poll')
             observe_work = work_armed and bool(scheduler_output.total_num_scheduled_tokens)
             # V2 kernel warmup invokes ordinary execute_model with synthetic
             # requests and no connector metadata. Session control starts at the
@@ -646,6 +689,8 @@ def make_probe_runner(base):
                 if not isinstance(control, ControlMetadata):
                     raise RuntimeError('Prompt sessions require native connector metadata')
                 sessions.receive(control.sessions)
+                if timing is not None:
+                    timing.mark('receive')
             if not dummy_run and runtime is not None:
                 # Apply EOS/cancellation truncation before draining the latest
                 # accepted sample packet into the immutable authority.
@@ -653,11 +698,15 @@ def make_probe_runner(base):
                 defer_scatter = (not is_profile and work_armed and
                                  getattr(getattr(runtime, 'options', None), 'prefill_scatter_after_target', False) and
                                  runtime.defer_prefill_scatter(scheduler_output, refresh))
+                if timing is not None:
+                    timing.mark('finish')
                 if defer_scatter:
                     runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh,
                                                 defer_scatter=True)
                 else:
                     runtime.advance_publication(scheduler_output.num_scheduled_tokens, refresh)
+                if timing is not None:
+                    timing.mark('publication')
             if not dummy_run and getattr(self, "_kvmem_window_adapter", None) is not None:
                 for request_id in scheduler_output.finished_req_ids:
                     self._kvmem_window_adapter.free(request_id)
@@ -685,6 +734,11 @@ def make_probe_runner(base):
                 connector.query_completion_poll = (
                     refresh.poll_query_completions if refresh is not None and
                     getattr(refresh, 'query_post_forward_reap', False) else None)
+                from .tensor_parallel import active as tp_active
+                if tp_active():
+                    # The joint readiness check in pump_refresh owns these ACKs.
+                    connector.restore_completion_poll = connector.pressure_completion_poll = None
+                    connector.query_completion_poll = None
                 if timing is not None:
                     connector.step_timings = timing.poll
                 if refresh is not None and refresh.maintenance is not None:

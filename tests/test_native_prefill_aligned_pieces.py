@@ -53,6 +53,7 @@ def host_bank(monkeypatch, *, enabled=True):
     monkeypatch.setattr(torch.cuda, 'Event', Event)
     bank=NativeAttentionStats.__new__(NativeAttentionStats)
     bank.disabled=None; bank.max_rows=8; bank.context=128; bank.max_segments=16
+    bank._lse_stack=None
     bank.width=32; bank.heads=4; bank.armed_rows=0; bank.upload_event=None
     bank.options=NS(memory=NS(block_tokens=32))
     bank.aligned_prefill_enabled=enabled; bank.aligned_prefill_counts=Counter()

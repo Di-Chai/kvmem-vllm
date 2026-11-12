@@ -250,6 +250,28 @@ def mixed_decode_candidates():
     return value == '1'
 
 
+def mixed_terminal_plans():
+    """KVMEM_MIXED_TERMINAL_PLANS=1 (with KVMEM_MIXED_DECODE_CANDIDATES): a mixed
+    batch carrying a prompt's final chunk keeps the fence-free candidate path.
+
+    The final chunk has no pipelined plan, so such a batch (every turn's final
+    piece beside other requests' decode rows) used the eager planner: the GPU
+    metadata wait and every decoder's publication fence before the forward,
+    with the GPU idle. Enabled, that owner gets its eager plan from CPU
+    coordinates behind its own fence; capture() checks the coordinates.
+    """
+    value = os.getenv('KVMEM_MIXED_TERMINAL_PLANS', '0')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_MIXED_TERMINAL_PLANS must be 0 or 1')
+    return value == '1'
+
+
+def mixed_terminal_check():
+    """KVMEM_MIXED_TERMINAL_CHECK=1 (testing): recompute each armed terminal
+    plan with the eager planner after the forward and fail on any difference."""
+    return os.getenv('KVMEM_MIXED_TERMINAL_CHECK', '0') == '1'
+
+
 def window_segments(records, history_begin, local_begin, count, block_tokens):
     """Freeze logical identities, including a partial historical tail."""
     starts=[];counts=[];history=[];cursor=0
@@ -405,6 +427,7 @@ class ActionRuntime:
         self._mtp_capture_frame = None
         self.decode_before_mtp = decode_action_before_mtp()
         self.mixed_candidates = mixed_decode_candidates()
+        self.mixed_terminal = self.mixed_candidates and mixed_terminal_plans()
         self._deferred_frames = []
         self.deferred_score_pool = None
         self.mtp_stage_stats = {}
@@ -934,13 +957,16 @@ class ActionRuntime:
         from .logical_action import LogicalActionResult, project_logical_scores
         if not isinstance(packets, LogicalActionResult):
             packets = LogicalActionResult(packets)
-        parts = project_logical_scores(group, plan['logical_score_plans'], pending.masses,
-            physical_rows=tuple(plan['rows']), event=pending.event,
-            layerwise_pressure=getattr(pending, 'layerwise_pressure', None))
         pending.logical_group = group
         packets[request_id] = pending
         packets.logical_groups[request_id] = group
-        packets.logical_slices[request_id] = parts
+        if isinstance(pending.masses, torch.Tensor) and pending.masses.is_cuda:
+            # Public TP scores are still GPU-local until capture() has validated both shards.
+            pending.tp_logical_plans = plan['logical_score_plans']
+        else:
+            packets.logical_slices[request_id] = project_logical_scores(group, plan['logical_score_plans'],
+                pending.masses, physical_rows=tuple(plan['rows']), event=pending.event,
+                layerwise_pressure=getattr(pending, 'layerwise_pressure', None))
         return packets
 
     def _record_logical_capture(self, result):
@@ -1025,13 +1051,17 @@ class ActionRuntime:
             return skip('unprepared')
         if tuple(metadata.indices)!=tuple(range(len(batch.req_ids))):
             return skip('partial_metadata')
-        plans={}
+        plans={};terminal=[]
         for i,(begin,end) in zip(metadata.indices,metadata.slices):
             request_id=batch.req_ids[i]
             if bool(batch.is_prefilling_np[i]):
                 plan=prepared[1].get(request_id)
                 if plan is None:
-                    return skip('prefill_unplanned')
+                    if not getattr(self,'mixed_terminal',False):
+                        return skip('prefill_unplanned')
+                    # Opt-in: planned below, once every other owner qualified.
+                    terminal.append((i,begin,end,request_id))
+                    continue
                 if (not plan.get('pipeline',False) or plan['index']!=i or
                         plan['begin']!=begin or plan['count']!=end-begin):
                     return skip('prefill_plan_mismatch')
@@ -1040,12 +1070,93 @@ class ActionRuntime:
                 if plan is None or plan['begin']!=begin or len(plan['rows'])!=end-begin:
                     return skip('decode_frame')
             plans[request_id]=plan
+        for i,begin,end,request_id in terminal:
+            plan,reason=self._terminal_prefill_plan(batch,i,begin,end,request_id)
+            if plan is None:
+                return skip('prefill_unplanned' if reason is None else 'terminal_'+reason)
+            plans[request_id]=plan
+            self.native.counts['mixed_terminal_plans']+=1
+        if terminal:
+            plans={request_id:plans[request_id] for request_id in batch.req_ids}   # batch order, as armed before
         if sum(len(plan['rows']) for plan in plans.values())>self.native.max_rows:
             # The exact decode scope is smaller than its candidates and may fit.
             return skip('rows')
         self.native_candidates=(batch,plans)
         self.native.arm(plans)
         return True
+
+    def _terminal_prefill_plan(self,batch,i,begin,end,request_id):
+        """Opt-in KVMEM_MIXED_TERMINAL_PLANS: the exact plan of a prompt's final
+        chunk in a mixed batch, from CPU coordinates, behind its own fence only.
+
+        The pipelined planner skips a prompt's final chunk, which sent every
+        mixed batch carrying one (each turn's final piece) to the eager planner:
+        a GPU metadata wait plus every decoder's publication fence, all before
+        the forward. This is the eager plan of that one owner (same _plan_owner
+        and _window_segments, same drained authority); decoders keep their
+        candidates. capture() checks the captured coordinates against it.
+        Returns (plan, None) or (None, reason).
+        """
+        count=end-begin
+        history_begin=int(batch.num_computed_tokens_np[i])
+        if request_id in getattr(self.runner,'_kvmem_logical_prefill_groups',{}):
+            return None,'logical'
+        states=getattr(self.runner,'req_states',None)
+        index=getattr(states,'req_id_to_index',{}).get(request_id)
+        if index is None or not hasattr(states,'prompt_len'):
+            return None,'prompt'
+        # Exactly the prompt's remaining tokens: no speculative padding rows.
+        prompt=int(states.prompt_len.np[index])
+        if count<=0 or history_begin+count!=prompt:
+            return None,'shape'
+        tokens=()
+        pressure=getattr(self.runner,'_kvmem_layerwise_pressure',None)
+        if pressure is not None and getattr(pressure,'rolling_decode',False):
+            from .layerwise_decode import prefill_fold_enabled
+            if prefill_fold_enabled():
+                # The fold reads this chunk's input IDs: the session's prompt
+                # tokens; capture() checks them against the captured input.
+                binding=getattr(getattr(self.runner,'_kvmem_sessions',None),'bindings',{}).get(request_id)
+                prompt_tokens=getattr(binding,'tokens',None)
+                if prompt_tokens is None or len(prompt_tokens)!=prompt:
+                    return None,'fold'
+                tokens=[int(t) for t in prompt_tokens[history_begin:history_begin+count]]
+        offset=getattr(getattr(self.runner,'_kvmem_window_adapter',None),'offsets',{}).get(request_id,0)
+        local_begin=history_begin-offset
+        if local_begin<0:
+            return None,'offset'
+        global_positions=range(history_begin,history_begin+count)
+        local_positions=range(local_begin,local_begin+count)
+        plan=self._plan_owner(request_id,True,tokens,global_positions,local_positions,count)
+        excluded=plan['state'].prefill_replay
+        if excluded is not None and history_begin<excluded[1] and history_begin+count>excluded[0]:
+            return None,'replay'        # a public Query replay keeps the eager planner
+        plan.update(index=i,begin=begin,count=count,terminal_exact=True,_terminal_tokens=tokens)
+        if plan['rows'] and 'starts' not in plan:
+            starts,counts,history=self._window_segments(plan['authority'],history_begin,local_begin,count)
+            plan.update(starts=starts,counts=counts,history=history)
+        return plan,None
+
+    def _check_terminal_plan(self,armed,request_id,tokens,global_positions,local_positions,count):
+        """KVMEM_MIXED_TERMINAL_CHECK=1 (testing): the eager planner's plan for
+        this owner, from the captured GPU coordinates, must equal the armed one."""
+        reference=self._plan_owner(request_id,True,tokens,global_positions,local_positions,count)
+        if reference['rows'] and 'starts' not in reference:
+            starts,counts,history=self._window_segments(reference['authority'],reference['history_begin'],
+                                                        reference['local_begin'],count)
+            reference.update(starts=starts,counts=counts,history=history)
+        if set(armed.get('prefill_thinking',()) or ())!=set(reference.get('prefill_thinking',()) or ()):
+            raise RuntimeError('Terminal prefill plan differs from the eager plan: prefill_thinking')
+        for key in ('authority','state','history_begin','local_begin','rows','sources','starts','counts','history'):
+            mine,theirs=armed.get(key),reference.get(key)
+            same=(mine is theirs if key in ('authority','state') else
+                  [int(x) for x in (mine if mine is not None else ())]==
+                  [int(x) for x in (theirs if theirs is not None else ())]
+                  if key not in ('history_begin','local_begin') else mine==theirs)
+            if not same:
+                raise RuntimeError('Terminal prefill plan differs from the eager plan: '+key)
+        self.terminal_plan_checks=getattr(self,'terminal_plan_checks',0)+1
+        self.native.counts['mixed_terminal_checked']+=1
 
     def _await_promised_commit(self, request_id):
         """Store reads for an owner wait until its promised refresh commits maps.
@@ -1065,8 +1176,12 @@ class ActionRuntime:
     def _plan_owner(self, request_id, prefill, tokens, global_positions, local_positions, count):
         self._await_promised_commit(request_id)
         self.invalidate_prefill_plans((request_id,))
+        _span = time.perf_counter()
         if not self.runtime.drain_requests((request_id,), wait=True):
             raise RuntimeError('Action capture preceded scheduler confirmation')
+        _timing = getattr(self.runner, '_kvmem_step_timing', None)
+        if _timing is not None:
+            _timing.add('owner_drain', time.perf_counter() - _span)
         authority = self.runtime.ensure_authority(request_id)
         state = getattr(authority, 'action_history', None)
         if state is None:
@@ -1244,6 +1359,10 @@ class ActionRuntime:
         return True
 
     def _detach_prefill_scores(self, frame):
+        from .tensor_parallel import active
+        if active():
+            # Validation must finish before the foreground TP score collective.
+            return None
         pool = getattr(self, 'deferred_score_pool', None)
         if pool is None or not frame.packets or not self.native.can_detach_validation():
             return None
@@ -1378,8 +1497,9 @@ class ActionRuntime:
         return self._record_logical_capture(result)
 
     def capture(self, captured, batch):
+        from .tensor_parallel import publish_action_scores
         if getattr(self, '_mtp_capture_frame', None) is not None:
-            return self._resolve_mtp_capture(batch)
+            return publish_action_scores(self._resolve_mtp_capture(batch), getattr(self, 'download_pool', None))
         profiler = getattr(self, 'profile', None)
         trace = profiler.begin_batch(batch) if profiler is not None else None
         status = 'submitted'
@@ -1403,7 +1523,7 @@ class ActionRuntime:
                     if hasattr(result, 'logical_slices'):
                         result.clear()
                     result = self._capture(captured, batch, trace)
-            return self._record_logical_capture(result)
+            return self._record_logical_capture(publish_action_scores(result, getattr(self, 'download_pool', None)))
         except BaseException:
             status = 'error'
             raise
@@ -1418,6 +1538,15 @@ class ActionRuntime:
                 self.native_candidates = None
 
     def _capture(self, captured, batch, trace=None):
+        _span = time.perf_counter()
+        try:
+            return self._capture_body(captured, batch, trace)
+        finally:
+            _timing = getattr(self.runner, '_kvmem_step_timing', None)
+            if _timing is not None:
+                _timing.add('action_capture', time.perf_counter() - _span)
+
+    def _capture_body(self, captured, batch, trace=None):
         self._resolve_promised_plans(batch)
         indices=[i for i in range(batch.num_reqs) if not batch.is_prefilling_np[i] or self.options.prefill_attention]
         if not indices:return {}
@@ -1451,12 +1580,18 @@ class ActionRuntime:
             for i,(begin,end) in zip(indices,slices):
                 count=end-begin;request_id=batch.req_ids[i]
                 armed=candidates[1].get(request_id)
-                if armed is not None and armed.get('pipeline',False):
+                if armed is not None and (armed.get('pipeline',False) or armed.get('terminal_exact',False)):
                     # Mixed batch: this prefill owner's exact plan was armed
                     # as is; the loop below checks its captured coordinates.
                     if (not batch.is_prefilling_np[i] or armed['index']!=i or
                             armed['begin']!=begin or armed['count']!=count):
                         raise RuntimeError('Pipelined prefill plan differs from the captured batch')
+                    if (armed.get('terminal_exact',False) and armed.get('_terminal_tokens') and
+                            list(armed['_terminal_tokens'])!=list(tokens[cursor:cursor+count])):
+                        raise RuntimeError('Terminal prefill tokens differ from the captured input')
+                    if armed.get('terminal_exact',False) and mixed_terminal_check():
+                        self._check_terminal_plan(armed,request_id,tokens[cursor:cursor+count],
+                            global_positions[cursor:cursor+count],local_positions[cursor:cursor+count],count)
                     plans[request_id]=armed
                     cursor+=count
                     continue
@@ -1507,7 +1642,7 @@ class ActionRuntime:
                         logical.request_id != receipt.request_id or logical.count != count or
                         logical.history_begin != receipt.history_begin):
                     raise RuntimeError('Logical prefill capture is missing its pre-forward worker plan')
-            if plan.get('pipeline', False):
+            if plan.get('pipeline', False) or plan.get('terminal_exact', False):
                 self._validate_prefill_plan(plan, global_positions[cursor:cursor+count],
                                             local_positions[cursor:cursor+count], count)
             authority, state = plan['authority'], plan['state']
@@ -1629,7 +1764,14 @@ class ActionRuntime:
                 with owner.stage('score.layer_mean', gpu=True) if owner else nullcontext():
                     total = torch.stack(separate) if layerwise is not None else total/len(self.layers)
                 pool=getattr(self,'download_pool',None)
-                if pool is not None:
+                from .tensor_parallel import active
+                if active():
+                    # TP workers stage rank-local masses through native validation.
+                    # capture() performs the single global download after MTP.
+                    host = total
+                    event = torch.cuda.Event()
+                    event.record()
+                elif pool is not None:
                     host,event=pool.copy(total)
                 else:
                     with owner.stage('mass.pinned_allocate', shape=list(total.shape),

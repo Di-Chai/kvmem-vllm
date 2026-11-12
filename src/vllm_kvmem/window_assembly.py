@@ -581,6 +581,8 @@ class NativeWindowAssembler:
         remaps = list(plan.remaps)
         # Validate the entire destination before changing any GPU cache bytes.
         _validate_destinations(remaps, by_slot, self.layers)
+        from .tensor_parallel import verify_window
+        verify_window(authority, remaps, by_slot)
         pending = [remap for remap in remaps if not remap.skip]
         if original_rope() and (self.raw_cache is not None or self.reuse_resident_v):
             raise ValueError('Original RoPE is not qualified for split/raw-cache assembly')

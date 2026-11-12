@@ -82,12 +82,36 @@ class SessionCapture:
     generation: int
     position: int
     tokens: tuple[int, ...] = ()
+    # Opt-in KVMEM_HELD_P_CAPTURE: the scheduler holds this request's final
+    # prefill piece; the worker captures after another batch's launch.
+    held: bool = False
+
+
+def held_p_capture():
+    """KVMEM_HELD_P_CAPTURE=1: a turn's P checkpoint no longer stalls the batch.
+
+    The P capture before a turn's final prefill piece (publication drain,
+    model-state copy, frame/action/layerwise snapshots) ran on the engine
+    thread before that piece's forward, while every other request's decode
+    rows in the same batch waited with the GPU idle. Enabled, when the piece
+    has batch peers, the scheduler holds it for one step: the worker takes the
+    same capture of the same, untouched state after the peers' forward is
+    enqueued, reports it, and the piece runs in a following step.
+
+    Value 2 (exactness testing only) also holds a piece without peers, so the
+    capture runs in a zero-token step and N=1 exercises the same path.
+    """
+    value = os.getenv('KVMEM_HELD_P_CAPTURE', '0')
+    if value not in ('0', '1', '2'):
+        raise ValueError('KVMEM_HELD_P_CAPTURE must be 0, 1 or 2')
+    return int(value)
 
 
 @dataclass(frozen=True)
 class SessionEviction:
     namespace: tuple[str, str]
     generation: int
+    allow_missing: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +131,7 @@ class SessionNotice:
     resident_ready: bool = False
     allocated_records: int = 0
     protected_records: int = 0
+    discard_shards: bool = False
 
 
 @dataclass(frozen=True)
@@ -673,6 +698,13 @@ class SessionLedger:
             raise ValueError('Unexpected session retirement completion')
         if entry.history:
             raise ValueError('Retirement arrived before prompt import restoration')
+        if getattr(notice, 'discard_shards', False):
+            # One worker retained a different P/M checkpoint under CPU
+            # pressure. Keep the namespace fenced until every shard is gone.
+            entry.request_id, entry.phase = None, 'evicting'
+            self.commands.evictions.append(SessionEviction(entry.namespace, entry.generation, allow_missing=True))
+            del self.requests[notice.request_id]
+            return
         if notice.history:
             expected = entry.retained_position or entry.candidate_position
             identity = entry.retained_tokens or entry.candidate_tokens

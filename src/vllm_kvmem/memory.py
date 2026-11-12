@@ -157,13 +157,14 @@ class RequestMemory:
         for _ in range(self.config.repository_blocks + 1):
             selected = self.preview_selection(scores, mandatory_slots, action=action,
                 prefill_scores=prefill_scores, pressure_scores=pressure_scores, max_tokens=max_tokens)
+            if getattr(self, 'tp_records', None) is not None:
+                from .tensor_parallel import selected_slots
+                selected = selected_slots(self.tp_records, selected)
             if self.first_pick is None:
                 # The pure (const) native pick for these inputs; a report may reuse it.
                 self.first_pick = selected
             try:
-                by_slots = getattr(self._store, 'select_slots', None) if _native_lookups() else None
-                plan = (by_slots(list(selected)) if by_slots is not None else
-                        self._store.select([self._store.handle(slot) for slot in selected]))
+                plan = self._admit_slots(selected, use_native_lookup=_native_lookups())
                 break
             except _native.HistoryAdmissionRetry:
                 # No window mutation or GPU work preceded this failure. Each
@@ -269,10 +270,11 @@ class RequestMemory:
         for _ in range(self.config.repository_blocks + 1):
             selected = self.preview_group_selection(groups, group_scores, mandatory_slots,
                 max_tokens=max_tokens)
-            if expected is not None and frozenset(selected) != expected:
-                raise RuntimeError('Historical group selection changed after preview; refusing stale selection evidence')
+            if getattr(self, 'tp_records', None) is not None:
+                from .tensor_parallel import selected_slots
+                selected = selected_slots(self.tp_records, selected)
             try:
-                plan = self._store.select([self._store.handle(slot) for slot in selected])
+                plan = self._admit_slots(selected, expected=expected)
                 break
             except _native.HistoryAdmissionRetry:
                 # The native failure precedes mutation/assembly, just as in
@@ -284,6 +286,19 @@ class RequestMemory:
         self.phase = Phase.ASSEMBLING
         self._submitted = False
         return plan
+
+    def _admit_slots(self, selected, *, use_native_lookup=False, expected=None):
+        def admit():
+            if expected is not None and frozenset(selected) != expected:
+                raise RuntimeError('Historical group selection changed after preview; refusing stale selection evidence')
+            by_slots = getattr(self._store, 'select_slots', None) if use_native_lookup else None
+            if by_slots is not None:
+                return by_slots(list(selected))
+            return self._store.select([self._store.handle(slot) for slot in selected])
+        if getattr(self, 'tp_records', None) is None:
+            return admit()
+        from .tensor_parallel import admit_window
+        return admit_window(admit)
 
     def preview_group_selection(self, groups, group_scores, mandatory_slots=(), *, max_tokens=None):
         """Native atomic groups within the existing block budget and keep bands.

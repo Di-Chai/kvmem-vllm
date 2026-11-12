@@ -15,6 +15,8 @@ import os
 import threading
 import time
 
+from .tensor_parallel import active as _tp_active
+
 _gate = None
 
 
@@ -203,7 +205,9 @@ def drain_open_enabled():
     value = os.getenv('KVMEM_GIL_GATE_DRAIN_OPEN', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_GIL_GATE_DRAIN_OPEN must be 0 or 1')
-    return value == '1'
+    # A local owner becoming runnable cannot release the publication gate
+    # on behalf of its TP peers. Keep the ordinary gate in that group.
+    return value == '1' and not _tp_active()
 
 
 def engine_blocked():

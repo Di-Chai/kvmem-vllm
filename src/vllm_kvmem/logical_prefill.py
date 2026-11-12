@@ -43,15 +43,13 @@ class LogicalPrefillSpan:
     def __post_init__(self):
         for name in ('index','history_begin','local_begin','count','physical_offset'):
             _integer(getattr(self,name),name)
-        full = self.count in SUPPORTED_LOGICAL_PREFILL_TOKENS
-        # A partial span is only legal as the clipped final span of a group;
-        # LogicalPrefillGroup checks that position and its chunk size.
-        partial = 0 < self.count < max(SUPPORTED_LOGICAL_PREFILL_TOKENS) and self.count % PARTIAL_SPAN_TOKENS == 0
-        if (not 0 <= self.index < MAX_LOGICAL_PREFILL_CHUNKS or not (full or partial) or
-                (full and self.physical_offset != self.index * self.count) or
-                (not full and self.physical_offset not in tuple(self.index * size for size in
-                                                                SUPPORTED_LOGICAL_PREFILL_TOKENS))):
-            raise ValueError('A logical span must preserve a complete 1K or 2K boundary')
+        # A 1K span can also be the clipped tail of a 2K group. The parent
+        # chooses the stride and checks that only its final span was clipped.
+        fits_parent = any(self.count <= chunk and self.physical_offset == self.index * chunk
+                          for chunk in SUPPORTED_LOGICAL_PREFILL_TOKENS)
+        if (self.index >= MAX_LOGICAL_PREFILL_CHUNKS or self.count == 0 or
+                self.count % PARTIAL_SPAN_TOKENS or not fits_parent):
+            raise ValueError('A logical span must fit its parent chunk at a whole-record boundary')
 
     @property
     def history_end(self):

@@ -3,8 +3,10 @@ from functools import cache
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import shutil
+import tempfile
 
 
 class UnsupportedNativeStats(RuntimeError):
@@ -35,8 +37,17 @@ def _replace(source, before, after, count=1):
 
 def _write(path, value):
     data = value.encode() if isinstance(value, str) else value
-    if not path.exists() or path.read_bytes() != data:
-        path.write_bytes(data)
+    if path.exists() and path.read_bytes() == data:
+        return
+    # Another TP worker may already be compiling from this shared cache.
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def patch_xqa(source, name):

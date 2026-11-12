@@ -91,15 +91,13 @@ class KVMemScheduler(Scheduler):
         self.prefill_physical_multi_owner = getattr(options, 'prefill_physical_multi_owner', False)
         self.prefill_physical_fill_rows = getattr(options, 'prefill_physical_fill_rows', False)
         self._physical_native_rows = options.action_native_max_rows
-        mixed = os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '0')
-        if mixed not in ('0', '1'):
-            raise ValueError('KVMEM_PREFILL_COALESCE_WITH_DECODE must be 0 or 1')
-        self.prefill_coalesce_with_decode = mixed == '1'
-        if self.prefill_coalesce_with_decode and not (
-                self.prefill_physical_coalescing and self.prefill_physical_multi_owner):
-            raise ValueError('Coalescing with decode rows requires multi-owner physical prefill')
+        from .defaults import legacy
+        from .multiowner_prefill import coalesce_with_decode
+        self.prefill_coalesce_with_decode = coalesce_with_decode(
+            self.prefill_physical_coalescing and self.prefill_physical_multi_owner)
         self.prefill_physical_max_chunks = options.prefill_physical_max_chunks
-        partial_tail = os.getenv('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL', '0')
+        partial_tail = os.getenv('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL',
+                                 '1' if self.prefill_physical_coalescing and not legacy() else '0')
         if partial_tail not in ('0', '1'):
             raise ValueError('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL must be 0 or 1')
         if partial_tail == '1' and not self.prefill_physical_coalescing:
@@ -233,7 +231,7 @@ class KVMemScheduler(Scheduler):
         schedule_ack = os.getenv('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
         if schedule_ack not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK must be 0 or 1')
-        self._schedule_ack = schedule_ack == '1'
+        self._schedule_ack = schedule_ack == '1' and self.vllm_config.parallel_config.tensor_parallel_size == 1
         if self._schedule_ack and (self.scheduler_config.async_scheduling or
                                    self.vllm_config.parallel_config.tensor_parallel_size != 1 or
                                    self.vllm_config.parallel_config.distributed_executor_backend
@@ -584,6 +582,7 @@ class KVMemScheduler(Scheduler):
 
     def _finish_swapped_request(self, request, delay_free_blocks=False):
         getattr(self.connector, 'publication_blocked', set()).discard(request.request_id)
+        getattr(self, '_held_capture_positions', {}).pop(request.request_id, None)
         restore_admission = getattr(self.connector, 'restore_admission', None)
         if restore_admission is not None:
             restore_admission.cancel(request)
@@ -1051,8 +1050,53 @@ class KVMemScheduler(Scheduler):
         self._deferred_native_padding[request.request_id] = (request.num_computed_tokens, query_tokens)
         request.spec_token_ids = list(padding)
 
+    def _held_capture_taken(self, request):
+        """Whether a released held piece is back at its already-captured position.
+
+        Its 'captured' notice cleared the session candidate, so issuing the P
+        capture again would hold the same piece again, forever.
+        """
+        positions = getattr(self, '_held_capture_positions', {})
+        held_at = positions.get(request.request_id)
+        if held_at is not None and held_at != request.num_computed_tokens:
+            del positions[request.request_id]           # its held piece has run
+            return False
+        return held_at is not None
+
+    def _hold_for_capture(self, connector, output, request_id, query_tokens, index, *, alone=False):
+        """Opt-in KVMEM_HELD_P_CAPTURE: move a final prefill piece behind its P capture.
+
+        Only a piece that is still in this batch beside peers, outside any
+        refresh/restore transaction or coalesced prefill group, is held. Like a
+        suspended Query, its allocation reaches the worker but not its tokens;
+        publication_blocked keeps it out of later batches until the worker
+        reports the capture (connector.held_captures).
+        """
+        if (request_id not in output.num_scheduled_tokens or request_id in self.transactions or
+                request_id in getattr(self, '_logical_prefill_groups', {}) or
+                len(output.num_scheduled_tokens) < (1 if alone else 2)):
+            return
+        command = connector.sessions.commands.captures[index]
+        if command.request_id != request_id or command.held:
+            raise RuntimeError('Held P capture command does not match its request')
+        from dataclasses import replace
+        connector.sessions.commands.captures[index] = replace(command, held=True)
+        self._preserve_deferred_padding(self.requests[request_id], output, query_tokens)
+        output.num_scheduled_tokens.pop(request_id)
+        output.total_num_scheduled_tokens -= query_tokens
+        output.scheduled_spec_decode_tokens.pop(request_id, None)
+        connector.held_captures.add(request_id)
+        connector.publication_blocked.add(request_id)
+        self.__dict__.setdefault('_held_capture_positions', {})[request_id] = \
+            self.requests[request_id].num_computed_tokens
+        self.held_p_captures = getattr(self, 'held_p_captures', 0) + 1
+
     def _build_kv_connector_meta(self, connector, output):
         if getattr(self, "_bounded_target", False):
+            from .session_control import held_p_capture
+            hold_captures = (held_p_capture() if connector.sessions is not None and not self.session_capture_decode
+                             and getattr(connector, 'tp_feedback', None) is None else 0)
+            held = []
             for request_id, query_tokens in list(output.num_scheduled_tokens.items()):
                 request = self.requests[request_id]
                 if (getattr(self, 'async_restore', False) and connector.sessions is not None
@@ -1076,8 +1120,13 @@ class KVMemScheduler(Scheduler):
                     output.total_num_scheduled_tokens -= query_tokens
                     output.scheduled_spec_decode_tokens.pop(request_id, None)
                     continue
-                if connector.sessions is not None:
+                if connector.sessions is not None and not self._held_capture_taken(request):
+                    issued = len(connector.sessions.commands.captures)
                     connector.sessions.capture_before_final_prefill(request, query_tokens)
+                    if (hold_captures and len(connector.sessions.commands.captures) > issued and
+                            request_id not in getattr(self, 'prepared_refreshes', {})):
+                        # Never a prepared public Query replay: it must run now.
+                        held.append((request_id, query_tokens, issued))
                     if self.session_capture_decode:
                         connector.sessions.capture_decode_boundary(request)
                 if hasattr(self, '_scheduled_queries'):
@@ -1174,6 +1223,9 @@ class KVMemScheduler(Scheduler):
                     # Native V2 otherwise defers start_load_kv until after model
                     # forward. The query command must exist before this forward.
                     output.has_sync_kv_loads = True
+            for request_id, query_tokens, index in held:
+                self._hold_for_capture(connector, output, request_id, query_tokens, index,
+                                       alone=hold_captures == 2)
         for request_id, query_tokens in output.num_scheduled_tokens.items():
             deferred = getattr(self, '_deferred_native_padding', {}).pop(request_id, None)
             if deferred is not None and (query_tokens != deferred[1] or

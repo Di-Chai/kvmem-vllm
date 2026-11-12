@@ -63,6 +63,7 @@ def test_native_planning_prepares_scope_once_and_keeps_unaccepted_rows():
     state.begin('r', [14])
     authority = SimpleNamespace(action_history=state, block_graph=object())
     runtime = ActionRuntime.__new__(ActionRuntime)
+    runtime.runner = SimpleNamespace()
     runtime.runtime = SimpleNamespace(drain_requests=lambda *a, **kw: True, ensure_authority=lambda r: authority)
     runtime.begin_response = lambda *a: None
     plan = runtime._plan_owner('r', False, [20, 21, 22, 23, 24], list(range(100, 105)), list(range(4, 9)), 5)
@@ -81,6 +82,17 @@ def test_native_fallback_reports_actual_reason_without_a_tensor():
     bank.disabled, bank.counts = 'source_mismatch:test', Counter()
     assert bank.score('layer', 'r', False) is None
     assert bank.counts == {'fallback:decode:source_mismatch:test': 1}
+
+
+def test_sm80_leaves_a_non_flashinfer_forward_on_its_own_backend():
+    from vllm_kvmem.native_attention import NativeAttentionStats
+    bank = NativeAttentionStats.__new__(NativeAttentionStats)
+    bank.fa2_only, bank.reasons = True, {}
+    impl = SimpleNamespace(forward=lambda *args: 'original output')
+    bank._wrap(impl, 'layer')
+    assert impl.forward(None, None, None, None, None, SimpleNamespace(), None) == 'original output'
+    assert bank.reasons == {('layer', 'prefill'): 'backend_not_observed',
+                            ('layer', 'decode'): 'backend_not_observed'}
 
 
 def test_capture_discards_invalid_native_packets_and_reuses_original_metadata():

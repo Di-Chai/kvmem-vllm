@@ -337,6 +337,15 @@ def test_partial_tail_is_opt_in_and_reproduces_the_clipped_standalone_step(monke
     assert group.accepted_counts(3100) == (1024, 1024, 1024, 28)
 
 
+def test_half_of_a_2k_chunk_keeps_the_2k_parent_stride():
+    gates = eligibility(native_limits=(2048, 2048, 1024), physical_token_budget=6144)
+    group, reason = build(gates=gates, logical_chunk_tokens=2048, partial_tail=True)
+    assert reason is None
+    assert [span.count for span in group.spans] == [2048, 2048, 1024]
+    assert [span.physical_offset for span in group.spans] == [0, 2048, 4096]
+    assert group.accepted_counts(4608) == (2048, 2048, 512)
+
+
 def test_partial_tail_never_starts_a_group_or_breaks_a_gate(monkeypatch):
     # Clipped second span: still the original two-span requirement.
     monkeypatch.setattr(RequestPlan, 'admit', clipped_admit(8192 + 1024 + 224))
