@@ -196,3 +196,67 @@ def test_tiering_prefetch_flag(monkeypatch):
     monkeypatch.setenv('KVMEM_TIERING_PREFETCH', 'on')
     with pytest.raises(ValueError):
         tiering_prefetch()
+
+
+def test_out_and_in_events_track_cpu_residency_for_the_scheduler_queue():
+    t, tier, ex, entries, now = setup()
+    a = session('a', [1, 2])
+    register(entries, tier, a)
+    t.idle('na', a); now[0] = 50.0; t.tick()               # spill submitted: out of RAM from now on
+    assert t.take_events() == [('out', 'na')] and t.out == {'na'}
+    ex.run(); t.tick()
+    assert t.take_events() == []                           # still out (on SSD)
+    t.prefetch('na')                                       # the turn arrived: promote
+    assert t.take_events() == []
+    ex.run(); t.tick()                                     # promotion reaped: back in RAM
+    assert t.take_events() == [('in', 'na')] and not t.out
+    assert t.ready('na', a) and t.take_events() == []
+
+
+def test_a_cancelled_spill_or_an_evicted_session_reports_in():
+    t, tier, ex, entries, now = setup()
+    a, b = session('a', [1]), session('b', [2])
+    register(entries, tier, a); register(entries, tier, b)
+    t.idle('na', a); now[0] = 50.0; t.tick()               # queued spill: reported out ...
+    assert t.take_events() == [('out', 'na')]
+    assert t.ready('na', a)                                # ... cancelled before it ran: in again
+    assert t.take_events() == [('in', 'na')]
+    t.idle('nb', b); now[0] = 100.0; t.tick(); ex.run(); t.tick()
+    assert t.take_events() == [('out', 'nb')]
+    t.forget('nb')                                         # evicted while on SSD: nothing to wait for
+    assert t.take_events() == [('in', 'nb')] and not t.out
+
+
+def test_tiering_queue_flag(monkeypatch):
+    from vllm_kvmem.session_tiering import tiering_queue
+    monkeypatch.delenv('KVMEM_TIERING_QUEUE', raising=False)
+    assert tiering_queue()
+    monkeypatch.setenv('KVMEM_TIERING_QUEUE', '0')
+    assert not tiering_queue()
+    monkeypatch.setenv('KVMEM_TIERING_QUEUE', 'yes')
+    with pytest.raises(ValueError):
+        tiering_queue()
+
+
+def test_connector_keeps_out_of_ram_sessions_in_the_vllm_waiting_queue():
+    from vllm_kvmem.connector import ControlCompletions, KVMemConnector
+    c = KVMemConnector.__new__(KVMemConnector)
+    commands = NS(returning=[])
+    c.sessions = NS(namespace=lambda request: request.namespace, commands=commands)
+    c.tiering_queue, c.tiering_out, c.tiering_requested, c.tiering_queue_waits = True, set(), set(), 0
+    for name in ('tp_feedback', 'scheduler_step_feedback', 'scheduler_restore_feedback', 'scheduler_archive_update',
+                 'history_admission', 'active_residency'):
+        setattr(c, name, None)
+    c.publication_sequence, c.pending, c.cancelled = 0, {}, set()
+    def feed(*events):
+        meta = ControlCompletions([], {})
+        meta.tiering = list(events)
+        c.update_connector_output(NS(kv_connector_worker_meta=meta, finished_sending=None, finished_recving=None))
+    req = NS(request_id='r1', namespace=('s', 'salt'))
+    feed(('out', ('s', 'salt')))
+    assert c._get_matched_tokens(req, 0) == (None, False)          # waits: no GPU slot taken
+    assert c._get_matched_tokens(req, 0) == (None, False)
+    assert commands.returning == [('s', 'salt')]                    # promotion requested once
+    assert c.tiering_queue_waits == 2
+    feed(('in', ('s', 'salt')))
+    assert not c.tiering_out and not c.tiering_requested

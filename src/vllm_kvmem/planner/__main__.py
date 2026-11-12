@@ -35,6 +35,11 @@ def _workload(args):
         over['max_history_tokens'] = args.max_history
     if args.p90_limit:
         over['turn_latency_p90_limit'] = args.p90_limit
+    context = args.max_context
+    if context is None and getattr(args, 'base_profile', None):
+        context = json.loads(Path(args.base_profile).read_text()).get('max_model_len')
+    if context:
+        over['max_context_tokens'] = int(context)
     return preset(args.workload, args.agents, **over)
 
 
@@ -81,6 +86,9 @@ def main(argv=None):
         s.add_argument('--geometry'); s.add_argument('--model-config'); s.add_argument('--kv-pool-bytes', type=int)
         s.add_argument('--spec-tokens', type=int, default=4); s.add_argument('--gen-budget', type=int, default=16384)
         s.add_argument('--window', type=int); s.add_argument('--history', type=int); s.add_argument('--max-history', type=int)
+        s.add_argument('--max-context', type=int,
+                       help='longest context per request (default: the base profile max_model_len); every running '
+                            'request must fit it in CPU RAM, which bounds the slot count')
         s.add_argument('--p90-limit', type=float); s.add_argument('--costs'); s.add_argument('--ssd-dir')
         s.add_argument('--cpu-budget-gib', type=float); s.add_argument('--duration', type=float, default=300.0)
         s.add_argument('--ssd-bench', action='store_true', help='measure --ssd-dir and use its bandwidth')
@@ -91,7 +99,7 @@ def main(argv=None):
             s.add_argument('--tiered', action='store_true'); s.add_argument('--cpu-ttl', type=float, default=math.inf)
             s.add_argument('--seed', type=int, default=1)
         else:
-            s.add_argument('--slots', default='8'); s.add_argument('--stacks', default='direct_prepared_exempt')
+            s.add_argument('--slots', default='8,12,16'); s.add_argument('--stacks', default='direct_prepared_exempt')
             s.add_argument('--tiered', action='store_true'); s.add_argument('--include-unbuilt', action='store_true')
             s.add_argument('--base-profile'); s.add_argument('--out', default='kvmem-plan')
             s.add_argument('--refine-seeds', type=int, default=8)
@@ -171,10 +179,12 @@ def main(argv=None):
         if 'cpu_session_ttl_ms' in patch['kvmem']:
             patch['kvmem'].update(cpu_spill_dir=args.ssd_dir or '<ssd directory>',
                                   cpu_spill_max_bytes=int(chosen.memory.ssd_bytes_needed * 1.5) or 1 << 30)
-        (out / 'profile-overlay.json').write_text(json.dumps(patch, indent=2))
         if args.base_profile:
             base = json.loads(Path(args.base_profile).read_text())
+            # More running requests need a bigger scheduler batch and Query capture.
+            patch = emit.merge(patch, emit.batch_sizing(base, chosen.placement.slots))
             (out / 'profile.json').write_text(json.dumps(emit.merge(base, patch), indent=2))
+        (out / 'profile-overlay.json').write_text(json.dumps(patch, indent=2))
         (out / 'env.json').write_text(json.dumps(emit.environment(chosen.placement), indent=2))
     print((out / 'report.md').read_text())
     return 0

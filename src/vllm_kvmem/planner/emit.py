@@ -34,13 +34,48 @@ def environment(placement):
     return dict(env) if env is not None else None
 
 
+QUERY_CAPTURE_MAX_BYTES = 1 << 30      # historical_gc.REDUNDANCY_Q_MAX_SLOT_BYTES
+
+
+def batch_sizing(profile, slots):
+    """Scheduler batch limits a profile needs for ``slots`` running requests.
+
+    The request-planning batch must hold one atomic Query replay plus a
+    (1 + draft) decode row for every running request (serve.build_launch), and
+    historical-GC thinking capture must hold a whole scheduler batch of Query
+    rows (capture_runtime: bytes per token x max_num_batched_tokens). Returns
+    the keys to raise (empty when the profile already fits); bytes per token
+    are taken from the profile's own (batch, query_capture_bytes) pair."""
+    kv = profile.get('kvmem', {})
+    replay = profile.get('query_replay_budget') or kv.get('gen_budget') or 0
+    draft = profile.get('draft_tokens') or 0
+    needed = replay + slots * (draft + 1)
+    patch = {}
+    for key in ('max_num_batched_tokens', 'request_planning_batch_tokens'):
+        if isinstance(profile.get(key), int) and profile[key] < needed:
+            patch[key] = needed
+    batch = patch.get('max_num_batched_tokens', profile.get('max_num_batched_tokens'))
+    params = (kv.get('historical_gc') or {}).get('policy_params') or {}
+    base_batch, capture = profile.get('max_num_batched_tokens'), params.get('query_capture_bytes')
+    if params.get('thinking_only') and isinstance(capture, int) and isinstance(base_batch, int) and batch > base_batch:
+        required = -(-capture * batch // base_batch)
+        if required > QUERY_CAPTURE_MAX_BYTES:
+            raise ValueError(f'{slots} slots need a {batch}-token batch whose thinking Query capture '
+                             f'({required} B) exceeds the {QUERY_CAPTURE_MAX_BYTES} B maximum')
+        patch['kvmem'] = {'historical_gc': {'policy_params': {'query_capture_bytes': required}}}
+    return patch
+
+
 def merge(profile, patch):
+    """Deep-merge ``patch`` into a copy of ``profile`` (nested dicts merge key by key)."""
     out = json.loads(json.dumps(profile))
-    for key, value in patch.items():
-        if key == 'kvmem':
-            out.setdefault('kvmem', {}).update(value)
-        else:
-            out[key] = value
+    def into(dst, src):
+        for key, value in src.items():
+            if isinstance(value, dict) and isinstance(dst.get(key), dict):
+                into(dst[key], value)
+            else:
+                dst[key] = json.loads(json.dumps(value))
+    into(out, patch)
     return out
 
 
@@ -49,7 +84,9 @@ def report(workload, geometry, machine_info, chosen, ranked, *, extrapolated=(),
     w = workload.describe()
     lines.append(f"Workload: window {w['window_tokens']} tokens, history {w['history_tokens']} "
                  f"(kept up to {w['max_history_tokens']}), {w['output_tokens']} output tokens/turn, "
-                 f"tool wait mean {w['tool_wait_mean_s']} s ({w['tool_wait']}).")
+                 f"tool wait mean {w['tool_wait_mean_s']} s ({w['tool_wait']})"
+                 + (f"; max context {w['max_context_tokens']} tokens per running request" if w.get('max_context_tokens') else '')
+                 + '.')
     lines.append(f'Geometry: {geometry.pool_pages} pool pages of {geometry.page_bytes/2**20:.1f} MiB; '
                  f'window {geometry.window_pages(min(workload.window_tokens, geometry.select_budget or 10**9))} '
                  f'pages; {geometry.recurrent_pages_per_request} GDN pages per running request; '

@@ -35,6 +35,18 @@ def tiering_prefetch():
     return value == '1'
 
 
+def tiering_queue():
+    """KVMEM_TIERING_QUEUE (default 1, session tiering only): a request whose
+    session is not in CPU RAM (spilling, on SSD or being promoted) waits in
+    vLLM's waiting queue -- the connector reports no matched tokens yet -- and
+    holds no GPU slot until the worker reports it back in RAM. 0 admits it at
+    once and lets its restore wait on the promotion inside a GPU slot."""
+    value = os.getenv('KVMEM_TIERING_QUEUE', '1')
+    if value not in ('0', '1'):
+        raise ValueError('KVMEM_TIERING_QUEUE must be 0 or 1')
+    return value == '1'
+
+
 def tiering_threads():
     """KVMEM_TIERING_THREADS (default 8, capped at the core count): parallel
     record I/O per session spill/promotion (pread/pwrite and SHA-256 release
@@ -69,6 +81,9 @@ class SessionTiering:
         self.durations = {'spill': [], 'promote': []}     # seconds per session job (bounded)
         self.submitted = {}         # namespace -> perf_counter() at submit (queueing time)
         self.wanted = set()         # returning sessions whose spill was already running
+        # Sessions not (fully) in CPU RAM, and the 'out'/'in' transitions the
+        # scheduler has not seen yet (its waiting-queue gate, tiering_queue()).
+        self.out, self.events = set(), []
 
     def _allocations(self, authority):
         namespace = authority.memory.request_id
@@ -81,6 +96,21 @@ class SessionTiering:
             if entry is not None and getattr(entry, 'ready', True):
                 out.append(entry.allocation)
         return out
+
+    def _mark_out(self, namespace):
+        if namespace not in self.out:
+            self.out.add(namespace)
+            self.events.append(('out', namespace))
+
+    def _mark_in(self, namespace):
+        if namespace in self.out:
+            self.out.discard(namespace)
+            self.events.append(('in', namespace))
+
+    def take_events(self):
+        """Engine thread: tier transitions for the scheduler (oldest first)."""
+        events, self.events = self.events, []
+        return events
 
     def _reap(self, namespace):
         job = self.jobs.get(namespace)
@@ -106,6 +136,7 @@ class SessionTiering:
             self.spilled.pop(namespace, None)
             self.stats['promoted_sessions'] += 1
             self.stats['promoted_records'] += count
+            self._mark_in(namespace)
         return True
 
     def _timed(self, fn, allocations):
@@ -139,6 +170,7 @@ class SessionTiering:
         self.idle_since.pop(namespace, None)
         self.spilled.pop(namespace, None)
         self.wanted.discard(namespace)
+        self._mark_in(namespace)            # gone: nothing left to wait for
 
     def _promote(self, namespace):
         self.submitted[namespace] = time.perf_counter()
@@ -157,12 +189,15 @@ class SessionTiering:
                     del self.jobs[namespace]    # the spill never started: still in RAM
                     self.submitted.pop(namespace, None)
                     self.stats['spills_cancelled'] = self.stats.get('spills_cancelled', 0) + 1
+                    self._mark_in(namespace)
                 else:
                     self.wanted.add(namespace)  # promote once the running spill is reaped
             return
         if self.spilled.get(namespace):
             self._promote(namespace)
             self.stats['prefetched'] = self.stats.get('prefetched', 0) + 1
+        else:
+            self._mark_in(namespace)
 
     def tick(self):
         """Engine thread, once per step: reap jobs, start spills past the TTL."""
@@ -186,6 +221,7 @@ class SessionTiering:
             del self.idle_since[namespace]
             if allocations:
                 self.submitted[namespace] = time.perf_counter()
+                self._mark_out(namespace)
                 self.jobs[namespace] = ('spill', self.executor.submit(self._timed, self.tier.spill, allocations),
                                         allocations)
                 return
@@ -199,12 +235,14 @@ class SessionTiering:
             del self.jobs[namespace]            # the spill never started: still in RAM
             self.submitted.pop(namespace, None)
             self.stats['spills_cancelled'] = self.stats.get('spills_cancelled', 0) + 1
+            self._mark_in(namespace)
             return True
         if not self._reap(namespace):
             self.stats['promote_waits'] += 1
             return False
         self.wanted.discard(namespace)
         if not self.spilled.get(namespace):
+            self._mark_in(namespace)
             return True
         self._promote(namespace)
         self.stats['promote_waits'] += 1

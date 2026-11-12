@@ -68,14 +68,23 @@ SWAP_STACKS = {
 }
 
 # Swap flags that select a stack (the planner emits these as environment).
+_FAST = ('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', 'KVMEM_RESTORE_DIRECT_LAYERS', 'KVMEM_RESTORE_PREPARED_READS',
+         'KVMEM_RESTORE_GATE_EXEMPT')
+
+
+def _stack(*on):
+    # The fast stack is default-on (defaults.py, 2026-11-12): slower stacks must
+    # switch the remaining flags off explicitly.
+    return {flag: '1' if flag in on else '0' for flag in _FAST}
+
+
 STACK_ENV = {
-    'baseline': {},
-    'isolate': {'KVMEM_ASSEMBLY_ISOLATE_PARTIAL': '1'},
-    'direct': {'KVMEM_ASSEMBLY_ISOLATE_PARTIAL': '1', 'KVMEM_RESTORE_DIRECT_LAYERS': '1'},
-    'direct_prepared': {'KVMEM_ASSEMBLY_ISOLATE_PARTIAL': '1', 'KVMEM_RESTORE_DIRECT_LAYERS': '1',
-                        'KVMEM_RESTORE_PREPARED_READS': '1'},
-    'direct_prepared_exempt': {'KVMEM_ASSEMBLY_ISOLATE_PARTIAL': '1', 'KVMEM_RESTORE_DIRECT_LAYERS': '1',
-                               'KVMEM_RESTORE_PREPARED_READS': '1', 'KVMEM_RESTORE_GATE_EXEMPT': '1'},
+    'baseline': _stack(),
+    'isolate': _stack('KVMEM_ASSEMBLY_ISOLATE_PARTIAL'),
+    'direct': _stack('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', 'KVMEM_RESTORE_DIRECT_LAYERS'),
+    'direct_prepared': _stack('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', 'KVMEM_RESTORE_DIRECT_LAYERS',
+                              'KVMEM_RESTORE_PREPARED_READS'),
+    'direct_prepared_exempt': {},       # the default-on stack
     'pinned': None,     # not implemented
 }
 

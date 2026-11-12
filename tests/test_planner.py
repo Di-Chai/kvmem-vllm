@@ -175,7 +175,9 @@ def test_cli_compile_writes_plan_overlay_and_report(geometry, tmp_path):
     plan = json.loads((out / 'plan.json').read_text())
     assert plan['chosen'] and (out / 'report.md').exists()
     merged = json.loads((out / 'profile.json').read_text())
-    assert merged['kvmem']['session_gpu_checkpoint_bytes'] == 0 and merged['max_num_seqs'] == 8
+    slots = int(plan['chosen']['placement'].split('/')[0][1:])        # the compiler picks among 8/12/16
+    assert merged['kvmem']['session_gpu_checkpoint_bytes'] == 0 and merged['max_num_seqs'] == slots
+    assert slots in (8, 12, 16)
 
 
 def test_learned_expected_wait_runs_in_the_simulator(geometry):
@@ -184,3 +186,32 @@ def test_learned_expected_wait_runs_in_the_simulator(geometry):
     r = simulate(geometry, w, Placement(slots=8, residency_fraction=0.5, victim='expected_wait'),
                  costs, duration=60, warmup=20, seed=3)
     assert r.turns > 0 and r.output_tok_s > 0
+
+
+def test_batch_sizing_scales_planning_batch_and_query_capture_with_slots():
+    from vllm_kvmem.planner import emit
+    base = dict(max_num_seqs=8, max_num_batched_tokens=16424, request_planning_batch_tokens=16424,
+                query_replay_budget=16384, draft_tokens=4,
+                kvmem=dict(gen_budget=16384, historical_gc=dict(policy_params=dict(
+                    thinking_only=True, query_capture_bytes=807272448, candidate_blocks=128))))
+    assert emit.batch_sizing(base, 8) == {}                     # the 8-slot profile already fits
+    patch = emit.batch_sizing(base, 16)
+    assert patch['max_num_batched_tokens'] == patch['request_planning_batch_tokens'] == 16464
+    assert patch['kvmem']['historical_gc']['policy_params']['query_capture_bytes'] == 809238528
+    merged = emit.merge(base, patch)
+    assert merged['kvmem']['historical_gc']['policy_params']['candidate_blocks'] == 128   # deep merge
+    with pytest.raises(ValueError, match='exceeds'):
+        emit.batch_sizing(base, 2000)
+
+
+def test_max_context_bounds_slots_by_cpu_ram(geometry):
+    from dataclasses import replace
+    from vllm_kvmem.planner.memory import Machine, Placement, plan_memory
+    from vllm_kvmem.planner.workload import preset
+    machine = Machine(ram_bytes=126 << 30, ram_reserved_bytes=19 << 30, memlock_bytes=float('inf'))
+    work = replace(preset('toolwait-sim', 32), max_context_tokens=262144)
+    legal = {slots: plan_memory(geometry, work, Placement(slots=slots), machine).legal for slots in (8, 12, 16)}
+    assert legal == {8: True, 12: True, 16: False}           # 256K x 34,816 B = 8.5 GiB per running request
+    m = plan_memory(geometry, work, Placement(slots=16), machine)
+    assert any('maximum context' in v for v in m.violations)
+    assert plan_memory(geometry, replace(work, max_context_tokens=None), Placement(slots=16), machine).legal

@@ -77,6 +77,8 @@ class ControlCompletions(KVConnectorWorkerMetadata):
     restore_timings: list = field(default_factory=list)
     publication_sequence: int | None = None
     publication_blocked: set[str] = field(default_factory=set)
+    # Opt-in session tiering: ('out'|'in', namespace) CPU-residency transitions.
+    tiering: list = field(default_factory=list)
 
     systemone_notices: list = field(default_factory=list)
 
@@ -106,8 +108,12 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.scheduler_completion = None
         options = vllm_config.kv_transfer_config.kv_connector_extra_config.get('kvmem', {})
         self.gpu_memory_admission = options.get('gpu_memory_admission', 'static')
-        from .session_tiering import tiering_prefetch
+        from .session_tiering import tiering_prefetch, tiering_queue
         self.tiering_prefetch = bool(options.get('cpu_session_ttl_ms')) and tiering_prefetch()
+        self.tiering_queue = bool(options.get('cpu_session_ttl_ms')) and tiering_queue()
+        self.tiering_out = set()        # sessions the worker reports out of CPU RAM
+        self.tiering_requested = set()  # out-of-RAM sessions whose promotion was requested
+        self.tiering_queue_waits = 0
         self.async_retirement = options.get('async_archive_retirement', False)
         self.physical_retirement = options.get('archive_backend') == 'tiered'
         repository_gc = options.get('repository_gc', False)
@@ -254,11 +260,14 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             self.publication_sequence += 1
             self.publication_blocked = set(publication)
         fork_notices = self.systemone_worker.take_notices() if self.systemone_worker is not None else []
-        if not fork_notices and not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None:
+        tiering = getattr(self.session_worker, 'tiering', None) if self.session_worker is not None else None
+        tier_events = tiering.take_events() if tiering is not None else []
+        if not fork_notices and not self.worker_completions and capacity is None and not notices and not timings and not restores and publication is None and not tier_events:
             return None
         result = ControlCompletions(self.worker_completions, self.worker_selected_windows)
         result.systemone_notices = fork_notices
         result.sessions = notices
+        result.tiering = tier_events
         result.step_timings = timings
         result.restore_timings = restores
         if publication is not None:
@@ -287,6 +296,13 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
                 self.publication_blocked = set(metadata.publication_blocked).intersection(live)
             if metadata.step_timings and self.scheduler_step_feedback is not None:
                 self.scheduler_step_feedback(metadata.step_timings)
+            if self.tiering_queue:
+                for kind, namespace in getattr(metadata, 'tiering', ()) or ():
+                    if kind == 'out':
+                        self.tiering_out.add(tuple(namespace))
+                    else:
+                        self.tiering_out.discard(tuple(namespace))
+                        self.tiering_requested.discard(tuple(namespace))
             if metadata.restore_timings and self.scheduler_restore_feedback is not None:
                 self.scheduler_restore_feedback(metadata.restore_timings)
             for notice in metadata.sessions:
@@ -382,6 +398,18 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
             return None, False
 
     def _get_matched_tokens(self, request, num_computed_tokens):
+        if self.tiering_out and self.sessions is not None:
+            namespace = self.sessions.namespace(request)
+            if namespace is not None and tuple(namespace) in self.tiering_out:
+                # Opt-in session tiering: wait in vLLM's queue, holding no GPU
+                # slot, until the worker reports this session back in RAM. The
+                # promotion is requested once per out-of-RAM period (idempotent
+                # on the worker), also when arrival prefetch is off.
+                if tuple(namespace) not in self.tiering_requested:
+                    self.tiering_requested.add(tuple(namespace))
+                    self.sessions.commands.returning.append(namespace)
+                self.tiering_queue_waits += 1
+                return None, False
         incremental_session = (self.gpu_memory_admission == 'incremental' and
                                bool(getattr(request, 'session_id', None)))
         if incremental_session:

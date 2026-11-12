@@ -14,6 +14,12 @@ all three) plus the flags validated after them:
 - KVMEM_SESSION_FAST_TURN, KVMEM_LAZY_ARCHIVE_REPORT: a further +7.5%, exact.
 - KVMEM_CHECKPOINT_CAPTURE_INDEX: session capture index and lazy decode rows,
   exact.
+- Fast session swap-in (user decision 2026-11-12): KVMEM_ASSEMBLY_ISOLATE_PARTIAL,
+  KVMEM_RESTORE_DIRECT_LAYERS, KVMEM_RESTORE_PREPARED_READS,
+  KVMEM_RESTORE_GATE_EXEMPT. 32 tool-waiting agents: 375.5 -> 492.8 tok/s
+  (+31%); an evicted swap-in at N=1 3.7 s -> 0.2 s; byte-identical restored
+  pages, N=1 token-identical. Outside layerwise session restores they change
+  nothing (each path falls back on its own).
 - Rolling decode scoring (user decision 2026-11-11, the default scoring
   policy): KVMEM_LAYERWISE_DECODE_SCOPE=non-thinking counts accepted
   non-thinking output, KVMEM_LAYERWISE_DECODE_INTERVAL=4 samples every 4th such
@@ -127,6 +133,11 @@ DEFAULTS = {
     'KVMEM_SESSION_FAST_TURN': '1',
     'KVMEM_WINDOW_TRANSLATE_DYNAMIC': '1',
     'KVMEM_CHECKPOINT_CAPTURE_INDEX': '1',
+    # Fast session swap-in (user decision 2026-11-12; +31% at 32 agents, exact).
+    'KVMEM_ASSEMBLY_ISOLATE_PARTIAL': '1',
+    'KVMEM_RESTORE_DIRECT_LAYERS': '1',
+    'KVMEM_RESTORE_PREPARED_READS': '1',
+    'KVMEM_RESTORE_GATE_EXEMPT': '1',
     # Default rolling decode scoring policy (user decision 2026-11-11).
     'KVMEM_LAYERWISE_DECODE_SCOPE': 'non-thinking',
     'KVMEM_LAYERWISE_DECODE_INTERVAL': '4',

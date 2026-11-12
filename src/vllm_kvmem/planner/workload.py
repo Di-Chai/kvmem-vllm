@@ -144,6 +144,10 @@ class Workload:
     turn_latency_p90_limit: float = float('inf')
     append_cap: int = 6000
     sticky_tool_class: bool = False     # each session keeps one tool class (mixtures)
+    # Longest context a request may reach (the profile's max_model_len). Every
+    # running request must be able to hold it in CPU RAM: that bounds the slot
+    # count (memory.plan_memory). None: no such bound.
+    max_context_tokens: int | None = None
 
     def describe(self):
         d = {k: v for k, v in asdict(self).items() if k != 'tool_wait'}

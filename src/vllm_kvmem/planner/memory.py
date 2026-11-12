@@ -99,6 +99,14 @@ def plan_memory(geometry, workload, placement, machine):
         if cpu_needed > budget:
             v.append(f'CPU RAM: archive + checkpoints need {cpu_needed/2**30:.1f} GiB, '
                      f'budget {budget/2**30:.1f} GiB (use tiered SSD, a history limit or fewer agents)')
+    if workload.max_context_tokens:
+        # Running requests stay in CPU RAM (never spilled or evicted mid-turn), so
+        # all of them must be able to grow to the maximum context at once.
+        running_cpu = placement.slots * workload.max_context_tokens * geometry.cpu_bytes_per_token
+        if running_cpu > budget:
+            v.append(f'CPU RAM: {placement.slots} running requests at the {workload.max_context_tokens}-token '
+                     f'maximum context need {running_cpu/2**30:.1f} GiB, budget {budget/2**30:.1f} GiB '
+                     f'(at most {budget // (workload.max_context_tokens * geometry.cpu_bytes_per_token)} slots)')
     pinned = checkpoints + (min(archive, budget) if placement.pinned_archive else 0)
     pin_limit = min(machine.memlock_bytes, machine.pinned_fraction_limit * machine.ram_bytes)
     if placement.pinned_archive and pinned > pin_limit:
