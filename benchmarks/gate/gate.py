@@ -48,7 +48,8 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
 DEFAULT_DATA = Path('/home/chaidi/kvmem-freetoken/kvmem-vllm/artifacts/mab-full-paired-20261105-r1/data/questions')
-STRATEGY_OPTIONS = ('strategy_query_scorer', 'strategy_pressure_scorer', 'strategy_picker', 'strategy_trace_scores')
+STRATEGY_OPTIONS = ('strategy_query_scorer', 'strategy_pressure_scorer', 'strategy_picker', 'strategy_trace_scores',
+                    'strategy_path')
 
 
 def log(*parts):
@@ -183,19 +184,19 @@ def run_agent(args):
         raise SystemExit('exists: %s' % out)
     profile = json.loads(json.dumps(fixture['profile']))
     opts = json.loads(args.opts)
-    unknown = set(opts) - set(profile['kvmem']) - set(STRATEGY_OPTIONS)
-    if unknown:
-        raise SystemExit('unknown kvmem options: %s' % sorted(unknown))
-    profile['kvmem'].update(opts)
+    profile['kvmem'].update(opts)   # the server validates every option
     profile['port'] = args.port
     execution = dict(fixture['execution'], **json.loads(args.env))
+    # The global path: one selection for every layer (no --layerwise-* flag).
+    flags = fixture['server_flags'] if args.path == 'layer' else []
     client = dict(fixture['client'])
     if args.turns is not None:
         client['turns'] = args.turns
     out.mkdir(parents=True)
     save_json(out / 'profile.json', profile)
     save_json(out / 'execution.json', execution)
-    save_json(out / 'gate.json', dict(fixture='agent', runtime=str(runtime), tools=str(HERE), sessions=args.sessions,
+    save_json(out / 'gate.json', dict(fixture='agent', path=args.path, runtime=str(runtime), tools=str(HERE),
+                                      sessions=args.sessions,
                                       client=client, opts=opts, env=json.loads(args.env),
                                       runtime_frozen=load_json(runtime / 'FROZEN.json')
                                       if (runtime / 'FROZEN.json').exists() else None))
@@ -204,7 +205,7 @@ def run_agent(args):
     extra = {'VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR': str(Path(args.autotune_dir).resolve())} if args.autotune_dir else {}
     env = server_environment(runtime, execution, extra)
     command = [PY, '-B', str(HERE / 'serve_with_env.py'), '--config', str(out / 'profile.json'),
-               '--run-dir', str(out / 'server'), *fixture['server_flags']]
+               '--run-dir', str(out / 'server'), *flags]
     with (out / 'server.log').open('x') as stream:
         server = subprocess.Popen(command, cwd=runtime, env=env, stdout=stream, stderr=subprocess.STDOUT,
                                   stdin=subprocess.DEVNULL, start_new_session=True)
@@ -275,7 +276,8 @@ def measure_agent(run):
     trace = trace_module()
     decisions = trace.read(run)
     stages = {}
-    for line in open(trace.locate(run)):
+    layers = trace.locate(run)
+    for line in open(layers) if layers.is_file() else ():
         event = json.loads(line)
         if event.get('event') == 'pressure_selected':
             stages[event.get('event_type', '?')] = stages.get(event.get('event_type', '?'), 0) + 1
@@ -286,7 +288,8 @@ def measure_agent(run):
                 turn_latency_p50=round(latencies[len(latencies) // 2], 3) if latencies else None,
                 grow_seconds=round(sum(r['ended'] - r['started'] for r in grows), 2),
                 decisions=len(decisions), query=sum(d.kind == 'query' for d in decisions),
-                pressure=sum(d.kind == 'pressure' for d in decisions), pressure_events=stages,
+                pressure=sum(d.kind == 'pressure' for d in decisions),
+                global_decisions=sum(d.layer == trace.GLOBAL_LAYER for d in decisions), pressure_events=stages,
                 methods=sorted({d.method for d in decisions}), released=released(run),
                 tracebacks=(run / 'server.log').read_text(errors='replace').count('Traceback'))
 
@@ -442,12 +445,14 @@ def measure_mab(run):
     phase = sum(s['prefill_tokens'] for s in steps
                 if any(first.get(g['request_id'], 1e18) <= s['started_at'] < query_start.get(g['request_id'], 0)
                        for g in s['batch_geometry']))
-    decisions = trace_module().read(run)
+    trace = trace_module()
+    decisions = trace.read(run)
     return dict(run=run_name(run), cases=len(list((run / 'run/answers/cases').glob('*/response.json'))),
                 prefill_tokens=tokens, wall=round(t1 - t0, 1), prefill_tok_s=round(tokens / (t1 - t0), 1),
                 prefill_phase_tok_s=round(phase / span) if span else None,
                 decisions=len(decisions), query=sum(d.kind == 'query' for d in decisions),
-                pressure=sum(d.kind == 'pressure' for d in decisions))
+                pressure=sum(d.kind == 'pressure' for d in decisions),
+                global_decisions=sum(d.layer == trace.GLOBAL_LAYER for d in decisions))
 
 
 def compare_mab(ref, run):
@@ -544,6 +549,8 @@ def main(argv=None):
     p.add_argument('out')
     p.add_argument('--sessions', type=int, default=1)
     p.add_argument('--turns', type=int, default=None)
+    p.add_argument('--path', choices=('layer', 'global'), default='layer',
+                   help='agent fixture: per-layer selection (the fixture flags) or the global path')
     p.add_argument('--opts', default='{}', help='kvmem profile options, JSON (e.g. the strategy_* options)')
     p.add_argument('--env', default='{}', help='extra KVMEM_* execution flags, JSON')
     p.add_argument('--port', type=int, default=19641)

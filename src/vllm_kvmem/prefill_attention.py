@@ -222,23 +222,35 @@ def single_pick():
 
 
 def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_records=None):
+    """The global pressure selection: the pressure scorer named by pressure_policy (strategy layer)."""
+    from .strategy import GLOBAL, PRESSURE_SCORER, native
     state = getattr(authority, 'action_history', None)
     options = getattr(authority, 'graph_options', None) or getattr(state, 'options', None)
     policy = getattr(options, 'pressure_policy', None)
     if policy is None:
         policy = 'attention' if state is not None and getattr(state.options, 'action_pressure', False) else 'recency'
-    if policy == 'recency':
-        return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
-                                       tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
+    if policy not in ('recency', 'attention', 'graph'):
+        raise ValueError('Unknown pressure policy')
+    return native(PRESSURE_SCORER, policy, GLOBAL)(authority, mandatory, max_tokens, candidate_records, options)
+
+
+def _pressure_recency(authority, mandatory, max_tokens, candidate_records, options):
+    return authority.memory.select({r.handle.slot: float(r.history_begin) for r in authority.records.values()},
+                                   tuple(h.slot for h in mandatory), action=False, max_tokens=max_tokens)
+
+
+def _pressure_graph(authority, mandatory, max_tokens, candidate_records, options):
+    # Checkpoint records remain authoritative after physical residency clears.
+    records = tuple(authority.memory._store.working_records() if candidate_records is None else candidate_records)
+    from .graph_integration import pressure_score_and_select
+    return pressure_score_and_select(authority, records, mandatory, max_tokens=max_tokens)
+
+
+def _pressure_attention(authority, mandatory, max_tokens, candidate_records, options):
     # Checkpoint records remain authoritative after physical residency clears.
     import time as _time
     _s0 = _time.perf_counter()
     records = tuple(authority.memory._store.working_records() if candidate_records is None else candidate_records)
-    if policy == 'graph':
-        from .graph_integration import pressure_score_and_select
-        return pressure_score_and_select(authority, records, mandatory, max_tokens=max_tokens)
-    if policy != 'attention':
-        raise ValueError('Unknown pressure policy')
     scores, source = pressure_seed(authority, records)
     _s1 = _time.perf_counter()
     single = single_pick() and getattr(authority, 'block_graph', None) is not None
@@ -279,3 +291,13 @@ def select_pressure(authority, mandatory=(), *, max_tokens=None, candidate_recor
     _trace('select_pressure_sections', records=len(records), seed=_s1-_s0, preview_report=_s2-_s1,
            select=_time.perf_counter()-_s2)
     return plan
+
+
+def _bind_global_pressure_scorers():
+    from .strategy import GLOBAL, PRESSURE_SCORER, bind
+    for name, implementation in (('recency', _pressure_recency), ('attention', _pressure_attention),
+                                 ('graph', _pressure_graph)):
+        bind(PRESSURE_SCORER, name, GLOBAL, implementation)
+
+
+_bind_global_pressure_scorers()

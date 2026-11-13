@@ -416,6 +416,12 @@ class RuntimeOptions:
     strategy_query_scorer: str = 'meank'
     strategy_pressure_scorer: str = 'attention'
     strategy_picker: str = 'native'
+    # Which path decides: 'global' (one selection for all layers) or 'layer'
+    # (per-layer selection). The launcher sets it from its --layerwise-* flags.
+    # On the global path the scorer names above are the same switch as the
+    # older options: key_fps is query_score_mode=key_fps_4, recency pressure
+    # is pressure_policy=recency, and so on.
+    strategy_path: str = 'global'
     # Research only: also record every candidate's score with each per-layer
     # decision, for offline replay (python -m vllm_kvmem.strategy.trace).
     strategy_trace_scores: bool = False
@@ -444,14 +450,32 @@ class RuntimeOptions:
         from . import _native
         from .historical_gc import HistoricalGcSettings
         from . import strategy as _strategy
+        if not isinstance(self.strategy_path, str) or self.strategy_path not in _strategy.PATHS:
+            raise ValueError('strategy_path must be global or layer')
         for _role, _name in ((_strategy.QUERY_SCORER, self.strategy_query_scorer),
                              (_strategy.PRESSURE_SCORER, self.strategy_pressure_scorer),
                              (_strategy.PICKER, self.strategy_picker)):
             if not isinstance(_name, str):
                 raise ValueError('A strategy is named by a string')
-            _strategy.get(_role, _name)
+            _strategy.check_path(_role, _name, self.strategy_path)
         if type(self.strategy_trace_scores) is not bool:
             raise ValueError('strategy_trace_scores must be true or false')
+        if self.strategy_path == _strategy.GLOBAL:
+            _modes = {name: mode for mode, name in _strategy.QUERY_SCORE_MODES.items()}
+            _query = self.strategy_query_scorer
+            if _query != 'meank' and _query in _modes:
+                if self.query_score_mode not in ('mean_k', _modes[_query]):
+                    raise ValueError('strategy_query_scorer=%s conflicts with query_score_mode=%s'
+                                     % (_query, self.query_score_mode))
+                object.__setattr__(self, 'query_score_mode', _modes[_query])
+            elif _query != 'meank' and self.query_score_mode != 'mean_k':
+                raise ValueError('strategy_query_scorer=%s replaces query_score_mode; leave it mean_k' % _query)
+            _pressure = self.strategy_pressure_scorer
+            if _pressure != 'attention':
+                if self.pressure_policy is not _UNSET and self.pressure_policy != _pressure:
+                    raise ValueError('strategy_pressure_scorer=%s conflicts with pressure_policy=%s'
+                                     % (_pressure, self.pressure_policy))
+                object.__setattr__(self, 'pressure_policy', _pressure)
         historical = HistoricalGcSettings.parse(self.historical_gc)
         object.__setattr__(self, 'historical_gc', historical)
         if historical is not None and (self.archive_backend != 'cpu' or self.repository_gc or
@@ -1135,7 +1159,7 @@ class RuntimeOptions:
             ('prefill_physical_max_chunks', 2),
             ('prefill_physical_logical_tokens', 2048),
             ('strategy_query_scorer', 'meank'), ('strategy_pressure_scorer', 'attention'),
-            ('strategy_picker', 'native'), ('strategy_trace_scores', False),
+            ('strategy_picker', 'native'), ('strategy_trace_scores', False), ('strategy_path', 'global'),
             ('early_capture_feedback_bytes', 268435456), ('action_profiling', False),
             ('action_profile_interval', 1), ('action_profile_max_events', 256))}
         try:

@@ -294,3 +294,116 @@ def test_trace_reads_per_layer_decisions_and_compares_runs(tmp_path):
     with pytest.raises(FileNotFoundError):
         trace.locate(tmp_path / 'missing')
     assert not trace.diff([], [])['same']
+
+
+# --- paths: one registry for the global and the per-layer path ----------------
+
+def test_strategies_declare_the_paths_they_decide_on():
+    G, L = strategy.GLOBAL, strategy.LAYER
+    q, p = strategy.QUERY_SCORER, strategy.PRESSURE_SCORER
+    assert strategy.names(q, G) == ('key_fps', 'meank', 'overlap', 'recency')
+    assert strategy.names(q, L) == ('meank', 'recency')
+    assert strategy.names(p, G) == ('attention', 'graph', 'recency')
+    assert strategy.names(p, L) == ('attention', 'recency')
+    assert strategy.get(q, 'overlap').legacy and not strategy.get(q, 'key_fps').legacy
+    # recency pressure: built in on the global path, a strategy object per layer.
+    assert strategy.resolve(p, 'recency', G) is None
+    assert strategy.resolve(p, 'recency', L).name == 'recency'
+    assert strategy.resolve(q, 'recency', G).name == 'recency'
+    with pytest.raises(ValueError, match='does not run on the layer path'):
+        strategy.resolve(q, 'key_fps', L)
+    with pytest.raises(ValueError, match='nonempty subset'):
+        Strategy(q, 'x', lambda: None, paths=('elsewhere',))
+    with pytest.raises(ValueError, match='only on its own paths'):
+        Strategy(q, 'x', lambda: None, native=(G,), paths=(L,))
+
+
+def test_serving_binds_every_global_built_in():
+    from vllm_kvmem import authority, prefill_attention
+    G = strategy.GLOBAL
+    assert strategy.native(strategy.QUERY_SCORER, 'meank', G) is authority._global_meank
+    assert strategy.native(strategy.QUERY_SCORER, 'key_fps', G) is authority._global_key_fps
+    assert strategy.native(strategy.QUERY_SCORER, 'overlap', G) is authority._global_overlap
+    for name in ('recency', 'attention', 'graph'):
+        assert strategy.native(strategy.PRESSURE_SCORER, name, G) is getattr(prefill_attention, '_pressure_' + name)
+    with pytest.raises(ValueError, match='not native'):
+        strategy.bind(strategy.QUERY_SCORER, 'recency', G, lambda: None)
+    with pytest.raises(ValueError, match='does not run'):
+        strategy.native(strategy.QUERY_SCORER, 'key_fps', strategy.LAYER)
+
+
+def test_on_the_global_path_the_strategy_options_are_the_older_switches():
+    from vllm_kvmem.options import RuntimeOptions
+    recency = RuntimeOptions(strategy_pressure_scorer='recency')
+    assert (recency.strategy_path, recency.pressure_policy, recency.action_pressure) == ('global', 'recency', False)
+    assert RuntimeOptions(strategy_pressure_scorer='recency', pressure_policy='recency').pressure_policy == 'recency'
+    with pytest.raises(ValueError, match='conflicts with pressure_policy'):
+        RuntimeOptions(strategy_pressure_scorer='recency', pressure_policy='attention')
+    # Per layer the same name is the per-layer scorer; the global policy is untouched.
+    layer = RuntimeOptions(strategy_pressure_scorer='recency', strategy_path='layer')
+    assert layer.pressure_policy == RuntimeOptions().pressure_policy
+    assert RuntimeOptions(strategy_query_scorer='recency').query_score_mode == 'mean_k'
+    with pytest.raises(ValueError, match='replaces query_score_mode'):
+        RuntimeOptions(strategy_query_scorer='recency', query_score_mode='key_fps_4')
+    with pytest.raises(ValueError, match='does not run on the layer path'):
+        RuntimeOptions(strategy_query_scorer='key_fps', strategy_path='layer')
+    with pytest.raises(ValueError, match='strategy_path'):
+        RuntimeOptions(strategy_path='both')
+
+
+def test_key_fps_by_either_name_is_the_same_option():
+    from vllm_kvmem.options import RuntimeOptions
+    # Without the graph prerequisites both spellings fail the same validation.
+    with pytest.raises(ValueError, match='query_score_mode=key_fps_4 requires'):
+        RuntimeOptions(query_score_mode='key_fps_4')
+    with pytest.raises(ValueError, match='query_score_mode=key_fps_4 requires'):
+        RuntimeOptions(strategy_query_scorer='key_fps')
+    with pytest.raises(ValueError, match='conflicts with query_score_mode'):
+        RuntimeOptions(strategy_query_scorer='key_fps', query_score_mode='overlap_16_8')
+
+
+def test_the_global_path_runs_a_strategy_object_behind_the_contract():
+    from vllm_kvmem.authority import global_query_scorer, _global_meank
+    records = [record(32 * i) for i in range(4)]
+    auth = NS(query_score_mode='mean_k', graph_options=NS(strategy_path='global', strategy_query_scorer='recency'))
+    scorer = global_query_scorer(auth)
+    scores, mean_scores = scorer(auth, records, None, None, (False, True, True, True), None, False, None)
+    assert mean_scores is None and scores[0] == 0 and scores[1] < scores[2] < scores[3]
+    with pytest.raises(ValueError, match='public Query only'):
+        scorer(auth, records, None, None, (False, True, True, True), None, True, None)
+    # The per-layer path keeps its shared frame on the built-in scorer.
+    auth.graph_options = NS(strategy_path='layer', strategy_query_scorer='recency')
+    assert global_query_scorer(auth) is _global_meank
+
+
+def test_global_pressure_dispatches_by_policy():
+    from vllm_kvmem.prefill_attention import select_pressure
+    calls = []
+    memory = NS(select=lambda scores, pins, **kw: calls.append((scores, pins, kw)) or 'plan')
+    auth = NS(graph_options=NS(pressure_policy='recency'), memory=memory,
+              records={1: NS(handle=NS(slot=7), history_begin=64)})
+    assert select_pressure(auth, (NS(slot=3),), max_tokens=96) == 'plan'
+    assert calls == [({7: 64.0}, (3,), dict(action=False, max_tokens=96))]
+    auth.graph_options = NS(pressure_policy='other')
+    with pytest.raises(ValueError, match='Unknown pressure policy'):
+        select_pressure(auth)
+
+
+def test_trace_includes_global_decisions(tmp_path):
+    capture = tmp_path / 'server' / 'capture'
+    capture.mkdir(parents=True)
+    write_trace(capture / trace.FILE)
+    rows = [dict(request_id='x', selection='pressure', history_begin=128, selected_history_ranges=[[0, 32], [64, 32]]),
+            dict(request_id='z', selection='query', history_begin=160, query_scoring_method='key_fps_4',
+                 selected_history_ranges=[[0, 32]]),
+            dict(request_id='z', selection='chunk', history_begin=0, selected_history_ranges=[])]
+    (capture / trace.GLOBAL_FILE).write_text(''.join(json.dumps(r) + '\n' for r in rows))
+    decisions = trace.read(tmp_path)
+    globals_ = [d for d in decisions if d.layer == trace.GLOBAL_LAYER]
+    assert [(d.kind, d.request, d.history, d.selected, d.method) for d in globals_] == [
+        ('pressure', 0, 128, (0, 64), ''), ('query', 2, 160, (0,), 'key_fps_4')]
+    assert trace.summary(decisions)['global_decisions'] == 2
+    only_global = tmp_path / 'global-only'
+    only_global.mkdir()
+    (only_global / trace.GLOBAL_FILE).write_text((capture / trace.GLOBAL_FILE).read_text())
+    assert len(trace.read(only_global)) == 2 and len(trace.read(only_global / trace.GLOBAL_FILE)) == 2

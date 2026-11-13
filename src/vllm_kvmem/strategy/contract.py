@@ -29,11 +29,20 @@ PICKER = 'picker'
 EVICTOR = 'evictor'
 ROLES = (QUERY_SCORER, PRESSURE_SCORER, PICKER, EVICTOR)
 
+# Where a decision is made. GLOBAL: one selection serves every layer
+# (authority.select_for_queries, prefill_attention.select_pressure). LAYER:
+# each attention layer selects its own window (layerwise_query/_pressure).
+GLOBAL = 'global'
+LAYER = 'layer'
+PATHS = (GLOBAL, LAYER)
+
 
 @dataclass(frozen=True)
 class QueryLayerView:
-    """One attention layer's retrieval decision at a Query.
+    """One attention layer's retrieval decision at a Query, or a global one.
 
+    layer: the layer index; None on the global path, where one decision serves
+        every layer and query/mean_index cover all scoring layers.
     records: the candidate snapshot, in history order; each has history_begin,
         count and handle.slot.
     eligible: per record, whether it competes for the budget. Ineligible
@@ -44,7 +53,7 @@ class QueryLayerView:
     history_tokens: accepted history length the snapshot covers.
     options: scorer-specific settings from serving (for example the MeanK backend).
     """
-    layer: int
+    layer: Any               # the attention layer, or None for a global decision (every layer)
     records: Sequence[Any]
     eligible: Sequence[bool]
     query: Any
@@ -168,13 +177,31 @@ class Strategy:
 
     needs: signals the strategy reads from its view. Serving refuses a
         strategy whose signals the current configuration cannot provide.
-    native: True when serving's built-in code path implements it. Serving then
-        runs that path unchanged and never calls build().
+    paths: where it can decide (GLOBAL, LAYER). Serving refuses it elsewhere.
+    native: the paths on which serving's built-in code implements it (True:
+        every path in paths). Serving runs that code, bound to the registry
+        with registry.bind, and never calls build() there.
+    legacy: kept for old profiles; not part of the comparison set.
     summary: one line for the generated strategy table.
     """
     role: str
     name: str
     build: Callable[[], Any]
     needs: tuple = ()
-    native: bool = False
+    native: Any = False
     summary: str = ''
+    paths: tuple = (LAYER,)
+    legacy: bool = False
+
+    def __post_init__(self):
+        paths = tuple(self.paths)
+        if not paths or any(path not in PATHS for path in paths):
+            raise ValueError('Strategy paths must be a nonempty subset of %s' % (PATHS,))
+        native = paths if self.native is True else () if self.native is False else tuple(self.native)
+        if not set(native) <= set(paths):
+            raise ValueError('A strategy can be native only on its own paths')
+        object.__setattr__(self, 'paths', paths)
+        object.__setattr__(self, 'native', native)
+
+    def native_on(self, path):
+        return path in self.native

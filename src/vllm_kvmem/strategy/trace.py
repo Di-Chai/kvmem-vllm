@@ -1,8 +1,9 @@
-"""Decision traces: what every per-layer selection chose in a serving run.
+"""Decision traces: what every selection chose in a serving run.
 
-Serving already writes its per-layer decisions to capture/layerwise_query.jsonl.
-This module reads them into one shape and compares two runs. It is the test
-for both layers:
+Serving already writes its per-layer decisions to capture/layerwise_query.jsonl
+and every refresh's global selection (one for all layers, layer -1) to
+capture/bounded_refresh.jsonl. This module reads both into one shape and
+compares two runs. It is the test for both layers:
 
 - a serving change keeps the strategy, so two runs must give equal traces;
 - a strategy change is studied by replaying a trace recorded with
@@ -21,6 +22,8 @@ from pathlib import Path
 import sys
 
 FILE = 'layerwise_query.jsonl'
+GLOBAL_FILE = 'bounded_refresh.jsonl'
+GLOBAL_LAYER = -1
 
 
 @dataclass(frozen=True)
@@ -36,20 +39,44 @@ class Decision:
 
 
 def locate(run):
+    """The per-layer decision file of a run (absent on the global path)."""
     path = Path(run)
     if path.is_file():
         return path
-    for candidate in (path / FILE, path / 'capture' / FILE, path / 'server' / 'capture' / FILE,
-                      path / 'run' / 'server' / 'capture' / FILE):
-        if candidate.is_file():
+    return capture_dir(path) / FILE
+
+
+def capture_dir(run):
+    path = Path(run)
+    if path.is_file():
+        return path.parent
+    for candidate in (path, path / 'capture', path / 'server' / 'capture', path / 'run' / 'server' / 'capture'):
+        if (candidate / FILE).is_file() or (candidate / GLOBAL_FILE).is_file():
             return candidate
-    raise FileNotFoundError('No %s under %s' % (FILE, run))
+    raise FileNotFoundError('No %s or %s under %s' % (FILE, GLOBAL_FILE, run))
 
 
 def read(run):
-    """Every per-layer decision of a run, in the order serving made them."""
-    decisions, order, pool = [], {}, {}
-    with locate(run).open() as stream:
+    """Every decision of a run: per-layer ones in serving order, then global ones in serving order.
+
+    RUN is a run or capture directory, a per-layer jsonl file, or a bounded_refresh.jsonl file.
+    """
+    decisions, order = [], {}
+    path = Path(run)
+    if path.is_file():
+        if path.name == GLOBAL_FILE:
+            return _read_global(path, decisions, order)
+        _read_layers(path, decisions, order)
+        return _read_global(path.parent / GLOBAL_FILE, decisions, order) if path.name == FILE else decisions
+    directory = capture_dir(path)
+    if (directory / FILE).is_file():
+        _read_layers(directory / FILE, decisions, order)
+    return _read_global(directory / GLOBAL_FILE, decisions, order)
+
+
+def _read_layers(path, decisions, order):
+    pool = {}
+    with path.open() as stream:
         for line in stream:
             event = json.loads(line)
             name = event.get('event')
@@ -76,6 +103,23 @@ def read(run):
     return decisions
 
 
+def _read_global(path, decisions, order):
+    """One decision per refresh: the selection made for every layer at once."""
+    if not path.is_file():
+        return decisions
+    with path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            ranges = row.get('selected_history_ranges')
+            if ranges is None or row.get('selection') not in ('query', 'pressure'):
+                continue
+            request = order.setdefault(row['request_id'], len(order))
+            method = row.get('query_scoring_method') or row.get('pressure_policy') or row.get('attention_source', '')
+            decisions.append(Decision(row['selection'], request, GLOBAL_LAYER, int(row.get('history_begin', -1)),
+                                      method, tuple(int(begin) for begin, _ in ranges), (), ()))
+    return decisions
+
+
 def digest(decisions):
     """One hash over what was chosen; scores and candidates are not part of it."""
     state = hashlib.sha256()
@@ -85,7 +129,8 @@ def digest(decisions):
 
 
 def summary(decisions):
-    out = dict(decisions=len(decisions), requests=len({d.request for d in decisions}), digest=digest(decisions))
+    out = dict(decisions=len(decisions), requests=len({d.request for d in decisions}), digest=digest(decisions),
+               global_decisions=sum(d.layer == GLOBAL_LAYER for d in decisions))
     for kind in ('query', 'pressure'):
         rows = [d for d in decisions if d.kind == kind]
         out[kind] = dict(decisions=len(rows), methods=sorted({d.method for d in rows}),
@@ -120,8 +165,10 @@ def main(argv=None):
         return 0 if result['same'] else 1
     if argv == ['table']:
         from . import table
+        print('%-16s %-11s %-13s %-13s %s' % ('role', 'name', 'paths', 'built-in on', 'summary'))
         for s in table():
-            print('%-16s %-11s %-8s %s' % (s.role, s.name, 'built-in' if s.native else 'strategy', s.summary))
+            print('%-16s %-11s %-13s %-13s %s%s' % (s.role, s.name, ','.join(s.paths), ','.join(s.native) or '-',
+                                                    s.summary, ' (legacy)' if s.legacy else ''))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

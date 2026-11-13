@@ -518,16 +518,23 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'profile': cfg, 'vllm_argv': argv, 'environment': env}
 
 
+def strategy_path(query_mode):
+    """The path whose decisions the strategy options choose, from the launch flags."""
+    return 'layer' if query_mode else 'global'
+
+
 def validate_strategy_scope(kvmem, *, query_mode, pressure):
     """Refuse a strategy the launched path would silently ignore.
 
-    The scorer seams are on the per-layer path. The global path still chooses
-    its scoring through query_score_mode and pressure_policy.
+    On the global path every registered global strategy runs (the options check
+    the names against the registry). On the per-layer path the Query scorer
+    seam is in sequential selection and the pressure scorer seam in per-layer
+    pressure; without them the per-layer scorer would never be called.
     """
-    if kvmem.get('strategy_query_scorer', 'meank') != 'meank' and query_mode != 'sequential':
+    if query_mode and query_mode != 'sequential' and kvmem.get('strategy_query_scorer', 'meank') != 'meank':
         raise ValueError('strategy_query_scorer applies to sequential per-layer Query selection '
                          '(--layerwise-query-diagnostic sequential)')
-    if kvmem.get('strategy_pressure_scorer', 'attention') != 'attention' and not pressure:
+    if query_mode and kvmem.get('strategy_pressure_scorer', 'attention') != 'attention' and not pressure:
         raise ValueError('strategy_pressure_scorer applies to per-layer pressure selection '
                          '(--layerwise-prefill-pressure)')
 
@@ -604,6 +611,12 @@ def main(argv=None):
         profile, base = json.loads(source.read_text()), source.parent
     if args.tensor_parallel_size is not None:
         profile['tensor_parallel_size'] = args.tensor_parallel_size
+    if isinstance(profile.get('kvmem'), dict):
+        path = strategy_path(args.layerwise_query_diagnostic)
+        if profile['kvmem'].get('strategy_path', path) != path:
+            raise ValueError('strategy_path=%s contradicts the launch flags (%s path)'
+                             % (profile['kvmem']['strategy_path'], path))
+        profile['kvmem']['strategy_path'] = path
     plan = build_launch(profile, base, run_dir)
     if plan['profile'].get('tensor_parallel_size', 1) > 1 and (args.layerwise_query_diagnostic or args.systemone_fork):
         raise ValueError('Tensor-parallel serving uses global selection and native Qwen MTP')

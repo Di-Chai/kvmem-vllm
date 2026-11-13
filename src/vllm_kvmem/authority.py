@@ -140,6 +140,77 @@ class VersionedRecords(dict):
 SCORE_DOMAIN_VERSION = 'qw3-native-v2'
 
 
+# Global Query scorers (strategy layer). Each returns (scores, mean_scores):
+# one score per record, and the MeanK scores a MeanK quota needs, or None.
+def _global_meank(authority, records, queries, means, score_mask, eligible, guided_pressure, mean_key_scores):
+    from .tensor_parallel import mean_head_scores
+    return mean_head_scores(mean_key_scores(queries, means.to(queries.device), eligible)).cpu().tolist(), None
+
+
+def _global_overlap(authority, records, queries, means, score_mask, eligible, guided_pressure, mean_key_scores):
+    from .query_window_scoring import score_authority_windows
+    from .tensor_parallel import mean_head_scores
+    if guided_pressure:
+        raise ValueError('16/8 window mode is qualified for the public Query only')
+    values, stats = score_authority_windows(authority, records, queries, means, score_mask)
+    authority.query_window_stats = stats
+    return mean_head_scores(values).cpu().tolist(), None
+
+
+def _global_key_fps(authority, records, queries, means, score_mask, eligible, guided_pressure, mean_key_scores):
+    from .query_key_fps import score_authority_fps
+    from .tensor_parallel import mean_head_scores
+    if guided_pressure:
+        raise ValueError('4-Key FPS mode is qualified for the public Query only')
+    values, stats = score_authority_fps(authority, records, queries, means, score_mask)
+    authority.query_key_fps_stats = stats
+    scores, mean_scores = mean_head_scores(values).cpu().tolist(), None
+    if getattr(getattr(authority, 'graph_options', None), 'query_mean_quota_fraction', 0):
+        mean_started = time.perf_counter()
+        mean_scores = mean_head_scores(mean_key_scores(
+            queries, means.to(queries.device), eligible)).cpu().tolist()
+        stats['mean_quota_scoring_seconds'] = time.perf_counter()-mean_started
+    return scores, mean_scores
+
+
+def _bind_global_query_scorers():
+    from .strategy import GLOBAL, QUERY_SCORER, bind
+    for name, implementation in (('meank', _global_meank), ('overlap', _global_overlap),
+                                 ('key_fps', _global_key_fps)):
+        bind(QUERY_SCORER, name, GLOBAL, implementation)
+
+
+_bind_global_query_scorers()
+
+
+def global_query_scorer(authority):
+    """The global Query scorer: a bound built-in, or a strategy object behind the contract.
+
+    query_score_mode names the built-in one. On the global path a strategy that
+    is not built in (strategy_query_scorer) replaces it.
+    """
+    from .strategy import GLOBAL, QUERY_SCORE_MODES, QUERY_SCORER, native, resolve
+    options = getattr(authority, 'graph_options', None)
+    name = getattr(options, 'strategy_query_scorer', 'meank')
+    if getattr(options, 'strategy_path', 'global') == GLOBAL and name not in QUERY_SCORE_MODES.values():
+        cache = authority.__dict__.setdefault('_strategy_scorers', {})
+        if name not in cache:
+            cache[name] = resolve(QUERY_SCORER, name, GLOBAL)
+        return _object_scorer(cache[name])
+    return native(QUERY_SCORER, QUERY_SCORE_MODES[authority.query_score_mode], GLOBAL)
+
+
+def _object_scorer(scorer):
+    def scores(authority, records, queries, means, score_mask, eligible, guided_pressure, mean_key_scores):
+        from .strategy import QueryLayerView, check_query_scores
+        if guided_pressure:
+            raise ValueError('A strategy Query scorer is qualified for the public Query only')
+        view = QueryLayerView(None, records, tuple(score_mask), queries, means,
+                              max((r.history_begin + r.count for r in records), default=0), {})
+        return list(check_query_scores(view, scorer.scores(view))), None
+    return scores
+
+
 @contextmanager
 def query_score_frame(memory, records, mandatory=(), max_tokens=None):
     """Keep the original qw3 score-frame leases through scoring and selection."""
@@ -1049,29 +1120,10 @@ class RequestAuthority:
                 transport_mask = frame.transport_mask
                 verify_query_domain(self.memory.request_id, records, score_mask, queries.shape[1])
                 eligible = torch.tensor(score_mask, dtype=torch.bool, device=queries.device)
-                mean_scores = None
-                if self.query_score_mode == 'overlap_16_8':
-                    from .query_window_scoring import score_authority_windows
-                    if guided_pressure:
-                        raise ValueError('16/8 window mode is qualified for the public Query only')
-                    values, stats = score_authority_windows(self, records, queries, means, score_mask)
-                    self.query_window_stats = stats
-                    scores = mean_head_scores(values).cpu().tolist()
-                elif self.query_score_mode == 'key_fps_4':
-                    from .query_key_fps import score_authority_fps
-                    if guided_pressure:
-                        raise ValueError('4-Key FPS mode is qualified for the public Query only')
-                    values, stats = score_authority_fps(self, records, queries, means, score_mask)
-                    self.query_key_fps_stats = stats
-                    scores = mean_head_scores(values).cpu().tolist()
-                    if getattr(getattr(self, 'graph_options', None), 'query_mean_quota_fraction', 0):
-                        mean_started = time.perf_counter()
-                        mean_scores = mean_head_scores(mean_key_scores(
-                            queries, means.to(queries.device), eligible)).cpu().tolist()
-                        stats['mean_quota_scoring_seconds'] = time.perf_counter()-mean_started
-                else:
-                    scores = mean_head_scores(mean_key_scores(
-                        queries, means.to(queries.device), eligible)).cpu().tolist()
+                # Strategy layer: the global Query scorer, looked up by name.
+                scorer = global_query_scorer(self)
+                scores, mean_scores = scorer(self, records, queries, means, score_mask, eligible,
+                                             guided_pressure, mean_key_scores)
             # index_snapshot retains the same generation-qualified records
             # through the remaining synchronous picker/assembly preparation.
             self.query_score_domain = dict(version=SCORE_DOMAIN_VERSION,
