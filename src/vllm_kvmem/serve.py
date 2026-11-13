@@ -622,8 +622,6 @@ def main(argv=None):
         raise ValueError('Tensor-parallel serving uses global selection and native Qwen MTP')
     if args.layerwise_query_diagnostic and not profile.get('kvmem', {}).get('async_refresh', False):
         raise ValueError('Layerwise Query requires async_refresh; synchronous refresh does not invoke layerwise selection')
-    validate_strategy_scope(profile.get('kvmem', {}), query_mode=args.layerwise_query_diagnostic,
-                            pressure=args.layerwise_prefill_pressure)
     if plan['profile'].get('kvmem', {}).get('request_swap_layerwise', False):
         if (args.layerwise_query_diagnostic != 'sequential' or not args.layerwise_query_optimized or
                 not args.layerwise_query_native_batches or not args.layerwise_prefill_pressure or
@@ -772,6 +770,17 @@ def main(argv=None):
         plan['environment']['KVMEM_VERIFY_GUIDED_PRESSURE'] = '1'
     if 'multi_user' in plan['profile'] and os.environ.get('VLLM_RUST_FRONTEND_PATH'):
         raise ValueError('Multi-user admission requires the Python API frontend')
+    if isinstance(plan['profile'].get('kvmem'), dict):
+        # Strategy layer: one check of every chosen strategy against the launched path.
+        from .capabilities import check as check_capabilities
+        plan['strategy'] = check_capabilities(
+            plan['profile']['kvmem'], query_mode=args.layerwise_query_diagnostic,
+            pressure=args.layerwise_prefill_pressure,
+            batch_selection=plan['environment'].get('KVMEM_LAYERWISE_PRESSURE_BATCH_SELECTION') == '1',
+            environment=plan['environment'])
+        if plan['strategy'].get('shared_frame_only'):
+            print('KVMem: per-layer selection; these choose only the shared frame, not any layer window: '
+                  + ', '.join(plan['strategy']['shared_frame_only']), file=sys.stderr)
     if args.dry_run:
         print(json.dumps(plan, indent=2))
         return
