@@ -11,7 +11,7 @@ from vllm_kvmem import serve
 def launch(tmp_path,monkeypatch,capsys):
     profile=dict(max_num_seqs=8,execution_mode='compiled_graph',
         kvmem=dict(select_budget=16384,gen_budget=4096,archive_backend='cpu',repository_gc=False,
-                   async_refresh=True))
+                   async_refresh=True,action_attention=True,prefill_attention=True,pressure_policy='attention'))
     config=tmp_path/'profile.json';config.write_text(json.dumps(profile))
     monkeypatch.setattr(serve,'build_launch',lambda p,*a:dict(profile=p,environment={}))
     flags=['--layerwise-query-diagnostic','sequential','--layerwise-query-optimized',
@@ -22,7 +22,9 @@ def launch(tmp_path,monkeypatch,capsys):
         serve.main(['--config',str(config),'--run-dir',str(tmp_path/'run'),'--dry-run',
                     *[f for f in flags if f not in omit],*extra])
         result=json.loads(capsys.readouterr().out)
-        assert result['profile']==profile and not (tmp_path/'run').exists()
+        # The launcher records which path the strategy options choose for (layering step 3).
+        assert result['profile']==dict(profile,kvmem=dict(profile['kvmem'],strategy_path='layer'))
+        assert not (tmp_path/'run').exists()
         return result['environment']
     return run,profile
 

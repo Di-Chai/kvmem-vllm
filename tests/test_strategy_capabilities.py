@@ -36,6 +36,9 @@ def test_per_layer_refusals_come_at_launch():
         capabilities.check(dict(BASE, strategy_query_scorer='key_fps'), **layer)
     with pytest.raises(ValueError, match='pressure_policy=attention'):
         capabilities.check(dict(BASE, pressure_policy='recency'), **layer)
+    # A Query-only per-layer diagnostic runs no per-layer pressure: nothing to check there.
+    capabilities.check(dict(BASE, pressure_policy='recency', action_attention=False),
+                       query_mode='sequential', pressure=False)
     with pytest.raises(ValueError, match='no guidance or Query history'):
         capabilities.check(dict(BASE, guided_query_tokens=64), **layer)
     with pytest.raises(ValueError, match='no guidance or Query history'):

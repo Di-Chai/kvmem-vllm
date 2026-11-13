@@ -95,6 +95,8 @@ def check(kvmem, *, query_mode, pressure, batch_selection=False, environment=Non
     choice = chosen(kvmem, path)
     for role, name in choice:
         entry = strategy.check_path(role, name, path)
+        if path == strategy.LAYER and role == strategy.PRESSURE_SCORER and not pressure:
+            continue    # no per-layer pressure is launched; its scorer never runs
         missing = [need for need in entry.needs if need not in signals]
         if missing:
             raise ValueError('%s %r needs %s, which this configuration does not produce' % (
@@ -110,8 +112,8 @@ def check(kvmem, *, query_mode, pressure, batch_selection=False, environment=Non
         policy = kvmem.get('pressure_policy')
         if policy is None:
             policy = 'attention' if kvmem.get('action_pressure', False) else 'recency'
-        if policy != 'attention':
-            raise ValueError('Per-layer selection requires pressure_policy=attention; choose another pressure '
+        if pressure and policy != 'attention':
+            raise ValueError('Per-layer pressure requires pressure_policy=attention; choose another pressure '
                              'strategy with strategy_pressure_scorer')
         if pressure and (kvmem.get('guided_query_tokens', 0) or kvmem.get('query_history', False) or
                          not kvmem.get('prefill_attention', False)):
