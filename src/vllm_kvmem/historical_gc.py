@@ -212,7 +212,9 @@ class HistoricalGcSettings:
     def __post_init__(self):
         if self.mode not in ('off', 'shadow', 'delete'):
             raise ValueError('historical_gc.mode must be off, shadow or delete')
-        if not isinstance(self.policy, str) or self.policy not in _POLICY_DEFAULTS:
+        # Strategy layer: the eviction policy is an evictor in the strategy registry.
+        from .strategy import EVICTOR, names
+        if not isinstance(self.policy, str) or self.policy not in names(EVICTOR) or self.policy not in _POLICY_DEFAULTS:
             raise ValueError(f'Unknown historical_gc.policy: {self.policy!r} (supported: lru, redundancy)')
         if not isinstance(self.policy_params, dict):
             raise ValueError('historical_gc.policy_params must be an object')

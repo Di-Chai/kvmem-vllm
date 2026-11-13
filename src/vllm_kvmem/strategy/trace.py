@@ -23,6 +23,7 @@ import sys
 
 FILE = 'layerwise_query.jsonl'
 GLOBAL_FILE = 'bounded_refresh.jsonl'
+EVICTION_FILE = 'historical_gc_evictions.jsonl'
 GLOBAL_LAYER = -1
 
 
@@ -36,6 +37,14 @@ class Decision:
     selected: tuple        # history_begin of every selected block, in order
     candidates: tuple      # history_begin of every candidate, or () when not recorded
     scores: tuple          # one score per candidate, or () when not recorded
+    # Recorded with strategy_trace_scores, for an offline replay (replay.py):
+    fixed: tuple = ()      # blocks placed before scoring (sink, mandatory, recent, partial)
+    excluded: tuple = ()   # candidates that may not be chosen (Query: partial blocks outside the frame)
+    eligible: tuple = ()   # per candidate, whether it competes (Query)
+    counts: tuple = ()     # per candidate, its token count, when recorded
+    budget: int = -1       # selected-token budget
+    sink: int = -1         # sink tokens (pressure)
+    stage: str = ''        # 'prefill' or 'decode' (pressure)
 
 
 def locate(run):
@@ -71,7 +80,25 @@ def read(run):
     directory = capture_dir(path)
     if (directory / FILE).is_file():
         _read_layers(directory / FILE, decisions, order)
-    return _read_global(directory / GLOBAL_FILE, decisions, order)
+    _read_global(directory / GLOBAL_FILE, decisions, order)
+    return _read_evictions(directory / EVICTION_FILE, decisions, order)
+
+
+def _read_evictions(path, decisions, order):
+    """One decision per request: every block the historical-GC evictor retired for it."""
+    if not path.is_file():
+        return decisions
+    evicted, policy = {}, {}
+    with path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            request = order.setdefault(row['request_id'], len(order))
+            evicted.setdefault(request, set()).update(int(b) for b in row.get('history_begins', ()))
+            policy[request] = row.get('policy') or ''
+    for request in sorted(evicted):
+        decisions.append(Decision('evict', request, GLOBAL_LAYER, -1, policy[request],
+                                  tuple(sorted(evicted[request])), (), ()))
+    return decisions
 
 
 def _read_layers(path, decisions, order):
@@ -84,22 +111,28 @@ def _read_layers(path, decisions, order):
                 continue
             request = order.setdefault(event['request_id'], len(order))
             if name == 'query_candidates':
-                pool[request] = (tuple(event['candidate_starts']), int(event['history']))
+                pool[request] = event
             elif name == 'layer_selected':
-                candidates, history = pool.get(request, ((), -1))
+                frame = pool.get(request, {})
                 scores = tuple(event.get('candidate_scores') or ())
                 decisions.append(Decision(
-                    'query', request, int(event['layer']), history,
+                    'query', request, int(event['layer']), int(frame.get('history', -1)),
                     event.get('query_scorer', 'meank'),
                     tuple(event.get('selected_starts') or event.get('selected_blocks') or ()),
-                    candidates if scores else (), scores))
+                    tuple(frame.get('candidate_starts', ())) if scores else (), scores,
+                    fixed=tuple(frame.get('fixed_starts', ())), excluded=tuple(frame.get('excluded_starts', ())),
+                    eligible=tuple(frame.get('eligible', ())), counts=tuple(frame.get('candidate_counts', ())),
+                    budget=int(frame.get('budget', -1))))
             else:
+                stage = str(event.get('event_type', '')).removesuffix('_pressure')
                 for layer in event.get('layers', ()):
                     scores = tuple(layer.get('candidate_scores') or ())
                     decisions.append(Decision(
                         'pressure', request, int(layer['layer']), int(event.get('accepted_history', -1)),
                         layer.get('actual_method', ''), tuple(layer.get('selected_starts', ())),
-                        tuple(layer.get('candidate_starts', ())), scores))
+                        tuple(layer.get('candidate_starts', ())), scores,
+                        fixed=tuple(layer.get('mandatory_starts', ())), budget=int(layer.get('budget_tokens', -1)),
+                        sink=int(layer.get('sink_tokens', -1)), stage=stage))
     return decisions
 
 
@@ -131,7 +164,7 @@ def digest(decisions):
 def summary(decisions):
     out = dict(decisions=len(decisions), requests=len({d.request for d in decisions}), digest=digest(decisions),
                global_decisions=sum(d.layer == GLOBAL_LAYER for d in decisions))
-    for kind in ('query', 'pressure'):
+    for kind in ('query', 'pressure', 'evict'):
         rows = [d for d in decisions if d.kind == kind]
         out[kind] = dict(decisions=len(rows), methods=sorted({d.method for d in rows}),
                          selected_blocks=sum(len(d.selected) for d in rows),

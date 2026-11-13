@@ -812,7 +812,10 @@ class LayerwisePrefillPressure:
                 query_samples=history.samples, sampled_chunks=history.chunks,
                 actual_method=('accumulated_attention_per_layer' if scorer is None
                                else scorer.name + '_per_layer'), fallback_reason=None,
-                **({'candidate_scores': [float(v) for v in traced]}
+                **({'candidate_scores': [float(v) for v in traced],
+                    # What an offline replay needs to pick again (python -m vllm_kvmem.strategy.replay).
+                    'mandatory_starts': sorted(32 * b for b in required), 'budget_tokens': cfg.select_budget,
+                    'sink_tokens': cfg.sink_blocks * cfg.block_tokens}
                    if trace_scores and batched is None and traced is not None else {}),
                 **({'pressure_selection_backend': 'native_batch_snapshot'} if batched is not None else {}),
                 **(dict(attention_state_backend='native_decode',

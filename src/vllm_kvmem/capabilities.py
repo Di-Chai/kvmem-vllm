@@ -121,6 +121,9 @@ def check(kvmem, *, query_mode, pressure, batch_selection=False, environment=Non
             raise ValueError('Pressure batch selection implements the attention scorer and native picker only')
     report = dict(path=path, query_scorer=query, pressure_scorer=pressure_name, picker=picker,
                   signals=sorted(signals))
+    gc = kvmem.get('historical_gc')
+    if isinstance(gc, dict) and gc.get('mode', 'off') != 'off':
+        report['evictor'] = strategy.check_path(strategy.EVICTOR, gc.get('policy', 'lru'), path).name
     if path == strategy.LAYER:
         report['shared_frame_only'] = global_only(kvmem, environment)
     return report

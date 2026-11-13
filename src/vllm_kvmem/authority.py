@@ -382,10 +382,13 @@ class RequestAuthority:
         staged = [(key, record) for key, record in self.discarded_records.items()
                   if record.staging_slot is not None]
         retired = []
+        finalizing = getattr(self.gc, 'stopped', False)
         if getattr(self.gc, 'native_history', False):
             self.gc.drain(self.records, self.discarded_records, retired=retired)
         else:
             self.gc.drain(self.records, self.discarded_records)
+        if retired and not finalizing:
+            self._trace_evictions(retired)
         if retired:
             self._pending_cache_retire.extend(retired)
             self._drain_cache_retirements()
@@ -393,6 +396,19 @@ class RequestAuthority:
         for key, record in staged:
             if key not in self.discarded_records:
                 self._return_record_buffers(record)
+
+    def _trace_evictions(self, retired):
+        """Strategy layer: the historical-GC evictor's decisions join the decision trace."""
+        path = getattr(self.archive, 'history_scope_metrics_path', None)
+        if path is None:
+            return
+        import json
+        from pathlib import Path
+        row = dict(event='evicted', request_id=self.memory.request_id, at=time.time(),
+                   policy=getattr(self.archive, '_history_policy', None),
+                   history_begins=sorted(int(entry[0]) for entry in retired))
+        with (Path(path).parent / 'historical_gc_evictions.jsonl').open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
 
     def _drain_cache_retirements(self):
         if self._index_snapshot_depth or not self._pending_cache_retire:

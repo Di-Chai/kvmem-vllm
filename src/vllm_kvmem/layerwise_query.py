@@ -515,7 +515,9 @@ class LayerwiseQuery:
                           candidate_counts=[r.count for r in records],
                           eligible=[bool(e) for e in state['score_mask']],
                           fixed_starts=sorted(r.history_begin for r in records
-                                              if r.handle.slot in fixed_slots))
+                                              if r.handle.slot in fixed_slots),
+                          excluded_starts=sorted(r.history_begin for r in records
+                                                 if r.handle.slot in state.get('partial_excluded', ())))
             diagnostic['candidate_scores'] = [float(v) for v in scores]
         if self.diagnostics:
             diagnostic['q_sha256'] = hashlib.sha256(

@@ -19,7 +19,7 @@ PACKAGE = Path(strategy.__file__).parent
 # --- layering -----------------------------------------------------------------
 
 def test_strategy_package_imports_only_itself_and_the_standard_library():
-    allowed = {'dataclasses', 'hashlib', 'json', 'math', 'pathlib', 'sys', 'typing'}
+    allowed = {'argparse', 'dataclasses', 'hashlib', 'json', 'math', 'pathlib', 'sys', 'typing'}
     for path in sorted(PACKAGE.glob('*.py')):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Import):
@@ -185,7 +185,9 @@ def test_trace_scores_record_one_score_per_candidate(scorer, fast):
     assert chosen == base
     for layer, reference in zip(evidence, plain):
         assert len(layer['candidate_scores']) == len(layer['candidate_starts'])
-        assert {k: v for k, v in layer.items() if k != 'candidate_scores'} == reference
+        replay_fields = {'candidate_scores', 'mandatory_starts', 'budget_tokens', 'sink_tokens'}
+        assert {k: v for k, v in layer.items() if k not in replay_fields} == reference
+        assert layer['budget_tokens'] > 0 and layer['sink_tokens'] >= 0
 
 
 def test_a_scorer_that_breaks_the_contract_stops_the_refresh():
