@@ -176,7 +176,9 @@ def diff(a, b, *, limit=10):
     """Compare what two runs chose, decision by decision in serving order."""
     out = dict(a=len(a), b=len(b), equal=0, different=[])
     for index, (x, y) in enumerate(zip(a, b)):
-        if (x.kind, x.request, x.layer, x.history, x.selected) == (y.kind, y.request, y.layer, y.history, y.selected):
+        # A Query decision's history is recorded only with strategy_trace_scores (-1 otherwise).
+        same_history = x.history == y.history or x.history < 0 or y.history < 0
+        if (x.kind, x.request, x.layer, x.selected) == (y.kind, y.request, y.layer, y.selected) and same_history:
             out['equal'] += 1
         elif len(out['different']) < limit:
             common = len(set(x.selected) & set(y.selected))

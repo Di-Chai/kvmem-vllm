@@ -99,3 +99,12 @@ def test_evictions_join_the_trace_once_per_request(tmp_path):
     assert [(d.kind, d.request, d.selected, d.method) for d in decisions] == [
         ('evict', 0, (32, 64, 96), 'lru'), ('evict', 1, (0,), 'lru')]
     assert trace.summary(decisions)['evict']['selected_blocks'] == 4
+
+
+def test_a_run_with_trace_scores_compares_equal_to_one_without(tmp_path):
+    with_scores = trace.read(write_run(tmp_path / 'a', pressure_selected=[0, 32, 64], query_selected=[0, 32, 96]))
+    plain = [d if d.kind != 'query' else trace.Decision(d.kind, d.request, d.layer, -1, d.method, d.selected, (), ())
+             for d in with_scores]
+    assert trace.diff(with_scores, plain)['same']
+    moved = [trace.Decision(d.kind, d.request, d.layer, d.history + 32, d.method, d.selected, (), ()) for d in with_scores]
+    assert not trace.diff(with_scores, moved)['same']
