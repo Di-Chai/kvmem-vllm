@@ -1,6 +1,6 @@
 """Explicit final Query scorer choice cannot silently fall back."""
 import pytest
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 from test_layerwise_query import runner
 
 

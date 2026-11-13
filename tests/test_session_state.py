@@ -5,8 +5,8 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.native_state import NativeRecurrentState
-from vllm_kvmem.session_state import PromptStateAdapter
+from vllm_kvmem.serving.native_state import NativeRecurrentState
+from vllm_kvmem.serving.session_state import PromptStateAdapter
 
 
 def fixture(device='cpu', draft=True):
@@ -140,7 +140,7 @@ def test_terminal_padded_prefill_tail_preserves_first_accepted_state(history):
 
 
 def test_clipped_continuation_keeps_accepted_state_and_repeated_metadata_is_idempotent(monkeypatch):
-    from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
+    from vllm_kvmem.serving.native_state import canonicalize_before_non_speculative_batch
     adapter, conv, ssm, _, _ = fixture()
     runner = adapter.runner
     runner.speculative_config = object()
@@ -150,7 +150,7 @@ def test_clipped_continuation_keeps_accepted_state_and_repeated_metadata_is_idem
         last_steps={'a': [{'history_begin': 6, 'accepted': 2, 'scheduled': 2}]})
     adapter.recurrent.conv_dim_first = False
     adapter.recurrent.conv_widths = {'gdn': 4}
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState', lambda _: adapter.recurrent)
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState', lambda _: adapter.recurrent)
     batch = SimpleNamespace(num_reqs=2, req_ids=['a', 'b'], num_draft_tokens_per_req=[0, 7],
         is_prefilling_np=[False, False], num_computed_tokens_np=[8, 8])
     old_conv, old_ssm = conv.clone(), ssm.clone()
@@ -177,7 +177,7 @@ def test_snapshot_uses_exact_visible_logical_tail_without_guessing_physical_page
 
 
 def test_prepared_restore_reuses_owned_packed_payload_without_another_host_gather(monkeypatch):
-    import vllm_kvmem.session_state as state_module
+    import vllm_kvmem.serving.session_state as state_module
     adapter, conv, ssm, cache, _ = fixture()
     snapshot = adapter.capture('a', 8, max_bytes=4096)
     expected = conv.clone(), ssm.clone(), cache.clone()
@@ -268,7 +268,7 @@ def test_pending_snapshot_keeps_source_and_rejects_cpu_consumers_until_its_fence
 def test_capture_submission_returns_without_host_wait_and_fences_failed_submission(monkeypatch, record_fails):
     """Exercise the CUDA submission branch with CPU-backed tensor storage."""
     from test_core import Event
-    import vllm_kvmem.session_state as state_module
+    import vllm_kvmem.serving.session_state as state_module
     adapter, _, _, _, _ = fixture(draft=False)
     copied, synchronized = [], []
 

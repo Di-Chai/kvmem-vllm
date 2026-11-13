@@ -6,7 +6,7 @@ import pytest
 
 torch = pytest.importorskip('torch')
 pytest.importorskip('vllm')
-from vllm_kvmem.window_assembly import (NativeWindowAssembler, _validate_destinations,
+from vllm_kvmem.serving.window_assembly import (NativeWindowAssembler, _validate_destinations,
                                       _validate_resident_sources)
 
 
@@ -163,7 +163,7 @@ def test_split_checks_all_resident_sources_before_first_snapshot():
 
 @pytest.mark.parametrize('packed', [False,True])
 def test_packed_and_generic_paths_keep_existing_whole_plan_capacity_guard(packed):
-    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.core.memory import Phase
     assembler=NativeWindowAssembler.__new__(NativeWindowAssembler)
     assembler.layers=[layer(16,16),layer(8,16)]
     assembler.block_tokens=4;assembler.heads=1;assembler.dim=4

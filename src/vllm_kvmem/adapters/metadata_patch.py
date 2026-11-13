@@ -31,6 +31,6 @@ def patch_metadata_source(source: bytes) -> str:
     anchor = "    attn_metadata: dict[str, Any] = {}"
     if text.count(anchor) != 1:
         raise ImportError("Ambiguous attention-window context hook")
-    return text.replace(anchor, """    from vllm_kvmem.window_batch import contextual_metadata
+    return text.replace(anchor, """    from vllm_kvmem.serving.window_batch import contextual_metadata
     model_specific_attn_metadata = contextual_metadata(model_specific_attn_metadata)
 """ + anchor)

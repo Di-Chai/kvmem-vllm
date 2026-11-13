@@ -4,7 +4,7 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.recall_scoring import build_block_features
+from vllm_kvmem.serving.recall_scoring import build_block_features
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
                                reason='Explicit GPU qualification only')

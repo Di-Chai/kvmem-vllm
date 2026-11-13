@@ -4,8 +4,8 @@ from threading import Event
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.storage import AsyncArchive
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.storage import AsyncArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 
 
 def archive_at(path, cached, limit=8192):
@@ -61,8 +61,8 @@ def test_byte_pressure_across_namespaces_and_direct_cache_reads(tmp_path, cached
 
 
 def test_serving_byte_quota_rejects_unserviceable_batches_before_open(tmp_path):
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.storage import make_shared_archive
     options = RuntimeOptions(archive_io_max_bytes=4096)
     with pytest.raises(ValueError, match='full serving batch'):
         make_shared_archive(options, tmp_path / 'never-opened', 4096, 4)
@@ -70,7 +70,7 @@ def test_serving_byte_quota_rejects_unserviceable_batches_before_open(tmp_path):
 
 
 def test_capture_waits_for_detached_retirement_bytes_instead_of_false_capacity_failure(tmp_path):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     archive = archive_at(tmp_path, False, limit=4096)
     repo = _native.Repository(1, 16)
     lease = repo.reserve(0, 16).commit()

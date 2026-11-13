@@ -18,7 +18,7 @@ test = ["pytest>=8,<10"]
 kvmem = "vllm_kvmem:register"
 
 [project.entry-points."vllm.endpoint_plugins"]
-kvmem = "vllm_kvmem.systemone:SystemOnePlugin"
+kvmem = "vllm_kvmem.serving.systemone:SystemOnePlugin"
 
 [project.scripts]
 vllm-kvmem = "vllm_kvmem.__main__:main"

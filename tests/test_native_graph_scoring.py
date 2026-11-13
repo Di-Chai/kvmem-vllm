@@ -3,8 +3,8 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.serving.graph_scoring import score_graph
 from test_graph_scoring_v2 import matrix_oracle
 
 

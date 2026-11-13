@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip("vllm")
 from vllm.v1.outputs import KVConnectorOutput
-from vllm_kvmem.connector import ControlCompletions
-from vllm_kvmem.scheduler import KVMemScheduler
+from vllm_kvmem.serving.connector import ControlCompletions
+from vllm_kvmem.serving.scheduler import KVMemScheduler
 from test_connector import pair
 from test_window_manager import make_manager
 
@@ -117,7 +117,7 @@ def test_prefill_decode_share_sizes_decode_turns_by_time(monkeypatch):
     # Binary-exact times: a 1 s prefill earns 0.25 s (two 0.125 s decode turns),
     # a 2 s prefill earns 0.5 s (four turns); prefill is released when spent.
     clock = iter([0., 1., 1.125, 1.25, 3.25, 3.375, 3.5, 3.625, 3.75])
-    monkeypatch.setattr('vllm_kvmem.scheduler.time.perf_counter', lambda: next(clock))
+    monkeypatch.setattr('vllm_kvmem.serving.scheduler.time.perf_counter', lambda: next(clock))
     turns = [scheduler._throttle_mixed_prefill() for _ in range(9)]
     assert turns == [False, True, True, False, True, True, True, True, False]
     assert scheduler._cadence_requested == 6
@@ -270,7 +270,7 @@ def test_size_aware_burst_lets_decoders_ride_small_admitted_prefills():
 
 def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     scheduler, request, _ = setup_scheduler()
     scheduler._bounded_target = scheduler.request_planning = True
     scheduler.query_policy = SpeculativeQueryPolicy(16,32,48,4)
@@ -286,7 +286,7 @@ def test_legacy_entry_in_query_profile_leaves_mtp_allocation_headroom(monkeypatc
 @pytest.mark.parametrize('planned',[False,True])
 def test_native_padded_one_token_tail_retains_full_verification_shape(monkeypatch,history,planned):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     scheduler,request,_=setup_scheduler()
     scheduler._bounded_target=True;scheduler.num_spec_tokens=4
     scheduler.query_policy=SpeculativeQueryPolicy(16,32,48,5)
@@ -360,7 +360,7 @@ def test_refresh_pages_cannot_be_preempted_before_ack():
 @pytest.mark.parametrize('native_field', [False, True])
 def test_published_rows_include_blocks_allocated_in_resume_step(monkeypatch, tmp_path, native_field):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     scheduler, request, _ = setup_scheduler()
     scheduler.begin_refresh(request, 32)
     command = scheduler.connector.commands[0]
@@ -382,7 +382,7 @@ def test_published_rows_include_blocks_allocated_in_resume_step(monkeypatch, tmp
 
 
 def test_query_command_precedes_counter_advance_and_ack_uses_actual_selected_extent(monkeypatch, tmp_path):
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     scheduler, request, pools = setup_scheduler()
     scheduler._bounded_target = True
     scheduler.query_policy = QueryPolicy(16, 32, 32)
@@ -442,8 +442,8 @@ def test_lifecycle_snapshot_does_not_confuse_released_credits_with_deferred_phys
 
 
 def test_import_and_query_refresh_share_one_native_forward_but_commit_in_order(monkeypatch, tmp_path):
-    from vllm_kvmem.session_control import SessionLedger, SessionBinding, SessionNotice
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.session_control import SessionLedger, SessionBinding, SessionNotice
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_session_control import request as session_request, first_turn
     scheduler, req, pools = setup_scheduler()
     for manager in scheduler.window_managers.values():

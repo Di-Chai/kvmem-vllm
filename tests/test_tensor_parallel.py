@@ -4,11 +4,11 @@ import pytest
 
 pytest.importorskip('vllm')
 
-from vllm_kvmem.archive_admission import ArchiveCapacity
-from vllm_kvmem.connector import ControlCompletions
-from vllm_kvmem.session_control import SessionNotice
-from vllm_kvmem.tensor_parallel import validate_parallelism
-from vllm_kvmem.tp_feedback import TensorParallelFeedback
+from vllm_kvmem.core.archive_admission import ArchiveCapacity
+from vllm_kvmem.serving.connector import ControlCompletions
+from vllm_kvmem.serving.session_control import SessionNotice
+from vllm_kvmem.serving.tensor_parallel import validate_parallelism
+from vllm_kvmem.serving.tp_feedback import TensorParallelFeedback
 
 
 def test_async_ack_different_steps_and_interleaved_requests():
@@ -33,7 +33,7 @@ def test_vllm_aggregator_holds_scheduler_commit_until_last_rank(monkeypatch):
     from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
     from vllm.v1.outputs import KVConnectorOutput, ModelRunnerOutput
-    from vllm_kvmem.connector import KVMemConnector, RefreshCommand
+    from vllm_kvmem.serving.connector import KVMemConnector, RefreshCommand
     cfg = NS(kv_transfer_config=KVTransferConfig(kv_connector='KVMemConnector', kv_role='kv_both',
                                                   kv_connector_extra_config={'kvmem': {}}),
              parallel_config=NS(tensor_parallel_size=2))
@@ -73,7 +73,7 @@ def test_disagreeing_window_cannot_ack():
 
 def test_partially_admitted_checkpoint_is_fenced_until_both_shards_evict():
     from test_session_control import ledger, request
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.session_worker import SessionWorker
     control, _ = ledger()
     req = request()
     assert control.lookup(req, 0) == 0
@@ -143,7 +143,7 @@ def test_pure_tp_geometry():
 
 
 def test_worker_uses_the_group_gate_for_publication(monkeypatch):
-    from vllm_kvmem import gil_gate, tensor_parallel
+    from vllm_kvmem.serving import gil_gate, tensor_parallel
     monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', '1')
     monkeypatch.setattr(tensor_parallel, '_group', object())
     assert not gil_gate.drain_open_enabled()
@@ -156,7 +156,7 @@ def _exercise_two_ranks(rank, rendezvous):
     from datetime import timedelta
     import torch
     import torch.distributed as dist
-    from vllm_kvmem import tensor_parallel as tp
+    from vllm_kvmem.serving import tensor_parallel as tp
     from vllm_kvmem import _native
     dist.init_process_group('gloo', init_method=rendezvous, rank=rank, world_size=2,
                             timeout=timedelta(seconds=30))
@@ -240,7 +240,7 @@ def _four_head_shards(rank, rendezvous):
     from datetime import timedelta
     import torch
     import torch.distributed as dist
-    from vllm_kvmem import tensor_parallel as tp
+    from vllm_kvmem.serving import tensor_parallel as tp
     dist.init_process_group('gloo', init_method=rendezvous, rank=rank, world_size=4,
                             timeout=timedelta(seconds=40))
     tp._group = NS(cpu_group=dist.group.WORLD, rank_in_group=rank, world_size=4, ranks=list(range(4)))

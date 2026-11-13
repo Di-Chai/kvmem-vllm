@@ -62,7 +62,7 @@ def test_changed_execution_or_workload_is_rejected(change):
 
 def test_current_worker_installs_commit_and_publication_probes_without_vllm(tmp_path, monkeypatch):
     from prefill_commit_phase_probe import _CommitWorkerMixin
-    from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+    from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
     from vllm_kvmem._prefill_state_native import State
 
     class BaseWorker:

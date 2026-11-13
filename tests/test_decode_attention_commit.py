@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime
-from vllm_kvmem.block_graph import BlockGraph
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime
+from vllm_kvmem.serving.block_graph import BlockGraph
 from test_graph_capture import options, output_packet
 
 

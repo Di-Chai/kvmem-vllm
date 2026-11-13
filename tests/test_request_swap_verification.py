@@ -7,8 +7,8 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.request_checkpoint import CacheRows, capture_exact, restore_exact, verify_exact
-from vllm_kvmem.request_swap_worker import RequestSwapWorker
+from vllm_kvmem.serving.request_checkpoint import CacheRows, capture_exact, restore_exact, verify_exact
+from vllm_kvmem.serving.request_swap_worker import RequestSwapWorker
 from test_request_checkpoint import fixture as cache_fixture, native_fixture
 from test_request_swap_worker import fixture as worker_fixture, command
 from test_request_swap_worker_ssd import ExactAdapter, eventually, drop_all

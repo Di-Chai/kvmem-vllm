@@ -208,7 +208,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if not isinstance(payload, dict):
         raise ValueError('kvmem must contain public connector options')
     transfer = {'kv_connector': 'KVMemConnector', 'kv_role': 'kv_both',
-                'kv_connector_module_path': 'vllm_kvmem.connector',
+                'kv_connector_module_path': 'vllm_kvmem.serving.connector',
                 'kv_connector_extra_config': {'kvmem': payload}}
     # This direct launcher is intrinsically the Mean-K backend. RuntimeOptions
     # validates graph modes here; the unchanged connector payload also carries
@@ -364,11 +364,11 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         '--gpu-memory-utilization', str(utilization), '--no-enable-prefix-caching',
         '--generation-config', 'vllm',
         '--long-prefill-token-threshold', str(cfg['long_prefill_token_threshold']), '--no-async-scheduling',
-        '--scheduler-cls', 'vllm_kvmem.scheduler.KVMemScheduler', '--kv-transfer-config', json.dumps(transfer),
-        '--worker-extension-cls', 'vllm_kvmem.systemone_worker.SystemOneWorker',
+        '--scheduler-cls', 'vllm_kvmem.serving.scheduler.KVMemScheduler', '--kv-transfer-config', json.dumps(transfer),
+        '--worker-extension-cls', 'vllm_kvmem.serving.systemone_worker.SystemOneWorker',
         '--speculative-config', json.dumps(speculation),
         '--enable-per-request-metrics', '--per-request-spec-decode-metrics', 'summary',
-        '--middleware', 'vllm_kvmem.http_sessions.validate_prompt_session',
+        '--middleware', 'vllm_kvmem.serving.http_sessions.validate_prompt_session',
         '--enable-auto-tool-choice', '--tool-call-parser', 'qwen3_xml', '--reasoning-parser', 'qwen3']
     env = {'KVMEM_SERVING': '1', 'KVMEM_RUNNER_PROBE_DIR': str(run_dir / 'capture'),
         'KVMEM_ARCHIVE_PROBE': '1', 'KVMEM_LIFECYCLE_TRACE': '1',
@@ -502,7 +502,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
         if settings['max_inflight'] > cfg['max_num_seqs']:
             raise ValueError('multi_user.max_inflight must not exceed max_num_seqs')
         cfg['multi_user'] = settings
-        argv[argv.index('--middleware') + 1] = 'vllm_kvmem.multi_user.MultiUserMiddleware'
+        argv[argv.index('--middleware') + 1] = 'vllm_kvmem.serving.multi_user.MultiUserMiddleware'
         # Admission counters and tenant queues have a single API process owner.
         argv += ['--api-server-count', '1']
         env['KVMEM_MULTI_USER_CONFIG'] = json.dumps(settings)
@@ -515,7 +515,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'max_model_len':cfg['max_model_len'],
             'query_replay_budget':cfg['query_replay_budget'],
             'rolling_active_window':options.rolling_active_window})
-    # Profile settings (vllm_kvmem.settings): system and strategy namespaces over the preset.
+    # Profile settings (vllm_kvmem.core.settings): system and strategy namespaces over the preset.
     for name, value in _settings.profile_environment(cfg.get('settings')).items():
         if env.get(name, value) != value:
             raise ValueError('settings: %s=%s conflicts with %s=%s required by the profile options'

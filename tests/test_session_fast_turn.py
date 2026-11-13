@@ -14,10 +14,10 @@ import numpy as np
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem import layerwise_checkpoints as lc
-from vllm_kvmem import layerwise_gc_holds as holds
-from vllm_kvmem.layerwise_checkpoints import capture, restored_decode
-from vllm_kvmem.layerwise_decode import DecodeHistory, NativeDecodeHistory
+from vllm_kvmem.serving import layerwise_checkpoints as lc
+from vllm_kvmem.serving import layerwise_gc_holds as holds
+from vllm_kvmem.serving.layerwise_checkpoints import capture, restored_decode
+from vllm_kvmem.serving.layerwise_decode import DecodeHistory, NativeDecodeHistory
 from test_checkpoint_fast_state import NAMES, Scope, build, summary
 from test_native_decode_segments import _mass_case, _pending
 

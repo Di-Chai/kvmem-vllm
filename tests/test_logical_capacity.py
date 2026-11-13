@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.logical_capacity import physical_config, wrap_planner, check_specs
+from vllm_kvmem.serving.logical_capacity import physical_config, wrap_planner, check_specs
 from test_deepswe_lru_10m import config as profile
 
 
@@ -21,9 +21,9 @@ def config(tmp_path):
     cache=CacheConfig(cache_dtype='fp8_e4m3',enable_prefix_caching=False,mamba_cache_mode='none')
     cache.kv_cache_layout='LBNHC'
     return NS(model_config=NS(max_model_len=10000000,original_max_model_len=10000000),
-        kv_transfer_config=NS(kv_connector='KVMemConnector',kv_connector_module_path='vllm_kvmem.connector',
+        kv_transfer_config=NS(kv_connector='KVMemConnector',kv_connector_module_path='vllm_kvmem.serving.connector',
                              kv_connector_extra_config={'kvmem':p['kvmem']}),
-        scheduler_config=NS(scheduler_cls='vllm_kvmem.scheduler.KVMemScheduler',
+        scheduler_config=NS(scheduler_cls='vllm_kvmem.serving.scheduler.KVMemScheduler',
                             async_scheduling=False,max_num_seqs=8,disable_hybrid_kv_cache_manager=False),
         cache_config=cache,
         speculative_config=NS(method='mtp',num_speculative_tokens=4,
@@ -230,7 +230,7 @@ def test_invalid_specs_rejected():
 def test_already_imported_core_alias_is_updated_and_idempotent(monkeypatch):
     import sys
     import vllm.v1.core.kv_cache_utils as module
-    from vllm_kvmem import logical_capacity as adapter
+    from vllm_kvmem.serving import logical_capacity as adapter
     original=module.get_kv_cache_configs
     core=NS(get_kv_cache_configs=original)
     monkeypatch.setitem(sys.modules,'vllm.v1.engine.core',core)

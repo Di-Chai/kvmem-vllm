@@ -7,8 +7,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_request_publication import fixture, packet, close
 from test_authority import drain, setup
 
@@ -106,7 +106,7 @@ def test_reclaim_copies_all_owners_without_unrelated_score_or_early_ready(tmp_pa
 def test_partial_copy_retains_source_and_immutable_metadata(tmp_path, monkeypatch):
     runtime, a, b, archive = enabled(tmp_path)
     shared = packet(runtime, [('a', 4, 2), ('b', 4, 3)])
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     append = authority.append_authority_batch
     monkeypatch.setattr(authority, 'append_authority_batch', lambda entries: append(entries[:1]))
     try:
@@ -198,7 +198,7 @@ def test_detached_owner_credit_counts_shared_packet_owners(tmp_path):
 def test_failure_after_partial_copy_keeps_uncopied_shared_source_owned(tmp_path, monkeypatch):
     runtime, a, b, archive = enabled(tmp_path)
     shared = packet(runtime, [('a', 4, 1), ('b', 4, 1)])
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     append = authority.append_authority_batch
     monkeypatch.setattr(authority, 'append_authority_batch', lambda entries: append(entries[:1]))
     original = RuntimeError('second owner copy failed')
@@ -310,7 +310,7 @@ def test_default_off_and_invalid_feedback_settings():
 
 def test_cancellation_after_copy_still_waits_for_semantic_owner_before_terminal_replay(tmp_path):
     from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     runtime, a, b, archive = enabled(tmp_path)
     captured = packet(runtime, [('a', 4, 1)])
     try:

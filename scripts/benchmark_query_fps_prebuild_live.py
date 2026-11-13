@@ -117,14 +117,14 @@ def prepare(root, reference, *, suite, device):
     proof['files']['target-spans.json'] = sha(reference/'target-spans.json')
     original = read(reference/halo.ARM/'profile.json')
     trials = schedule(suite)
-    from vllm_kvmem.graph_integration import _MAX_LOG_BYTES
+    from vllm_kvmem.serving.graph_integration import _MAX_LOG_BYTES
     trace_capacity = verify_trace_capacity(reference, trials, _MAX_LOG_BYTES)
     profiles = {trial['id']: profile_for_trial(original, trial, device=device) for trial in trials}
     for trial in trials:
         partner = next(t for t in trials if t['suite'] == trial['suite'] and t['pair'] == trial['pair'] and
             t['prebuild'] != trial['prebuild'])
         assert_paired_profiles(profiles[trial['id']], profiles[partner['id']])
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     for trial in trials:
         build_launch(profiles[trial['id']], REPO, root/'trials'/trial['id']/'preflight-only')
     for row in fixture['rows']:

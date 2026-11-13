@@ -19,8 +19,8 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Excl
 @pytest.mark.parametrize('dtype',[torch.float16,torch.bfloat16])
 @pytest.mark.parametrize('tokens',[1,61])
 def test_prepared_layer_scores_preserve_native_contract(pages,dtype,tokens,monkeypatch):
-    from vllm_kvmem import cuda_scoring
-    from vllm_kvmem.cuda_scoring import mean_key_scores,prepare_mean_key_index,prepared_layer_scores
+    from vllm_kvmem.core import cuda_scoring
+    from vllm_kvmem.core.cuda_scoring import mean_key_scores,prepare_mean_key_index,prepared_layer_scores
     spec=importlib.util.spec_from_file_location('frozen_mean_key_reference',os.environ['KVMEM_MEANK_REFERENCE_SOURCE'])
     reference=importlib.util.module_from_spec(spec);spec.loader.exec_module(reference)
     # The C++ scorer sources are unchanged and separately hash-bound. Run the

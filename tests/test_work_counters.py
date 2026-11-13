@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.work_counters import PublicWorkCounters, classify_public_batch, public_work_idle
+from vllm_kvmem.serving.work_counters import PublicWorkCounters, classify_public_batch, public_work_idle
 
 
 class Clock:
@@ -194,7 +194,7 @@ def test_idle_flush_publishes_new_pending_fence_without_changing_counts(tmp_path
 
 def _runner(tmp_path, work):
     pytest.importorskip('vllm')
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
 
     class Base:
         def prepare_attn(self, input_batch):

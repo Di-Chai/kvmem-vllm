@@ -5,10 +5,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.request_plan import RequestPlan, request_plan
-from vllm_kvmem.guided_refresh import prepare_request
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.connector import RefreshCommand
+from vllm_kvmem.serving.request_plan import RequestPlan, request_plan
+from vllm_kvmem.serving.guided_refresh import prepare_request
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.connector import RefreshCommand
 
 
 def test_prefill_guidance_reserves_capacity_without_rewriting_final_query(monkeypatch):
@@ -87,7 +87,7 @@ def test_guided_pressure_native_picker_ignores_old_attention_and_graph(tmp_path,
     state.scores={0:1000000.};state.prefill.values={0:(1000000.,1.)}
     before=state.snapshot(),dict(state.mass),state.samples,a.block_graph.binding
     a.graph_options.graph_aggregation='max'
-    monkeypatch.setattr('vllm_kvmem.graph_integration.score_and_select',
+    monkeypatch.setattr('vllm_kvmem.serving.graph_integration.score_and_select',
                         lambda *a,**kw:pytest.fail('Guided pressure must not propagate'))
     plan=a.select_for_queries(torch.eye(2).reshape(1,2,1,2)*2**.5, guided_pressure=True)
     records=sorted(a.records.values(),key=lambda r:r.history_begin)
@@ -136,7 +136,7 @@ def test_corrected_profile_changes_only_guidance_location_and_service_port():
 
 
 def test_diagnostic_state_verification_survives_launcher_environment_filtering(tmp_path,monkeypatch,capsys):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     config=tmp_path/'profile.json';config.write_text(json.dumps(dict(kvmem=dict(guided_reselect='prefill'))))
     monkeypatch.setattr(serve,'build_launch',lambda *a:dict(profile={},environment={}))
     serve.main(['--config',str(config),'--run-dir',str(tmp_path/'run'),

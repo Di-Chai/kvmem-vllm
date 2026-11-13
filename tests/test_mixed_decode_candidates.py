@@ -4,10 +4,10 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import action_attention
-from vllm_kvmem.action_attention import ActionRuntime, mixed_decode_candidates
-from vllm_kvmem.native_attention_planning import make_decode_frame
-from vllm_kvmem.window_batch import WindowBatchAdapter
+from vllm_kvmem.serving import action_attention
+from vllm_kvmem.serving.action_attention import ActionRuntime, mixed_decode_candidates
+from vllm_kvmem.serving.native_attention_planning import make_decode_frame
+from vllm_kvmem.serving.window_batch import WindowBatchAdapter
 
 
 def fixture():

@@ -124,7 +124,7 @@ def test_fixture_and_closed_loop_prompts_keep_exact_history_and_complete_message
 
 
 def test_stable_body_has_no_query_and_forced_turn_uses_explicit_old_query():
-    from vllm_kvmem.request_plan import FIELDS, RequestPlan
+    from vllm_kvmem.serving.request_plan import FIELDS, RequestPlan
     body = qual.request_body(profile(), 'owner', list(range(8192)), turn=1, query=[1024,1088])
     assert 'kvmem_query_span' not in body
     assert body['kvmem_reselect'] == 'off' and body['kvmem_prefill_window'] == 'keep_selected'

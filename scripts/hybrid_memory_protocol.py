@@ -37,7 +37,7 @@ def validate_profile(profile, arm, suite):
 
 
 def expected_query_budget(profile, selected, *, prompt_tokens, output_tokens, replay_span=None):
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     k = profile['kvmem']; block = k['block_tokens']
     query = selected['query_span']; history = selected['history_begin']
     expected_replay = [query[0]//block*block,query[1]] if replay_span is None else list(replay_span)

@@ -10,7 +10,7 @@ import numpy as np
 from tokenizers import Tokenizer
 
 from benchmark_niah import save, TASKS
-from vllm_kvmem.action_attention import ActionHistory
+from vllm_kvmem.serving.action_attention import ActionHistory
 
 
 def audit(campaign, config, baseline):

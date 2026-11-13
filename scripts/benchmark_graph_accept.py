@@ -11,7 +11,7 @@ import time
 
 import numpy as np
 
-from vllm_kvmem.block_graph import BlockGraph, GraphSample
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphSample
 
 
 def run(calls=100, active_tokens=50176, chunk_tokens=1024, block_tokens=32):

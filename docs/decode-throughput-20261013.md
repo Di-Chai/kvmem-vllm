@@ -62,7 +62,7 @@ thinking 关闭、ignore_eos=true。先进行了不计入正式成绩的 128-tok
 ## 提升的解释与适用边界
 
 并发能让模型处理更多请求的 token，提升服务总吞吐。当前实现还存在明确的
-内核切换门槛：[q8_adapter.py](../src/vllm_kvmem/q8_adapter.py) 仅在输入行数
+内核切换门槛：[q8_adapter.py](../src/vllm_kvmem/adapters/q8_adapter.py) 仅在输入行数
 至少 16 时使用 Q8 Tensor Core 路径。常规 DFlash decode 下，target 有 8C 行，
 草稿共享 Q8 输出头有 7C 行：C1 通常均用原生路径；C2 target 跨过门槛而草稿
 输出头仍未跨过；C4／C8 两者均可使用加速路径。

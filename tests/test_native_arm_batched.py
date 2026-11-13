@@ -10,7 +10,7 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1', reason=
 def test_stacked_clear_equals_per_layer_clears(rows, active):
     import torch
     import triton
-    from vllm_kvmem.native_attention import _clear_lse, _clear_lse_layers
+    from vllm_kvmem.serving.native_attention import _clear_lse, _clear_lse_layers
     torch.manual_seed(rows)
     layers, heads, width = 17, 4, 600
     stack = torch.randn((layers, rows, heads, width), device='cuda')

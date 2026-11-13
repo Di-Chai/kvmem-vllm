@@ -6,8 +6,8 @@ import weakref
 import numpy as np
 import pytest
 
-from vllm_kvmem import _native, memory_storage
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem import _native; from vllm_kvmem.core import memory_storage
+from vllm_kvmem.core.memory_storage import MemoryArchive
 from test_cpu_direct_record_seal import repository, reclaim_all
 
 

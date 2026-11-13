@@ -35,7 +35,7 @@ q = module('graph_v2_session_shared', ROOT/'scripts/qualify_block_graph.py')
 
 def verify_plan(prepared, profile):
     """Adding locality evidence must preserve all existing planner decisions."""
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     tokens, plan = prepared[:2]
     kv = profile['kvmem']
     baseline = {k:v for k,v in plan.items() if k not in ('kvmem_locality_spans','kvmem_locality_provenance')}

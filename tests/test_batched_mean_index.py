@@ -70,9 +70,9 @@ def test_empty_batch_is_noop():
 
 
 def test_authority_batches_sealed_pages_and_skips_partial_decode(tmp_path, monkeypatch):
-    from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
 
     config = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=24,
                          repository_blocks=16, sink_blocks=1, recent_blocks=0)

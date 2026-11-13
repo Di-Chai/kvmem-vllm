@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.logical_capacity import physical_config, wrap_planner
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.logical_capacity import physical_config, wrap_planner
 from test_tiered_options import options
 
 
@@ -56,8 +56,8 @@ def native_config():
         'request_checkpoint_bytes', 'request_checkpoint_ssd_bytes', 'request_swap_min_resident_steps')}}
     return NS(model_config=NS(max_model_len=1024, original_max_model_len=1024),
         kv_transfer_config=NS(kv_connector='KVMemConnector',
-            kv_connector_module_path='vllm_kvmem.connector', kv_connector_extra_config={'kvmem': payload}),
-        scheduler_config=NS(scheduler_cls='vllm_kvmem.scheduler.KVMemScheduler',
+            kv_connector_module_path='vllm_kvmem.serving.connector', kv_connector_extra_config={'kvmem': payload}),
+        scheduler_config=NS(scheduler_cls='vllm_kvmem.serving.scheduler.KVMemScheduler',
             async_scheduling=False, max_num_seqs=8),
         cache_config=NS(cache_dtype='fp8_e4m3', enable_prefix_caching=False, mamba_cache_mode='none'),
         speculative_config=None, parallel_config=NS())
@@ -70,7 +70,7 @@ def test_planner_requires_one_complete_window_and_preserves_logical_length(monke
     bounded = physical_config(config)
     assert bounded.model_config.max_model_len == 96
     assert config.model_config.max_model_len == 1024
-    monkeypatch.setattr('vllm_kvmem.logical_capacity.check_specs', lambda _: None)
+    monkeypatch.setattr('vllm_kvmem.serving.logical_capacity.check_specs', lambda _: None)
     group = NS(kv_cache_spec=NS(max_num_blocks_per_req=lambda cfg, length: 6))
     planner = wrap_planner(lambda cfg, specs, available: [NS(num_blocks=available[0], kv_cache_groups=[group])])
     assert planner(config, [{}], [7])[0].num_blocks == 7
@@ -91,7 +91,7 @@ def test_incremental_native_geometry_rejects_unsupported_runtime(field):
 
 def test_explicit_native_pool_bytes_survive_launcher_roundtrip(tmp_path):
     from test_serving_launcher import profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg = profile(tmp_path)
     cfg['kv_cache_memory_bytes'] = 2**30
     plan = build_launch(cfg, tmp_path, tmp_path/'run')
@@ -108,7 +108,7 @@ def test_explicit_native_pool_bytes_survive_launcher_roundtrip(tmp_path):
 def test_incremental_launcher_preserves_k_g_and_rejects_graph_execution(tmp_path, example):
     import json
     from pathlib import Path
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg = json.loads((Path(__file__).parents[1]/'examples'/example).read_text())
     model = tmp_path/'model'
     tokenizer = tmp_path/'tokenizer'
@@ -133,7 +133,7 @@ def test_incremental_launcher_preserves_k_g_and_rejects_graph_execution(tmp_path
 
 def test_swap_verification_requires_explicit_boolean_and_incremental_mode(tmp_path):
     from test_serving_launcher import profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg = profile(tmp_path)
     for value in (True, 1, '1'):
         cfg['verify_request_swap'] = value
@@ -144,7 +144,7 @@ def test_swap_verification_requires_explicit_boolean_and_incremental_mode(tmp_pa
 def test_scheduler_preflights_final_mtp_shape_without_clipping_query(monkeypatch):
     from test_scheduler_transactions import setup_scheduler
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     scheduler, request, _ = setup_scheduler()
     scheduler._bounded_target = True
     scheduler.num_spec_tokens = scheduler.num_lookahead_tokens = 4

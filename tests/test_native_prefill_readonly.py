@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import native_attention_build as build
-from vllm_kvmem.native_prefill_readonly import ReadonlyMetadataIneligible, qualify_readonly_arguments
+from vllm_kvmem.serving import native_attention_build as build
+from vllm_kvmem.serving.native_prefill_readonly import ReadonlyMetadataIneligible, qualify_readonly_arguments
 
 
 class Device:

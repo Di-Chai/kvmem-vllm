@@ -1,6 +1,6 @@
 from types import SimpleNamespace as NS
 
-from vllm_kvmem.step_timing import StepTiming
+from vllm_kvmem.serving.step_timing import StepTiming
 
 
 class Event:

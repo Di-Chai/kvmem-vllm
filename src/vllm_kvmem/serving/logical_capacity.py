@@ -29,8 +29,8 @@ def physical_config(config):
         return config
     transfer = config.kv_transfer_config
     if (transfer is None or transfer.kv_connector != 'KVMemConnector' or
-            transfer.kv_connector_module_path != 'vllm_kvmem.connector' or
-            config.scheduler_config.scheduler_cls != 'vllm_kvmem.scheduler.KVMemScheduler'):
+            transfer.kv_connector_module_path != 'vllm_kvmem.serving.connector' or
+            config.scheduler_config.scheduler_cls != 'vllm_kvmem.serving.scheduler.KVMemScheduler'):
         raise ValueError('Bounded logical KV planning requires the owned KVMem scheduler/connector')
     options = RuntimeOptions.from_vllm(config)
     if incremental:
@@ -145,7 +145,7 @@ class _Loader(importlib.machinery.SourceFileLoader):
         from ..adapters.engine_api import check_source
         check_source(source, 'get_kv_cache_configs',
                      ('vllm_config','kv_cache_specs','available_memory'))
-        source += ('\nfrom vllm_kvmem.logical_capacity import wrap_planner as _kvmem_wrap_planner\n'
+        source += ('\nfrom vllm_kvmem.serving.logical_capacity import wrap_planner as _kvmem_wrap_planner\n'
                    'get_kv_cache_configs = _kvmem_wrap_planner(get_kv_cache_configs)\n')
         return compile(source, self.path, 'exec')
 

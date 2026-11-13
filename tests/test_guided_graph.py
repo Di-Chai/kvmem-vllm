@@ -6,16 +6,16 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.guided_graph import (PrivateDecodeGraph, UnsupportedGuidedGraph,
+from vllm_kvmem.serving.guided_graph import (PrivateDecodeGraph, UnsupportedGuidedGraph,
                                       metadata_signature, restore_tensors)
-from vllm_kvmem.guided_query import update_private_decode
+from vllm_kvmem.serving.guided_query import update_private_decode
 
 
 @pytest.mark.parametrize('backend',['eager','cuda_graph'])
 def test_backend_ablation_survives_launch_profile_and_worker_options(tmp_path,backend):
     import json
     from test_serving_launcher import nvfp4_profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg=nvfp4_profile(tmp_path);cfg['kvmem']['guided_query_backend']=backend
     plan=build_launch(cfg,tmp_path,tmp_path/'run')
     argv=plan['vllm_argv']
@@ -27,7 +27,7 @@ def test_backend_ablation_survives_launch_profile_and_worker_options(tmp_path,ba
 
 @pytest.mark.parametrize('backend',[None,False,1,'auto','dflash'])
 def test_backend_rejects_ambiguous_values(backend):
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     with pytest.raises(ValueError,match='Guided Query backend'):
         RuntimeOptions(guided_query_backend=backend)
 

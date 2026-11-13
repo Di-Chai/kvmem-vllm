@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.capture_pack import PackLimits, source_signature
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.transfer import PackedDownloads
+from vllm_kvmem.serving.capture_pack import PackLimits, source_signature
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.core.transfer import PackedDownloads
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
                                reason='Explicit GPU qualification only')
@@ -273,7 +273,7 @@ def test_fixed_dma_slots_preserve_two_versions_while_capture_buffers_are_replaye
 
 
 def test_supported_kernel_failure_is_not_silently_retried_or_allowed_to_replace(monkeypatch):
-    import vllm_kvmem.capture_pack as pack
+    import vllm_kvmem.serving.capture_pack as pack
     runtime, captured, batch, rejected = fixture(128, 3)
     compare(runtime, captured, batch, rejected)
     cache = runtime._capture_pack_cache

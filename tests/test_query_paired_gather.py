@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import record_key
-from vllm_kvmem.packed_assembly import read_packed_records
+from vllm_kvmem.serving.authority import record_key
+from vllm_kvmem.serving.packed_assembly import read_packed_records
 from test_native_memory_storage import eventually
 from test_paired_archive_reads import archive_fixture
 

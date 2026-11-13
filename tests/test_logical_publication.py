@@ -10,18 +10,18 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.action_attention import ActionRuntime
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.capture_runtime import CapturedPacket
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.logical_action import LogicalScorePlan, project_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.logical_publication import LogicalPublicationCursor
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.prefill_attention import PrefillHistory
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.action_attention import ActionRuntime
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.serving.capture_runtime import CapturedPacket
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, project_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.logical_publication import LogicalPublicationCursor
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.terminal import TerminalPrefix
 
 
 class Lease:

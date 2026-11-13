@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import analyze_block_graph as offline
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.graph_scoring import score_graph
 
 _source = Path(__file__).resolve().parents[1]/'scripts/test_ruler_fps_answers.py'
 _spec = importlib.util.spec_from_file_location('fps_answer_campaign', _source)
@@ -49,7 +49,7 @@ def test_actual_saved_overlap_profile_has_only_the_two_requested_changes():
     before = experiment.read(source)
     after = experiment.profile_for_fps(before)
     assert set(experiment.profile_difference(before, after)) == {'port', 'kvmem.query_score_mode'}
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     launch = build_launch(after, _source.parents[1], Path('/tmp/fps-test-no-start'))
     assert launch['vllm_argv']
 

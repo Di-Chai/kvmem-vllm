@@ -3,8 +3,8 @@ from threading import Event
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.storage import AsyncArchive
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.storage import AsyncArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 
 
 @pytest.mark.parametrize('cached',[False,True])

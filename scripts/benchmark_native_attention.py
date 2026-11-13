@@ -17,8 +17,8 @@ from types import SimpleNamespace
 import torch
 import numpy as np
 
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 
 
 def setup(args, phase):
@@ -66,7 +66,7 @@ def setup(args, phase):
     runner = SimpleNamespace(model=SimpleNamespace(named_modules=lambda: zip(names,layers)),
         _kvmem_layers=names,max_num_tokens=batch*qlen,max_num_reqs=batch)
     if layerwise:
-        from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+        from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
         runner.model_config=SimpleNamespace(enforce_eager=True)
         runner.device=q.device
         runner._kvmem_layerwise_pressure=LayerwisePrefillPressure(SimpleNamespace(
@@ -168,9 +168,9 @@ def setup(args, phase):
             torch.testing.assert_close(b.sum(-1),torch.ones_like(b.sum(-1)),atol=2e-5,rtol=0)
     selections = []
     if independent_scores:
-        from vllm_kvmem.config import KVMemConfig
-        from vllm_kvmem.memory import RequestMemory
-        from vllm_kvmem.prefill_attention import PrefillHistory
+        from vllm_kvmem.core.config import KVMemConfig
+        from vllm_kvmem.core.memory import RequestMemory
+        from vllm_kvmem.serving.prefill_attention import PrefillHistory
         memory=RequestMemory('native-layerwise-component',KVMemConfig(block_tokens=32,
             select_budget=36864,gen_budget=16384,repository_blocks=16384,sink_blocks=41,recent_blocks=0))
         spans=memory.begin_append(length,0)

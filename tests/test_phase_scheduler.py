@@ -4,8 +4,8 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.scheduler import Scheduler
-from vllm_kvmem.admission import QueryPolicy
-from vllm_kvmem.scheduler import KVMemScheduler
+from vllm_kvmem.serving.admission import QueryPolicy
+from vllm_kvmem.serving.scheduler import KVMemScheduler
 
 NATIVE_RESERVE = Scheduler._reserve_prefill_lookahead
 
@@ -22,7 +22,7 @@ def request(rid, *, computed=128, prompt=128, output=1, plan=None):
 
 
 def scheduler(monkeypatch, tmp_path, *, budget=8192):
-    from vllm_kvmem.phase_policy import PhasePolicy
+    from vllm_kvmem.serving.phase_policy import PhasePolicy
     s = KVMemScheduler.__new__(KVMemScheduler)
     s._bounded_target = True
     s.phase_policy = PhasePolicy(4, budget, 1000., clock=lambda: s.now)
@@ -288,7 +288,7 @@ def test_steady_decode_logs_at_most_once_per_second_but_records_every_batch(monk
     s = scheduler(monkeypatch, tmp_path)
     r = request('decode')
     s.running = [r]
-    monkeypatch.setattr('vllm_kvmem.scheduler.time.monotonic', lambda: s.now)
+    monkeypatch.setattr('vllm_kvmem.serving.scheduler.time.monotonic', lambda: s.now)
     for at in (0., .1, .2, .9, 1.):
         s.now = at
         s._prepare_phase()

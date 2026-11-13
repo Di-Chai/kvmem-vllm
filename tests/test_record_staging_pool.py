@@ -3,9 +3,9 @@ from threading import Event
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch, _Ready
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch, _Ready
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def setup(dtype, backend='qw3_cuda', resident=2):

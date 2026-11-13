@@ -5,8 +5,8 @@ import torch
 
 pytest.importorskip("vllm")
 
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.draft_contract import DraftContract
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.adapters.draft_contract import DraftContract
 
 
 def config():

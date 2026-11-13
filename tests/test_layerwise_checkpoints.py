@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.layerwise_checkpoints import (
+from vllm_kvmem.serving.layerwise_checkpoints import (
     capture, prepare_restore, restore_sync, require_supported_restore, oracle_record_groups,
 )
 from test_layerwise_pressure import controller, options
@@ -148,7 +148,7 @@ def test_unsupported_restore_is_rejected_before_assembly(fault):
 @pytest.mark.parametrize('foreground_busy',[False,True])
 def test_sync_prefix_restore_does_not_claim_a_background_pressure_producers_scratch(monkeypatch,foreground_busy):
     import torch
-    from vllm_kvmem.window_assembly import _AssemblyStaging
+    from vllm_kvmem.serving.window_assembly import _AssemblyStaging
     c,a=prefix();snapshot=capture(c,'old',a,288)
     worker=NS(runner=NS(_kvmem_layerwise_pressure=c,device='cpu'),
         options=options(),bindings={'fresh':NS(pressure_restore=False)})

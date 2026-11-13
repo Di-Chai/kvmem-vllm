@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.block_graph import _merge_spans, _spans
-from vllm_kvmem.prompt_spans import combine_spans, graph_metadata, normalize_spans
+from vllm_kvmem.serving.block_graph import _merge_spans, _spans
+from vllm_kvmem.serving.prompt_spans import combine_spans, graph_metadata, normalize_spans
 
 
 def reference_combine(old, new):

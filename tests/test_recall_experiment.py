@@ -7,10 +7,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import Phase, RequestMemory
-from vllm_kvmem import recall_experiment as experiment
-from vllm_kvmem.recall_scoring import METHODS as KEY_METHODS, build_block_features, block_logits
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import Phase, RequestMemory
+from vllm_kvmem.serving import recall_experiment as experiment
+from vllm_kvmem.serving.recall_scoring import METHODS as KEY_METHODS, build_block_features, block_logits
 from test_core import append, Event
 
 
@@ -185,7 +185,7 @@ def test_features_use_owned_key_only_slab_without_reading_values_or_draft_layers
     authority.read_records = forbidden
     actual = experiment._features(authority, rows, method)
     expected = build_block_features(keys[:2], [32, 32, 7], method)
-    from vllm_kvmem.recall_scoring import concat_block_features
+    from vllm_kvmem.serving.recall_scoring import concat_block_features
     combined = concat_block_features(actual)
     assert torch.equal(combined.values, expected.values)
     assert torch.equal(combined.valid, expected.valid)
@@ -258,7 +258,7 @@ def test_pressure_native_picker_stays_in_working_domain_and_charges_budget(
 @pytest.mark.parametrize('method', KEY_METHODS)
 def test_query_preserves_native_frame_mask_pins_runtime_budget_and_can_recall_archived_block(
         tmp_path, monkeypatch, method):
-    from vllm_kvmem.authority import query_score_frame
+    from vllm_kvmem.serving.authority import query_score_frame
     monkeypatch.setenv('KVMEM_RECALL_METHOD', method)
     authority = native_authority(count=256, budget=160, sink=1, recent=1)
     memory = authority.memory

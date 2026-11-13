@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def prepare(args):
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     root=args.output.resolve();root.mkdir(parents=True,exist_ok=False)
     reference=args.reference.resolve();base=read(reference/'profile.json')
     if read(reference/'status.json')['status']!='passed':raise ValueError('Require passed original state reference')

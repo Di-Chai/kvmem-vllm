@@ -80,7 +80,7 @@ def test_profiled_boundary_tactic_matches_independent_values_and_runtime_cache(k
     import torch
     from flashinfer.autotuner import AutoTuner,autotune
     from flashinfer.gemm import gemm_base
-    from vllm_kvmem.flashinfer_gemm_buckets import _CONFIG_NAMES,_align_gemm_overrides
+    from vllm_kvmem.serving.flashinfer_gemm_buckets import _CONFIG_NAMES,_align_gemm_overrides
 
     if torch.cuda.get_device_capability()[0] != 12:
         pytest.skip('Qualified deployment is Blackwell SM12x')

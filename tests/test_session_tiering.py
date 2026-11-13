@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.session_tiering import SessionTiering
+from vllm_kvmem.serving.session_tiering import SessionTiering
 
 
 class Inline:
@@ -188,7 +188,7 @@ def test_prefetch_cancels_a_queued_spill_and_follows_a_running_one():
 
 
 def test_tiering_prefetch_flag(monkeypatch):
-    from vllm_kvmem.session_tiering import tiering_prefetch
+    from vllm_kvmem.serving.session_tiering import tiering_prefetch
     monkeypatch.delenv('KVMEM_TIERING_PREFETCH', raising=False)
     assert tiering_prefetch()
     monkeypatch.setenv('KVMEM_TIERING_PREFETCH', '0')
@@ -228,7 +228,7 @@ def test_a_cancelled_spill_or_an_evicted_session_reports_in():
 
 
 def test_tiering_queue_flag(monkeypatch):
-    from vllm_kvmem.session_tiering import tiering_queue
+    from vllm_kvmem.serving.session_tiering import tiering_queue
     monkeypatch.delenv('KVMEM_TIERING_QUEUE', raising=False)
     assert tiering_queue()
     monkeypatch.setenv('KVMEM_TIERING_QUEUE', '0')
@@ -239,7 +239,7 @@ def test_tiering_queue_flag(monkeypatch):
 
 
 def test_connector_keeps_out_of_ram_sessions_in_the_vllm_waiting_queue():
-    from vllm_kvmem.connector import ControlCompletions, KVMemConnector
+    from vllm_kvmem.serving.connector import ControlCompletions, KVMemConnector
     c = KVMemConnector.__new__(KVMemConnector)
     commands = NS(returning=[])
     c.sessions = NS(namespace=lambda request: request.namespace, commands=commands)

@@ -31,7 +31,7 @@ def profile_new(root):
     os.environ['TRITON_CACHE_DIR']=str(root/'triton_cache')
     sys.path.insert(0,str(root/'runtime'))
     import torch
-    from vllm_kvmem import capture_opaque
+    from vllm_kvmem.adapters import capture_opaque
     if not Path(capture_opaque.__file__).resolve().is_relative_to((root/'runtime').resolve()):
         raise ValueError('Frozen production runtime is not active')
     torch.set_grad_enabled(False)

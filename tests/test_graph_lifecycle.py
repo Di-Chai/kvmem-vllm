@@ -3,11 +3,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.block_graph import BlockGraph, GraphBudget, GraphSample
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget, GraphSample
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.core.storage import AsyncArchive
 from test_authority import payload, drain
 from test_core import Event
 from test_prompt_checkpoints import saved, ready
@@ -46,7 +46,7 @@ def complete(authority):
 
 def test_query_graph_changes_native_selection_same_budget_and_skips_legacy(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path)
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.01, .10, .15, .12, .02, .60]))
     class Forbidden:
         def scores(self):
@@ -73,7 +73,7 @@ def test_max_pooling_coselects_adjacent_value_block_with_same_query_budget(tmp_p
     authority.graph_options.graph_trace = not native
     # The query strongly matches the key at 8. Its value is on block 12;
     # independent raw ranking would instead choose blocks 0, 4 and 8.
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.30,.29,1.,.001,.28,.27]))
     plan = authority.select_for_queries(torch.zeros(2,1,1,2), max_tokens=12)
     assert selected_starts(authority,plan) == [4,8,12]
@@ -87,7 +87,7 @@ def test_max_pooling_coselects_adjacent_value_block_with_same_query_budget(tmp_p
 
 def test_collect_keeps_native_selection_and_observe_only_never_selects(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path, 'collect')
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.01, .10, .15, .12, .02, .60]))
     before = authority.memory.phase
     assert authority.select_for_queries(torch.zeros(2, 1, 1, 2), observe_only=True) is None
@@ -104,7 +104,7 @@ def test_collect_keeps_native_selection_and_observe_only_never_selects(tmp_path,
 def test_scoring_scratch_exhaustion_precedes_native_assembly(tmp_path, monkeypatch, trace, extra_capacity):
     authority, archive, graph = fixture(tmp_path)
     authority.graph_options.graph_trace = trace
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.01, .10, .15, .12, .02, .60]))
     # Permit the immutable scoring snapshot, then reject either the first
     # propagation scratch or the additional bounded explanation pass.
@@ -128,7 +128,7 @@ def test_scoring_scratch_exhaustion_precedes_native_assembly(tmp_path, monkeypat
 
 def test_collect_observer_can_run_inside_uncommitted_graph_acceptance(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path, 'collect')
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.01, .10, .15, .12, .02, .60, .01]))
     assert authority.append(*payload(24, 1), history_begin=24, local_rope_begin=24)
     # Archive publication precedes query-history observation and graph commit.
@@ -145,7 +145,7 @@ def test_native_keep_bands_mandatory_and_runtime_budget_survive_graph(tmp_path, 
     def scores(q, means, eligible):
         assert eligible.tolist() == [False, True, True, True, True, False]
         return torch.tensor([0., .1, 0., .5, .4, 0.])
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores', scores)
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores', scores)
     mandatory = [r.handle for r in authority.records.values() if r.history_begin == 8]
     plan = authority.select_for_queries(torch.zeros(2, 1, 1, 2), mandatory, max_tokens=16)
     assert selected_starts(authority, plan) == [0, 8, 12, 20]
@@ -157,7 +157,7 @@ def test_native_keep_bands_mandatory_and_runtime_budget_survive_graph(tmp_path, 
 
 def test_old_async_plan_cannot_commit_after_epoch_invalidation(tmp_path, monkeypatch):
     authority, archive, graph = fixture(tmp_path)
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *a: torch.tensor([.01, .10, .15, .12, .02, .60]))
     plan = authority.select_for_queries(torch.zeros(2, 1, 1, 2))
     graph.invalidate()

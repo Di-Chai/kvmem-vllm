@@ -24,7 +24,7 @@ def save(path,value):path.write_text(json.dumps(value,indent=2)+'\n')
 
 
 def prepare(args):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     root=args.output.resolve();root.mkdir(parents=True,exist_ok=False)
     qualification=args.qualification.resolve()
     if read(qualification/'status.json')['status']!='passed':

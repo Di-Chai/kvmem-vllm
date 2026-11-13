@@ -15,7 +15,7 @@ import benchmark_niah as niah
 import guided_benchmark_protocol as protocol
 import qualify_block_graph as q
 import qualify_graph_niah as old
-from vllm_kvmem.offline_queue import OfflineQueue, OfflineTask
+from vllm_kvmem.serving.offline_queue import OfflineQueue, OfflineTask
 
 ROOT = Path(__file__).resolve().parents[1]
 NIAH_REFERENCE = Path('/data/chaidi/qw3-experiments/cacheblend_20260925/official_template_20260927')
@@ -42,7 +42,7 @@ def prepare(args):
         for arm in ('off', 'guided'):
             pair[arm] = deepcopy(common)
             pair[arm]['kvmem']['guided_query_tokens'] = 512 if arm == 'guided' else 0
-            from vllm_kvmem.serve import build_launch
+            from vllm_kvmem.serving.serve import build_launch
             build_launch(pair[arm], ROOT, root/f'{suite}-{arm}/server')
             q.save(root/f'{suite}-{arm}.json', pair[arm])
         protocol.validate_pair(pair['off'], pair['guided'], suite)

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.action_download_pool import ActionDownloadPool
+from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
 
 
 class Event:

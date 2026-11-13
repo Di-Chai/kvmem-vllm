@@ -38,8 +38,8 @@
       "modules": [
         "vllm_kvmem",
         "vllm_kvmem._native",
-        "vllm_kvmem.serve",
-        "vllm_kvmem.engine_api"
+        "vllm_kvmem.serving.serve",
+        "vllm_kvmem.adapters.engine_api"
       ]
     }
   },

@@ -12,5 +12,5 @@ predicts throughput and turn latency. A grid search over placements (slots,
 GPU TTL / residency, CPU TTL to SSD, archive backend, swap-in flags) picks the
 best legal configuration and emits a profile overlay plus a short report.
 
-Usage: python -m vllm_kvmem.planner {probe,calibrate,compile,validate} ...
+Usage: python -m vllm_kvmem.apps.planner {probe,calibrate,compile,validate} ...
 """

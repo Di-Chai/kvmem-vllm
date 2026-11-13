@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.capture import CapturedLayer
-from vllm_kvmem.qsa_adapter import validate_qsa_config, write_auxiliary_bytes, borrow_qsa_state
+from vllm_kvmem.adapters.capture import CapturedLayer
+from vllm_kvmem.adapters.qsa_adapter import validate_qsa_config, write_auxiliary_bytes, borrow_qsa_state
 
 
 def qsa_config():
@@ -86,7 +86,7 @@ def test_qsa_checkpoint_borrows_only_the_owned_request_slot():
 def test_qsa_archive_admission_accounts_for_auxiliary_bytes():
     pytest.importorskip('vllm')
     from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheGroupSpec
-    from vllm_kvmem.cache_manifest import archive_bytes_per_token
+    from vllm_kvmem.adapters.cache_manifest import archive_bytes_per_token
     cache = NS(kv_cache_groups=[KVCacheGroupSpec(['target', 'mtp'],
         FullAttentionSpec(block_size=32, num_kv_heads=2, head_size=256, dtype=torch.uint8))])
     assert archive_bytes_per_token(cache) == 2048
@@ -94,7 +94,7 @@ def test_qsa_archive_admission_accounts_for_auxiliary_bytes():
 
 
 def test_qsa_mtp_uses_dense_text_positions_instead_of_stale_native_mrope():
-    from vllm_kvmem.qsa_adapter import install_qsa_mtp_positions
+    from vllm_kvmem.adapters.qsa_adapter import install_qsa_mtp_positions
     logical = torch.tensor([[250000, 250001]] * 3)
     dense = torch.tensor([8192, 8193])
     proposer = NS(_target_model_positions=lambda batch, profile: logical)
@@ -112,7 +112,7 @@ def test_qsa_mtp_uses_dense_text_positions_instead_of_stale_native_mrope():
 
 
 def test_control_only_guard_preserves_external_connector_rejection():
-    from vllm_kvmem.qsa_config_compat import patch_source, control_only
+    from vllm_kvmem.adapters.qsa_config_compat import patch_source, control_only
     with pytest.raises(ImportError, match='Unrecognized'):
         patch_source(b'unknown upstream implementation')
     source = b'''def check(self, connector, aligned):
@@ -133,7 +133,7 @@ def test_control_only_guard_preserves_external_connector_rejection():
 def test_flash_next_launch_is_explicit_and_does_not_install_dflash_patch(tmp_path):
     import json
     from pathlib import Path
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile = json.loads((Path(__file__).parents[1] / 'examples/serve-qwen38-flash-next-fp4-local.json').read_text())
     launch = build_launch(profile, tmp_path, tmp_path/'run', check_paths=False)
     assert '--mamba-cache-mode' in launch['vllm_argv']
@@ -150,8 +150,8 @@ def test_flash_next_launch_is_explicit_and_does_not_install_dflash_patch(tmp_pat
 
 
 def test_qsa_state_source_contract_rejects_missing_selector_pool(tmp_path):
-    from vllm_kvmem.engine_api import UnsupportedEngine
-    from vllm_kvmem.qsa_contract import check_qsa_sources
+    from vllm_kvmem.adapters.engine_api import UnsupportedEngine
+    from vllm_kvmem.adapters.qsa_contract import check_qsa_sources
     root = tmp_path/'models/qwen4_exp/nvidia'
     root.mkdir(parents=True)
     qsa = '''class Qwen4ExpQSAAttention:
@@ -180,7 +180,7 @@ class Qwen4ExpQSAImpl:
 
 def test_spawned_worker_can_patch_already_imported_config_without_replacing_class(tmp_path, monkeypatch):
     import sys
-    from vllm_kvmem.qsa_config_compat import enable
+    from vllm_kvmem.adapters.qsa_config_compat import enable
     source = '''class VllmConfig:
     def _verify_kv_transfer_compat(self):
         connector, aligned = self.connector, False
@@ -207,7 +207,7 @@ def test_spawned_worker_can_patch_already_imported_config_without_replacing_clas
 
 
 def test_mtp_loader_releases_unused_target_staging_and_restores_hook_on_failure(monkeypatch):
-    from vllm_kvmem.qsa_contract import release_target_loader_staging
+    from vllm_kvmem.adapters.qsa_contract import release_target_loader_staging
     calls = []
     monkeypatch.setattr(torch.cuda, 'synchronize', lambda device: calls.append('fence'))
     monkeypatch.setattr('gc.collect', lambda: calls.append('collect'))

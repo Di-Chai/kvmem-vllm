@@ -1,7 +1,7 @@
 """Opt-in: reserve the final Query replay only in the window where it starts."""
 import pytest
 
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 CAP, BT = 36864 + 4096, 32
 

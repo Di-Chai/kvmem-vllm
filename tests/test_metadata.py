@@ -8,12 +8,12 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from vllm_kvmem.metadata import WindowLengths, WorkingSetMetadata
-from vllm_kvmem.metadata_patch import patch_metadata_source
+from vllm_kvmem.core.metadata import WindowLengths, WorkingSetMetadata
+from vllm_kvmem.adapters.metadata_patch import patch_metadata_source
 
 
 def test_real_vllm_metadata_separates_working_set_from_recurrent_history():
-    from vllm_kvmem.engine_api import engine_root
+    from vllm_kvmem.adapters.engine_api import engine_root
     path = engine_root() / 'v1/worker/gpu/attn_utils.py'
     source = patch_metadata_source(path.read_bytes())
     module = ModuleType("_kvmem_metadata_qualification")
@@ -58,7 +58,7 @@ def test_real_vllm_metadata_separates_working_set_from_recurrent_history():
         assert attn.max_seq_len == 1024 and recurrent.max_seq_len == 262144
         assert torch.equal(attn.is_prefilling, prefill_flags)
         assert attn_extra == recurrent_extra == {"native_marker": "unchanged"}
-        from vllm_kvmem.window_batch import attention_windows
+        from vllm_kvmem.serving.window_batch import attention_windows
         positions = torch.tensor([256, 512])
         kwargs["model_specific_attn_metadata"] = NativeMetadata()
         with attention_windows({0: WindowLengths(window_lens, window_lens.clone(), 1024, positions)}):

@@ -1,6 +1,6 @@
 import pytest
 
-from vllm_kvmem.measurement import StreamTrace, summarize_group
+from vllm_kvmem.serving.measurement import StreamTrace, summarize_group
 
 
 def trace(start, first, last, end, tokens=3):
@@ -40,7 +40,7 @@ def test_truncated_or_miscounted_stream_cannot_pass_measurement():
 def test_sse_preserves_bursts_empty_text_tokens_and_trailing_usage(monkeypatch, tmp_path):
     import io
     import json
-    from vllm_kvmem import measurement
+    from vllm_kvmem.serving import measurement
     wire = ('data: {"id":"r","choices":[\n'
             'data: {"index":0,"text":"hello","token_ids":[10,11]}]}\n\n'
             'data: {"id":"r","choices":[{"index":0,"text":"","token_ids":[12],"finish_reason":"stop"}]}\n\n'

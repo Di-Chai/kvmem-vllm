@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from vllm_kvmem import gil_gate
+from vllm_kvmem.serving import gil_gate
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +114,7 @@ def test_a_single_live_request_keeps_the_gate_open(monkeypatch):
 
 
 def test_chunk_checkpoint_is_opt_in(monkeypatch):
-    from vllm_kvmem import gil_gate
+    from vllm_kvmem.serving import gil_gate
     calls = []
     monkeypatch.setattr(gil_gate, 'checkpoint', lambda request_id=None: calls.append(request_id))
     monkeypatch.delenv('KVMEM_GIL_GATE_CHUNKS', raising=False)
@@ -185,7 +185,7 @@ def test_launching_step_owners_are_never_parked(monkeypatch):
 def test_engine_drain_wait_opens_the_gate(monkeypatch):
     """CaptureRuntime.drain_requests(wait=True) on the engine thread: a parked
     publisher proceeds, and the gate is closed again afterwards."""
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     monkeypatch.setenv('KVMEM_GIL_GATE_MS', '1000')
     monkeypatch.setenv('KVMEM_GIL_GATE_DRAIN_OPEN', '1')
     g = gil_gate.gate()

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import cpu_private_record_pack as candidate
 from test_cpu_direct_record_seal import repository, reclaim_all
 from vllm_kvmem import _native
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def test_private_bytes_are_unobservable_until_all_ranges_finish():

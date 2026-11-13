@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 torch = pytest.importorskip("torch")
-from vllm_kvmem.native_state import NativeRecurrentState
-from vllm_kvmem.state import StateCheckpoints
+from vllm_kvmem.serving.native_state import NativeRecurrentState
+from vllm_kvmem.core.state import StateCheckpoints
 
 
 def adapter():
@@ -41,9 +41,9 @@ def test_restore_includes_all_speculation_rows_and_preserves_other_request():
 
 
 def test_fresh_single_token_prompt_clears_only_its_owned_recycled_pages(monkeypatch):
-    from vllm_kvmem.native_state import initialize_cold_single_token_state
+    from vllm_kvmem.serving.native_state import initialize_cold_single_token_state
     owner,conv,recurrent,_=adapter()
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState',lambda _:owner)
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState',lambda _:owner)
     batch=SimpleNamespace(req_ids=['a','b'],num_computed_tokens_np=[0,8],prefill_len_np=[1,9])
     old_conv,old_recurrent=conv.clone(),recurrent.clone()
     owner.runner.model_state.num_accepted_tokens_gpu[0]=7
@@ -96,7 +96,7 @@ def test_canonicalization_validates_all_native_rows_before_any_write():
 
 def test_recurrent_source_contract_matches_installed_native_implementation():
     pytest.importorskip('vllm')
-    from vllm_kvmem.native_state import verify_state_sources
+    from vllm_kvmem.serving.native_state import verify_state_sources
     verify_state_sources()
 
 
@@ -114,7 +114,7 @@ def test_dilated_ple_convolution_canonicalizes_accepted_prefix_without_ssm():
 
 @pytest.mark.parametrize('confirmed', [True, False])
 def test_non_speculative_resume_publishes_only_its_actual_accepted_prefix(monkeypatch, confirmed):
-    from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
+    from vllm_kvmem.serving.native_state import canonicalize_before_non_speculative_batch
     owner, _, _, _ = adapter()
     calls = []
     runtime = SimpleNamespace(last_steps={},
@@ -131,7 +131,7 @@ def test_non_speculative_resume_publishes_only_its_actual_accepted_prefix(monkey
     owner.runner._kvmem_capture_runtime = runtime
     owner.runner.speculative_config = object()
     owner.runner.model_state.num_accepted_tokens_gpu[0] = 2
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState',
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState',
                         lambda _: SimpleNamespace(canonicalize_accepted=lambda *a, **kw: calls.append((a, kw))))
     batch = SimpleNamespace(req_ids=['a', 'b'], num_reqs=2, num_draft_tokens_per_req=[0, 4],
         is_prefilling_np=[False, False], num_computed_tokens_np=[10, 100])

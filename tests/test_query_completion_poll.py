@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from test_pressure_completion_poll import inflight
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.core.memory import Phase
 
 
 def query_inflight():
@@ -18,7 +18,7 @@ def query_inflight():
 
 def test_query_ack_keeps_cuda_fence_and_excludes_probe_before_commit(monkeypatch):
     from test_connector import pair
-    from vllm_kvmem import prefill_attention
+    from vllm_kvmem.serving import prefill_attention
     manager, job, future, fence, authority, trace = query_inflight()
     monkeypatch.setattr(prefill_attention, 'exclude_query_replay',
                         lambda *args: trace.append(('exclude', args[2:])))

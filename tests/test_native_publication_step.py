@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.publication_step import native_publication_step
+from vllm_kvmem.serving.publication_step import native_publication_step
 
 
 def row(retained, begin=8192, *, chunks=2):
@@ -51,7 +51,7 @@ def test_malformed_physical_receipt_fails_closed(change):
 @pytest.mark.parametrize('retained', [0, 1, 2048, 2049, 4095, 4096])
 def test_native_continuation_uses_non_speculative_4k_extent_or_requires_replay(monkeypatch, retained):
     from test_session_state import fixture
-    from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
+    from vllm_kvmem.serving.native_state import canonicalize_before_non_speculative_batch
     adapter, conv, ssm, _, _ = fixture(draft=False)
     runner = adapter.runner
     adapter.recurrent.conv_dim_first = False
@@ -60,7 +60,7 @@ def test_native_continuation_uses_non_speculative_4k_extent_or_requires_replay(m
     runner.model_state.num_accepted_tokens_gpu[0] = 3
     runner._kvmem_capture_runtime = NS(drain_requests=lambda *_a, **_kw: True,
                                       last_steps={'a': [row(retained)]})
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState', lambda _: adapter.recurrent)
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState', lambda _: adapter.recurrent)
     batch = NS(num_reqs=1, req_ids=['a'], num_draft_tokens_per_req=[0],
         is_prefilling_np=[False], num_computed_tokens_np=[8192+retained])
     before_conv, before_ssm = conv.clone(), ssm.clone()
@@ -97,7 +97,7 @@ def test_terminal_checkpoint_preserves_physical_non_speculative_full_or_replay_r
 
 def test_rolling_oracle_reports_actual_forward_not_last_logical_transaction(monkeypatch, tmp_path):
     from test_rolling_verification import oracle_fixture
-    from vllm_kvmem.rolling_verification import RollingPressureOracle
+    from vllm_kvmem.serving.rolling_verification import RollingPressureOracle
     runner, job, *_ = oracle_fixture(monkeypatch, tmp_path)
     runner._kvmem_capture_runtime.last_steps['a'] = [row(64, begin=0)]
     # The final logical child begins at 2048 but has no retained rows; the

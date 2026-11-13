@@ -43,7 +43,7 @@ KVMem 保留原配置 step_latency_interval=1 的非阻塞 CUDA event 计时，�
 
 请求仍携带同一个显式 Query 和 `kvmem_reselect=force`，但历史小于 K，调度器
 跳过实际重选。三次请求均为 **0 次 pressure、0 次 Query selection、0 次恢复**。
-参见 `src/vllm_kvmem/scheduler.py` 中 `num_computed_tokens >= selected_budget`
+参见 `src/vllm_kvmem/serving/scheduler.py` 中 `num_computed_tokens >= selected_budget`
 的触发条件。Query 图传播配置启用，但没有选页事件，因而没有传播执行成本。
 
 attention 统计和构图确实运行：每请求 1,023 个 prefill 采样行、16 次原生

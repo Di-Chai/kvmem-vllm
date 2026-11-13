@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.core.options import RuntimeOptions
 
 
 def make_owner(dtype, enabled, *, resident=4, layers=3, heads=2, dim=64, block=32):
@@ -102,7 +102,7 @@ def test_mixed_owners_partial_acceptance_recycled_archive_and_no_double_finaliza
 @pytest.mark.parametrize('enabled',[False,True])
 def test_worker_profile_transport(tmp_path,enabled):
     from test_graph_options import model_profile,runtime,worker_payload
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile=model_profile(tmp_path);profile['kvmem'].update(cpu_fuse_record_mean=enabled,mean_k_backend='qw3_cuda')
     assert runtime(worker_payload(build_launch(profile,tmp_path,tmp_path/'out'))).cpu_fuse_record_mean is enabled
     assert RuntimeOptions().cpu_fuse_record_mean is False

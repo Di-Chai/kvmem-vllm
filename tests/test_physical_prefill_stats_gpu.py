@@ -13,10 +13,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.logical_action import LogicalScorePlan, project_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.native_attention import NativeAttentionStats
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, project_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
@@ -217,8 +217,8 @@ def test_reference_fallback_preserves_original_logical_widths_and_exact_scores(t
     length 10240/width 16384. Scoring the first with the final physical length
     would violate the original reference computation even with a causal mask.
     """
-    import vllm_kvmem.action_scoring as scoring
-    from vllm_kvmem.logical_action import reference_logical_scores
+    import vllm_kvmem.serving.action_scoring as scoring
+    from vllm_kvmem.serving.logical_action import reference_logical_scores
     env = geometry(tmp_path,prefix=6144,chunks=chunks)
     prefix,history_begin = env.prefix,12288
     rows = tuple(range(31,2048,32))

@@ -6,7 +6,7 @@ import time
 import pytest
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def eventually(predicate):

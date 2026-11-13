@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.restore_timing import RestoreTiming
+from vllm_kvmem.serving.restore_timing import RestoreTiming
 
 
 def test_disabled_observer_never_reads_either_clock():
@@ -59,7 +59,7 @@ def test_noop_summary_does_not_create_stages_or_read_clocks():
 @pytest.mark.parametrize('enabled', [None, False, True])
 def test_memory_restore_timing_preserves_plan_and_fenced_commit(enabled):
     from test_core import Event, append, small
-    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.core.memory import Phase
     memory = small()
     append(memory, 32)
     snapshot = memory.checkpoint_window()
@@ -85,7 +85,7 @@ def test_memory_restore_timing_preserves_plan_and_fenced_commit(enabled):
 
 def test_memory_validation_error_is_observed_without_mutation():
     from test_core import append, small
-    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.core.memory import Phase
     memory = small()
     append(memory, 32)
     snapshot = memory.checkpoint_window()
@@ -101,7 +101,7 @@ def test_memory_validation_error_is_observed_without_mutation():
 
 
 def test_pool_claim_miss_and_prefix_comparison_are_optional_observation():
-    from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
+    from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
     pool = PromptCheckpointPool(1, 1024)
     timing = RestoreTiming(True)
     assert pool.claim(('tenant', 'missing'), 'new', [1, 2, 3], timing=timing) is None

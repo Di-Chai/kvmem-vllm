@@ -66,7 +66,7 @@ def test_remainder_reservations_fill_only_existing_native_rows(monkeypatch,tmp_p
 
 
 def test_row_remainder_is_bounded_and_rotates_without_starvation():
-    from vllm_kvmem.multiowner_prefill import owner_chunk_allocations
+    from vllm_kvmem.serving.multiowner_prefill import owner_chunk_allocations
     totals=[0]*6
     for step in range(6):
         allocation=owner_chunk_allocations(6,448,1024,8,rotation=step)

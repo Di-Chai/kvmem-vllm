@@ -5,8 +5,8 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 
 
 def histories():
@@ -101,7 +101,7 @@ def test_rejected_packets_do_not_materialize_or_mutate_scores(end,count,accepted
 
 
 def test_layerwise_staging_is_atomic_and_reports_actual_native_updates():
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
     c=LayerwisePrefillPressure.__new__(LayerwisePrefillPressure)
     c.names=('a','b');c.buffered_history=True;c.histories={};c.options=None
     options=NS(native_prefill_commit=True,prefill_attention_half_life=8192,
@@ -126,8 +126,8 @@ def test_layerwise_staging_is_atomic_and_reports_actual_native_updates():
 
 
 def test_frozen_prefix_restore_keeps_the_buffered_backend():
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
-    from vllm_kvmem.layerwise_checkpoints import LayerwisePrefix,prepare_restore
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_checkpoints import LayerwisePrefix,prepare_restore
     c=LayerwisePrefillPressure.__new__(LayerwisePrefillPressure)
     c.names=('a','b');c.buffered_history=True;c.maps={};c.histories={};c.query=NS(finished=set())
     mapping=((0,1,0,32,0),(1,1,32,32,32))

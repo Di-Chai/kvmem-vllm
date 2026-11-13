@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
-from vllm_kvmem.block_graph import BlockGraph
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
+from vllm_kvmem.serving.block_graph import BlockGraph
 from test_graph_capture import action, history, prefill_packet
 
 

@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.active_residency import ActiveResidency
-from vllm_kvmem.session_control import SessionNotice
+from vllm_kvmem.serving.active_residency import ActiveResidency
+from vllm_kvmem.serving.session_control import SessionNotice
 from test_window_manager import make_manager
 
 

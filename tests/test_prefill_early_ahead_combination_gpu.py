@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.capture_pack import PackLimits
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.transfer import PackedDownloads
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.serving.capture_pack import PackLimits
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.core.transfer import PackedDownloads
 from test_prefill_action_before_mtp_gpu import fixture, snapshot
 from test_prefill_plan_mtp_combination_gpu import through_prepare
 

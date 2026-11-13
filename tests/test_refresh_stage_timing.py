@@ -6,15 +6,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.core.config import KVMemConfig
 
 
 @pytest.mark.parametrize('action_profile,step_timing', [(False, False), (False, True),
                                                        (True, False), (True, True)])
 def test_step_timing_exposes_existing_refresh_diagnostics_without_extra_work(
         monkeypatch, tmp_path, action_profile, step_timing):
-    from vllm_kvmem import prefill_attention, window_assembly
+    from vllm_kvmem.serving import prefill_attention, window_assembly
 
     cfg = KVMemConfig(block_tokens=4, select_budget=12, gen_budget=12,
                       repository_blocks=32, sink_blocks=0, recent_blocks=0)

@@ -18,8 +18,8 @@ def summary(samples):
 
 def decode(repeats):
     from vllm_kvmem import _native
-    from vllm_kvmem.action_attention import ActionHistory,ActionRuntime,ActionPacket,_AcceptanceParser
-    from vllm_kvmem.block_graph import BlockGraph
+    from vllm_kvmem.serving.action_attention import ActionHistory,ActionRuntime,ActionPacket,_AcceptanceParser
+    from vllm_kvmem.serving.block_graph import BlockGraph
     targets=[0]+list(range(0,53152,32))
     values=np.random.default_rng(43).random((1,len(targets))).astype('float32')
     values/=values.sum(axis=1,keepdims=True)
@@ -67,8 +67,8 @@ def decode(repeats):
 
 
 def propagation(repeats):
-    from vllm_kvmem.block_graph import BlockGraph,GraphSample
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.block_graph import BlockGraph,GraphSample
+    from vllm_kvmem.serving.graph_scoring import score_graph
     g=BlockGraph('propagation',32)
     rng=np.random.default_rng(103);rows=[]
     for i in range(8192):
@@ -102,7 +102,7 @@ def propagation(repeats):
 
 
 def pool(repeats):
-    from vllm_kvmem.action_download_pool import ActionDownloadPool
+    from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
     results=[]
     for rows in (32,1):
         source=torch.arange(8*rows*1661,device='cuda',dtype=torch.float32).reshape(8,rows,1661)
@@ -135,7 +135,7 @@ def pool(repeats):
 
 
 def fused(repeats):
-    from vllm_kvmem.action_scoring import page_attention
+    from vllm_kvmem.serving.action_scoring import page_attention
     # Verified against the original full-C8 action_config/cache-geometry:
     # both prefill and XQA decode use BF16 Q, FP8 KV, and 1616-token KV pages.
     length,heads,kv,dim,page,batch=53152,24,4,256,1616,8

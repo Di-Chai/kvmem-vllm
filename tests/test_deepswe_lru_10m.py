@@ -8,8 +8,8 @@ import pytest
 
 from scripts import queue_deepswe_lru_10m as queue
 from scripts import deepswe_long_gc_preflight as long
-from vllm_kvmem.serve import build_launch
-from vllm_kvmem.historical_admission import HistoricalAdmission, HistoricalCapacitySnapshot
+from vllm_kvmem.serving.serve import build_launch
+from vllm_kvmem.serving.historical_admission import HistoricalAdmission, HistoricalCapacitySnapshot
 from test_serving_launcher import nvfp4_profile
 
 

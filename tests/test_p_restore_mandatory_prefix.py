@@ -3,8 +3,8 @@ import random
 
 import pytest
 
-from vllm_kvmem.prompt_checkpoints import token_bytes
-from vllm_kvmem.request_plan import RequestPlan, request_plan
+from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+from vllm_kvmem.serving.request_plan import RequestPlan, request_plan
 from test_session_control import planned_idle_session, request
 
 

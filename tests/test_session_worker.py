@@ -5,10 +5,10 @@ import time
 import pytest
 import torch
 
-from vllm_kvmem.session_control import SessionBinding, SessionCapture, SessionCommands, SessionEviction
-from vllm_kvmem.session_worker import SessionWorker, verify_preserved_authority
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.window_batch import WindowBatchAdapter
+from vllm_kvmem.serving.session_control import SessionBinding, SessionCapture, SessionCommands, SessionEviction
+from vllm_kvmem.serving.session_worker import SessionWorker, verify_preserved_authority
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.window_batch import WindowBatchAdapter
 from test_authority import setup, payload, drain
 from test_session_state import fixture
 
@@ -109,8 +109,8 @@ def test_shutdown_keeps_discarded_live_capture_owned_until_d2h_completion(tmp_pa
 
 
 def test_tool_wait_preserves_bounded_raw_cache_until_explicit_eviction(tmp_path):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.gpu_raw_cache import RawCacheIndex
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.gpu_raw_cache import RawCacheIndex
     worker, binding, authority, archive, _ = worker_fixture(tmp_path)
     index = RawCacheIndex(4, 2)
     record = next(iter(authority.records.values()))
@@ -135,7 +135,7 @@ def test_tool_wait_preserves_bounded_raw_cache_until_explicit_eviction(tmp_path)
 def test_frozen_prompt_restores_pre_question_window_and_feedback(tmp_path):
     from test_core import Event
     from test_prefill_attention import options
-    from vllm_kvmem.action_attention import ActionHistory
+    from vllm_kvmem.serving.action_attention import ActionHistory
     from test_prompt_checkpoints import ready
 
     worker, binding, authority, archive, _ = worker_fixture(tmp_path)
@@ -171,7 +171,7 @@ def test_frozen_prompt_restores_pre_question_window_and_feedback(tmp_path):
 
 
 def test_worker_exports_rewinds_and_imports_before_next_native_attention(tmp_path, monkeypatch):
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     worker, binding, authority, archive, (conv, ssm, cache) = worker_fixture(tmp_path)
     assert authority.append(*payload(8, 4), history_begin=8, local_rope_begin=8)
     assert worker.detach('a', authority, {'request_id': 'a'})
@@ -231,7 +231,7 @@ def test_failed_actual_archive_integrity_never_detaches_or_acknowledges_session(
 
 
 def test_failed_import_reclaims_authority_only_after_partial_restore_cleanup(tmp_path, monkeypatch):
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     worker, binding, authority, archive, _ = worker_fixture(tmp_path)
     assert worker.detach('a', authority, {})
     del worker.runtime.authorities['a']

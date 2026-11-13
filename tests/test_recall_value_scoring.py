@@ -4,7 +4,7 @@ import math
 import pytest
 import torch
 
-from vllm_kvmem.recall_value_scoring import (REFERENCE_METHODS, AttentionMoments,
+from vllm_kvmem.serving.recall_value_scoring import (REFERENCE_METHODS, AttentionMoments,
     aggregate_scores, aggregate_set_errors, block_scores, concatenate_moments,
     iter_attention_moments, moments_from_blocks, selected_set_error)
 
@@ -114,7 +114,7 @@ def test_value_scale_and_translation_have_expected_physical_effects():
 
 @pytest.mark.parametrize('query_batch,block_batch',[(1,1),(3,2),(128,128)])
 def test_streaming_matches_reference_including_empty_tiles_and_gqa(query_batch,block_batch):
-    from vllm_kvmem.recall_value_streaming import streaming_scores
+    from vllm_kvmem.serving.recall_value_streaming import streaming_scores
     g=torch.Generator().manual_seed(912)
     q=torch.randn(2,7,6,3,generator=g);k=torch.randn(2,5,4,2,3,generator=g);v=torch.randn_like(k)
     counts=[0,4,3,2,1];mask=[True,True,False,True,True]
@@ -124,14 +124,14 @@ def test_streaming_matches_reference_including_empty_tiles_and_gqa(query_batch,b
     actual,_=streaming_scores(q,reader,counts,mask,kv_heads=2,query_batch=query_batch,block_batch=block_batch)
     for m in REFERENCE_METHODS:
         torch.testing.assert_close(torch.tensor(actual[m]),torch.tensor(expected[m]),atol=3e-6,rtol=1e-5)
-    from vllm_kvmem.recall_value_streaming import streaming_value_norm
+    from vllm_kvmem.serving.recall_value_streaming import streaming_value_norm
     norm,_=streaming_value_norm(q,reader,counts,mask,kv_heads=2,query_batch=query_batch,block_batch=block_batch)
     torch.testing.assert_close(torch.tensor(norm),torch.tensor(expected['block_value_norm']),atol=3e-6,rtol=1e-5)
 
 
 @pytest.mark.parametrize('dominant_block',[0,1,2,3])
 def test_streaming_complement_survives_new_maximum_in_any_tile(dominant_block):
-    from vllm_kvmem.recall_value_streaming import streaming_scores
+    from vllm_kvmem.serving.recall_value_streaming import streaming_scores
     q=torch.ones(1,1,1,1);k=torch.zeros(1,4,1,1,1);k[:,dominant_block]=1000.
     v=torch.arange(4,dtype=torch.float32).reshape(1,4,1,1,1)
     def reader(b,e,l,h):return k[l,b:e,:,h],v[l,b:e,:,h]

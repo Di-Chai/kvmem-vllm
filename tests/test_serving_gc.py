@@ -6,8 +6,8 @@ import time
 import pytest
 
 pytest.importorskip('torch')
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.repository_gc import serving_gc_config
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.repository_gc import serving_gc_config
 
 
 def test_serving_reserve_matches_original_policy_and_rejects_unreclaimable_capacity():
@@ -26,10 +26,10 @@ def test_serving_reserve_matches_original_policy_and_rejects_unreclaimable_capac
 def test_shared_archive_recycles_both_request_namespaces_with_serving_pressure_path(tmp_path):
     pytest.importorskip('vllm')
     import torch
-    from vllm_kvmem.authority import RequestAuthority, _Ready
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.serving.authority import RequestAuthority, _Ready
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.storage import AsyncArchive
     from test_authority import payload, drain
 
     memory = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=8,
@@ -79,8 +79,8 @@ def test_shared_archive_recycles_both_request_namespaces_with_serving_pressure_p
 
 def test_pressure_timeout_is_bounded_and_never_claims_release(tmp_path):
     pytest.importorskip('vllm')
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.core.options import RuntimeOptions
     runtime = CaptureRuntime.__new__(CaptureRuntime)
     runtime.options = RuntimeOptions(repository_gc=True)
     runtime.authorities = {'held': SimpleNamespace(poll=lambda: 0, writes=[])}
@@ -93,8 +93,8 @@ def test_pressure_timeout_is_bounded_and_never_claims_release(tmp_path):
 def test_capacity_fallback_waits_for_background_progress_without_running_policy():
     pytest.importorskip('vllm')
     from threading import Timer
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.core.options import RuntimeOptions
     runtime = CaptureRuntime.__new__(CaptureRuntime)
     runtime.options = RuntimeOptions(repository_gc=True)
     runtime.authorities = {'held': SimpleNamespace(poll=lambda: 0, writes=[])}

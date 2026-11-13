@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import math
 import pytest
 
-from vllm_kvmem.block_graph import GraphRow
-from vllm_kvmem.graph_scoring import score_graph, locality_boundary
+from vllm_kvmem.serving.block_graph import GraphRow
+from vllm_kvmem.serving.graph_scoring import score_graph, locality_boundary
 
 
 def snapshot(rows=(), spans=(), block_tokens=4):
@@ -168,7 +168,7 @@ def test_trace_prioritizes_newly_selected_targets_and_keeps_true_contributors():
 
 
 def test_real_snapshot_reserves_scratch_before_large_locality_allocations():
-    from vllm_kvmem.block_graph import BlockGraph, GraphBudget
+    from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget
     graph = BlockGraph('bounded', 32, budget=GraphBudget(4096), max_bytes_per_session=4096)
     raw, starts, mask = [1.] * 8192, list(range(0, 262144, 32)), [True] * 8192
     with graph.snapshot() as snap:
@@ -181,8 +181,8 @@ def test_real_snapshot_reserves_scratch_before_large_locality_allocations():
 
 
 def test_result_lifetime_stays_charged_after_snapshot_close_until_result_release():
-    from vllm_kvmem.block_graph import BlockGraph
-    from vllm_kvmem.graph_scoring import scoring_scratch_bytes
+    from vllm_kvmem.serving.block_graph import BlockGraph
+    from vllm_kvmem.serving.graph_scoring import scoring_scratch_bytes
     graph = BlockGraph('owner', 4)
     snap = graph.snapshot()
     before = graph.bytes
@@ -200,7 +200,7 @@ def test_result_lifetime_stays_charged_after_snapshot_close_until_result_release
 
 
 def test_score_exception_returns_scratch_charge_and_identity_needs_none():
-    from vllm_kvmem.block_graph import BlockGraph, GraphBudget
+    from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget
     graph = BlockGraph('owner', 4)
     with graph.snapshot() as snap:
         before = graph.bytes
@@ -220,7 +220,7 @@ def test_score_exception_returns_scratch_charge_and_identity_needs_none():
 
 def test_scratch_charge_is_released_when_result_is_discarded():
     import gc
-    from vllm_kvmem.block_graph import BlockGraph
+    from vllm_kvmem.serving.block_graph import BlockGraph
     graph = BlockGraph('owner', 4)
     with graph.snapshot() as snap:
         before = graph.bytes

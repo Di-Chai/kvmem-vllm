@@ -15,7 +15,7 @@ from pathlib import Path
 import statistics
 from types import SimpleNamespace
 from tokenizers import Tokenizer
-from vllm_kvmem.action_attention import ActionHistory
+from vllm_kvmem.serving.action_attention import ActionHistory
 
 from benchmark_memory import source, digest_tokens
 from benchmark_niah import save, sha

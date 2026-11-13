@@ -4,12 +4,12 @@ import time
 
 import pytest
 
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.coordination import HistoryAdmission
-from vllm_kvmem.historical_admission import HistoricalHistoryAdmission
-from vllm_kvmem.historical_gc import HistoricalGcSettings, historical_record_charge
-from vllm_kvmem.query_window_budget import split_cpu_history_budget
-from vllm_kvmem.storage import make_shared_archive
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.coordination import HistoryAdmission
+from vllm_kvmem.serving.historical_admission import HistoricalHistoryAdmission
+from vllm_kvmem.core.historical_gc import HistoricalGcSettings, historical_record_charge
+from vllm_kvmem.core.query_window_budget import split_cpu_history_budget
+from vllm_kvmem.core.storage import make_shared_archive
 
 
 def options(*, historical=False, **updates):

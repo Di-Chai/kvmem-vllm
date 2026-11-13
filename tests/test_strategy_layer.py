@@ -53,7 +53,7 @@ def test_unknown_and_duplicate_strategies_are_refused():
 
 
 def test_runtime_options_validate_strategy_names():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     base = RuntimeOptions()
     assert (base.strategy_query_scorer, base.strategy_pressure_scorer, base.strategy_picker,
             base.strategy_trace_scores) == ('meank', 'attention', 'native', False)
@@ -66,7 +66,7 @@ def test_runtime_options_validate_strategy_names():
 
 
 def test_launcher_refuses_a_scorer_the_launched_path_would_ignore():
-    from vllm_kvmem.serve import validate_strategy_scope
+    from vllm_kvmem.serving.serve import validate_strategy_scope
     validate_strategy_scope({}, query_mode=None, pressure=False)
     validate_strategy_scope(dict(strategy_query_scorer='recency', strategy_pressure_scorer='recency'),
                             query_mode='sequential', pressure=True)
@@ -321,7 +321,7 @@ def test_strategies_declare_the_paths_they_decide_on():
 
 
 def test_serving_binds_every_global_built_in():
-    from vllm_kvmem import authority, prefill_attention
+    from vllm_kvmem.serving import authority, prefill_attention
     G = strategy.GLOBAL
     assert strategy.native(strategy.QUERY_SCORER, 'meank', G) is authority._global_meank
     assert strategy.native(strategy.QUERY_SCORER, 'key_fps', G) is authority._global_key_fps
@@ -335,7 +335,7 @@ def test_serving_binds_every_global_built_in():
 
 
 def test_on_the_global_path_the_strategy_options_are_the_older_switches():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     recency = RuntimeOptions(strategy_pressure_scorer='recency')
     assert (recency.strategy_path, recency.pressure_policy, recency.action_pressure) == ('global', 'recency', False)
     assert RuntimeOptions(strategy_pressure_scorer='recency', pressure_policy='recency').pressure_policy == 'recency'
@@ -354,7 +354,7 @@ def test_on_the_global_path_the_strategy_options_are_the_older_switches():
 
 
 def test_key_fps_by_either_name_is_the_same_option():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     # Without the graph prerequisites both spellings fail the same validation.
     with pytest.raises(ValueError, match='query_score_mode=key_fps_4 requires'):
         RuntimeOptions(query_score_mode='key_fps_4')
@@ -365,7 +365,7 @@ def test_key_fps_by_either_name_is_the_same_option():
 
 
 def test_the_global_path_runs_a_strategy_object_behind_the_contract():
-    from vllm_kvmem.authority import global_query_scorer, _global_meank
+    from vllm_kvmem.serving.authority import global_query_scorer, _global_meank
     records = [record(32 * i) for i in range(4)]
     auth = NS(query_score_mode='mean_k', graph_options=NS(strategy_path='global', strategy_query_scorer='recency'))
     scorer = global_query_scorer(auth)
@@ -380,7 +380,7 @@ def test_the_global_path_runs_a_strategy_object_behind_the_contract():
 
 
 def test_global_pressure_dispatches_by_policy():
-    from vllm_kvmem.prefill_attention import select_pressure
+    from vllm_kvmem.serving.prefill_attention import select_pressure
     calls = []
     memory = NS(select=lambda scores, pins, **kw: calls.append((scores, pins, kw)) or 'plan')
     auth = NS(graph_options=NS(pressure_policy='recency'), memory=memory,

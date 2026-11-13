@@ -7,7 +7,7 @@ import pytest
 def test_restore_diagnostic_survives_serving_env_reset_without_changing_model_controls(tmp_path,monkeypatch):
     from copy import deepcopy
     from run_layerwise_memory import restore_verification_profile,server_command
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     from test_serving_launcher import profile
     original=profile(tmp_path);before=deepcopy(original)
     monkeypatch.setenv('KVMEM_VERIFY_SESSION_RESTORE_DIGEST','1')

@@ -6,11 +6,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionPacket, ActionRuntime
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
-from vllm_kvmem.logical_action import LogicalScorePlan, project_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillEligibility, plan_logical_prefill
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.action_attention import ActionPacket, ActionRuntime
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, project_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillEligibility, plan_logical_prefill
+from vllm_kvmem.serving.request_plan import RequestPlan
 from test_logical_action import state, consumer, publish
 from test_physical_prefill_options import payload, model_profile, build_launch, runtime, worker_payload
 

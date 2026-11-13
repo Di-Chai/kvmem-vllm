@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from vllm_kvmem import _prefill_state_native as native
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory, accept_buffered_batch
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure, _LayerwiseAcceptance
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory, accept_buffered_batch
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure, _LayerwiseAcceptance
 
 
 @pytest.fixture

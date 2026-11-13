@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from test_fused_record_mean import make_owner
-from vllm_kvmem.authority import append_authority_batch
+from vllm_kvmem.serving.authority import append_authority_batch
 
 pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Exclusive GPU byte check')
 

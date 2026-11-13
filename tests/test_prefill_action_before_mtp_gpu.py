@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime, action_metadata
-from vllm_kvmem.action_download_pool import ActionDownloadPool
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime, action_metadata
+from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 from test_native_attention_stats_gpu import geometry
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',

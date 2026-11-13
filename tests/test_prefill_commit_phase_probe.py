@@ -7,7 +7,7 @@ import pytest
 
 from prefill_commit_phase_probe import CommitTimings
 from prefill_phase_probe import PhaseScopes
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
 from vllm_kvmem._prefill_state_native import State
 
 

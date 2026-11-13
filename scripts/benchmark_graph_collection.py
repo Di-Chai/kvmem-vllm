@@ -79,7 +79,7 @@ def prepare(args):
         fixture = shared.freeze_niah(SimpleNamespace(reference=args.reference,scope='smoke8'),root,configs['collect'])
         write(root/'fixture.json',fixture)
         hashes, jobs = None, []
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         native = native_identity()
         for name in VARIANTS:
             write(root/(name+'.json'),configs[name])

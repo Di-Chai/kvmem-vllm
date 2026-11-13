@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from vllm_kvmem import gil_switch
+from vllm_kvmem.serving import gil_switch
 
 
 @pytest.fixture

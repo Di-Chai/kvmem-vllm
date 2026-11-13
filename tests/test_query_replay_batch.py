@@ -7,8 +7,8 @@ import pytest
 import torch
 
 from vllm.v1.worker.gpu.input_batch import InputBatch
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.query_replay_batch import (
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.query_replay_batch import (
     QueryReplayCoBatch, QueryFrame, UnsupportedQueryBatch, merge_query_batch, public_hidden)
 
 
@@ -125,7 +125,7 @@ def test_admission_declines_are_bounded_and_do_not_starve_the_original_path():
 
 
 def test_memory_admission_rejects_before_allocating_or_touching_a_private_batch(monkeypatch):
-    import vllm_kvmem.async_refresh as module
+    import vllm_kvmem.serving.async_refresh as module
     refresh, co, job = coordinator()
     refresh.options.query_replay_max_bytes = 1
     monkeypatch.setattr(module, 'maintenance_batch', lambda *args:pytest.fail('must reject before allocation'))
@@ -145,7 +145,7 @@ def test_first_qualification_preserves_unqualified_public_execution(branch):
 
 
 def test_prepare_uses_a_bounded_independent_input_frame(monkeypatch):
-    import vllm_kvmem.async_refresh as module
+    import vllm_kvmem.serving.async_refresh as module
     refresh, co, job = coordinator()
     monkeypatch.setattr(module, 'maintenance_batch', lambda *args:batch(('private',),(2,),(2,),None))
     assert co.arm(scheduled())
@@ -230,7 +230,7 @@ def test_partial_query_keeps_its_state_until_all_quanta_have_been_captured():
 def test_private_forward_selects_the_requested_compilation_path(monkeypatch, backend, embedding_input):
     from contextlib import contextmanager
     import vllm.forward_context as context
-    import vllm_kvmem.async_refresh as module
+    import vllm_kvmem.serving.async_refresh as module
     refresh, co, job = coordinator()
     refresh.options.query_replay_backend = backend
     runner = refresh.runner
@@ -276,8 +276,8 @@ def test_private_forward_selects_the_requested_compilation_path(monkeypatch, bac
 
 def test_actual_runner_hooks_project_before_work_accounting_sampling_or_mtp(monkeypatch):
     import vllm.v1.worker.gpu.attn_utils as attn
-    import vllm_kvmem.async_refresh as module
-    from vllm_kvmem.runner import make_probe_runner
+    import vllm_kvmem.serving.async_refresh as module
+    from vllm_kvmem.serving.runner import make_probe_runner
     refresh, co, job = coordinator()
     source_runner = refresh.runner
     public = batch()

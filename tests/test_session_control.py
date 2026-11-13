@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.session_control import SessionLedger, SessionNotice
+from vllm_kvmem.serving.session_control import SessionLedger, SessionNotice
 
 
 def request(name='a', session='s', tokens=None, salt='tenant'):
@@ -259,7 +259,7 @@ def planned_idle_session():
 
 @pytest.mark.parametrize('explicit_pins', [False, True])
 def test_short_prefix_replacement_does_not_inherit_old_query_pins(explicit_pins):
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     control, _, binding, _ = planned_idle_session()
     req = request('reset', tokens=[999])
     req.num_prompt_tokens = 1
@@ -275,7 +275,7 @@ def test_short_prefix_replacement_does_not_inherit_old_query_pins(explicit_pins)
 
 
 def test_exact_continuation_keeps_old_query_and_mandatory_pins():
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     control, events, _, entry = planned_idle_session()
     req = request('next', tokens=list(range(25))+[999])
     req.num_prompt_tokens = len(req.prompt_token_ids)
@@ -295,7 +295,7 @@ def test_exact_continuation_keeps_old_query_and_mandatory_pins():
     ((8, 15), 'auto', 'stable-task'), ((20, 24), 'auto', 'new-question'),
     (None, 'auto', 'stable-task'), (None, 'off', 'stable-task')])
 def test_feature_question_preserves_explicit_source_without_reviving_replay(query, mode, identity):
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     control, _, _, entry = planned_idle_session()
     entry.query_id = 'stable-task'
     req = request('question-source', tokens=list(range(25))+[999])
@@ -317,7 +317,7 @@ def test_feature_question_preserves_explicit_source_without_reviving_replay(quer
 @pytest.mark.parametrize('max_output,expected_window', [(16,63),(32,55)])
 def test_larger_output_after_partial_terminal_compacts_during_import(
         cancel_before_allocation,max_output,expected_window):
-    from vllm_kvmem.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
     control, events, binding, entry = planned_idle_session()
     entry.history = entry.window = 95
     entry.tokens = token_bytes(list(range(96)), 95)
@@ -330,7 +330,7 @@ def test_larger_output_after_partial_terminal_compacts_during_import(
     assert entry.history == entry.window == 95  # Durable M remains unchanged.
     assert events[-1] == ('prepare', ('larger-output', 95, expected_window))
     assert expected_window + 1 + req.max_tokens <= 96 - 4
-    from vllm_kvmem.restore_admission import RestoreAdmission
+    from vllm_kvmem.serving.restore_admission import RestoreAdmission
     gate = RestoreAdmission()
     assert gate.lookup(req, entry)
     assert gate.permits[req.request_id].window == expected_window
@@ -359,8 +359,8 @@ def test_larger_output_after_partial_terminal_compacts_during_import(
 def test_rolling_partial_m_preserves_selected_pages_when_only_output_reserve_overflows(
         monkeypatch,rolling,history,expected_window,pressure):
     import json
-    from vllm_kvmem.prompt_checkpoints import token_bytes
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.request_plan import request_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':rolling}))
     control, events, _, entry = planned_idle_session()
     entry.history = entry.window = history
@@ -389,7 +389,7 @@ def test_rolling_partial_m_preserves_selected_pages_when_only_output_reserve_ove
 def test_near_full_terminal_append_reserves_prefill_probe_before_import(
         monkeypatch,window,suffix,pressure):
     import json
-    from vllm_kvmem.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps({'rolling_active_window':True}))
     control, events, _, entry = planned_idle_session()
     history = window + 128
@@ -413,8 +413,8 @@ def test_near_full_terminal_append_reserves_prefill_probe_before_import(
 def test_dsh_terminal_capacity_failure_keeps_native_lookahead_inside_allocation(monkeypatch):
     """Real DSH step132: partial M at local53212, then628 new prompt tokens."""
     import json
-    from vllm_kvmem.prompt_checkpoints import token_bytes
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.request_plan import request_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':True}))
     control, _, _, entry = planned_idle_session()
     control.block_tokens, control.select_budget, control.gen_budget = 32,36864,16384
@@ -446,8 +446,8 @@ def test_dsh_terminal_capacity_failure_keeps_native_lookahead_inside_allocation(
 @pytest.mark.parametrize('cancel', [False,True])
 def test_warm_new_query_reserves_atomic_replay_before_import(monkeypatch,history,window,pressure,cancel):
     import json
-    from vllm_kvmem.prompt_checkpoints import token_bytes
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.request_plan import request_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':True}))
     control, events, binding, entry = planned_idle_session()
     control.block_tokens, control.select_budget, control.gen_budget = 32,98304,16384
@@ -490,7 +490,7 @@ def test_warm_new_query_reserves_atomic_replay_before_import(monkeypatch,history
 def test_rolling_cold_plan_reserves_input_and_native_headroom(
         monkeypatch,session,rolling,prompt,expected):
     import json
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'rolling_active_window':rolling}))
     control, _ = ledger()
     control.gen_budget, control.select_budget = 32,64
@@ -506,8 +506,8 @@ def test_rolling_cold_plan_reserves_input_and_native_headroom(
 
 
 def test_changed_branch_inherits_only_pins_in_verified_prompt_checkpoint():
-    from vllm_kvmem.prompt_checkpoints import token_bytes
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+    from vllm_kvmem.serving.request_plan import request_plan
     control, events, _, entry = planned_idle_session()
     entry.prompt_history = entry.prompt_window = 8
     entry.prompt_tokens = token_bytes(list(range(25)), 8)
@@ -616,7 +616,7 @@ def test_checkpoint_candidate_requires_sealed_final_prefill_boundary():
 def test_native_connector_metadata_roundtrip_for_exact_checkpoint_ack(monkeypatch):
     from test_connector import pair
     from vllm.v1.outputs import KVConnectorOutput
-    from vllm_kvmem.connector import ControlCompletions
+    from vllm_kvmem.serving.connector import ControlCompletions
     scheduler, _ = pair()
     control, events = ledger()
     scheduler.sessions = control

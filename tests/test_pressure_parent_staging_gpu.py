@@ -12,12 +12,12 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',
 @pytest.mark.parametrize('page', [64, 1616])
 def test_parent_pool_preserves_all_layer_cache_bytes_and_source_leases(tmp_path,monkeypatch,page):
     from vllm_kvmem import _native
-    from vllm_kvmem.authority import record_key
-    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.window_assembly import LayerWindow,NativeWindowAssembler
+    from vllm_kvmem.serving.authority import record_key
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.window_assembly import LayerWindow,NativeWindowAssembler
 
     monkeypatch.setenv('KVMEM_LAYERWISE_ORIGINAL_ROPE','0')
     torch.manual_seed(7921)

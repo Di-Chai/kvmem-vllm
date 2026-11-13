@@ -4,8 +4,8 @@ from threading import Event, Lock, Thread
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem import memory_storage
-from vllm_kvmem.memory_storage import (
+from vllm_kvmem.core import memory_storage
+from vllm_kvmem.core.memory_storage import (
     MemoryArchive, MemorySpan, MemoryTier, gather_records_native, gather_records_python,
 )
 
@@ -263,8 +263,8 @@ def test_production_paired_layer_regions_share_one_lease_and_copy_inline(tmp_pat
 
 
 def test_cpu_gather_worker_configuration_is_wired_into_both_paths(tmp_path):
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.storage import make_shared_archive
     archive = make_shared_archive(RuntimeOptions(archive_backend='cpu', cpu_read_cache_bytes=8192,
         cpu_gather_workers=3), tmp_path/'not-created', 4096, 8)
     try:

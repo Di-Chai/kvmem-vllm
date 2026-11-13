@@ -6,7 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
-from vllm_kvmem.fp8_compat import fp8_storage, fp8_to_float, float_to_fp8
+from vllm_kvmem.adapters.fp8_compat import fp8_storage, fp8_to_float, float_to_fp8
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
                                reason='Explicit GPU qualification only')

@@ -5,9 +5,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from vllm_kvmem.window_batch import WindowBatch, contextual_metadata
-from vllm_kvmem.metadata import WindowLengths
-from vllm_kvmem.window_bridge import install_window_bridge
+from vllm_kvmem.serving.window_batch import WindowBatch, contextual_metadata
+from vllm_kvmem.core.metadata import WindowLengths
+from vllm_kvmem.serving.window_bridge import install_window_bridge
 
 
 def test_instance_bridge_preserves_recurrent_inputs_and_restores_context():

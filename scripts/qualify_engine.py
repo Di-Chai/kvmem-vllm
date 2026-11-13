@@ -325,10 +325,10 @@ def main():
             or args.require_gc_reclamation and not args.repository_gc):
         parser.error('Repository GC/capacity options require bounded serving; reclamation requires GC')
     try:
-        from vllm_kvmem.config import KVMemConfig
+        from vllm_kvmem.core.config import KVMemConfig
         memory_options = KVMemConfig(repository_blocks=args.repository_blocks)
         if args.repository_gc:
-            from vllm_kvmem.repository_gc import serving_gc_config
+            from vllm_kvmem.core.repository_gc import serving_gc_config
             serving_gc_config(memory_options, args.batch_token_budget)
     except ValueError as error:
         parser.error(str(error))
@@ -485,7 +485,7 @@ def main():
         report['performance_eligible'] = performance_eligible(args.profile_concurrent_steps,
             ([frozen_provenance] if frozen_provenance else []) + [p for _, p in frozen_concurrent])
         if args.profile_concurrent_steps:
-            from vllm_kvmem.profiling import native_profiler_config
+            from vllm_kvmem.serving.profiling import native_profiler_config
             profiler = native_profiler_config(args.output / 'profile',
                 args.profile_concurrent_steps, args.profile_delay_steps)
             command += ['--profiler-config', json.dumps(profiler)]
@@ -501,10 +501,10 @@ def main():
             if args.bounded_short_lifecycle:
                 report['scope'] = 'short C1/C4 native terminal-prefix and retirement lifecycle; compression not exercised'
         if args.scheduled_rebuild_probe or args.bounded_target:
-            command += ["--scheduler-cls", "vllm_kvmem.scheduler.KVMemScheduler",
+            command += ["--scheduler-cls", "vllm_kvmem.serving.scheduler.KVMemScheduler",
                         "--kv-transfer-config", json.dumps({
                             "kv_connector": "KVMemConnector", "kv_role": "kv_both",
-                            "kv_connector_module_path": "vllm_kvmem.connector",
+                            "kv_connector_module_path": "vllm_kvmem.serving.connector",
                             "kv_connector_extra_config": {"kvmem": {
                                 "cpu_read_cache_bytes": args.cpu_read_cache_mib * 1024**2,
                                 "packed_assembly": args.packed_assembly,
@@ -532,7 +532,7 @@ def main():
                 process = subprocess.Popen(command, env=env, stdout=logfile, stderr=subprocess.STDOUT,
                                            start_new_session=True)
                 report["server_pid"] = process.pid
-                from vllm_kvmem.telemetry import ResourceMonitor
+                from vllm_kvmem.serving.telemetry import ResourceMonitor
                 monitor = ResourceMonitor(args.output / "resources.jsonl", process.pid).start()
                 start = time.monotonic()
                 url = f"http://127.0.0.1:{port}"
@@ -573,7 +573,7 @@ def main():
                     timeout = 3600 if args.compression_probe or args.bounded_target or frozen is not None or frozen_concurrent else 180
                     measured = None
                     if args.stream_metrics:
-                        from vllm_kvmem.measurement import stream_completion
+                        from vllm_kvmem.serving.measurement import stream_completion
                         measured = stream_completion(url + "/v1/completions", payload, timeout=timeout,
                             trace_path=args.output / f"{phase}_{index}_stream.jsonl")
                         result = {"id": measured.response_id, "usage": measured.usage,
@@ -599,7 +599,7 @@ def main():
                         single_prompt = (history * ((length + len(history) - 1) // len(history)))[:length-len(task)] + task
                         report["long_single_prompt_tokens"] = len(single_prompt)
                     if args.cancel_during_refresh:
-                        from vllm_kvmem.cancellation import cancel_during_refresh
+                        from vllm_kvmem.core.cancellation import cancel_during_refresh
                         payload = {"model": "qualification", "prompt": single_prompt,
                             "request_id": "kvmem-cancel-" + uuid.uuid4().hex,
                             "temperature": 0, "seed": 104729, "max_tokens": args.output_tokens}
@@ -618,7 +618,7 @@ def main():
                             stop_owned_server(process)
                             raise
                 if args.profile_concurrent_steps:
-                    from vllm_kvmem.profiling import control_profiler
+                    from vllm_kvmem.serving.profiling import control_profiler
                     control_profiler(url, 'start')
                 begin = time.monotonic()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -631,14 +631,14 @@ def main():
                         raise
                 report["concurrent_wall_seconds"] = time.monotonic() - begin
                 if args.profile_concurrent_steps:
-                    from vllm_kvmem.profiling import summarize_trace
+                    from vllm_kvmem.serving.profiling import summarize_trace
                     control_profiler(url, 'stop')
                     traces = sorted((args.output / 'profile').rglob('*.pt.trace.json*'))
                     if not traces:
                         raise RuntimeError('Native profiler did not produce its requested trace')
                     report['profiling']['traces'] = [summarize_trace(path) for path in traces]
                 if args.stream_metrics:
-                    from vllm_kvmem.measurement import StreamTrace, summarize_group
+                    from vllm_kvmem.serving.measurement import StreamTrace, summarize_group
                     report["http_measurements"] = {
                         "concurrent": summarize_group([StreamTrace(**item["trace"]) for item in report["concurrent"]])}
                     if "single" in report:

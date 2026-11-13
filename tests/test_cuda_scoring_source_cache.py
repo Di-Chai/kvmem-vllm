@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem import cuda_scoring as scoring
+from vllm_kvmem.core import cuda_scoring as scoring
 
 
 CONTENTS = {

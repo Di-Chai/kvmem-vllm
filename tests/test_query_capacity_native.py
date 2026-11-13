@@ -12,7 +12,7 @@ from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.engine.core import EngineCore
 from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT
 
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.core.config import KVMemConfig
 from test_native_readiness_admission import native_fixture, enqueue, request
 
 

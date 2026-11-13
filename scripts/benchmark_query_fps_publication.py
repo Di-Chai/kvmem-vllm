@@ -81,7 +81,7 @@ def load_versions(old_path):
     sys.modules[package_name]=package
     spec=importlib.util.spec_from_file_location(package_name+'.query_key_fps',old_path)
     old=importlib.util.module_from_spec(spec);sys.modules[spec.name]=old;spec.loader.exec_module(old)
-    new=importlib.import_module('vllm_kvmem.query_key_fps')
+    new=importlib.import_module('vllm_kvmem.serving.query_key_fps')
     require(old.RawKeyFPSCache is not new.RawKeyFPSCache,'Old/new cache implementations are not isolated')
     return dict(old=old,new=new)
 

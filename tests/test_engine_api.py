@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_kvmem.engine_api import (
+from vllm_kvmem.adapters.engine_api import (
     CONTRACTS, UnsupportedEngine, check_contract, check_source, engine_root,
 )
 
@@ -40,9 +40,9 @@ def test_contracts_ignore_versions_comments_and_unrelated_methods():
 
 
 def test_compatibility_adapters_compile_against_upstream():
-    from vllm_kvmem.compat import patched_source
-    from vllm_kvmem.metadata_patch import patch_metadata_source
-    from vllm_kvmem.logprob_patch import patch_rejection_source
+    from vllm_kvmem.adapters.compat import patched_source
+    from vllm_kvmem.adapters.metadata_patch import patch_metadata_source
+    from vllm_kvmem.adapters.logprob_patch import patch_rejection_source
     root = source_root()
     for relative, patch in (
         ('v1/worker/gpu/spec_decode/dflash/utils.py', patched_source),
@@ -55,8 +55,8 @@ def test_compatibility_adapters_compile_against_upstream():
 
 
 def test_native_loader_fix_and_logprob_support_are_preserved():
-    from vllm_kvmem.compat import patched_source
-    from vllm_kvmem.logprob_patch import patch_rejection_source
+    from vllm_kvmem.adapters.compat import patched_source
+    from vllm_kvmem.adapters.logprob_patch import patch_rejection_source
     source = b'''def load_dflash_model(target_model, vllm_config):
     return replace(vllm_config,
         load_config=get_pp_safe_draft_load_config(get_draft_load_config(vllm_config)))
@@ -68,14 +68,14 @@ def test_native_loader_fix_and_logprob_support_are_preserved():
 
 
 def test_metadata_patch_rejects_missing_semantic_hook():
-    from vllm_kvmem.metadata_patch import patch_metadata_source
+    from vllm_kvmem.adapters.metadata_patch import patch_metadata_source
     source = (source_root() / 'v1/worker/gpu/attn_utils.py').read_bytes()
     with pytest.raises(ImportError, match='metadata patch'):
         patch_metadata_source(source.replace(b'seq_lens=seq_lens,', b'seq_lens=other,'))
 
 
 def test_state_contract_rejects_changed_initial_acceptance_counter(tmp_path):
-    from vllm_kvmem.engine_api import INVARIANTS
+    from vllm_kvmem.adapters.engine_api import INVARIANTS
     root = source_root()
     files = {item[0] for item in (*CONTRACTS['state'], *INVARIANTS['state'])}
     for relative in files:
@@ -92,8 +92,8 @@ def test_speculative_label_ids_follow_the_correct_request_rows():
     """Execute upstream extraction with CPU stand-ins for the two GPU kernels."""
     from types import SimpleNamespace
     torch = pytest.importorskip('torch')
-    from vllm_kvmem.logprob_patch import patch_rejection_source
-    from vllm_kvmem.engine_api import find_symbol
+    from vllm_kvmem.adapters.logprob_patch import patch_rejection_source
+    from vllm_kvmem.adapters.engine_api import find_symbol
     source = (source_root() / 'v1/worker/gpu/spec_decode/rejection_sampler.py').read_bytes()
     patched = patch_rejection_source(source)
     method = find_symbol(patched, 'RejectionSampler._get_logprobs_tensors')

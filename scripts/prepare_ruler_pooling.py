@@ -56,7 +56,7 @@ def prepare(root, reference, repo, native):
         validate_execution(profile,variant)
         # Full launch planning is CPU-only and validates native/guided resource
         # compatibility before any model is started.
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         build_launch(profile,repo,campaign/'preflight-server')
         save(campaign/'profile.json',profile)
         variant['profile_sha256']=sha(campaign/'profile.json')

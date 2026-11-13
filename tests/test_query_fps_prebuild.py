@@ -7,11 +7,11 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, _Ready
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.query_fps_prebuild import FPSPrebuildManager
-from vllm_kvmem.query_key_fps import select_key_representatives
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.query_fps_prebuild import FPSPrebuildManager
+from vllm_kvmem.serving.query_key_fps import select_key_representatives
 
 
 def complete_close(close):

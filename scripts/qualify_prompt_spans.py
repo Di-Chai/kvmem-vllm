@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def qualify(protocol, tokenizer_path):
     from transformers import AutoTokenizer
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     spec = importlib.util.spec_from_file_location('qualify_locality_bridge', ROOT/'benchmarks/deepswe/claude_bridge.py')
     bridge = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = bridge

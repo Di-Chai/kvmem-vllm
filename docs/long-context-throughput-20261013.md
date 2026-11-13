@@ -199,7 +199,7 @@ KV 预算本身就约 89.52 GiB，还要加模型权重和工作区。更高利�
 
 ## 134K 阶段具体验证什么
 
-依据 [admission.py](../src/vllm_kvmem/admission.py) 的 `QueryPolicy.refresh`，
+依据 [admission.py](../src/vllm_kvmem/serving/admission.py) 的 `QueryPolicy.refresh`，
 prefill 到达 K=131072 时安装边界窗口；其后尚未完成输入的对齐 chunk 会进行
 query-conditioned selection。本轮实际记录了 **4 次 prefill refresh**，对应
 history=**131072、132096、133120、134144**。每次选择窗口均为 131072 token；

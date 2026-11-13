@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 import torch
 
-from vllm_kvmem.recall_scoring import (
+from vllm_kvmem.serving.recall_scoring import (
     METHODS, build_block_features, block_logits, concat_block_features, prepare_queries,
 )
 

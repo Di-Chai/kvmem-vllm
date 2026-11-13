@@ -60,8 +60,8 @@ def test_native_frozen_p_restores_graph_and_action_before_independent_query(tmp_
     from test_prefill_attention import options
     from test_prompt_checkpoints import ready
     from test_session_worker import worker_fixture
-    from vllm_kvmem.action_attention import ActionHistory
-    from vllm_kvmem.block_graph import GraphSample
+    from vllm_kvmem.serving.action_attention import ActionHistory
+    from vllm_kvmem.serving.block_graph import GraphSample
 
     worker, binding, authority, archive, _ = worker_fixture(tmp_path)
     worker.options.session_freeze_prompt = True

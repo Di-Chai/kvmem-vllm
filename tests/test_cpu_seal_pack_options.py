@@ -8,10 +8,10 @@ import pytest
 from test_graph_options import model_profile, runtime, worker_payload
 from test_graph_v2_options import elastic_profile
 from test_historical_options import settings as historical_options
-from vllm_kvmem.elastic_serve import build_launch as elastic_launch
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
-from vllm_kvmem.storage import make_shared_archive
+from vllm_kvmem.apps.elastic_serve import build_launch as elastic_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
+from vllm_kvmem.core.storage import make_shared_archive
 
 
 def enabled(**updates):

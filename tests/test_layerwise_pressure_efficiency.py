@@ -2,9 +2,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.action_attention import window_segments
-from vllm_kvmem.layerwise_pressure import extend_records
-from vllm_kvmem.layerwise_pressure_efficiency import assembly_groups, packet_histories
+from vllm_kvmem.serving.action_attention import window_segments
+from vllm_kvmem.serving.layerwise_pressure import extend_records
+from vllm_kvmem.serving.layerwise_pressure_efficiency import assembly_groups, packet_histories
 
 
 @pytest.mark.parametrize('skip', [(), (0,), (32, 64), (0, 32, 64, 96)])
@@ -56,9 +56,9 @@ def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(m
     # rebuilds layer zero and the draft fully, as rolling decode does.
     diverged = stage == 'prefill-diverged'
     stage = 'prefill' if diverged else stage
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem import window_assembly
-    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.serving import window_assembly
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
     records = [NS(history_begin=i*32,count=32,handle=NS(slot=i)) for i in range(5)]
     chosen = [[records[0],records[2]], [records[0],records[4]]]
     plan = NS(remaps=[NS(block_id=0,to_base=0,n_tokens=32,skip=True),
@@ -90,7 +90,7 @@ def test_single_assembly_visits_each_target_and_draft_once_with_original_skips(m
 
 
 def test_single_assembly_rejects_draft_archive_reordering():
-    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
     with pytest.raises(ValueError,match='archive layer order'):
         install_single_assembly(NS(),NS(names=('a','b')),NS(),('a','draft','b'))
 
@@ -98,9 +98,9 @@ def test_single_assembly_rejects_draft_archive_reordering():
 @pytest.mark.parametrize('failed',[False,True])
 def test_single_assembly_closes_union_reader_on_success_and_submit_failure(monkeypatch,failed):
     import torch
-    from vllm_kvmem import pressure_reader,window_assembly
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
+    from vllm_kvmem.serving import pressure_reader, window_assembly
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
     records=[NS(history_begin=i*32,count=32,handle=NS(slot=i)) for i in range(3)]
     chosen=[[records[0],records[1]],[records[0],records[2]]]
     plan=NS(remaps=[NS(block_id=i,to_base=i*32,n_tokens=32,skip=False) for i in (0,1)],total_window_tokens=64)

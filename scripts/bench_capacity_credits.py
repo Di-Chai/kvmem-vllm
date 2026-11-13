@@ -16,8 +16,8 @@ import torch
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm_kvmem.capacity import ReservedKVCacheManager
-from vllm_kvmem.window_manager import WorkingSetManager
+from vllm_kvmem.serving.capacity import ReservedKVCacheManager
+from vllm_kvmem.serving.window_manager import WorkingSetManager
 
 
 def gate(cls):

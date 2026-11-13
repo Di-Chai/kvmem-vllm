@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from test_native_state import adapter
-from vllm_kvmem.recurrent_table_journal import RecurrentTableJournal, install_recurrent_table_journal
+from vllm_kvmem.serving.recurrent_table_journal import RecurrentTableJournal, install_recurrent_table_journal
 
 
 def fixture(*, install_journal=True):
@@ -115,7 +115,7 @@ def test_explicit_ablation_uses_original_gpu_table_validation(monkeypatch):
 
 
 def test_runtime_option_disables_optimization_without_launcher_env(monkeypatch):
-    from vllm_kvmem.checkpoint_timing import async_checkpoint_capture
+    from vllm_kvmem.serving.checkpoint_timing import async_checkpoint_capture
     monkeypatch.delenv('KVMEM_ASYNC_CHECKPOINT_CAPTURE', raising=False)
     runner = SimpleNamespace(vllm_config=SimpleNamespace(kv_transfer_config=SimpleNamespace(
         kv_connector_extra_config={'kvmem': {'async_checkpoint_capture': False}})))
@@ -145,7 +145,7 @@ def test_empty_warmup_submission_does_not_publish_unknown_request_rows():
 
 def empty_startup(*, install_journal=False):
     from vllm.v1.kv_cache_interface import MambaSpec
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.session_worker import SessionWorker
     runner = fixture(install_journal=install_journal)[0].runner
     runner.req_states.req_id_to_index.clear()
     runner._kvmem_request_generations.clear()
@@ -169,8 +169,8 @@ def test_runner_temporary_graph_cache_then_serving_cache_has_fresh_journal(monke
     """Exercise the real override in native graph profiling -> teardown -> init order."""
     import gc
     import weakref
-    from vllm_kvmem.engine_api import engine_root, find_symbol
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.adapters.engine_api import engine_root, find_symbol
+    from vllm_kvmem.serving.runner import make_probe_runner
     monkeypatch.setenv('KVMEM_ASYNC_CHECKPOINT_CAPTURE', '1')
     # Check positional forwarding without importing unrelated GPU model kernels.
     native = find_symbol((engine_root() / 'v1/worker/gpu/model_runner.py').read_text(),

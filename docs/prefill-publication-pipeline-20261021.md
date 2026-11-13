@@ -23,7 +23,7 @@
 - 原生统计的 metadata D2H 和 validate 同步保留。本轮收益来自发布流水与布局
   规划解耦；没有实施多个原生统计帧的延迟验证，也没有修改评分 kernel。
 
-主要实现位于 `src/vllm_kvmem/capture_runtime.py`、`action_attention.py`、
+主要实现位于 `src/vllm_kvmem/serving/capture_runtime.py`、`action_attention.py`、
 `prefill_planning.py`；`runner.py` 增加模型提交前的非阻塞诊断计数。
 
 ## 协议

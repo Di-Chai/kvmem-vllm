@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import pressure_key_reuse as reuse
+from vllm_kvmem.serving import pressure_key_reuse as reuse
 
 
 def test_flags_default_off_validate_and_yield_to_byte_verification(monkeypatch):
@@ -130,7 +130,7 @@ def _window(seed, blocks=40, evict=0.3):
 def test_native_plan_matches_the_python_reference(seed):
     native_bases = _native_or_skip('reuse_resident_bases')
     _native_or_skip('reuse_layer_plan')
-    from vllm_kvmem.pressure_resident_values import resident_bases as python_bases
+    from vllm_kvmem.serving.pressure_resident_values import resident_bases as python_bases
     mapping, chosen, sources, local, rng = _window(seed)
     assert native_bases(mapping, chosen, local, 32) == python_bases(chosen, mapping, local) == sources
     counts = {r.history_begin: rng.randrange(0, 4) for r in chosen if rng.random() < .8}
@@ -150,7 +150,7 @@ def test_native_plan_matches_the_python_reference(seed):
 @pytest.mark.parametrize('case', ['partial', 'unarchived', 'absent', 'duplicate', 'gap', 'short'])
 def test_native_bases_fallbacks_and_errors_match_python(case):
     native_bases = _native_or_skip('reuse_resident_bases')
-    from vllm_kvmem.pressure_resident_values import resident_bases as python_bases
+    from vllm_kvmem.serving.pressure_resident_values import resident_bases as python_bases
     mapping, chosen, _, local, _ = _window(7, blocks=12, evict=0)
     if case == 'partial':
         chosen[3] = NS(history_begin=chosen[3].history_begin, count=16, archived=True)

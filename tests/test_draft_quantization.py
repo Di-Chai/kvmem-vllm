@@ -7,7 +7,7 @@ pytest.importorskip('vllm')
 
 
 def test_context_projection_uses_codec_forward_instead_of_transposed_weight_storage():
-    from vllm_kvmem.draft_quantization import install_quantized_context
+    from vllm_kvmem.adapters.draft_quantization import install_quantized_context
     torch.manual_seed(73)
     weights = [torch.randn(8, 5) for _ in range(2)]
     calls = []
@@ -31,8 +31,8 @@ def test_context_projection_uses_codec_forward_instead_of_transposed_weight_stor
     torch.testing.assert_close(values, torch.stack([x[:, 6:8].reshape(3, 1, 2) for x in independent]))
 def test_mtp_inherited_fp8_does_not_enter_dflash_patch(monkeypatch):
     from types import SimpleNamespace
-    from vllm_kvmem.draft_quantization import install_quantized_context
-    import vllm_kvmem.draft_contract as contract
+    from vllm_kvmem.adapters.draft_quantization import install_quantized_context
+    import vllm_kvmem.adapters.draft_contract as contract
 
     def forbidden():
         raise AssertionError('Native MTP must not run DFlash verification')

@@ -11,7 +11,7 @@ import torch
 
 from vllm.v1.worker.gpu.buffer_utils import StagedWriteTensor, UvaBufferPool
 from vllm.v1.worker.gpu.mm.rope import RopeState
-from vllm_kvmem import fast_request_staging as frs
+from vllm_kvmem.serving import fast_request_staging as frs
 
 
 class HostBuffer:

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from vllm_kvmem.step_timing import StepTiming
+from vllm_kvmem.serving.step_timing import StepTiming
 
 
 class Event:
@@ -85,7 +85,7 @@ def test_public_prepare_replaces_private_query_classification_and_sample_keeps_i
 
 def test_runner_passes_metadata_to_timing_and_public_prepare_wins(tmp_path):
     from test_work_counters import _runner
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     runner = _runner(tmp_path, None)
     public = batch()
     timing = runner._kvmem_step_timing = timer()

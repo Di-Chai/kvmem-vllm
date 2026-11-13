@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import serve
+from vllm_kvmem.serving import serve
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_resident_values_requires_existing_profile_capacity_and_packed_path(laun
 
 
 def test_layerwise_controller_candidates_require_explicit_environment(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
     query=NS(optimized=True,native_batches=True,names=('a',),runner=NS(model_config=NS(enforce_eager=False)))
     for name in ('PREPARED_READS','POST_FORWARD_REAP','SUBMIT_ON_PREPARE'):
         monkeypatch.delenv('KVMEM_LAYERWISE_PRESSURE_'+name,raising=False)

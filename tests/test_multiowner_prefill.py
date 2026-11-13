@@ -5,11 +5,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CapturedPacket
-from vllm_kvmem.multiowner_prefill import (owner_chunk_limit, capture_owner_plans,
+from vllm_kvmem.serving.capture_runtime import CapturedPacket
+from vllm_kvmem.serving.multiowner_prefill import (owner_chunk_limit, capture_owner_plans,
     attach_owner_views, bind_owner_payload)
-from vllm_kvmem.terminal import TerminalPrefix
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
+from vllm_kvmem.core.options import RuntimeOptions
 from test_logical_capture_publication import runtime_fixture
 from test_logical_publication import fixture
 

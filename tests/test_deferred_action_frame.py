@@ -5,8 +5,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.deferred_action_frame import DeferredActionFrame
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.deferred_action_frame import DeferredActionFrame
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 from test_prefill_pipeline_options import profile
 from test_request_publication import fixture, packet, close
@@ -58,7 +58,7 @@ def test_entire_shared_frame_resolves_before_either_owner_append(tmp_path, monke
     frame, log = deferred(valid=False, resolve=validate)
     shared.action_validation = frame
     if graph:
-        from vllm_kvmem.block_graph import BlockGraph
+        from vllm_kvmem.serving.block_graph import BlockGraph
         for name, owner in (('a', a), ('b', b)):
             owner.block_graph = BlockGraph(name, owner.memory.config.block_tokens, initial_position=4)
     observed = []
@@ -130,7 +130,7 @@ def test_option_rejects_missing_physical_prefix_lifetime_or_unbounded_settings()
 
 def test_native_preempt_and_forced_reset_cannot_release_a_frozen_prefix(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     scheduler = KVMemScheduler.__new__(KVMemScheduler)
     scheduler._deferred_prefill_validation = True
     owner = object()

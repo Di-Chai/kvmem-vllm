@@ -55,7 +55,7 @@ def prepare(root, diagnostic):
     for arm in ['mean_k','token_sum']:
         directory=root/arm;directory.mkdir()
         profile=deepcopy(base);profile['port']=18863
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         build_launch(profile,repo,directory/'preflight-server')
         save(directory/'profile.json',profile)
     save(root/'status.json',dict(status='prepared',cases=len(rows),arms=2,at=time.time()))

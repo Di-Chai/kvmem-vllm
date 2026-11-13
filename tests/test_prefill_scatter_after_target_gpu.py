@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.connector import ControlMetadata
-from vllm_kvmem.prefill_planning import PrefillPlanFrame
+from vllm_kvmem.serving.connector import ControlMetadata
+from vllm_kvmem.serving.prefill_planning import PrefillPlanFrame
 from test_prefill_early_ahead_combination_gpu import (
     integrated, dispose, durable_snapshot, through_prepare, snapshot,
 )

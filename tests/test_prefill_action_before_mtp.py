@@ -8,11 +8,11 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionPacket, ActionRuntime
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.native_attention import NativeAttentionStats
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem import mtp_runtime
+from vllm_kvmem.serving.action_attention import ActionPacket, ActionRuntime
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.adapters import mtp_runtime
 from test_options import config
 from test_prefill_pipeline_options import profile
 
@@ -151,7 +151,7 @@ class Batch:
 
 
 def install_wrapper(monkeypatch, action, captured, batch, log, *, failure=None):
-    monkeypatch.setattr('vllm_kvmem.draft_contract.verify_mtp_sources', lambda: None)
+    monkeypatch.setattr('vllm_kvmem.adapters.draft_contract.verify_mtp_sources', lambda: None)
     module = NS()
     model = NS(named_modules=lambda: [('layer', module)])
     monkeypatch.setattr(mtp_runtime, 'install_qwen_capture', lambda _: ['layer'])

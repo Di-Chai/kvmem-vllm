@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.streaming_publication import allocate_pages, verify_page
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.streaming_publication import allocate_pages, verify_page
 
 L, B, H, D = 5, 32, 2, 64
 
@@ -122,7 +122,7 @@ def test_zero_copy_partial_pages_and_discard(monkeypatch):
 
 def test_private_record_views_keep_their_bytes_alive():
     import gc
-    from vllm_kvmem.streaming_publication import private_record
+    from vllm_kvmem.serving.streaming_publication import private_record
     record, view = private_record(4096)
     tensor = torch.from_numpy(view[:2048])
     del record, view
@@ -132,7 +132,7 @@ def test_private_record_views_keep_their_bytes_alive():
 
 
 def test_flag_validation(monkeypatch):
-    from vllm_kvmem import streaming_publication as sp
+    from vllm_kvmem.serving import streaming_publication as sp
     monkeypatch.setenv('KVMEM_STREAM_PUBLICATION_ZERO_COPY', 'on')
     with pytest.raises(ValueError, match='ZERO_COPY'):
         sp.zero_copy_requested()
@@ -198,7 +198,7 @@ def test_native_stream_pages_reject_bad_geometry(monkeypatch):
 @pytest.mark.parametrize('verify', [False, True])
 def test_prescatter_job_publishes_identically(monkeypatch, verify):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.streaming_publication import PrescatterJob
+    from vllm_kvmem.serving.streaming_publication import PrescatterJob
     if getattr(_native, 'StreamPages', None) is None:
         pytest.skip('Requires the StreamPages native extension')
     monkeypatch.setenv('KVMEM_STREAM_PUBLICATION_VERIFY', '1' if verify else '0')

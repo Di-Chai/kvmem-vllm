@@ -5,8 +5,8 @@ from threading import Event, get_ident
 import pytest
 import torch
 
-from vllm_kvmem import _native, storage
-from vllm_kvmem.packed_assembly import begin_read_packed_records, read_packed_records
+from vllm_kvmem import _native; from vllm_kvmem.core import storage
+from vllm_kvmem.serving.packed_assembly import begin_read_packed_records, read_packed_records
 from test_paired_archive_reads import archive_fixture
 from test_native_memory_storage import eventually
 
@@ -100,7 +100,7 @@ def test_inline_holder_failure_precedes_admission_and_destination_writes(tmp_pat
 
 def test_inline_packed_path_requires_blocking_cpu_destination(tmp_path):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.authority import record_key
+    from vllm_kvmem.serving.authority import record_key
     archive,repo,leases,records=archive_fixture(tmp_path,'native')
     authority=NS(archive=archive,record_bytes=64,shape=(2,4,2,2),poll=lambda:None,
         memory=NS(request_id='owner',admitted_read=lambda h:(repo.pin(h),None)),

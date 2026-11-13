@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.prefill_control import BatchPrefillBudget, PrefillController
-from vllm_kvmem.step_timing import StepTiming
+from vllm_kvmem.serving.prefill_control import BatchPrefillBudget, PrefillController
+from vllm_kvmem.serving.step_timing import StepTiming
 
 
 def options():
@@ -59,7 +59,7 @@ def test_per_request_cap_never_increases_shared_budget_or_changes_zero_default()
 
 def test_per_request_limit_parses_and_requires_an_enabled_aligned_batch_budget():
     from test_options import config
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     values=dict(block_tokens=32,repository_blocks=8192,request_planning=True,prefill_batch_tokens=2048,prefill_request_tokens=256)
     assert RuntimeOptions.from_vllm(config({'kvmem':values})).prefill_request_tokens==256
     for invalid in [True,-32,17,4096]:
@@ -73,7 +73,7 @@ def test_per_request_limit_parses_and_requires_an_enabled_aligned_batch_budget()
 def test_scheduler_shared_budget_keeps_decode_and_atomic_query_independent(monkeypatch,per_request):
     from copy import copy
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_scheduler_transactions import setup_scheduler
     scheduler, first, _ = setup_scheduler()
     scheduler._bounded_target = scheduler.request_planning = True
@@ -99,7 +99,7 @@ def test_scheduler_shared_budget_keeps_decode_and_atomic_query_independent(monke
 
 def test_shared_credits_preserve_native_mtp_placeholder_tail(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_scheduler_transactions import setup_scheduler
     scheduler, request, _ = setup_scheduler()
     scheduler._bounded_target = scheduler.request_planning = True
@@ -265,7 +265,7 @@ def test_latency_only_connector_feedback_reaches_scheduler_without_session_work(
 
 def test_adaptive_chunks_never_split_explicit_query_replay(monkeypatch):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_scheduler_transactions import setup_scheduler
     scheduler, request, _ = setup_scheduler()
     scheduler._bounded_target = scheduler.request_planning = True
@@ -284,7 +284,7 @@ def test_adaptive_chunks_never_split_explicit_query_replay(monkeypatch):
 @pytest.mark.parametrize('adaptive', [False, True])
 def test_query_suffix_resumes_chunk_cap_after_checkpoint_fallback(monkeypatch, adaptive):
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_scheduler_transactions import setup_scheduler
     scheduler, request, _ = setup_scheduler()
     scheduler._bounded_target = scheduler.request_planning = True
@@ -308,8 +308,8 @@ def test_query_suffix_resumes_chunk_cap_after_checkpoint_fallback(monkeypatch, a
 @pytest.mark.parametrize('changed', [dict(step_latency_interval=0), dict(prefill_min_tokens=17),
     dict(prefill_max_tokens=65536), dict(decode_step_target_ms=float('nan')), dict(adaptive_prefill=1)])
 def test_invalid_control_configuration_fails_before_launch(changed):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.options import RuntimeOptions
     cfg = dict(memory=KVMemConfig(block_tokens=16, select_budget=32, gen_budget=256, sink_blocks=0, recent_blocks=0),
                request_planning=True, adaptive_prefill=True, step_latency_interval=4,
                prefill_min_tokens=16, prefill_max_tokens=128)
@@ -321,7 +321,7 @@ def test_invalid_control_configuration_fails_before_launch(changed):
 def test_elastic_v2_controls_reach_native_options_without_changing_model(tmp_path, pressure_only):
     import json
     from test_serving_launcher import nvfp4_profile
-    from vllm_kvmem.elastic_serve import build_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch
     model = nvfp4_profile(tmp_path)
     users = tmp_path/'users.json'
     users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-only-key'}]}))

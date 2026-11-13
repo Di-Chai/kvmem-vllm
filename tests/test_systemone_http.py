@@ -13,7 +13,7 @@ from vllm.entrypoints.generate.structured_decisions import api_router as api
 from vllm.inputs import tokens_input
 from vllm.logprobs import Logprob
 from vllm.outputs import CompletionOutput, RequestOutput
-from vllm_kvmem.systemone import SystemOnePlugin
+from vllm_kvmem.serving.systemone import SystemOnePlugin
 
 
 @pytest.fixture

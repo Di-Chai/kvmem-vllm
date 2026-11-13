@@ -11,7 +11,7 @@ if [ "$mode" = --latest ]; then
   # Resolve the current release and its dependencies together. The lock below
   # remains available solely to reproduce historical qualification runs.
   uv pip install --python .venv/bin/python --torch-backend=cu130 --upgrade -e '.[vllm,test]'
-  .venv/bin/python -m vllm_kvmem.engine_api --systemone
+  .venv/bin/python -m vllm_kvmem.adapters.engine_api --systemone
   exit 0
 fi
 uv pip install --python .venv/bin/python --torch-backend=cu130 -r requirements-cu130.lock

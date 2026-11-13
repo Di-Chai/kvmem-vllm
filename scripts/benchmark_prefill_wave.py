@@ -41,7 +41,7 @@ def validate_arguments(args):
 
 
 def cap_profiles(candidate, cap):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profiles = {}
     for arm, amount in (('A0', 0), ('P1', cap)):
         profile = copy.deepcopy(candidate)

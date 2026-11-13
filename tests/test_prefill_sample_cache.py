@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 from prefill_sample_cache import patch_kernel,patch_variant
-from vllm_kvmem.native_attention_build import patch_prefill
+from vllm_kvmem.serving.native_attention_build import patch_prefill
 
 
 def upstream():

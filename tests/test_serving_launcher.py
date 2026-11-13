@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def profile(tmp_path):
@@ -129,7 +129,7 @@ def test_launcher_preserves_mainline_precisions_and_native_execution(tmp_path):
     transfer = json.loads(argv[argv.index('--kv-transfer-config')+1])
     assert transfer['kv_connector_extra_config']['kvmem']['session_capacity'] == 4
     assert '--no-enable-prefix-caching' in argv and '--no-async-scheduling' in argv
-    assert argv[argv.index('--middleware')+1] == 'vllm_kvmem.http_sessions.validate_prompt_session'
+    assert argv[argv.index('--middleware')+1] == 'vllm_kvmem.serving.http_sessions.validate_prompt_session'
     assert env['KVMEM_SERVING'] == '1' and 'KVMEM_Q8_TENSORCORE' not in env
     assert env['VLLM_PLUGINS'] == 'gguf,kvmem'
     assert json.loads(argv[argv.index('--model-loader-extra-config')+1]) == {
@@ -148,7 +148,7 @@ def test_full_graph_launch_keeps_original_selector_scheduler_and_archive(tmp_pat
     assert '--enforce-eager' not in argv
     assert json.loads(argv[argv.index('--compilation-config') + 1]) == {
         'mode': 0, 'cudagraph_mode': 'FULL'}
-    assert argv[argv.index('--scheduler-cls') + 1] == 'vllm_kvmem.scheduler.KVMemScheduler'
+    assert argv[argv.index('--scheduler-cls') + 1] == 'vllm_kvmem.serving.scheduler.KVMemScheduler'
     assert plan['environment']['KVMEM_FULL_GRAPH'] == '1'
     assert plan['environment']['KVMEM_BOUNDED_TARGET'] == '1'
 
@@ -258,7 +258,7 @@ def test_dry_run_never_imports_engine_changes_env_or_creates_run_directory(tmp_p
     config = tmp_path/'profile.json'
     config.write_text(json.dumps(profile(tmp_path)))
     code = '''import os,sys
-from vllm_kvmem.serve import main
+from vllm_kvmem.serving.serve import main
 before=dict(os.environ)
 main(sys.argv[1:])
 assert dict(os.environ)==before
@@ -272,7 +272,7 @@ assert 'vllm' not in sys.modules and 'torch' not in sys.modules
 
 
 def test_existing_run_directory_is_not_reused(tmp_path):
-    from vllm_kvmem.serve import main
+    from vllm_kvmem.serving.serve import main
     config = tmp_path/'profile.json'
     config.write_text(json.dumps(profile(tmp_path)))
     run = tmp_path/'owned'; run.mkdir()
@@ -289,7 +289,7 @@ def test_multi_user_launch_keeps_keys_out_of_manifest_and_limits_api_workers(tmp
     cfg['multi_user'] = {'users_file': users.name, 'max_inflight': 4}
     plan = build_launch(cfg, tmp_path, tmp_path/'run')
     argv = plan['vllm_argv']
-    assert argv[argv.index('--middleware')+1] == 'vllm_kvmem.multi_user.MultiUserMiddleware'
+    assert argv[argv.index('--middleware')+1] == 'vllm_kvmem.serving.multi_user.MultiUserMiddleware'
     assert argv[argv.index('--api-server-count')+1] == '1'
     resolved = json.loads(plan['environment']['KVMEM_MULTI_USER_CONFIG'])
     assert resolved['users_file'] == str(users)
@@ -323,7 +323,7 @@ def nvfp4_profile(tmp_path, quant=None):
 
 
 def test_tensor_parallel_mtp_launch(tmp_path, capsys):
-    from vllm_kvmem.serve import main
+    from vllm_kvmem.serving.serve import main
     cfg = nvfp4_profile(tmp_path)
     cfg.update(draft_method='mtp', draft_tokens=4)
     path = tmp_path/'tp.json'
@@ -433,7 +433,7 @@ def test_nvfp4_dry_run_is_cpu_only_and_keeps_configuration_environment_unchanged
     cfg['linear_backend_per_quant'] = {'nvfp4_w4a4': 'flashinfer_b12x'}
     config.write_text(json.dumps(cfg))
     code = '''import os,sys
-from vllm_kvmem.serve import main
+from vllm_kvmem.serving.serve import main
 before=dict(os.environ)
 main(sys.argv[1:])
 assert dict(os.environ)==before
@@ -506,7 +506,7 @@ def test_profiler_config_is_opt_in_native_passthrough_and_cpu_only(tmp_path):
     source = tmp_path / 'profile.json'
     source.write_text(json.dumps(cfg))
     code = '''import os,sys
-from vllm_kvmem.serve import main
+from vllm_kvmem.serving.serve import main
 before=dict(os.environ)
 main(sys.argv[1:])
 assert dict(os.environ)==before
@@ -541,7 +541,7 @@ def test_invalid_profiler_structure_rejected_without_engine(tmp_path, profiler):
 @pytest.mark.parametrize('mode', ['full', 'meank'])
 @pytest.mark.parametrize('enabled', [False, True])
 def test_elastic_profiler_passthrough_preserves_execution_mode(tmp_path, mode, enabled):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic_launch
     model = nvfp4_profile(tmp_path)
     users = tmp_path / 'users.json'
     users.write_text(json.dumps({'users': [{'id': 'alice', 'api_key': 'test-profile-key'}]}))
@@ -582,7 +582,7 @@ def test_compiled_mtp_capture_uses_native_compiler_without_changing_memory_polic
 
 @pytest.mark.parametrize('quota', [None, 1024**3])
 def test_pm_launch_budgets_both_snapshots_and_honors_explicit_quota(tmp_path, quota):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic_launch
     model = nvfp4_profile(tmp_path)
     users = tmp_path/'users.json'
     users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
@@ -599,7 +599,7 @@ def test_pm_launch_budgets_both_snapshots_and_honors_explicit_quota(tmp_path, qu
 
 
 def test_elastic_action_switch_reaches_native_selector_and_runtime(tmp_path):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic_launch
     model = nvfp4_profile(tmp_path)
     users = tmp_path/'users.json'
     users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
@@ -620,7 +620,7 @@ def test_elastic_action_switch_reaches_native_selector_and_runtime(tmp_path):
 
 
 def test_elastic_async_refresh_preserves_native_single_inflight_and_compiled_model(tmp_path):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic_launch
     model=nvfp4_profile(tmp_path)
     users=tmp_path/'users.json'
     users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))
@@ -636,7 +636,7 @@ def test_elastic_async_refresh_preserves_native_single_inflight_and_compiled_mod
 
 
 def test_elastic_prefill_attention_requires_and_forwards_bounded_chunk(tmp_path):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic_launch
     model=nvfp4_profile(tmp_path)
     users=tmp_path/'users.json'
     users.write_text(json.dumps({'users':[{'id':'alice','api_key':'test-profile-key'}]}))

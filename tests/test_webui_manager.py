@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from vllm_kvmem.webui import manager as module
-from vllm_kvmem.webui.manager import EngineManager, _OwnedProcess
+from vllm_kvmem.apps.webui import manager as module
+from vllm_kvmem.apps.webui.manager import EngineManager, _OwnedProcess
 
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux console')
@@ -317,7 +317,7 @@ def test_controller_death_closes_control_pipe_and_cleans_engine(tmp_path):
     marker = tmp_path / 'engine.pid'
     command = ('import os,time; from pathlib import Path; '
                f'Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(60)')
-    controller_code = ('import sys,time; from vllm_kvmem.webui.manager import _OwnedProcess; '
+    controller_code = ('import sys,time; from vllm_kvmem.apps.webui.manager import _OwnedProcess; '
                        f'log=open({str(tmp_path / "log")!r},"wb"); '
                        f'p=_OwnedProcess([sys.executable,"-c",{command!r}],log); time.sleep(60)')
     env = dict(os.environ)

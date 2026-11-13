@@ -156,7 +156,7 @@ extension）与wheel/安装目录/源码逐字节相同；wheel SHA256：
 
 `profile_elastic_decode.py --phase decode` 支持MeanK MTP和完整上下文native MTP，
 `--direct` 使用直接引擎SSE控制；`--phase both` 保留原MeanK prefill/decode两阶段
-收集。原生控制显式指定 `--worker-cls vllm_kvmem.profile_worker.NativeProfileWorker`，
+收集。原生控制显式指定 `--worker-cls vllm_kvmem.serving.profile_worker.NativeProfileWorker`，
 只增加profiler启用时的注解，没有安装KVMem capture/selector/connector hooks。
 普通基准需完全省略profiler与该worker类，不能只调用stop_profile后就当正式成绩。
 

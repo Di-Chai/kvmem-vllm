@@ -10,8 +10,8 @@ from types import SimpleNamespace as NS
 
 import torch
 
-from vllm_kvmem.recall_value_reference import score_value_records
-from vllm_kvmem.recall_value_scoring import VALUE_METHODS
+from vllm_kvmem.serving.recall_value_reference import score_value_records
+from vllm_kvmem.serving.recall_value_scoring import VALUE_METHODS
 
 
 def run(args):

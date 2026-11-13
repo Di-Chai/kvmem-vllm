@@ -9,7 +9,7 @@ pytest.importorskip('vllm')
 from vllm.v1.request import RequestStatus
 
 from test_incremental_capacity import make_gate, request
-from vllm_kvmem.request_swap_control import RequestSwapController
+from vllm_kvmem.serving.request_swap_control import RequestSwapController
 
 
 class Connector:
@@ -420,7 +420,7 @@ def test_growth_preserves_nearly_finished_decode_when_another_victim_fits():
 
 
 def bind_session(f, req):
-    from vllm_kvmem.session_control import SessionCommands
+    from vllm_kvmem.serving.session_control import SessionCommands
     req.session_id, req.cache_salt = 'session', 'salt'
     entry = SimpleNamespace(namespace=('salt', 'session'), generation=7, request_id=req.request_id,
         phase='active', allocated=True, history=0, candidate_position=32)

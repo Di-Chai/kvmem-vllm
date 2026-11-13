@@ -1,7 +1,7 @@
-"""Launch-time strategy capability checks (vllm_kvmem.capabilities)."""
+"""Launch-time strategy capability checks (vllm_kvmem.serving.capabilities)."""
 import pytest
 
-from vllm_kvmem import capabilities
+from vllm_kvmem.serving import capabilities
 
 BASE = dict(action_attention=True, prefill_attention=True, pressure_policy='attention')
 

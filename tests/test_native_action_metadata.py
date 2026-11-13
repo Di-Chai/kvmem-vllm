@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime, window_segments
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime, window_segments
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 from test_native_restore_frame import fixture
 from test_options import config
 

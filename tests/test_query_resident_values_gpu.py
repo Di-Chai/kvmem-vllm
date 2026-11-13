@@ -15,12 +15,12 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',
 def test_query_resident_v_preserves_entire_cache_across_mixed_cycles_and_tails(
         tmp_path,monkeypatch,layer_index,tail,page,hit_full):
     from vllm_kvmem import _native
-    from vllm_kvmem.authority import record_key
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.query_resident_values import bind_query_resident_sources
-    from vllm_kvmem.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
+    from vllm_kvmem.serving.authority import record_key
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.query_resident_values import bind_query_resident_sources
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
     from test_query_resident_values import global_assembly
 
     torch.manual_seed(187)

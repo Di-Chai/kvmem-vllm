@@ -15,11 +15,11 @@ import torch
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.async_restore import RestoreContext, step_restore, validate_pages
-from vllm_kvmem.connector import ControlCompletions, ControlMetadata, RestoreCommand
-from vllm_kvmem.prompt_checkpoints import CheckpointPhase
-from vllm_kvmem.session_control import SessionLedger, SessionNotice
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.async_restore import RestoreContext, step_restore, validate_pages
+from vllm_kvmem.serving.connector import ControlCompletions, ControlMetadata, RestoreCommand
+from vllm_kvmem.serving.prompt_checkpoints import CheckpointPhase
+from vllm_kvmem.serving.session_control import SessionLedger, SessionNotice
 from test_core import Event
 from test_prompt_checkpoints import ready, saved
 from test_scheduler_transactions import setup_scheduler
@@ -27,7 +27,7 @@ from test_session_control import request as session_request
 
 
 def restored_scheduler(monkeypatch, tmp_path):
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     scheduler, _, pools = setup_scheduler()
     for manager in scheduler.window_managers.values():
         manager.free('a')
@@ -175,7 +175,7 @@ def test_deferred_padding_is_consumed_by_public_execution_or_cancel(monkeypatch,
 
 
 def test_restore_validates_cpu_allocation_witness_without_reading_gpu_tables():
-    from vllm_kvmem.restore_lease import FreshRestoreLease
+    from vllm_kvmem.serving.restore_lease import FreshRestoreLease
     runner = SimpleNamespace(req_states=SimpleNamespace(req_id_to_index={'new': 0}),
         _kvmem_request_generations={'new': 3}, _kvmem_restore_allocations={},
         kv_cache_config=SimpleNamespace(kv_cache_groups=[None, None]),
@@ -355,7 +355,7 @@ def test_second_restore_cannot_claim_shared_scratch_before_first_gpu_fence():
 
 @pytest.mark.parametrize('mutation', ['scheduled_tokens', 'block_table', 'cached_state', 'finished'])
 def test_runner_holds_restore_state_and_allocation_until_completion_but_allows_peers(mutation):
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     calls = []
 
     class NativeBase:
@@ -397,8 +397,8 @@ def test_runner_holds_restore_state_and_allocation_until_completion_but_allows_p
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_runner_registers_fresh_allocation_only_for_enabled_checkpoint_imports(enabled):
-    from vllm_kvmem.restore_lease import FreshRestoreLease
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.restore_lease import FreshRestoreLease
+    from vllm_kvmem.serving.runner import make_probe_runner
 
     class NativeBase:
         def add_requests(self, output):
@@ -436,9 +436,9 @@ class LaneEvent(Event):
 
 def two_lane_manager(monkeypatch, tmp_path, *, resident_slots=1):
     """Real producer threads, fake device fences, and separate leased rows."""
-    from vllm_kvmem.maintenance import MaintenancePolicy
-    import vllm_kvmem.async_restore as restore_module
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.maintenance import MaintenancePolicy
+    import vllm_kvmem.serving.async_restore as restore_module
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     options = SimpleNamespace(async_restore=True, maintenance_max_steps=8,
         maintenance_busy_ms=2., maintenance_idle_ms=8., maintenance_aging_ms=250.,
         maintenance_inflight_bytes=0, session_checkpoint_bytes=256,

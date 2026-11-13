@@ -112,7 +112,7 @@ python scripts/build_webui.py
 ```
 
 The build needs Node.js 22+ and the locked npm dependencies. It performs Svelte type
-checking and emits static files under `src/vllm_kvmem/webui/static/`.
+checking and emits static files under `src/vllm_kvmem/apps/webui/static/`.
 
 Focused CPU checks cover configuration validation, real child-process cleanup,
 the HTTP boundary, stream cancellation, token/session contracts and telemetry:

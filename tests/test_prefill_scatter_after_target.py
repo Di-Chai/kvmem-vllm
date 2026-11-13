@@ -7,12 +7,12 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from vllm_kvmem.action_attention import ActionRuntime
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-from vllm_kvmem.connector import ControlMetadata
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.prefill_planning import PrefillPlanFrame
-from vllm_kvmem.runner import make_probe_runner
+from vllm_kvmem.serving.action_attention import ActionRuntime
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.serving.connector import ControlMetadata
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.prefill_planning import PrefillPlanFrame
+from vllm_kvmem.serving.runner import make_probe_runner
 from test_options import config
 from test_prefill_pipeline_options import profile
 

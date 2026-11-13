@@ -5,10 +5,10 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.diagnostics import CompletionHistory, SERVING_COMPLETION_LIMIT, completion_counts
-from vllm_kvmem.session_control import SessionBinding
-from vllm_kvmem.session_worker import SessionWorker
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.diagnostics import CompletionHistory, SERVING_COMPLETION_LIMIT, completion_counts
+from vllm_kvmem.serving.session_control import SessionBinding
+from vllm_kvmem.serving.session_worker import SessionWorker
 
 
 def test_serving_history_releases_old_reports_but_keeps_cumulative_counts():
@@ -36,7 +36,7 @@ def test_serving_history_releases_old_reports_but_keeps_cumulative_counts():
 @pytest.mark.parametrize('retirement', ['synchronous', 'asynchronous', 'checkpoint'])
 def test_runtime_retirements_bound_serving_reports_and_preserve_qualification(
         tmp_path, monkeypatch, serving, retirement):
-    import vllm_kvmem.capture_runtime as capture
+    import vllm_kvmem.serving.capture_runtime as capture
     archive = NS(tier=NS(used_slots=0), capacity_bytes=0, preallocated=False, io_usage=lambda: {})
     layer = NS(num_kv_heads=1, head_dim=2,
                attn=NS(kv_cache_dtype='fp8_e4m3', _v_scale=torch.tensor(1.0)))

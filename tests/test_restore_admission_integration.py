@@ -11,14 +11,14 @@ from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, FullAtte
 from vllm.v1.outputs import KVConnectorOutput
 from vllm.v1.request import Request, RequestStatus
 
-from vllm_kvmem.active_residency import ActiveResidency
-from vllm_kvmem.capacity import ReservedKVCacheManager
-from vllm_kvmem.connector import ControlCompletions, RestoreCommand
-from vllm_kvmem.prompt_checkpoints import token_bytes
-from vllm_kvmem.restore_admission import RestoreAdmission
-from vllm_kvmem.scheduler import KVMemScheduler
-from vllm_kvmem.session_control import SessionLedger, SessionNotice, _Entry
-from vllm_kvmem.window_manager import WorkingSetManager
+from vllm_kvmem.serving.active_residency import ActiveResidency
+from vllm_kvmem.serving.capacity import ReservedKVCacheManager
+from vllm_kvmem.serving.connector import ControlCompletions, RestoreCommand
+from vllm_kvmem.serving.prompt_checkpoints import token_bytes
+from vllm_kvmem.serving.restore_admission import RestoreAdmission
+from vllm_kvmem.serving.scheduler import KVMemScheduler
+from vllm_kvmem.serving.session_control import SessionLedger, SessionNotice, _Entry
+from vllm_kvmem.serving.window_manager import WorkingSetManager
 from test_connector import pair
 
 

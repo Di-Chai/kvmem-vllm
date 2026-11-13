@@ -14,9 +14,9 @@ import time
 
 import torch
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.cached_storage import CachedArchive
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.cached_storage import CachedArchive
+from vllm_kvmem.core.config import KVMemConfig
 
 
 def main():

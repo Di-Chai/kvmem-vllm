@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.session_control import SessionBinding, SessionLedger
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.session_control import SessionBinding, SessionLedger
 
 
 SPANS = [{'begin': 0, 'end': 4, 'role': 'system'},
@@ -36,7 +36,7 @@ def test_old_positional_request_and_binding_construction_stays_compatible():
 
 
 def test_native_http_and_session_binding_preserve_message_spans(monkeypatch):
-    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(dict(block_tokens=4,
         gen_budget=12, select_budget=16)))
     payload = dict(prompt=list(range(24)), max_tokens=2,
@@ -158,7 +158,7 @@ def test_graph_http_ownership_gate_rejects_before_native_and_accepts_body_header
     from fastapi import FastAPI
     from starlette.responses import JSONResponse
     from starlette.routing import Route
-    from vllm_kvmem.http_sessions import validate_prompt_session
+    from vllm_kvmem.serving.http_sessions import validate_prompt_session
     monkeypatch.setenv('KVMEM_REQUIRE_OWNED_SESSION', '1')
     monkeypatch.delenv('KVMEM_REQUEST_PLAN_CONFIG', raising=False)
     received = []

@@ -17,10 +17,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from vllm_kvmem import _native
-from vllm_kvmem.block_graph import GraphPartial, GraphRow
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.graph_scoring import score_graph
-from vllm_kvmem.memory import RequestMemory
+from vllm_kvmem.serving.block_graph import GraphPartial, GraphRow
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.graph_scoring import score_graph
+from vllm_kvmem.core.memory import RequestMemory
 
 
 MAX_NODES = 8192
@@ -72,7 +72,7 @@ def _validate_record(record, *, max_nodes=MAX_NODES):
     version = record.get('version')
     if type(version) is not int or version not in (1, 2):
         raise ValueError('Unsupported recorded graph input version')
-    from vllm_kvmem.options import validate_graph_aggregation
+    from vllm_kvmem.core.options import validate_graph_aggregation
     validate_graph_aggregation(record.get('aggregation', 'sum'), record.get('scoring_version', 'v1'))
     if version == 1 and (record.get('phase', 'query') != 'query' or
                          record.get('scoring_version', 'v1') != 'v1'):

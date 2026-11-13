@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 from test_authority import setup, payload, drain
 
 
@@ -98,7 +98,7 @@ def test_async_cached_records_roundtrip_and_refused_writer_does_not_pack(tmp_pat
 
 
 def test_publish_barrier_retries_a_sealed_record_refused_by_another_namespace(tmp_path, monkeypatch):
-    from vllm_kvmem.packed_assembly import read_packed_records
+    from vllm_kvmem.serving.packed_assembly import read_packed_records
     size = 2 * 4 * 1 * 2 * 3
     archive = CachedArchive(str(tmp_path),size,16,cache_bytes=16*size,
                             namespace_bytes=16*size,max_pending=1)

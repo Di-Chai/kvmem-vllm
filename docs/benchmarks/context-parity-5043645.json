@@ -78,16 +78,16 @@
     "src/kernels_cuda.cu": "017898aaea1261624f017d92dae9392c0150de1476db6610d6c30b4c6116a821"
   },
   "adapter_source_sha256": {
-    "src/vllm_kvmem/request_plan.py": "77ef2a977557cbae5f350ae8ca6c0034d8d8b02ce76212f4f64aeb57621df506",
-    "src/vllm_kvmem/http_sessions.py": "94d34f949425d1cf5fcba9a3536e7a31e31496b53b57bd7b3b95fcdcb1fc0fcf",
-    "src/vllm_kvmem/config.py": "58e21e75ae3eb0e75bbeede57d9d258ba846c8649ecf59281b0a489b4a26c9db",
-    "src/vllm_kvmem/authority.py": "0325c0ad3760699960377881d5e67b031c2dfa2d70ecfafb4ee0f55552e7b382",
-    "src/vllm_kvmem/session_control.py": "4b6af91951bcf6204314269842d6f60b2bf1ef3f676a18de575c11dee14707cb",
-    "src/vllm_kvmem/prompt_checkpoints.py": "eddb9432e5499b6301eeecff970631c24b7126cc1b65f8c005eb215a954a3500",
-    "src/vllm_kvmem/session_worker.py": "33e47a0b6ee99410a55344216ff129f6f6bd87c9b6ff4f82afa0bc213c2c4ac2",
-    "src/vllm_kvmem/scheduler.py": "60d30a06a542dc9950e830c37a95fa093586a87a210502890110293373c9850d",
-    "src/vllm_kvmem/cuda_scoring.py": "05c74d91b6ac35c5bcec26339a1993bc3120f9009ad64e1f5becd2d1342d3af4",
-    "src/vllm_kvmem/serve.py": "739639cf1b18f0ca9063d926f7c95291248dbcb60ec9071049b750366a11dcf8"
+    "src/vllm_kvmem/serving/request_plan.py": "77ef2a977557cbae5f350ae8ca6c0034d8d8b02ce76212f4f64aeb57621df506",
+    "src/vllm_kvmem/serving/http_sessions.py": "94d34f949425d1cf5fcba9a3536e7a31e31496b53b57bd7b3b95fcdcb1fc0fcf",
+    "src/vllm_kvmem/core/config.py": "58e21e75ae3eb0e75bbeede57d9d258ba846c8649ecf59281b0a489b4a26c9db",
+    "src/vllm_kvmem/serving/authority.py": "0325c0ad3760699960377881d5e67b031c2dfa2d70ecfafb4ee0f55552e7b382",
+    "src/vllm_kvmem/serving/session_control.py": "4b6af91951bcf6204314269842d6f60b2bf1ef3f676a18de575c11dee14707cb",
+    "src/vllm_kvmem/serving/prompt_checkpoints.py": "eddb9432e5499b6301eeecff970631c24b7126cc1b65f8c005eb215a954a3500",
+    "src/vllm_kvmem/serving/session_worker.py": "33e47a0b6ee99410a55344216ff129f6f6bd87c9b6ff4f82afa0bc213c2c4ac2",
+    "src/vllm_kvmem/serving/scheduler.py": "60d30a06a542dc9950e830c37a95fa093586a87a210502890110293373c9850d",
+    "src/vllm_kvmem/core/cuda_scoring.py": "05c74d91b6ac35c5bcec26339a1993bc3120f9009ad64e1f5becd2d1342d3af4",
+    "src/vllm_kvmem/serving/serve.py": "739639cf1b18f0ca9063d926f7c95291248dbcb60ec9071049b750366a11dcf8"
   },
   "scope": "Code audit and CPU policy fixtures against the actual qw3 helpers; no new GPU model or throughput measurement."
 }

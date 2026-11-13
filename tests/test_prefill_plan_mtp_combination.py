@@ -11,10 +11,10 @@ import weakref
 import pytest
 import torch
 
-import vllm_kvmem.action_attention as module
-import vllm_kvmem.action_scoring as scoring
-from vllm_kvmem.memory import RequestMemory
-from vllm_kvmem.native_attention import NativeAttentionStats
+import vllm_kvmem.serving.action_attention as module
+import vllm_kvmem.serving.action_scoring as scoring
+from vllm_kvmem.core.memory import RequestMemory
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 from test_core import append
 from test_prefill_planning import runtime
 

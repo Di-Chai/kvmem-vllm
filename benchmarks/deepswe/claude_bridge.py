@@ -311,7 +311,7 @@ class Planner:
                 continue  # Match qw3 default lifetimes: tools remain selectable.
             pins.append({'begin':coordinate(pin['begin']), 'end':coordinate(pin['end']), 'kind':kind})
         plan['kvmem_mandatory_spans'] = list({canonical(p):p for p in pins}.values())
-        from vllm_kvmem.prompt_spans import map_prompt_spans, span_payload, normalize_provenance
+        from vllm_kvmem.serving.prompt_spans import map_prompt_spans, span_payload, normalize_provenance
         # Renderer byte ranges cover each real message/tool result. The new
         # suffix uses its actual encoding and exactly one history offset.
         shift = separator_bytes - boundary if reused else 0
@@ -381,7 +381,7 @@ class Planner:
         # same complete public validation; payload fields cannot disable it.
         if finalize_plan is not None:
             finalize_plan(result)
-        from vllm_kvmem.request_plan import RequestPlan
+        from vllm_kvmem.serving.request_plan import RequestPlan
         RequestPlan.parse(plan, len(tokens), 32, self.gen_budget)
         return result
 
@@ -418,7 +418,7 @@ class Planner:
         state.locations = locations
         historical_end = max((s['end'] for s in rendered['spans']), default=rendered['control_end'])
         state.rendered_prefix = rendered['prompt'].encode()[:historical_end]
-        from vllm_kvmem.prompt_spans import normalize_spans, normalize_provenance
+        from vllm_kvmem.serving.prompt_spans import normalize_spans, normalize_provenance
         state.locality_spans = normalize_spans(plan.get('kvmem_locality_spans', []), len(tokens))
         state.locality_provenance = normalize_provenance(plan.get('kvmem_locality_provenance'))
         assistant_begin = getattr(prepared, 'assistant_begin', None)

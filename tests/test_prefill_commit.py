@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 
 
 def histories(monkeypatch):
@@ -133,7 +133,7 @@ def test_direct_options_default_and_environment_override(monkeypatch):
 
 
 def test_action_runtime_passes_tensor_without_tolist_and_reports_commit_cost(tmp_path, monkeypatch):
-    from vllm_kvmem.action_attention import ActionRuntime, ActionPacket
+    from vllm_kvmem.serving.action_attention import ActionRuntime, ActionPacket
     _, history = histories(monkeypatch)
     mass = torch.ones((1, 1))
     monkeypatch.setattr(torch.Tensor, 'tolist', lambda _: (_ for _ in ()).throw(AssertionError('scalar materialization')))

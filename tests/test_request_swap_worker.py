@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.request_swap_worker import RequestSwapWorker, SwapCommand
+from vllm_kvmem.serving.request_swap_worker import RequestSwapWorker, SwapCommand
 
 
 class Event:

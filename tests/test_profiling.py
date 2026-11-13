@@ -2,7 +2,7 @@ import gzip
 import json
 
 import pytest
-from vllm_kvmem.profiling import native_profiler_config, summarize_trace
+from vllm_kvmem.serving.profiling import native_profiler_config, summarize_trace
 
 
 def test_native_profile_configuration_is_bounded_and_keeps_frontend_out(tmp_path):

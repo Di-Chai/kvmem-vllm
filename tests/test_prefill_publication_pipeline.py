@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.archive_admission import ArchiveAdmission
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.core.archive_admission import ArchiveAdmission
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_request_publication import fixture, packet, close
 from test_terminal_prefix import request
 
@@ -181,7 +181,7 @@ def test_graph_budget_failure_does_not_publish_either_queued_chunk(tmp_path):
 
 def test_terminal_deferral_does_not_treat_pipeline_owner_as_tiny(tmp_path, monkeypatch):
     from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     runtime, a, b, archive = enabled_fixture(tmp_path)
     mark_pipeline(packet(runtime, [('a', 4, 4)], confirmed=False))
     prefix = TerminalPrefix.from_request(request(8, 0, 16, 0, 'FINISHED_ABORTED'))

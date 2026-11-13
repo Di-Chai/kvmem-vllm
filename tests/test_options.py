@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import pytest
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 
 
 def config(payload):

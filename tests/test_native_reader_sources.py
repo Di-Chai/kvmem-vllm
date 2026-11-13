@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.memory_storage import gather_records_native
+from vllm_kvmem.core.memory_storage import gather_records_native
 
 pytestmark = pytest.mark.skipif(not hasattr(_native, 'RecordSources'), reason='Requires the rebuilt extension')
 

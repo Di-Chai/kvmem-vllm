@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.block_graph import BlockGraph, GraphSample
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphSample
 
 
 def commit(graph, begin, end, positions, targets, masses, kind='prefill', dense=True):

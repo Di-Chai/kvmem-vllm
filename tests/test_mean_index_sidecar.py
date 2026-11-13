@@ -125,9 +125,9 @@ def test_adapter_restores_original_after_consumer_exception_or_unused_pages():
 
 
 def test_real_append_keeps_same_means_and_archive_without_changing_production():
-    from vllm_kvmem.authority import RequestAuthority,append_authority_batch
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.authority import RequestAuthority,append_authority_batch
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
     raw,sums = data()
     values = raw.view(torch.uint8).clone()
     results = []

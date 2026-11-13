@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.maintenance import MaintenancePolicy
+from vllm_kvmem.serving.maintenance import MaintenancePolicy
 
 
 def policy(clock=lambda: 10., **changes):
@@ -174,16 +174,16 @@ def test_resident_credit_is_independent_bounded_and_does_not_distort_cold_cost()
 
 
 def test_maintenance_waits_for_native_cache_allocation_during_model_load(monkeypatch):
-    from vllm_kvmem.async_refresh import AsyncRefresh
-    import vllm_kvmem.cache_manifest as manifest
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh
+    import vllm_kvmem.adapters.cache_manifest as manifest
+    from vllm_kvmem.serving.runner import make_probe_runner
     opts = SimpleNamespace(maintenance_max_steps=8)
     runner = SimpleNamespace(model=SimpleNamespace(forward=lambda:None))
     refresh = AsyncRefresh(runner, opts)  # kv_cache_config intentionally absent.
     assert refresh.maintenance is None
     calls = []
     monkeypatch.setattr(manifest, 'archive_bytes_per_token', lambda geometry:calls.append(geometry) or 123)
-    monkeypatch.setattr('vllm_kvmem.maintenance.MaintenancePolicy', lambda o,n:('budget',o,n))
+    monkeypatch.setattr('vllm_kvmem.serving.maintenance.MaintenancePolicy', lambda o,n:('budget',o,n))
     class Base:
         def initialize_kv_cache(self):
             runner.kv_cache_config = 'allocated-geometry'
@@ -192,12 +192,12 @@ def test_maintenance_waits_for_native_cache_allocation_during_model_load(monkeyp
     wrapper._kvmem_async_refresh = refresh
     wrapper.vllm_config = object()
     wrapper.model_config = SimpleNamespace(enforce_eager=True)
-    monkeypatch.setattr('vllm_kvmem.profile_scopes.install_profile_scopes', lambda _:None)
-    monkeypatch.setattr('vllm_kvmem.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw:None)
+    monkeypatch.setattr('vllm_kvmem.serving.profile_scopes.install_profile_scopes', lambda _:None)
+    monkeypatch.setattr('vllm_kvmem.serving.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw:None)
     # This fixture checks cache-allocation ordering, independently of optional
     # checkpoint-payload prewarming in the same initialization hook.
-    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _:opts)
-    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads', lambda *a:None)
+    monkeypatch.setattr('vllm_kvmem.core.options.RuntimeOptions.from_vllm', lambda _:opts)
+    monkeypatch.setattr('vllm_kvmem.serving.checkpoint_prewarm.prewarm_checkpoint_payloads', lambda *a:None)
     assert wrapper.initialize_kv_cache() == 'native-result'
     assert calls == ['allocated-geometry'] and refresh.maintenance == ('budget',opts,123)
     refresh.initialize_cache()

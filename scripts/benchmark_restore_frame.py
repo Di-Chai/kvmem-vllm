@@ -12,9 +12,9 @@ import statistics
 import time
 
 from vllm_kvmem import _native
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import Phase, RequestMemory
-from vllm_kvmem.restore_timing import RestoreTiming
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import Phase, RequestMemory
+from vllm_kvmem.serving.restore_timing import RestoreTiming
 
 
 class Ready:

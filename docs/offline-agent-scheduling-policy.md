@@ -27,14 +27,14 @@ K128K/G128K、4 路原生请求、100 GB CPU 历史、按压力驻留，闲置�
 推理示例，不会启用本策略，也不是这轮验收配置。
 
 ```bash
-python -m vllm_kvmem.serve \
+python -m vllm_kvmem.serving.serve \
   --config examples/qwen-nvfp4-offline-agent-k128-g128.json \
   --run-dir runs/offline-agent-p1 --dry-run
 ```
 
 路径检查通过后，删除 `--dry-run` 启动；每次使用新的运行目录。
 
-`src/vllm_kvmem/offline_policy.py` 负责只读候选评估、就绪 decode 优先、跨原生
+`src/vllm_kvmem/serving/offline_policy.py` 负责只读候选评估、就绪 decode 优先、跨原生
 waiting / skipped 队列排序及同一步内的额度复核。调度器通过原有 metadata
 把同一组预计剩余耗时交给后台维护线程；完成 fence 和饥饿防护优先于成本。
 `offline_decisions.jsonl` 记录状态与顺序变化，包含具体资源等待原因。

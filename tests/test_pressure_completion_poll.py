@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.core.memory import Phase
 from test_recall_experiment import native_authority
 
 

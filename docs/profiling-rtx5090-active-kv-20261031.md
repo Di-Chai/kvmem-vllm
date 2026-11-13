@@ -103,7 +103,7 @@ configured gather workers, effective gathering changes from one worker to eight.
 Launch count, transfer/staging size and gathering parallelism change together.
 Their individual contributions have not been isolated. CPU KV records, selected
 blocks, RoPE positions, FP8 arithmetic, page leases and completion fences are
-retained. See [window assembly](../src/vllm_kvmem/window_assembly.py) and the
+retained. See [window assembly](../src/vllm_kvmem/serving/window_assembly.py) and the
 [path-audit summary](benchmarks/deepswe-rtx5090-regression-20261031.json).
 
 Two capacity fixes are shared by both arms: private Query chunks are copied

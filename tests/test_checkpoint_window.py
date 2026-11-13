@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.core.memory import Phase
 from test_core import Event, append, small
 
 

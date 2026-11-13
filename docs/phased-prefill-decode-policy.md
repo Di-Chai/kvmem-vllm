@@ -204,7 +204,7 @@ stateDiagram-v2
 
 ## 现有源码落点与不可破坏的契约
 
-- `src/vllm_kvmem/scheduler.py` 的 `schedule()`：在现有完成状态、offline 候选
+- `src/vllm_kvmem/serving/scheduler.py` 的 `schedule()`：在现有完成状态、offline 候选
   和准入预览基础上决策本步阶段；原生 `begin_step()/end_step()` 额度边界保留。
 - `_reserve_prefill_lookahead()`：在普通 token/page 分配之前应用阶段 gate，
   保留 MTP padded tail、`plan.admit()`、Query atomic 和 G 约束。

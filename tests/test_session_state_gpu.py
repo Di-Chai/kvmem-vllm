@@ -31,7 +31,7 @@ def test_async_canonical_checkpoint_matches_blocking_reference_before_native_reu
     """Identical bytes after accepted-state normalization, including neighbours."""
     from types import SimpleNamespace
     from test_session_state import fixture
-    from vllm_kvmem.recurrent_table_journal import RecurrentTableJournal
+    from vllm_kvmem.serving.recurrent_table_journal import RecurrentTableJournal
 
     snapshots = []
     for enabled in (False, True):

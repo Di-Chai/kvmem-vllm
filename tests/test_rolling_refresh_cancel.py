@@ -7,10 +7,10 @@ import torch
 
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm_kvmem.async_refresh import AsyncRefresh
-from vllm_kvmem.connector import ControlMetadata
-from vllm_kvmem.window_batch import WindowBatchAdapter
-from vllm_kvmem.window_manager import RefreshPending
+from vllm_kvmem.serving.async_refresh import AsyncRefresh
+from vllm_kvmem.serving.connector import ControlMetadata
+from vllm_kvmem.serving.window_batch import WindowBatchAdapter
+from vllm_kvmem.serving.window_manager import RefreshPending
 from test_async_refresh import manager
 from test_scheduler_transactions import setup_scheduler
 from test_session_worker import worker_fixture, wait_retirement

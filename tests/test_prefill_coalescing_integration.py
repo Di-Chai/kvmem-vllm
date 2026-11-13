@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip('vllm')
 from test_phase_scheduler import scheduler as phase_scheduler, request, NATIVE_RESERVE
 from vllm.v1.core.sched.scheduler import Scheduler
-from vllm_kvmem.prefill_coalescing import OfflinePrefillCoalescer
+from vllm_kvmem.serving.prefill_coalescing import OfflinePrefillCoalescer
 
 
 SHAPE = dict(decode_requests=3, prefill_requests=1,

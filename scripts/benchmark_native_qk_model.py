@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def prepare(args):
     from qualify_graph_cost import profiles
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     reference = args.reference.resolve()
     old = read(reference/'manifest.json')
     if read(reference/'status.json')['status'] != 'passed':

@@ -46,7 +46,7 @@ lifecycle; it does not remeasure the separate 256K throughput benchmark.
 To run the interface check again:
 
 ```sh
-.venv/bin/python -m vllm_kvmem.engine_api --systemone
+.venv/bin/python -m vllm_kvmem.adapters.engine_api --systemone
 ```
 
 The `--systemone` check includes the optional native decision API. It requires a

@@ -1,10 +1,10 @@
 from types import SimpleNamespace as NS
 import pytest
 
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.session_control import SessionLedger, _Entry
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.session_control import SessionLedger, _Entry
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
+from vllm_kvmem.core.config import KVMemConfig
 from test_authority import setup, payload, drain
 from test_core import Event
 

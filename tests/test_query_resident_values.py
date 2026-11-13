@@ -3,14 +3,14 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.query_resident_values import bind_query_resident_sources as _bind_query_resident_sources
-from vllm_kvmem.query_resident_values import plan_query_resident_values
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.query_resident_values import bind_query_resident_sources as _bind_query_resident_sources
+from vllm_kvmem.serving.query_resident_values import plan_query_resident_values
 
 
 def global_assembly(query,state,working,*,noncanonical=(),skip=()):
     import torch
-    from vllm_kvmem.window_assembly import AssemblyResult, NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import AssemblyResult, NativeWindowAssembler
     authority=state['authority']
     assembler=NativeWindowAssembler.__new__(NativeWindowAssembler)
     assembler.closed=True;assembler._runner_binding=(query.runner,state['request_id'])
@@ -107,7 +107,7 @@ def test_unsupported_global_route_declines_before_any_resident_plan():
 
 def test_actual_prefix_publish_restore_binds_new_native_request_to_old_archive_namespace():
     from contextlib import nullcontext
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.session_worker import SessionWorker
 
     query,state,working,records=fixture()
     authority=state['authority'];authority.gc=None
@@ -216,8 +216,8 @@ def test_partial_unpublished_and_no_hit_are_explicit_fallbacks():
 @pytest.mark.parametrize('fail_read',[False,True])
 def test_mixed_reader_uses_existing_scratch_and_snapshots_before_all_writes(monkeypatch,fail_read):
     import torch
-    from vllm_kvmem import split_assembly
-    from vllm_kvmem.query_resident_values import assemble_query_resident_values
+    from vllm_kvmem.serving import split_assembly
+    from vllm_kvmem.serving.query_resident_values import assemble_query_resident_values
     query,state,working,records=fixture()
     query.packed_assembly=True
     query.runner.device='cpu'

@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.session_control import SessionBinding
-from vllm_kvmem.systemone_worker import ActiveDecisionQueue, TailSnapshot
+from vllm_kvmem.serving.session_control import SessionBinding
+from vllm_kvmem.serving.systemone_worker import ActiveDecisionQueue, TailSnapshot
 
 
 def queue():
@@ -25,7 +25,7 @@ def test_queue_waits_for_confirmed_prefill_and_keeps_parent_identity(monkeypatch
     q, binding = queue()
     assert submit(q) == {'status': 'pending'}
     seen = []
-    monkeypatch.setattr('vllm_kvmem.systemone_worker.execute_reads',
+    monkeypatch.setattr('vllm_kvmem.serving.systemone_worker.execute_reads',
                         lambda *args: seen.append(args) or {'status': 'done'})
     batch = NS(req_ids=['native-parent'], num_computed_tokens_np=[40], prefill_len_np=[50])
     q.before_attention(batch)
@@ -47,7 +47,7 @@ def test_queue_waits_for_confirmed_prefill_and_keeps_parent_identity(monkeypatch
 @pytest.mark.parametrize('change', ['tenant', 'generation', 'incarnation', 'retire', 'history'])
 def test_queue_rejects_stale_or_wrong_owner(change, monkeypatch):
     q, binding = queue()
-    monkeypatch.setattr('vllm_kvmem.systemone_worker.execute_reads', lambda *a: pytest.fail('must not execute'))
+    monkeypatch.setattr('vllm_kvmem.serving.systemone_worker.execute_reads', lambda *a: pytest.fail('must not execute'))
     if change == 'generation':
         assert 'error' in submit(q, generation=6)
         return
@@ -64,7 +64,7 @@ def test_queue_rejects_stale_or_wrong_owner(change, monkeypatch):
 
 def test_cancelled_and_expired_reads_never_execute(monkeypatch):
     q, _ = queue()
-    monkeypatch.setattr('vllm_kvmem.systemone_worker.execute_reads', lambda *a: pytest.fail('must not execute'))
+    monkeypatch.setattr('vllm_kvmem.serving.systemone_worker.execute_reads', lambda *a: pytest.fail('must not execute'))
     submit(q)
     q.rpc('cancel', 'operation')
     q.before_attention(None)
@@ -100,8 +100,8 @@ def test_tail_rollback_preserves_prefix_and_neighbours_byte_for_byte():
 @pytest.mark.parametrize('fail', [False, True])
 def test_transaction_restores_parent_even_when_private_forward_fails(monkeypatch, fail):
     pytest.importorskip('triton')
-    from vllm_kvmem.systemone_worker import execute_reads
-    from vllm_kvmem.window_batch import WindowBatchAdapter
+    from vllm_kvmem.serving.systemone_worker import execute_reads
+    from vllm_kvmem.serving.window_batch import WindowBatchAdapter
     q, binding = queue()
     runner = q.runner
     runner.device = torch.device('cpu')
@@ -119,9 +119,9 @@ def test_transaction_restores_parent_even_when_private_forward_fails(monkeypatch
     bundle = NS(tensors={'state': recurrent, 'counter': counter}, bytes=52,
                 request_indices={'native-parent': 0})
     state = NS(borrow=lambda _: bundle, validate=lambda _: None)
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState', lambda _: state)
-    monkeypatch.setattr('vllm_kvmem.cache_groups.full_attention_groups', lambda _: (0,))
-    monkeypatch.setattr('vllm_kvmem.publication_step.native_publication_step', lambda step: step)
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState', lambda _: state)
+    monkeypatch.setattr('vllm_kvmem.adapters.cache_groups.full_attention_groups', lambda _: (0,))
+    monkeypatch.setattr('vllm_kvmem.serving.publication_step.native_publication_step', lambda step: step)
     monkeypatch.setattr(torch.cuda, 'current_stream', lambda _: NS(synchronize=lambda: None))
     monkeypatch.delenv('KVMEM_VERIFY_SESSION_RESTORE', raising=False)
     runtime = runner._kvmem_capture_runtime
@@ -130,7 +130,7 @@ def test_transaction_restores_parent_even_when_private_forward_fails(monkeypatch
     cache = torch.arange(64, dtype=torch.uint8).reshape(2, 16, 1, 2)
     original = cache.clone(), recurrent.clone()
     pages, offsets = torch.tensor([1, 1]), torch.tensor([0, 1])
-    monkeypatch.setattr('vllm_kvmem.systemone_worker.tail_views', lambda *args: [(cache, pages, offsets)])
+    monkeypatch.setattr('vllm_kvmem.serving.systemone_worker.tail_views', lambda *args: [(cache, pages, offsets)])
     observed = []
     def read(*args):
         assert torch.equal(recurrent, original[1]) and torch.equal(cache, original[0])
@@ -141,7 +141,7 @@ def test_transaction_restores_parent_even_when_private_forward_fails(monkeypatch
         runner._kvmem_last_batch = 'private'
         if fail: raise RuntimeError('injected forward failure')
         return {'argmax': 3, 'logprobs': [-.5]}
-    monkeypatch.setattr('vllm_kvmem.systemone_worker.private_read', read)
+    monkeypatch.setattr('vllm_kvmem.serving.systemone_worker.private_read', read)
     args = (runner, NS(req_ids=['native-parent'], num_computed_tokens_np=[50],
         prefill_len_np=[50]), 0, binding, [{'tokens': [1, 2], 'labels': [3]}] * 3)
     if fail:

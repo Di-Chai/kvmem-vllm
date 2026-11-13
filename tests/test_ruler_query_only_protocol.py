@@ -67,8 +67,8 @@ def test_actual_query_must_retain_raw_scores_and_picked_pages(key,value):
 
 
 def test_alpha_zero_returns_exact_query_vector_despite_a_rank_changing_edge():
-    from vllm_kvmem.block_graph import GraphRow
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.block_graph import GraphRow
+    from vllm_kvmem.serving.graph_scoring import score_graph
     raw=[.49,.51]
     snapshot=NS(block_tokens=4, rows=(GraphRow(4,(0,),(1.,),1),), partial=None,
         message_spans=(), closed=False, revision=1, epoch=1, accepted_through=8, completed_through=8,

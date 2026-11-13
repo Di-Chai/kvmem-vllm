@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from vllm_kvmem.prefill_coalescing import OfflinePrefillCoalescer
+from vllm_kvmem.serving.prefill_coalescing import OfflinePrefillCoalescer
 
 
 SHAPE = dict(decode_requests=3, prefill_requests=1,

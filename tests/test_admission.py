@@ -1,11 +1,11 @@
 import pytest
 
-from vllm_kvmem.admission import QueryPolicy
+from vllm_kvmem.serving.admission import QueryPolicy
 
 
 def test_planned_batch_can_span_multiple_g_windows_without_growing_any_owner():
-    from vllm_kvmem.admission import validate_target_batch_budget
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.admission import validate_target_batch_budget
+    from vllm_kvmem.serving.request_plan import RequestPlan
     validate_target_batch_budget(32,4096,16424,8,5,request_planning=True)
     with pytest.raises(ValueError):validate_target_batch_budget(32,4096,16424,8,5)
     with pytest.raises(ValueError):validate_target_batch_budget(32,4096,32809,8,5,request_planning=True)

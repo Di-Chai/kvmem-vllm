@@ -7,8 +7,8 @@ import json
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_logical_publication import fixture, snapshot
 
 

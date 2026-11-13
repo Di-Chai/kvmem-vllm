@@ -1,14 +1,14 @@
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.core.storage import AsyncArchive
 from threading import Event
 
 
 def test_global_nvme_byte_quota_is_checked_before_creating_arena(tmp_path):
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import make_shared_archive
     options = RuntimeOptions(memory=KVMemConfig(repository_blocks=4096),
                              nvme_max_bytes=4096 * 4096 * 2 - 1, nvme_preallocate=True)
     with pytest.raises(ValueError, match='byte quota'):
@@ -76,8 +76,8 @@ def test_cancelled_request_retains_io_leases_and_applies_backpressure(tmp_path,m
 
 
 def test_cpu_authority_never_opens_nvme_and_reclaims_only_after_last_reader(tmp_path,monkeypatch):
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.storage import make_shared_archive
     def forbidden(*args,**kwargs):
         raise AssertionError('CPU-only archive attempted to construct NVMe storage')
     monkeypatch.setattr(_native,'NvmeTier',forbidden)

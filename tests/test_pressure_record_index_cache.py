@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.authority import VersionedRecords
-from vllm_kvmem.layerwise_pressure import record_index
+from vllm_kvmem.serving.authority import VersionedRecords
+from vllm_kvmem.serving.layerwise_pressure import record_index
 
 
 class Handle:
@@ -58,7 +58,7 @@ def test_duplicate_slots_are_rejected(monkeypatch):
 def test_single_pick_select_pressure_matches_two_picks(tmp_path, monkeypatch, prefill):
     from test_graph_lifecycle import fixture, complete
     from test_graph_pressure_v2 import configure
-    from vllm_kvmem.prefill_attention import select_pressure
+    from vllm_kvmem.serving.prefill_attention import select_pressure
     results = []
     for single in ('0', '1'):
         monkeypatch.setenv('KVMEM_PRESSURE_SINGLE_PICK', single)
@@ -104,7 +104,7 @@ def test_incremental_index_equals_full_rebuild(monkeypatch, mutation):
 
 
 def test_alignment_flag_tracks_records(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import record_index_aligned
+    from vllm_kvmem.serving.layerwise_pressure import record_index_aligned
     monkeypatch.setenv('KVMEM_PRESSURE_RECORD_INDEX_CACHE', '1')
     controller = NS()
     records = VersionedRecords({(i, 1): rec(32*i, i) for i in range(4)})

@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from vllm_kvmem.action_scoring import page_attention
-from vllm_kvmem.codec import neox_rope
+from vllm_kvmem.serving.action_scoring import page_attention
+from vllm_kvmem.core.codec import neox_rope
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA attention qualification')

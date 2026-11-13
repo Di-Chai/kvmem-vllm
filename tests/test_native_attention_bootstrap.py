@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.runner import make_probe_runner
+from vllm_kvmem.serving.runner import make_probe_runner
 
 
 def fixture(monkeypatch, *, fail=False):
@@ -19,7 +19,7 @@ def fixture(monkeypatch, *, fail=False):
         return NS(action=NS(prepare=lambda *args:calls.append('arm')),
                   note_prefill_pipeline_forward=lambda *args:calls.append('planned'),
                   start_stream_session=lambda *args:calls.append('stream'))
-    monkeypatch.setattr('vllm_kvmem.capture_runtime.CaptureRuntime',create)
+    monkeypatch.setattr('vllm_kvmem.serving.capture_runtime.CaptureRuntime',create)
     runner=make_probe_runner(Base)()
     runner._kvmem_continuous=True;runner._kvmem_capture_runtime=None
     runner._kvmem_native_attention=NS(disarm=lambda:calls.append('disarm'))

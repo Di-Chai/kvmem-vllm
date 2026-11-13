@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.authority import append_authority_batch
-from vllm_kvmem.logical_publication import NO_GRAPH, LogicalPublicationCursor
+from vllm_kvmem.serving.authority import append_authority_batch
+from vllm_kvmem.serving.logical_publication import NO_GRAPH, LogicalPublicationCursor
 from test_logical_publication import advance, confirm, fixture
 
 
@@ -65,6 +65,6 @@ def test_a_graph_installed_mid_publication_is_refused(tmp_path):
 
 def test_option_is_declared_and_defaults_off():
     import dataclasses
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     field = {f.name: f for f in dataclasses.fields(RuntimeOptions)}['prefill_physical_graphless']
     assert field.default is False

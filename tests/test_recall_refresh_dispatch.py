@@ -5,12 +5,12 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.async_refresh import AsyncRefresh
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.pressure_query_capture import PressureQueryWindow
-from vllm_kvmem import recall_experiment
-from vllm_kvmem import prefill_attention
-from vllm_kvmem.window_assembly import NativeWindowAssembler
+from vllm_kvmem.serving.async_refresh import AsyncRefresh
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.pressure_query_capture import PressureQueryWindow
+from vllm_kvmem.serving import recall_experiment
+from vllm_kvmem.serving import prefill_attention
+from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
 
 
 def setup_dispatch(monkeypatch, tmp_path, *, selection='pressure', stage='prefill',

@@ -16,9 +16,9 @@ from types import SimpleNamespace as NS
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import record_key
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.packed_assembly import read_packed_records
+from vllm_kvmem.serving.authority import record_key
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.packed_assembly import read_packed_records
 
 
 def run(args):

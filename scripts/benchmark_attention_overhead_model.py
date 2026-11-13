@@ -22,8 +22,8 @@ COUNTERS=('vllm:spec_decode_num_drafts_total','vllm:spec_decode_num_draft_tokens
 
 def prepare(args):
     from graph_v2_protocol import validate_profile
-    from vllm_kvmem.serve import build_launch
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.serving.serve import build_launch
+    from vllm_kvmem.core.options import RuntimeOptions
     reference=args.reference.resolve();base=read(reference/'profile.json');old=read(reference/'manifest.json')
     if read(reference/'status.json')['status']!='passed':raise ValueError('Require original passed full C8 reference')
     combined=getattr(args,'combined',False)

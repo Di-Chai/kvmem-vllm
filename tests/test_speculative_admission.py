@@ -1,5 +1,5 @@
 import pytest
-from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
 
 
 def test_arbitrary_acceptance_counts_cannot_skip_the_refresh_boundary():

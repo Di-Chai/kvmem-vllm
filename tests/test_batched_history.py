@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import append_authority_batch
+from vllm_kvmem.serving.authority import append_authority_batch
 from test_authority import setup, payload, drain
 
 
@@ -114,9 +114,9 @@ def test_fused_real_geometry_bf16_mean_matches_torch_bitwise_with_cancellation(c
 
 
 def test_cached_destination_exports_release_when_record_is_sealed(tmp_path):
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
     config = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=8,
         repository_blocks=8, sink_blocks=1, recent_blocks=0)
     archive = AsyncArchive(str(tmp_path), 2 * 4 * 1 * 64 * 3, 16)

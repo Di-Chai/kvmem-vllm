@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import pressure_commit
+from vllm_kvmem.serving import pressure_commit
 
 
 def _table_cls():

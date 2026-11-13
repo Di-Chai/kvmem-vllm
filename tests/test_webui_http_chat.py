@@ -21,8 +21,8 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from vllm_kvmem.webui.chat import ChatBridge
-from vllm_kvmem.webui.server import ConsoleServer
+from vllm_kvmem.apps.webui.chat import ChatBridge
+from vllm_kvmem.apps.webui.server import ConsoleServer
 
 
 class FakeTokenizer:

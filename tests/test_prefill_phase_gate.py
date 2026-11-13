@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from vllm_kvmem.prefill_phase_gate import PrefillPhaseGate
+from vllm_kvmem.serving.prefill_phase_gate import PrefillPhaseGate
 
 
 def job(rid, selection='query', **kw):
@@ -103,7 +103,7 @@ def test_gpu_endpoint_rejects_incomplete_or_contaminated_work(fault):
 
 
 def test_install_gpu_endpoint_uses_nonblocking_flush_only(tmp_path,monkeypatch):
-    from vllm_kvmem import prefill_phase_gate
+    from vllm_kvmem.serving import prefill_phase_gate
     class Manager:
         def enqueue(self,command):return job(command.request_id,command.selection)
         def step(self,task):return 'query-executed'

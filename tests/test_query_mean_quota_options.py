@@ -7,9 +7,9 @@ import pytest
 
 from test_graph_options import model_profile, runtime, worker_payload
 from test_query_fps_prebuild_options import fps_settings, elastic_profile
-from vllm_kvmem.elastic_serve import build_launch as build_elastic
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def quota_settings(**updates):
@@ -34,7 +34,7 @@ def test_default_preserves_existing_modes_and_only_explicit_quota_changes_settin
 
 @pytest.mark.parametrize('fraction', [0, .25, .5, 1.])
 def test_quota_profile_survives_direct_cli_worker_and_elastic_replay(tmp_path, capsys, fraction):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     profile = model_profile(tmp_path)
     profile['kvmem'] = quota_settings(query_mean_quota_fraction=fraction)
     original = deepcopy(profile)

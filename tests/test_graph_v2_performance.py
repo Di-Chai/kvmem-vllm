@@ -102,7 +102,7 @@ def test_each_new_pair_changes_only_its_declared_boolean(candidate):
 
 @pytest.mark.parametrize('candidate', list(control.CANDIDATES))
 def test_real_launcher_transports_only_the_declared_candidate(tmp_path, candidate):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     source = base()
     source['kvmem']['packed_assembly'] = True
     source['kvmem']['native_action_metadata'] = False

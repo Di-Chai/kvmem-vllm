@@ -7,7 +7,7 @@ import statistics
 import time
 from types import SimpleNamespace
 
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 
 
 def main():

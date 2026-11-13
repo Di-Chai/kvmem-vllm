@@ -5,8 +5,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
-from vllm_kvmem import window_assembly as window
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.serving import window_assembly as window
+from vllm_kvmem.core.memory import Phase
 
 
 class Event:
@@ -317,7 +317,7 @@ def test_read_only_oracle_views_do_not_activate_split_assembly(cuda_oracle,monke
 @pytest.mark.parametrize("direct", [False, True])
 def test_metadata_is_submitted_once_before_chunks_and_partial_tail_keeps_dense_positions(
         cuda_oracle, monkeypatch, direct):
-    from vllm_kvmem import packed_assembly
+    from vllm_kvmem.serving import packed_assembly
 
     layer = cpu_layer()
     layer.kernel_page_table = torch.tensor([1, 2, 3], dtype=torch.int32)

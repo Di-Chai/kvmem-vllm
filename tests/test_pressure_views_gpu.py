@@ -15,14 +15,14 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',
 @pytest.mark.parametrize('page',[64,1616])
 def test_pressure_parent_views_preserve_gpu_bytes(tmp_path,monkeypatch,layer_index,tail,page):
     from vllm_kvmem import _native
-    from vllm_kvmem.authority import record_key
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem import packed_assembly
-    from vllm_kvmem import split_assembly
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.pressure_reader import prepare_pressure_reader
-    from vllm_kvmem.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
+    from vllm_kvmem.serving.authority import record_key
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving import packed_assembly
+    from vllm_kvmem.serving import split_assembly
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.serving.pressure_reader import prepare_pressure_reader
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
     torch.manual_seed(571)
     count,layers,block,heads,dim=265,17,32,4,256
     row_bytes=block*heads*dim;record_bytes=layers*row_bytes*2

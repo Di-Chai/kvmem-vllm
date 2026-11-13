@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import decode_priority as dp
+from vllm_kvmem.serving import decode_priority as dp
 from test_maintenance import policy, job as maintenance_job
 
 
@@ -49,7 +49,7 @@ def test_maintenance_order_tries_a_waiting_decode_pressure_first(monkeypatch):
 
 
 def test_refresh_admission_yields_before_touching_lanes_or_credits(monkeypatch):
-    from vllm_kvmem.async_refresh import AsyncRefresh
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh
     monkeypatch.setenv('KVMEM_LAYERWISE_DECODE_PRIORITY', '1')
     refresh = AsyncRefresh.__new__(AsyncRefresh)
     decode, prefill = job(pressure_stage='decode'), job()

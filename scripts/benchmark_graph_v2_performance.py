@@ -86,7 +86,7 @@ def prepare(args):
         contract = CANDIDATES[candidate]
         variants = contract['variants']
         configurations = profiles(base, args.port, candidate)
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         for variant, profile in configurations.items():
             build_launch(profile, ROOT, root/variant/'server')
             write(root/(variant+'.json'), profile)

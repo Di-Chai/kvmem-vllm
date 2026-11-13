@@ -2,8 +2,8 @@
 import pytest
 import torch
 
-from vllm_kvmem import request_checkpoint as rc
-from vllm_kvmem.request_checkpoint import CacheRows, capture_exact, checkpoint_size, restore_exact
+from vllm_kvmem.serving import request_checkpoint as rc
+from vllm_kvmem.serving.request_checkpoint import CacheRows, capture_exact, checkpoint_size, restore_exact
 
 
 def caches(device):

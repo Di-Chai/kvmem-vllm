@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.layerwise_swap import capture, ready, validate_modes
+from vllm_kvmem.serving.layerwise_swap import capture, ready, validate_modes
 from test_request_swap_worker import Event, command, fixture as ordinary_fixture, usage
 
 

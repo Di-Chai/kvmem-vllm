@@ -8,9 +8,9 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from vllm_kvmem import layerwise_decode
-from vllm_kvmem.action_attention import window_segments
-from vllm_kvmem.layerwise_pressure import extend_records
+from vllm_kvmem.serving import layerwise_decode
+from vllm_kvmem.serving.action_attention import window_segments
+from vllm_kvmem.serving.layerwise_pressure import extend_records
 
 
 def _native():
@@ -285,7 +285,7 @@ def _pending(rng, begin, end, count=5, interval=16):
 
 def test_native_decode_history_matches_dict_history(monkeypatch):
     _map()
-    from vllm_kvmem.layerwise_decode import DecodeHistory, NativeDecodeHistory
+    from vllm_kvmem.serving.layerwise_decode import DecodeHistory, NativeDecodeHistory
     rng = random.Random(5)
     plain = DecodeHistory({32 * k: rng.random() for k in range(50)}, 2, 0, 1)
     chains = {}
@@ -313,7 +313,7 @@ def test_native_decode_history_matches_dict_history(monkeypatch):
 
 
 def test_mass_map_flag_is_validated(monkeypatch):
-    from vllm_kvmem import layerwise_decode
+    from vllm_kvmem.serving import layerwise_decode
     monkeypatch.setenv('KVMEM_NATIVE_DECODE_MASS_MAP', 'true')
     with pytest.raises(ValueError):
         layerwise_decode.mass_map_enabled()
@@ -322,7 +322,7 @@ def test_mass_map_flag_is_validated(monkeypatch):
 # KVMEM_NATIVE_DECODE_LAYER_MAP: fused identities from the frozen pressure frame.
 
 def _controller(rng, layers=16, blocks=300, partial=True):
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
     c = LayerwisePrefillPressure.__new__(LayerwisePrefillPressure)
     c.names = [f'l{i}' for i in range(layers)]
     maps, total = [], None

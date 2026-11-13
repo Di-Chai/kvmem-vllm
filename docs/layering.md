@@ -18,18 +18,17 @@ The plan it belongs to is the [roadmap](roadmap.md).
 | Core | `core/` | KV archive, records, the store, options, settings; the native extensions at the package root | Strategy contract |
 
 Benchmarks and bridges live outside the package (`benchmarks/`, `scripts/`).
-`tests/test_layers.py` checks the import rule for every layer on every run, and
-`tests/test_strategy_layer.py` checks that the strategy package imports nothing else.
-Seven imports still point up (core into serving's pressure reader, pipeline and tensor
-parallel hooks, and one adapter into serving); they are listed in `tests/test_layers.py`,
-and the list may only shrink.
+`tests/test_layers.py` checks the import rule for every layer on every run, with no
+exceptions, and `tests/test_strategy_layer.py` checks that the strategy package imports
+nothing else. Where core needs serving's behavior (tensor-parallel collectives, the layer
+materialization type), serving registers it on `RequestMemory`; core never imports serving.
 
-Every module keeps an alias at its old flat path (`vllm_kvmem.memory` is
-`vllm_kvmem.core.memory`, the same module object) for one release. Code inside the
-package imports the new paths. The module paths vLLM receives on its command line and in
-its configuration (`vllm_kvmem.scheduler.KVMemScheduler`, `vllm_kvmem.connector`) still use
-the old names: they are part of vLLM's configuration, and changing them may re-key cached
-kernel tuning; they change when the aliases go.
+Modules are no longer importable at the flat package root, and a test fails if the
+repository names a module there. The module paths vLLM receives
+(`vllm_kvmem.serving.scheduler.KVMemScheduler`, `vllm_kvmem.serving.connector`) use the layer
+names; this leaves vLLM's configuration hash and the agent fixture's tokens and decisions
+unchanged. Experiment scripts and their tests still name files in the flat layout where
+they handle runtimes frozen before the move.
 
 ## The contract
 
@@ -83,8 +82,8 @@ native picker, through the fused native call when that is enabled. Two shortcuts
 implement the built-in strategy only and refuse anything else: pressure batch selection
 and group selection.
 
-`python -m vllm_kvmem.capabilities table` prints every registered strategy on every path,
-with its declared needs. At launch, `vllm_kvmem.capabilities.check` refuses a strategy
+`python -m vllm_kvmem.serving.capabilities table` prints every registered strategy on every path,
+with its declared needs. At launch, `vllm_kvmem.serving.capabilities.check` refuses a strategy
 whose path or signals the configuration lacks and records the result in `launch.json`
 under `strategy`.
 
@@ -149,9 +148,9 @@ This gives each layer its own test:
 - Query and pressure scorers on both paths, looked up by name; the global path's
   `query_score_mode` and `pressure_policy` are names for the same entries.
 - Picker seam at `RequestMemory.preview_selection`, the funnel for global and per-layer picks.
-- Launch-time capability checks (`vllm_kvmem.capabilities`) and the generated strategy table.
+- Launch-time capability checks (`vllm_kvmem.serving.capabilities`) and the generated strategy table.
 - The decision trace: per-layer, global and eviction decisions.
-- `vllm_kvmem.settings`: the one accessor for `KVMEM_*` settings, and profile settings in
+- `vllm_kvmem.core.settings`: the one accessor for `KVMEM_*` settings, and profile settings in
   `system` and `strategy` namespaces over the default-on preset ([settings.md](settings.md)).
 - One directory per layer, with the import rule checked on every test run.
 - The gate as a tracked command, `benchmarks/gate/gate.py`, with both fixtures.
@@ -206,18 +205,18 @@ decode and several owners, which is where earlier restore bugs appeared.
   (also chosen as `strategy_query_scorer=key_fps`), recency pressure, graph pressure and
   per-layer recency gave the same tokens and decisions.
 
-### 4. Capability checks (done 2026-11-12); signals by need (not done)
+### 4. Capability checks (done 2026-11-12); signals by need (decided against)
 
-- `vllm_kvmem.capabilities` checks every chosen strategy against the launched path and the
+- `vllm_kvmem.serving.capabilities` checks every chosen strategy against the launched path and the
   signals the configuration produces, and refuses at launch what was refused only at the
   first refresh. Strategies set through older options that decide only on the global path
   are reported for a per-layer launch (`launch.json`, `strategy.shared_frame_only`).
-  `python -m vllm_kvmem.capabilities table` generates the strategy table.
-- **Signals by need is not done.** The attention statistics feed the prefill publication
-  pipeline, which requires action and prefill attention, and they are computed inside the
-  attention kernel. A strategy that does not read them (recency) cannot stop paying for
-  them without splitting that pipeline. The launch report lists such costly signals
-  (`unused_signals`).
+  `python -m vllm_kvmem.serving.capabilities table` generates the strategy table.
+- **Signals by need: not built, by decision (2026-11-13).** The attention statistics feed
+  the prefill publication pipeline, which requires action and prefill attention, and they
+  are computed inside the attention kernel. Only the `recency` reference would stop paying
+  for them, so its throughput includes their cost (about 3–6% of GPU time); its decisions
+  and quality do not depend on it. The launch report lists such signals (`unused_signals`).
 
 ### 5. Evictors and offline replay (done 2026-11-12)
 
@@ -234,7 +233,7 @@ decode and several owners, which is where earlier restore bugs appeared.
 
 ### 6. Typed configuration (done 2026-11-12)
 
-- Every `KVMEM_*` read in the package goes through `vllm_kvmem.settings` (318 reads in 79
+- Every `KVMEM_*` read in the package goes through `vllm_kvmem.core.settings` (318 reads in 79
   modules); a test forbids direct reads.
 - A serving profile may carry `settings` with a `preset` (`default-on` or `legacy`) and the
   namespaces `system` (never changes output) and `strategy` (may change it). The launcher
@@ -243,11 +242,16 @@ decode and several owners, which is where earlier restore bugs appeared.
 - The reference deployments set no profile settings; their effective settings are
   unchanged.
 
-### 7. Directory moves (done 2026-11-12)
+### 7. Directory moves (done 2026-11-12, finished 2026-11-13)
 
-- 253 files moved into `core/`, `adapters/`, `serving/` and `apps/`, with an alias at every
-  old path; package-internal imports rewritten to the new paths.
-- The import rule holds for every layer, with the seven listed exceptions.
+- 253 files moved into `core/`, `adapters/`, `serving/` and `apps/`; package-internal
+  imports rewritten to the new paths.
+- The import rule holds for every layer. The seven imports that pointed up after the move
+  were inverted: two flag readers moved into `core/archive_flags.py`, the engine version
+  check into `adapters/engine_api.py`, `checkpoint_storage` into serving, and serving
+  registers its tensor-parallel and layer-materialization hooks on `RequestMemory`.
+- The aliases at the old paths were removed, and every reference in the repository uses
+  the layer paths, including the module paths vLLM receives.
 - `capture.py`, `_fused_capture.py`, `capture_opaque.py` and `capture_compile.py` moved
   together and byte for byte: their source fingerprint is part of vLLM's compile
   configuration.
@@ -315,7 +319,5 @@ which is local and not part of a source checkout.
 | --- | --- |
 | Move `main` forward to the strategy-layer commit | Done: `main` follows every step that passed its gate |
 | Comparison set for the retrieval paper | Adopted for step 3: per-layer MeanK, global MeanK, key-FPS, graph attention, recency, and the eviction policies. Whether the recall-experiment methods join it is open |
-| Signals by need (step 4) | Needs the prefill publication pipeline split from the attention statistics, or a kernel variant without them; decide whether the recency reference is worth that |
+| Signals by need (step 4) | Decided against (2026-11-13): only the recency reference would benefit |
 | Legacy experiments | Marked legacy in the audit, not deleted. Deleting needs a list confirmed by the user |
-| Remove the old-path aliases | After the next release; then switch the module paths vLLM receives to the new names and record new references |
-| The seven upward imports | Invert each dependency (hooks registered by serving instead of imported by core) |

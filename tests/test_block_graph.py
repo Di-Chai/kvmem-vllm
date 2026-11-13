@@ -1,7 +1,7 @@
 import math
 import pytest
 
-from vllm_kvmem.block_graph import BlockGraph, GraphBudget, GraphSample
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget, GraphSample
 
 
 def accept(graph, begin, end, rows=()):
@@ -262,7 +262,7 @@ def test_unknown_message_end_does_not_invent_boundary_or_accept_conflicting_spli
     graph.update_message_spans((), validated_prefix=50)
     assert graph.message_spans == ((0, 50, 'user'),)
     assert graph.message_end_known == (False,)
-    from vllm_kvmem.graph_scoring import locality_boundary
+    from vllm_kvmem.serving.graph_scoring import locality_boundary
     assert locality_boundary(48, 52, 4, graph.message_spans, .25, graph.message_end_known) == (1., True)
     assert locality_boundary(40, 44, 4, graph.message_spans, .25, graph.message_end_known) == (1., False)
     graph.update_message_spans(((0, 100, 'user'),), validated_prefix=50)

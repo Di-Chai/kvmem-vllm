@@ -26,17 +26,17 @@ GPU 全局池预分配与请求块的动态分配可以同时成立。上游也�
 
 | 位置 | 已确认行为 |
 | --- | --- |
-| [capacity.py](../src/vllm_kvmem/capacity.py)，`_demand`、`_allocate_slots`、`begin_step` | attention 需求按 `min(prompt + max_tokens + speculative/guided 余量, K+G)` 再按各组原生页大小取整；另加 recurrent 和 draft 固定需求。其他请求的未使用增长额度通过 `reserved_blocks` 保留 |
-| [window_manager.py](../src/vllm_kvmem/window_manager.py)，`allocate_new_blocks`、`commit_refresh` | 委托原生池分配实际窗口页；仅在完成 fence 后归还刷新淘汰的页 |
-| [logical_capacity.py](../src/vllm_kvmem/logical_capacity.py)，`wrap_planner` | 在超长上下文或特定 recall 路径中，启动时要求 `max_num_seqs × 每请求完整窗口及状态 + null page` 能装下；普通路径不都经过这项检查 |
-| [coordination.py](../src/vllm_kvmem/coordination.py)，`demand`、`_usage`、`consume` | 完整 turn 预留、单 trajectory 进度预留，以及 idle 后保留高水位 |
-| [historical_admission.py](../src/vllm_kvmem/historical_admission.py)，`preview`、`settle` | 已分配历史加整轮 incoming、tail/checkpoint/在途余量；只认 worker 完成确认，不提前使用待 GC 空间 |
-| [storage.py](../src/vllm_kvmem/storage.py)，`make_shared_archive` | 进程共享 arena；CPU 和 NVMe 是互斥后端；CPU 总预算还要扣除 Query 和特征预留 |
-| [memory_storage.py](../src/vllm_kvmem/memory_storage.py)、[native_memory_storage.py](../src/vllm_kvmem/native_memory_storage.py) | CPU payload 随记录发布建立；现有 CPU 后端没有自动磁盘 fallback |
-| [cached_storage.py](../src/vllm_kvmem/cached_storage.py)、[read_cache.py](../src/vllm_kvmem/read_cache.py) | NVMe 权威记录上方的有界 CPU 缓存，不能等同于延迟写回的 CPU 优先分层存储 |
-| [scheduler.py](../src/vllm_kvmem/scheduler.py)，`_preempt_request`、`_request_blocks_can_be_freed` | bounded 请求尚未结束时禁止静默释放权威 GDN 历史；deferred prefill validation 明确禁止普通原生抢占 |
-| [active_residency.py](../src/vllm_kvmem/active_residency.py)、[restore_admission.py](../src/vllm_kvmem/restore_admission.py) | 已支持 idle GPU 页撤回、精确 session restore 及 restore lane 准入；尚不是任意运行中请求的换出调度 |
-| [cache_manifest.py](../src/vllm_kvmem/cache_manifest.py)、[transfer.py](../src/vllm_kvmem/transfer.py)、[historical_feature_budget.py](../src/vllm_kvmem/historical_feature_budget.py) | 存在共享 backing、固定传输池和 feature/query 预留，必须与 payload 分开计量 |
+| [capacity.py](../src/vllm_kvmem/serving/capacity.py)，`_demand`、`_allocate_slots`、`begin_step` | attention 需求按 `min(prompt + max_tokens + speculative/guided 余量, K+G)` 再按各组原生页大小取整；另加 recurrent 和 draft 固定需求。其他请求的未使用增长额度通过 `reserved_blocks` 保留 |
+| [window_manager.py](../src/vllm_kvmem/serving/window_manager.py)，`allocate_new_blocks`、`commit_refresh` | 委托原生池分配实际窗口页；仅在完成 fence 后归还刷新淘汰的页 |
+| [logical_capacity.py](../src/vllm_kvmem/serving/logical_capacity.py)，`wrap_planner` | 在超长上下文或特定 recall 路径中，启动时要求 `max_num_seqs × 每请求完整窗口及状态 + null page` 能装下；普通路径不都经过这项检查 |
+| [coordination.py](../src/vllm_kvmem/serving/coordination.py)，`demand`、`_usage`、`consume` | 完整 turn 预留、单 trajectory 进度预留，以及 idle 后保留高水位 |
+| [historical_admission.py](../src/vllm_kvmem/serving/historical_admission.py)，`preview`、`settle` | 已分配历史加整轮 incoming、tail/checkpoint/在途余量；只认 worker 完成确认，不提前使用待 GC 空间 |
+| [storage.py](../src/vllm_kvmem/core/storage.py)，`make_shared_archive` | 进程共享 arena；CPU 和 NVMe 是互斥后端；CPU 总预算还要扣除 Query 和特征预留 |
+| [memory_storage.py](../src/vllm_kvmem/core/memory_storage.py)、[native_memory_storage.py](../src/vllm_kvmem/core/native_memory_storage.py) | CPU payload 随记录发布建立；现有 CPU 后端没有自动磁盘 fallback |
+| [cached_storage.py](../src/vllm_kvmem/core/cached_storage.py)、[read_cache.py](../src/vllm_kvmem/core/read_cache.py) | NVMe 权威记录上方的有界 CPU 缓存，不能等同于延迟写回的 CPU 优先分层存储 |
+| [scheduler.py](../src/vllm_kvmem/serving/scheduler.py)，`_preempt_request`、`_request_blocks_can_be_freed` | bounded 请求尚未结束时禁止静默释放权威 GDN 历史；deferred prefill validation 明确禁止普通原生抢占 |
+| [active_residency.py](../src/vllm_kvmem/serving/active_residency.py)、[restore_admission.py](../src/vllm_kvmem/serving/restore_admission.py) | 已支持 idle GPU 页撤回、精确 session restore 及 restore lane 准入；尚不是任意运行中请求的换出调度 |
+| [cache_manifest.py](../src/vllm_kvmem/adapters/cache_manifest.py)、[transfer.py](../src/vllm_kvmem/core/transfer.py)、[historical_feature_budget.py](../src/vllm_kvmem/core/historical_feature_budget.py) | 存在共享 backing、固定传输池和 feature/query 预留，必须与 payload 分开计量 |
 
 现有 `test_future_growth_is_reserved_and_refresh_does_not_overadmit` 就覆盖了用户描述的情况：池还有六个物理空闲页，第三个请求仍因前两个请求未来增长信用而被拒绝；刷新释放页也不改变这一保证。CPU 对应测试覆盖整轮预留和释放 fence。
 
@@ -132,7 +132,7 @@ CPU 优先保留近期生成、即将 restore 的窗口、活跃请求常用记�
 
 热缓存使用共享总容量加可借用的公平份额，替代把每请求最大窗口额度锁死。已在 SSD 有完整副本的 CPU cache 可以直接丢弃；CPU_ONLY 记录必须先成功写盘。对后台逐层读取维持原 record lease、层片段布局和 byte-exact 语义，不破坏现有 prepared reader 优化。
 
-对 SSD read、SSD write、D2H、H2D 分别设置有界字节和槽位额度。关键 restore、排空写回有进度通道，预取优先级最低；读写之间设置最低服务份额，避免 restore 抢占所有槽导致写回永远无法释放 RAM。复用 [transfer_budget.py](../src/vllm_kvmem/transfer_budget.py) 的限速思路，但增加 SSD 及双向传输维度。
+对 SSD read、SSD write、D2H、H2D 分别设置有界字节和槽位额度。关键 restore、排空写回有进度通道，预取优先级最低；读写之间设置最低服务份额，避免 restore 抢占所有槽导致写回永远无法释放 RAM。复用 [transfer_budget.py](../src/vllm_kvmem/core/transfer_budget.py) 的限速思路，但增加 SSD 及双向传输维度。
 
 ## 运行中请求暂停和恢复
 

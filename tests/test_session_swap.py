@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.session_control import SessionBinding, SessionCapture, SessionCommands, SessionEviction
-from vllm_kvmem.session_swap import (
+from vllm_kvmem.serving.session_control import SessionBinding, SessionCapture, SessionCommands, SessionEviction
+from vllm_kvmem.serving.session_swap import (
     SessionSwapIdentity, session_swap_candidate, validate_session_swap, owned_session_admission,
 )
 

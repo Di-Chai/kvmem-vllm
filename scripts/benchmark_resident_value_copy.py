@@ -11,7 +11,7 @@ def run(output):
     import torch
     import benchmark_block_graph as lifecycle
     from run_recall_comparison import gpu_lock
-    from vllm_kvmem.split_assembly import gather_resident_values
+    from vllm_kvmem.serving.split_assembly import gather_resident_values
     if output.exists():
         raise ValueError('Preserve the original measurement')
     rows = []

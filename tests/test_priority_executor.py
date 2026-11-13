@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from vllm_kvmem.priority_executor import PriorityExecutor, restore_first
+from vllm_kvmem.serving.priority_executor import PriorityExecutor, restore_first
 
 
 def test_urgent_overtakes_queued_but_not_running_work():

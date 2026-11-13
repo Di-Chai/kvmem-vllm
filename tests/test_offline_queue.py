@@ -3,7 +3,7 @@ from threading import Event, Thread
 
 import pytest
 
-from vllm_kvmem.offline_queue import OfflineQueue, OfflineTask
+from vllm_kvmem.serving.offline_queue import OfflineQueue, OfflineTask
 
 
 def tasks(n, amount=40):

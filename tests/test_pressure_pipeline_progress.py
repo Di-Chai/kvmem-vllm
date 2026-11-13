@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.connector import ControlMetadata, RefreshCommand
+from vllm_kvmem.serving.connector import ControlMetadata, RefreshCommand
 from test_pressure_pipeline_handoff import handoff
 
 
@@ -121,7 +121,7 @@ def test_acknowledged_but_unfinished_copy_still_owns_the_only_lane():
 
 
 def test_entire_feedback_turn_shares_original_bounded_wait_budget(monkeypatch):
-    from vllm_kvmem import pressure_pipeline
+    from vllm_kvmem.serving import pressure_pipeline
     p, refresh, job, trace, native, output = progress()
     now=[0.];monkeypatch.setattr(pressure_pipeline.time,'perf_counter',lambda:now[0])
     second=copy(job);second.command=NS(request_id='s',selection='pressure',pressure_stage='prefill')

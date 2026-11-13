@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_kvmem import defaults
+from vllm_kvmem.core import defaults
 
 ROOT = Path(__file__).resolve().parents[1]
 NOT_DEFAULTED = ('KVMEM_PUBLICATION_TRACE', 'KVMEM_QUERY_STAGE_PROFILE', 'KVMEM_HD_ALLOW_PTRACE',

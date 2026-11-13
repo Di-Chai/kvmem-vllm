@@ -232,7 +232,7 @@ def serve(root):
     plan = assert_frozen(root)
     runtime = Path(plan['runtime'])
     sys.path[:0] = [str(runtime / 'src'), str(runtime / 'scripts')]
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     launch = build_launch(read(root / 'profile.json'), root, root / 'run/server')
     argv = list(launch['vllm_argv'])
     if '--profiler-config' in argv:
@@ -261,7 +261,7 @@ def serve(root):
             if name.startswith('KVMEM_'):
                 del os.environ[name]
         os.environ.update(launch['environment'])
-        from vllm_kvmem.compat import enable_draft_load_config_fix
+        from vllm_kvmem.adapters.compat import enable_draft_load_config_fix
         enable_draft_load_config_fix()
     if plan.get('phase_scopes'):
         argv = phase_worker_argv(argv, plan['mode'])

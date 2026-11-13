@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.prompt_spans import (combine_spans, graph_metadata, install_graph_metadata,
+from vllm_kvmem.serving.prompt_spans import (combine_spans, graph_metadata, install_graph_metadata,
     map_prompt_spans, normalize_provenance)
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.block_graph import BlockGraph
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.block_graph import BlockGraph
 
 
 def chars(text):

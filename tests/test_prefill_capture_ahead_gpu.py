@@ -13,8 +13,8 @@ torch = pytest.importorskip('torch')
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
                                 reason='Explicit GPU qualification only')
 
-from vllm_kvmem.terminal import TerminalPrefix
-from vllm_kvmem.transfer import PackedDownloads
+from vllm_kvmem.serving.terminal import TerminalPrefix
+from vllm_kvmem.core.transfer import PackedDownloads
 from test_capture_dma_isolation import configure
 from test_prefill_capture_ahead import inputs, prepare as prepare_host
 from test_request_publication import fixture, close

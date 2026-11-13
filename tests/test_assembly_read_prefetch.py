@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem import packed_assembly as packed
-from vllm_kvmem import transfer
-from vllm_kvmem import window_assembly as window
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.serving import packed_assembly as packed
+from vllm_kvmem.core import transfer
+from vllm_kvmem.serving import window_assembly as window
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.core.memory_storage import MemoryArchive
 from test_authority import setup, payload, drain
 
 
@@ -325,7 +325,7 @@ def make_split(tmp_path, cuda, monkeypatch, enabled=True):
         direct_pinned_reads=True, reuse_resident_v=True, read_prefetch=enabled)
     assembler.device = assembler.staging.device = torch.device('cuda:0')
     monkeypatch.setattr(assembler, '_upload_metadata', lambda values: torch.tensor(values))
-    from vllm_kvmem import split_assembly
+    from vllm_kvmem.serving import split_assembly
     monkeypatch.setattr(split_assembly, 'gather_resident_values', lambda layers, bases, block, out: out)
     cuda.complete = True
     return assembler, proxy, plan, authority, archive, split_assembly

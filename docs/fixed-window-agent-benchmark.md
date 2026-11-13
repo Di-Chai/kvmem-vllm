@@ -3,7 +3,7 @@
 2026-10-16。用户明确将主要验收改为固定时长的 GPU 利用率和吞吐比较，
 不再以完成整批 DeepSWE 为性能测量边界。定时入口为
 `scripts/benchmark_timed_agents.py`，负载为 `scripts/timed_agent_workload.py`；
-逐 public batch 观测为 `src/vllm_kvmem/work_counters.py`。窗口、退休屏障、
+逐 public batch 观测为 `src/vllm_kvmem/serving/work_counters.py`。窗口、退休屏障、
 流式计数及观测相关 35 项 CPU 测试通过，报告为
 `artifacts/timed-agent-cpu-20261016.xml`。首对 GPU 诊断已完成，结果在
 `artifacts/timed-agent-20261016-r3`：有效输出 85.32 → 89.05 token/s，

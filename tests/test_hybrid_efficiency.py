@@ -133,7 +133,8 @@ def dense_allocation_fixture(tmp_path):
     from pathlib import Path
     import shutil
     from benchmark_niah import save,sha
-    name='src/vllm_kvmem/query_key_fps.py';source=Path(__file__).resolve().parents[1]/name
+    name='src/vllm_kvmem/query_key_fps.py'   # the analysed runtime's (flat) layout
+    source=Path(__file__).resolve().parents[1]/'src/vllm_kvmem/serving/query_key_fps.py'
     target=tmp_path/'runtime'/name;target.parent.mkdir(parents=True);shutil.copy2(source,target)
     save(tmp_path/'runtime-proof.json',dict(files={name:sha(target)}))
     save(tmp_path/'model/config.json',dict(num_attention_heads=24,num_key_value_heads=4,head_dim=256))

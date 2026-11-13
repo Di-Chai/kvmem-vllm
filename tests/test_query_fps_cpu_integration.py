@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.query_key_fps import (
+from vllm_kvmem.serving.query_key_fps import (
     select_key_representatives, select_key_representatives_optimized, score_authority_fps)
 from test_query_fps_incremental_cache import fixture
 from test_query_fps_prebuild import harness, append, drain_writes

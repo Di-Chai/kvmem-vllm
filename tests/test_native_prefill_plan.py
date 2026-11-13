@@ -4,11 +4,11 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_kvmem.action_attention import window_segments
-from vllm_kvmem.logical_action import LogicalScorePlan, plan_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.prefill_planning import PrefillPlanFrame, native_plan_function
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.action_attention import window_segments
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, plan_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.prefill_planning import PrefillPlanFrame, native_plan_function
+from vllm_kvmem.serving.request_plan import RequestPlan
 from types import SimpleNamespace as NS
 
 

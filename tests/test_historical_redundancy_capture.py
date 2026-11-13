@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-from vllm_kvmem.historical_gc import (
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.core.historical_gc import (
     HistoricalGcSettings, RedundancyHistory, redundancy_layers,
     REDUNDANCY_Q_SLOT_BYTES, REDUNDANCY_Q_MAX_SLOTS)
-from vllm_kvmem.session_control import SessionBinding
+from vllm_kvmem.serving.session_control import SessionBinding
 
 
 class Scope:
@@ -182,7 +182,7 @@ def test_adaptive_gpu_starts_not_cpu_upper_bound_and_split_owner():
 
 
 def test_overflow_is_explicit_fail_closed_without_partial_question(monkeypatch):
-    import vllm_kvmem.historical_gc as gc
+    import vllm_kvmem.core.historical_gc as gc
     monkeypatch.setattr(gc, 'REDUNDANCY_Q_SLOT_BYTES', 4)
     obj = runtime([binding(query=(0, 3), prompt=3)])
     payload, _ = packet_roundtrip(obj, batch(['r'], [0], [3], [True]), captures(3), retained=[3], history=[0])
@@ -193,7 +193,7 @@ def test_overflow_is_explicit_fail_closed_without_partial_question(monkeypatch):
 
 @pytest.mark.parametrize('capacity,overflow', [(3*4*2*3*2, False), (3*4*2*3*2-1, True)])
 def test_configured_query_slot_is_the_exact_capture_bound(monkeypatch, capacity, overflow):
-    import vllm_kvmem.historical_gc as gc
+    import vllm_kvmem.core.historical_gc as gc
     monkeypatch.setattr(gc, 'REDUNDANCY_Q_SLOT_BYTES', 4)
     obj = runtime([binding(query=(0, 3), prompt=3)])
     obj.redundancy_q_slot_bytes = capacity
@@ -211,9 +211,9 @@ def test_configured_query_slot_is_the_exact_capture_bound(monkeypatch, capacity,
 def test_thinking_startup_checks_atomic_query_batch_before_allocating_slots(
         tmp_path, monkeypatch, thinking, capacity, too_small):
     import sys
-    import vllm_kvmem.capture_runtime as capture
-    import vllm_kvmem.pressure_query_capture as pressure
-    from vllm_kvmem.options import RuntimeOptions
+    import vllm_kvmem.serving.capture_runtime as capture
+    import vllm_kvmem.serving.pressure_query_capture as pressure
+    from vllm_kvmem.core.options import RuntimeOptions
 
     options = NS(**vars(RuntimeOptions()))
     options.historical_gc = HistoricalGcSettings(mode='delete', policy='redundancy', policy_params={
@@ -271,7 +271,7 @@ def test_changed_or_missing_cached_question_cannot_reuse():
 def test_stable_question_survives_two_tool_rounds_without_replay_or_epoch_churn():
     from dataclasses import replace
     from test_session_control import planned_idle_session, request
-    from vllm_kvmem.session_control import SessionNotice
+    from vllm_kvmem.serving.session_control import SessionNotice
 
     control, _, original, entry = planned_idle_session()
     entry.query_id = 'task-1'
@@ -364,7 +364,7 @@ def test_invalid_question_is_invalidated_once_per_request_and_can_reset_on_rewin
 
 @pytest.mark.parametrize('valid,drained', [(True, True), (False, True), (True, False)])
 def test_authority_invalidates_gc_before_retiring_rewind_suffix(valid, drained):
-    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.serving.authority import RequestAuthority
 
     events = []
     checkpoint = NS(position=32)
@@ -478,9 +478,9 @@ def test_native_header_retained_prefix_and_kv_payload_ignore_sidecar():
 def test_real_native_archive_mean_features_and_question_publication(tmp_path, backend):
     import time
     from vllm_kvmem import _native as n
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
 
     config = KVMemConfig(block_tokens=32, select_budget=64, gen_budget=64,
         repository_blocks=32, sink_blocks=1, recent_blocks=0)

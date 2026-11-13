@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.flashinfer_gemm_buckets import (
+from vllm_kvmem.serving.flashinfer_gemm_buckets import (
     _AlignmentState, _CONFIG_NAMES, _STATE, _align_gemm_overrides,
     _aligned_buckets, _install_warmup_adapter, _seed_cache,
     install_flashinfer_gemm_bucket_alignment,
 )
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_graph_options import model_profile, runtime, worker_payload
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def native_bucket(rows):
@@ -138,7 +138,7 @@ def test_option_is_strict_boolean(value):
 @pytest.mark.parametrize('enabled', [None, True, False])
 def test_install_accepts_vllm_automatic_autotune_and_rejects_only_false(
         enabled, monkeypatch, tmp_path):
-    import vllm_kvmem.flashinfer_gemm_buckets as adapter
+    import vllm_kvmem.serving.flashinfer_gemm_buckets as adapter
     installed = []
     monkeypatch.setattr(adapter, '_install_warmup_adapter', lambda *args: installed.append(args))
     monkeypatch.setitem(sys.modules, 'flashinfer.autotuner',
@@ -167,7 +167,7 @@ def test_install_accepts_vllm_automatic_autotune_and_rejects_only_false(
 @pytest.mark.parametrize('seed_case', ['upstream', 'missing', 'explicit'])
 def test_install_seeds_private_cache_from_upstream_unless_overridden(
         seed_case, monkeypatch, tmp_path):
-    import vllm_kvmem.flashinfer_gemm_buckets as adapter
+    import vllm_kvmem.serving.flashinfer_gemm_buckets as adapter
     upstream = tmp_path/'upstream.json'
     explicit = tmp_path/'explicit.json'
     upstream_bytes = b'{"4136": "upstream baseline tactic"}\n'

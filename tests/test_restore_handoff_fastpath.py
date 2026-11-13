@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.prompt_checkpoints import token_bytes
+from vllm_kvmem.serving.prompt_checkpoints import token_bytes
 
 
 @pytest.mark.parametrize('container', [list, tuple])
@@ -76,7 +76,7 @@ def test_post_forward_ack_keeps_lease_until_future_and_cuda_complete(tmp_path,ca
 
 
 def test_post_forward_never_starts_prepare_or_query_and_honors_publication():
-    from vllm_kvmem.async_refresh import AsyncRefresh
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh
     manager=AsyncRefresh.__new__(AsyncRefresh)
     manager.options=NS(restore_handoff_fastpath=True)
     manager.runner=NS(_kvmem_capture_runtime=NS(publication_ready=lambda ids:ids!=('blocked',)))
@@ -92,7 +92,7 @@ def test_post_forward_never_starts_prepare_or_query_and_honors_publication():
 
 
 def test_fastpath_option_is_explicit_and_requires_async_split():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     from test_options import config
     assert RuntimeOptions.from_vllm(config({})).restore_handoff_fastpath is False
     for flag in [True,1,'true']:

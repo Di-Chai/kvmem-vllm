@@ -102,7 +102,7 @@ def prepare(root,source,*,optimized):
         require(sha(path)==row['served_sha256'] and path.stat().st_size==row['served_input_tokens']*4,
             'Original full input changed')
     repo=Path(__file__).resolve().parents[1]
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(profile,repo,root/ARM/'preflight-only')
     targets=read(source/'target-spans.json')
     require(set(targets)==set(CASE_IDS),'Missing offline evaluation spans')
@@ -155,7 +155,7 @@ def expected_groups(inputs):
 
 def audit_selection(query,graph,inputs,profile):
     import analyze_block_graph as offline
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.graph_scoring import score_graph
     k=profile['kvmem'];stats=query.get('query_key_fps_scoring',{})
     require(k['query_score_mode']==SCORE_MODE and k['graph_alpha']==0 and k['query_fps_halo_blocks']==1 and
         type(k['query_fps_optimized']) is bool,'Requested FPS halo policy differs')

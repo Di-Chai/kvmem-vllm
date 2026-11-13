@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 
 def test_resident_v_snapshot_above_signed_int32_byte_range():
     """Exercise the real 128K/17-layer layout, including its >2 GiB tail."""
-    from vllm_kvmem.split_assembly import gather_resident_values
+    from vllm_kvmem.serving.split_assembly import gather_resident_values
     records, layers, tokens, heads, dim = 4096, 17, 32, 4, 256
     source = torch.arange(records * tokens * heads * dim, device='cuda',
                           dtype=torch.int32).remainder_(251).to(torch.uint8)

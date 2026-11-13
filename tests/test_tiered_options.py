@@ -4,10 +4,10 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.archive_limits import tiered_capacity_records
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.coordination import HistoryAdmission
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.archive_limits import tiered_capacity_records
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.coordination import HistoryAdmission
+from vllm_kvmem.core.options import RuntimeOptions
 
 
 def options(**changes):
@@ -55,7 +55,7 @@ def test_roundtrip_does_not_change_memory_policy():
 
 def test_factory_and_history_quota_use_disk_not_per_request_cpu(tmp_path):
     from vllm_kvmem import _native
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.storage import make_shared_archive
     cfg = options()
     archive = make_shared_archive(cfg, tmp_path, 4096, 4)
     try:
@@ -81,7 +81,7 @@ def test_factory_and_history_quota_use_disk_not_per_request_cpu(tmp_path):
 
 
 def test_ssd_rounding_and_impossible_record_fail_before_open(tmp_path):
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.storage import make_shared_archive
     cfg = options(nvme_max_bytes=65535)
     assert tiered_capacity_records(cfg, 4096, 4) == 15
     with pytest.raises(ValueError, match='one complete'):
@@ -91,7 +91,7 @@ def test_ssd_rounding_and_impossible_record_fail_before_open(tmp_path):
 
 def test_factory_rejects_region_scratch_overflow_and_accepts_exact_serving_bound(tmp_path):
     from vllm_kvmem import _native
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.storage import make_shared_archive
     # Six complete K/G records; paired K/V outputs plus fallback scratch/cache
     # copies need three extents even when all source records start on CPU.
     size = 6 * 4096

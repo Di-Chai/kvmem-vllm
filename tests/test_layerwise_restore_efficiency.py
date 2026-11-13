@@ -4,13 +4,13 @@ import pytest
 import torch
 
 from test_layerwise_checkpoints import prefix
-from vllm_kvmem.layerwise_checkpoints import capture
-from vllm_kvmem.layerwise_restore_efficiency import install_direct_restore, finish_direct_restore
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.serving.layerwise_checkpoints import capture
+from vllm_kvmem.serving.layerwise_restore_efficiency import install_direct_restore, finish_direct_restore
+from vllm_kvmem.core.memory import Phase
 
 
 def fixture(monkeypatch):
-    from vllm_kvmem import layerwise_restore_efficiency as module
+    from vllm_kvmem.serving import layerwise_restore_efficiency as module
     controller, authority = prefix()
     snapshot = capture(controller,'old',authority,288)
     names = (*controller.names,'draft')

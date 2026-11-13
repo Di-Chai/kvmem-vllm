@@ -198,7 +198,7 @@ P0证明相应成本足够大后再做：
 独立区分：前向FA2本体、piece-LSE侧输出、清理、row归约、segment归约、stack/D2H、CPU累计。
 优先复用已有`action_native_prefill_static_aligned` / aligned / CTA gate的组件测试和隔离构建：
 
-- `src/vllm_kvmem/native_attention.py`、`native_attention_build.py`。
+- `src/vllm_kvmem/serving/native_attention.py`、`native_attention_build.py`。
 - `scripts/benchmark_native_prefill_static_aligned.py`、`benchmark_native_prefill_stats_floor.py`。
 - `docs/native-prefill-static-aligned-20261022.md`、`native-prefill-stats-floor-20261022.md`。
 

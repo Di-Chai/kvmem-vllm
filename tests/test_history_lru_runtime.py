@@ -6,9 +6,9 @@ import pytest
 
 from test_graph_options import runtime, model_profile, worker_payload
 from test_query_fps_prebuild_options import fps_settings
-from vllm_kvmem.serve import build_launch
-from vllm_kvmem.prompt_spans import install_selection_metadata, selection_metadata
-from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
+from vllm_kvmem.serving.serve import build_launch
+from vllm_kvmem.serving.prompt_spans import install_selection_metadata, selection_metadata
+from vllm_kvmem.serving.query_boundary_history import QueryBoundaryHistory
 
 
 def settings(mode='delete'):

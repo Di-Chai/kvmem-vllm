@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
 
 
 def setup(monkeypatch):

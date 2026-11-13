@@ -4,11 +4,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.guided_query import GuidedQueryPolicy, collect_guided_query
+from vllm_kvmem.serving.guided_query import GuidedQueryPolicy, collect_guided_query
 
 
 def test_guided_audit_checks_exact_target_bits_and_acceptance_counter():
-    from vllm_kvmem.guided_query import verify_guided_rollback
+    from vllm_kvmem.serving.guided_query import verify_guided_rollback
     values={'state':torch.tensor([-0.,float('nan')]),'num_accepted':torch.tensor([3])}
     before=NS(tensors={k:v.clone() for k,v in values.items()})
     assert verify_guided_rollback(before,values,[])['recurrent_byte_equal']
@@ -22,7 +22,7 @@ def test_guided_audit_checks_exact_target_bits_and_acceptance_counter():
 
 
 def test_guided_audit_covers_committed_draft_rows_but_allows_scratch():
-    from vllm_kvmem.guided_query import snapshot_guided_draft, verify_guided_rollback
+    from vllm_kvmem.serving.guided_query import snapshot_guided_draft, verify_guided_rollback
     cache=torch.arange(8,dtype=torch.float32).reshape(4,1,1,2)
     def views(owner,begin,end):
         assert (owner,begin,end)==('a',1,3)
@@ -40,7 +40,7 @@ def test_guided_audit_covers_committed_draft_rows_but_allows_scratch():
 
 
 def test_guided_audit_rejects_incomplete_recurrent_schema():
-    from vllm_kvmem.guided_query import verify_guided_rollback
+    from vllm_kvmem.serving.guided_query import verify_guided_rollback
     with pytest.raises(RuntimeError,match='schema'):
         verify_guided_rollback(NS(tensors={'state':torch.ones(1)}),{},[])
 
@@ -166,8 +166,8 @@ def test_unknown_token_id_is_not_an_accidental_stop_marker():
     (['Recover'],16,1002)])
 def test_cooperative_and_sync_policy_publish_identical_rows_after_restore_fence(monkeypatch,pieces,limit,stop):
     pytest.importorskip('vllm')
-    from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-    from vllm_kvmem.connector import RefreshCommand
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+    from vllm_kvmem.serving.connector import RefreshCommand
     tokenizer,first,sync_calls,forward=stream(pieces,stop)
     expected,diagnostics=collect_guided_query(tokenizer,limit,first,68,forward)
     tokenizer,first,async_calls,forward=stream(pieces,stop)
@@ -204,8 +204,8 @@ def test_cooperative_and_sync_policy_publish_identical_rows_after_restore_fence(
 
 def test_cooperative_report_preserves_consumed_count_and_adds_distinct_capture_counts(tmp_path):
     pytest.importorskip('vllm')
-    from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-    from vllm_kvmem.connector import RefreshCommand
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+    from vllm_kvmem.serving.connector import RefreshCommand
     import json
     obj=AsyncRefresh.__new__(AsyncRefresh)
     obj.options=NS(memory=NS(action_attention=False,action_combine='quota'),mean_k_backend='torch_reference')

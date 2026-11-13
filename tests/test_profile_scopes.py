@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip('torch')
 
-from vllm_kvmem import profile_scopes as profiling
+from vllm_kvmem.serving import profile_scopes as profiling
 
 
 def test_mixed_step_diagnostics_cover_actual_capture_and_score_methods():

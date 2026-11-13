@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 from test_graph_options import model_profile, runtime, settings, worker_payload
 
 
@@ -73,7 +73,7 @@ def test_direct_profile_replay_preserves_mode_capacity_and_native_budget(tmp_pat
 
 @pytest.mark.parametrize('alpha', [0., .2])
 def test_elastic_profile_forwards_mode_and_capacity_and_rejects_full_context(tmp_path, alpha):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
     local = model_profile(tmp_path)
     users = tmp_path / 'users.json'
     users.write_text(json.dumps({'users': [{'id': 'overlap-test', 'api_key': 'local-test-only'}]}))
@@ -112,7 +112,7 @@ def test_direct_launcher_rejects_exhausted_cpu_budget_before_creating_run(tmp_pa
 
 
 def test_overlap_rejects_both_explicit_and_inherited_token_experiment(tmp_path, monkeypatch):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     profile = model_profile(tmp_path)
     profile['kvmem'] = overlap_settings()
     config = tmp_path / 'profile.json'

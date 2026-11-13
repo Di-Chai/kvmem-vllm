@@ -7,7 +7,7 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.deferred_action_scoring import (
+from vllm_kvmem.serving.deferred_action_scoring import (
     FrozenLayerInput, FrozenOwnerInput, FrozenScoreLimits, FrozenScorePool)
 
 

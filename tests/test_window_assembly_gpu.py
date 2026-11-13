@@ -15,11 +15,11 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
     if optimized and not direct:
         pytest.skip('Split assembly requires direct packed reads')
     from vllm import _custom_ops as ops
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.core.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
     torch.manual_seed(71)
     cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32,
                       repository_blocks=8, sink_blocks=int(retain_sink), recent_blocks=0)
@@ -55,15 +55,15 @@ def test_selected_archive_blocks_rebuild_native_pages_in_bounded_chunks(tmp_path
         rk, rv = native_vllm_fp8_views(reference, heads, dim)
         native_layers.append(LayerWindow(k, v, trig, scale, table))
         expected.append((rk, rv))
-    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
     raw_cache=GpuRawCache(2*layers*16*heads*dim*2,(layers,16,heads,dim),torch.device('cuda:0'),1,2) if optimized else None
     extra=dict(raw_cache=raw_cache,reuse_resident_v=optimized)
     assembler = NativeWindowAssembler(tuple(native_layers), 16, chunk_blocks=1, packed=packed,
                                       direct_pinned_reads=direct,**extra)
     if fail_second_read:
-        from vllm_kvmem.memory import Phase
+        from vllm_kvmem.core.memory import Phase
         if packed:
-            from vllm_kvmem import packed_assembly
+            from vllm_kvmem.serving import packed_assembly
             original_read = packed_assembly.read_packed_records
             read = lambda handles, **kwargs: original_read(authority, handles, **kwargs)
         else:
@@ -173,11 +173,11 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
     if optimized and not direct:
         pytest.skip('Split assembly requires direct packed reads')
     from vllm import _custom_ops as ops
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.core.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
     cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32, repository_blocks=8,
                       sink_blocks=1, recent_blocks=1)
     layers, heads, dim, count = 2, 2, 64, 35
@@ -209,7 +209,7 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
         native.append(LayerWindow(k, v, trig, scale, table)); expected.append((rk, rv))
     extra = {}
     if optimized:
-        from vllm_kvmem.gpu_raw_cache import GpuRawCache
+        from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
         extra = dict(raw_cache=GpuRawCache(2*layers*16*heads*dim*2,
             (layers,16,heads,dim),torch.device('cuda:0'),1,2), reuse_resident_v=True)
     for attempt in range(2 if optimized else 1):
@@ -240,12 +240,12 @@ def test_partial_terminal_tail_rebuilds_exact_native_fp8_bytes(tmp_path, packed,
 
 def test_resident_value_moves_crossing_chunks_and_raw_hits_are_byte_exact(tmp_path):
     from vllm import _custom_ops as ops
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
-    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.core.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
     cfg=KVMemConfig(block_tokens=16,select_budget=48,gen_budget=48,
                     repository_blocks=12,sink_blocks=0,recent_blocks=0)
     layers,heads,dim=2,2,64
@@ -298,7 +298,7 @@ def test_resident_value_moves_crossing_chunks_and_raw_hits_are_byte_exact(tmp_pa
 
 
 def test_two_staging_slots_preserve_delayed_gpu_consumers_across_refreshes():
-    from vllm_kvmem.window_assembly import _AssemblyStaging
+    from vllm_kvmem.serving.window_assembly import _AssemblyStaging
 
     device = torch.device('cuda', torch.cuda.current_device())
     staging = _AssemblyStaging(4096, device)
@@ -336,13 +336,13 @@ def test_two_staging_slots_preserve_delayed_gpu_consumers_across_refreshes():
 
 @pytest.mark.parametrize('trig_dtype',[torch.float32,torch.bfloat16])
 def test_real_qwen_geometry_cached_assembly_matches_legacy_across_1600_token_pages(tmp_path,trig_dtype):
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.window_assembly import LayerWindow,NativeWindowAssembler
-    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.window_assembly import LayerWindow,NativeWindowAssembler
+    from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
     layers,heads,dim,block,page,count=17,4,256,128,1600,4096
     cfg=KVMemConfig(block_tokens=block,select_budget=2048,gen_budget=2048,
                     repository_blocks=64,sink_blocks=0,recent_blocks=0)

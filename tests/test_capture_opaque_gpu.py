@@ -15,9 +15,9 @@ class Owner:
 def fixture(tokens, *, capacity=None, mrope=False, draft=False):
     import torch
     from vllm.forward_context import ForwardContext
-    from vllm_kvmem.capture import CapturedLayer
-    from vllm_kvmem.capture_compile import capture_compile_fingerprint
-    from vllm_kvmem.capture_opaque import install_opaque_capture
+    from vllm_kvmem.adapters.capture import CapturedLayer
+    from vllm_kvmem.adapters.capture_compile import capture_compile_fingerprint
+    from vllm_kvmem.adapters.capture_opaque import install_opaque_capture
     torch.manual_seed(769)
     capacity = max(tokens+7, 64) if capacity is None else capacity
     heads, kvheads, dim, rotary = 24, 4, 256, 64
@@ -71,7 +71,7 @@ def same_bits(left, right):
 
 def functions(data, compiled):
     import torch
-    from vllm_kvmem.capture import _project_with_capture
+    from vllm_kvmem.adapters.capture import _project_with_capture
     result = []
     for layer in data.layers:
         def forward(x, positions, owner=layer):
@@ -186,7 +186,7 @@ def test_actual_compiled_dispatch_removes_capture_clones_and_copybacks():
 def test_real_cuda_capacity_context_rejection_does_not_write():
     import torch
     from vllm.forward_context import override_forward_context
-    from vllm_kvmem.capture_opaque import _project_impl
+    from vllm_kvmem.adapters.capture_opaque import _project_impl
     data = fixture(3, capacity=4)
     before = [tensor.clone() for tensor in raw(data.layers[1])]
     with override_forward_context(data.contexts[1]):

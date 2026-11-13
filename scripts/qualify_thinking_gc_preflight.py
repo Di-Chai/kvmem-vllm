@@ -91,7 +91,7 @@ def fixture(profile, protocol, target_tokens, *, planner=None):
     from scripts.dsh_bridge import to_anthropic
     from scripts.dsh_query_epoch import prepare_with_query_provenance
     from scripts.terminalbench_query import TaskQuery
-    from vllm_kvmem.thinking_history import thinking_token_layout
+    from vllm_kvmem.serving.thinking_history import thinking_token_layout
     from vllm_kvmem import _native
     if planner is None:
         tokenizer = AutoTokenizer.from_pretrained(profile['tokenizer'], local_files_only=True)

@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.sampling_params import SamplingParams
-from vllm_kvmem.systemone import DecisionEngine, SystemOnePlugin
+from vllm_kvmem.serving.systemone import DecisionEngine, SystemOnePlugin
 
 
 class Engine:
@@ -93,7 +93,7 @@ def test_failure_and_disconnect_close_session_before_reusing_concurrency_slot(ca
 
 
 def test_plugin_uses_native_handler_and_is_idempotent(monkeypatch):
-    import vllm_kvmem.engine_api as api
+    import vllm_kvmem.adapters.engine_api as api
     monkeypatch.setenv('KVMEM_SERVING', '1')
     monkeypatch.setattr(api, 'require_contract', lambda name: None)
     @dataclass

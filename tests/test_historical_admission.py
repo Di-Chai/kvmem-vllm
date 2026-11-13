@@ -5,10 +5,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.historical_admission import HistoricalAdmission, HistoricalCapacitySnapshot as Snapshot
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.historical_admission import HistoricalAdmission, HistoricalCapacitySnapshot as Snapshot
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def test_running_and_retiring_reservations_never_become_gc_credit():

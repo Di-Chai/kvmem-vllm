@@ -7,7 +7,7 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1", reason=
 
 def test_fp8_reselection_uses_raw_source_without_drift():
     import torch
-    from vllm_kvmem.codec import KVFormat, materialize_k, neox_rope
+    from vllm_kvmem.core.codec import KVFormat, materialize_k, neox_rope
     device = torch.device("cuda:0")
     generator = torch.Generator(device=device).manual_seed(123)
     raw = torch.randn(128, 2, 128, dtype=torch.bfloat16, device=device, generator=generator)
@@ -35,7 +35,7 @@ def test_fp8_reselection_uses_raw_source_without_drift():
 @pytest.mark.parametrize("layout", ["2PNHD", "P2NHD", "P2HND"])
 def test_physical_views_alias_backend_pages(layout):
     import torch
-    from vllm_kvmem.codec import KVFormat, paged_nhd_view
+    from vllm_kvmem.core.codec import KVFormat, paged_nhd_view
     shapes = {"2PNHD": (2, 3, 16, 2, 64), "P2NHD": (3, 2, 16, 2, 64), "P2HND": (3, 2, 2, 16, 64)}
     tensor = torch.zeros(shapes[layout], dtype=torch.float8_e4m3fn, device="cuda")
     k, v = paged_nhd_view(tensor, KVFormat(tensor.dtype, 64, 2, 16), layout)
@@ -48,7 +48,7 @@ def test_physical_views_alias_backend_pages(layout):
 
 def test_packed_upload_owns_payload_until_cuda_completion():
     import torch
-    from vllm_kvmem.transfer import PackedTransfers
+    from vllm_kvmem.core.transfer import PackedTransfers
     device = torch.device("cuda:0")
     pool = PackedTransfers(65536, 2, device)
     source = torch.arange(65536, dtype=torch.int32).to(torch.uint8)
@@ -63,7 +63,7 @@ def test_packed_upload_owns_payload_until_cuda_completion():
 
 def test_upload_waits_for_prior_destination_use_on_caller_stream():
     import torch
-    from vllm_kvmem.transfer import PackedTransfers
+    from vllm_kvmem.core.transfer import PackedTransfers
     device = torch.device("cuda", torch.cuda.current_device())
     caller = torch.cuda.Stream(device=device)
     pool = PackedTransfers(4096, 1, device)
@@ -82,7 +82,7 @@ def test_upload_waits_for_prior_destination_use_on_caller_stream():
 
 def test_direct_reader_keeps_slot_exclusive_through_cpu_io_and_recovers_after_failure():
     import torch
-    from vllm_kvmem.transfer import PackedTransfers
+    from vllm_kvmem.core.transfer import PackedTransfers
     device = torch.device('cuda', torch.cuda.current_device())
     pool = PackedTransfers(4096, 1, device)
     destination = torch.empty(4096, dtype=torch.uint8, device=device)

@@ -5,7 +5,7 @@ import pytest
 
 torch = pytest.importorskip('torch')
 pytest.importorskip('vllm')
-from vllm_kvmem.packed_assembly import read_packed_records
+from vllm_kvmem.serving.packed_assembly import read_packed_records
 from test_authority import setup, payload, drain
 
 
@@ -64,10 +64,10 @@ def test_packed_restore_waits_for_real_archive_backpressure(tmp_path,region,limi
 @pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1', reason='Explicit GPU qualification only')
 @pytest.mark.parametrize('raw_dtype', [torch.bfloat16, torch.float16])
 def test_packed_gpu_assembly_matches_reference_with_permuted_sources_and_pages(raw_dtype):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.window_assembly import LayerWindow
-    from vllm_kvmem.packed_assembly import assemble_packed_layer
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.serving.window_assembly import LayerWindow
+    from vllm_kvmem.serving.packed_assembly import assemble_packed_layer
     torch.manual_seed(129)
     layers, count, block, heads, dim = 2, 3, 16, 2, 64
     raw = torch.randn(count, layers, block, heads, dim, dtype=raw_dtype)

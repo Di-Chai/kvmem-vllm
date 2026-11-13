@@ -79,7 +79,7 @@ def test_full_actual_ranges_are_counts_and_not_truncated_page_lists():
 
 
 def export_fixture(tmp_path, *, trace=True, nodes=4096):
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     cfg=KVMemConfig(block_tokens=32,select_budget=36864,gen_budget=16384,repository_blocks=16384,
         sink_blocks=0,recent_blocks=0,action_attention=True,action_fraction=0)
     rows=[NS(history_begin=i*32,count=32,handle=NS(slot=i,generation=1)) for i in range(nodes)]
@@ -93,7 +93,7 @@ def export_fixture(tmp_path, *, trace=True, nodes=4096):
 
 
 def export(authority,rows,snapshot):
-    from vllm_kvmem.graph_integration import record_query_inputs
+    from vllm_kvmem.serving.graph_integration import record_query_inputs
     record_query_inputs(authority,rows,[1/len(rows)]*len(rows),[True]*len(rows),snapshot,(),None)
 
 
@@ -111,7 +111,7 @@ def test_opt_in_export_accepts_real_131k_domain_and_default_stays_disabled(tmp_p
 
 @pytest.mark.parametrize('excess',['nodes','record_bytes','record_count','total_bytes'])
 def test_export_still_refuses_records_beyond_bounded_limits(tmp_path,excess):
-    from vllm_kvmem import graph_integration as integration
+    from vllm_kvmem.serving import graph_integration as integration
     authority,rows,snapshot=export_fixture(tmp_path,nodes=8193 if excess=='nodes' else 4)
     path=tmp_path/'block_graph_inputs.jsonl'
     if excess=='record_bytes': snapshot.locality_provenance=(('oversized','x'*(2*1024*1024)),)

@@ -101,7 +101,7 @@ def prepare(args):
     benchmark.q.save(root / 'status.json', dict(status='preparing_diagnostic', at=time.time(), gpu_started=False))
     # Shared preparation supplies freezing/validation, but changes public P1
     # defaults. Restore the exact reference profile, including timing cadence.
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(final_profile, source, root / 'validation-diagnostic')
     benchmark.q.save(root / 'P1.json', final_profile)
     (root / 'A0.json').unlink()

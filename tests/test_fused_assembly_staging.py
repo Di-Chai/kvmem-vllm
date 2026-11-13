@@ -6,8 +6,8 @@ from threading import Event
 import pytest
 import torch
 
-from vllm_kvmem import split_assembly as split
-from vllm_kvmem import window_assembly as window
+from vllm_kvmem.serving import split_assembly as split
+from vllm_kvmem.serving import window_assembly as window
 from test_assembly_read_prefetch import cuda, DeviceBytes, FakeEvent, make_split
 
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-import vllm_kvmem.query_key_fps as module
+import vllm_kvmem.serving.query_key_fps as module
 
 
 @pytest.mark.parametrize('records, maximum, expected', [

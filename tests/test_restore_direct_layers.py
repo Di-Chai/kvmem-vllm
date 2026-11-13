@@ -4,9 +4,9 @@ from types import SimpleNamespace as NS
 import pytest
 
 from test_layerwise_restore_efficiency import fixture
-from vllm_kvmem.layerwise_restore_efficiency import (direct_session_restore,
+from vllm_kvmem.serving.layerwise_restore_efficiency import (direct_session_restore,
     install_direct_session_restore, finish_direct_session_restore)
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.core.memory import Phase
 
 
 class Staging:
@@ -123,7 +123,7 @@ def test_other_restores_keep_their_path(monkeypatch, case):
 
 
 def test_finish_async_restore_skips_restore_sync(monkeypatch):
-    from vllm_kvmem import layerwise_checkpoints as module
+    from vllm_kvmem.serving import layerwise_checkpoints as module
     worker, checkpoint, assembler, plan, event, calls = session_fixture(monkeypatch)
     worker.bindings['new'].pressure_restore = False
     assert install_direct_session_restore(worker, 'new', checkpoint, assembler, plan)
@@ -142,7 +142,7 @@ def test_finish_async_restore_skips_restore_sync(monkeypatch):
 
 def _layer():
     import torch
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     cache = torch.empty((5, 32, 2, 2, 64), dtype=torch.float8_e4m3fn)
     return LayerWindow(cache[:, :, :, 0], cache[:, :, :, 1], torch.zeros(128, 32),
                        torch.tensor(1.), torch.tensor([1, 3, 4]))
@@ -151,7 +151,7 @@ def _layer():
 def test_per_layer_assembly_borrows_a_larger_transaction_scratch():
     """The restore job's all-layer scratch serves its one-layer assemblies."""
     import torch
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     layers = tuple(_layer() for _ in range(3))
     parent = NativeWindowAssembler(layers, 32, 32, raw_dtype=torch.float8_e4m3fn)
     with pytest.raises(ValueError, match='geometry changed'):   # the strict shared rule
@@ -167,7 +167,7 @@ def test_per_layer_assembly_borrows_a_larger_transaction_scratch():
 @pytest.mark.parametrize('fault', ['missing', 'small', 'resident_v'])
 def test_borrowed_scratch_rejects_unsafe_geometry(fault):
     import torch
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     layers = tuple(_layer() for _ in range(2))
     parent = NativeWindowAssembler(layers, 32, 8, raw_dtype=torch.float8_e4m3fn)
     kwargs = dict(raw_dtype=torch.float8_e4m3fn, staging=parent.staging, borrowed_staging=True)
@@ -184,7 +184,7 @@ def test_borrowed_scratch_rejects_unsafe_geometry(fault):
 
 @pytest.mark.parametrize('available', [True, False])
 def test_prepared_reads_share_one_reader_across_layers(monkeypatch, available):
-    from vllm_kvmem import pressure_reader
+    from vllm_kvmem.serving import pressure_reader
     worker, checkpoint, assembler, plan, event, calls = session_fixture(monkeypatch)
     monkeypatch.setenv('KVMEM_RESTORE_PREPARED_READS', '1')
     controller = worker.runner._kvmem_layerwise_pressure
@@ -225,7 +225,7 @@ def test_prepared_reads_share_one_reader_across_layers(monkeypatch, available):
 
 
 def test_prepared_reads_flag_parsing(monkeypatch):
-    from vllm_kvmem.layerwise_restore_efficiency import prepared_restore_reads
+    from vllm_kvmem.serving.layerwise_restore_efficiency import prepared_restore_reads
     monkeypatch.delenv('KVMEM_RESTORE_PREPARED_READS', raising=False)
     assert not prepared_restore_reads()
     monkeypatch.setenv('KVMEM_RESTORE_PREPARED_READS', '2')
@@ -277,7 +277,7 @@ def test_job_lends_its_validated_views_and_a_partial_record_cache(monkeypatch):
 def test_partial_record_operands_are_read_once_per_restore():
     """assemble_layer_pinned's slow path: one read_records per staged record per restore."""
     import inspect
-    from vllm_kvmem import layerwise_query
+    from vllm_kvmem.serving import layerwise_query
     source = inspect.getsource(layerwise_query.LayerwiseQuery.assemble_layer_pinned)
     assert "state.get('restore_partial_operands')" in source
     assert "missing = [r for r in group if id(r) not in cache]" in source

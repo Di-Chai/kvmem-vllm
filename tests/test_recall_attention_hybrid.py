@@ -7,8 +7,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem import recall_experiment as recall
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving import recall_experiment as recall
+from vllm_kvmem.serving.serve import build_launch
 from test_recall_experiment import native_authority, finish
 from test_recall_launch import profile as launch_profile
 from test_recall_refresh_dispatch import setup_dispatch

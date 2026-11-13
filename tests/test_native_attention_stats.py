@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.native_attention import piece_layout, _layout_array
-from vllm_kvmem.native_attention_build import UnsupportedNativeStats, patch_prefill, patch_xqa
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.native_attention import piece_layout, _layout_array
+from vllm_kvmem.serving.native_attention_build import UnsupportedNativeStats, patch_prefill, patch_xqa
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -56,7 +56,7 @@ def test_source_overlay_fails_closed_on_unknown_kernel_structure():
 
 
 def test_native_planning_prepares_scope_once_and_keeps_unaccepted_rows():
-    from vllm_kvmem.action_attention import ActionHistory, ActionRuntime
+    from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime
     from vllm_kvmem import _native
     options = SimpleNamespace(action_scope='non-thinking', action_interval=1, action_decay=.5)
     state = ActionHistory(options, [10, 11, 12, 13, 14])
@@ -76,7 +76,7 @@ def test_native_planning_prepares_scope_once_and_keeps_unaccepted_rows():
 
 
 def test_native_fallback_reports_actual_reason_without_a_tensor():
-    from vllm_kvmem.native_attention import NativeAttentionStats
+    from vllm_kvmem.serving.native_attention import NativeAttentionStats
     from collections import Counter
     bank = NativeAttentionStats.__new__(NativeAttentionStats)
     bank.disabled, bank.counts = 'source_mismatch:test', Counter()
@@ -85,7 +85,7 @@ def test_native_fallback_reports_actual_reason_without_a_tensor():
 
 
 def test_sm80_leaves_a_non_flashinfer_forward_on_its_own_backend():
-    from vllm_kvmem.native_attention import NativeAttentionStats
+    from vllm_kvmem.serving.native_attention import NativeAttentionStats
     bank = NativeAttentionStats.__new__(NativeAttentionStats)
     bank.fa2_only, bank.reasons = True, {}
     impl = SimpleNamespace(forward=lambda *args: 'original output')
@@ -96,7 +96,7 @@ def test_sm80_leaves_a_non_flashinfer_forward_on_its_own_backend():
 
 
 def test_capture_discards_invalid_native_packets_and_reuses_original_metadata():
-    from vllm_kvmem.action_attention import ActionRuntime
+    from vllm_kvmem.serving.action_attention import ActionRuntime
     action = ActionRuntime.__new__(ActionRuntime)
     metadata, batch, plans = object(), object(), object()
     action.metadata, action.native_plans = metadata, plans
@@ -118,8 +118,8 @@ def test_capture_discards_invalid_native_packets_and_reuses_original_metadata():
 
 
 def test_decode_candidates_use_immutable_frame_and_invalidate_every_reorder():
-    from vllm_kvmem.action_attention import ActionRuntime
-    from vllm_kvmem.window_batch import WindowBatchAdapter
+    from vllm_kvmem.serving.action_attention import ActionRuntime
+    from vllm_kvmem.serving.window_batch import WindowBatchAdapter
     adapter=WindowBatchAdapter((0,),128)
     adapter.commit('r',100,64)
     action=ActionRuntime.__new__(ActionRuntime)
@@ -128,7 +128,7 @@ def test_decode_candidates_use_immutable_frame_and_invalidate_every_reorder():
         ensure_authority=lambda r:pytest.fail('candidate planning must not read mutable authority'))
     armed=[]
     action.native=SimpleNamespace(disabled=None,arm=armed.append)
-    from vllm_kvmem.native_attention_planning import make_decode_frame
+    from vllm_kvmem.serving.native_attention_planning import make_decode_frame
     action.native_cache={'r':dict(generation=1,offset=36,
         **make_decode_frame([0,32,64],[32,32,5],[0,1024,96],100,64,5,128,32))}
     batch=SimpleNamespace(req_ids=['r'],is_prefilling_np=[False],num_computed_tokens_np=[100],
@@ -148,10 +148,10 @@ def test_decode_candidates_use_immutable_frame_and_invalidate_every_reorder():
 @pytest.mark.parametrize('native_commit',[False,True])
 def test_logical_page_coalescing_preserves_output_prefill_and_graph_checkpoint(native_commit):
     import numpy as np
-    from vllm_kvmem.native_attention_planning import canonical_segments
-    from vllm_kvmem.action_attention import ActionHistory
-    from vllm_kvmem.prefill_attention import PrefillHistory
-    from vllm_kvmem.block_graph import BlockGraph
+    from vllm_kvmem.serving.native_attention_planning import canonical_segments
+    from vllm_kvmem.serving.action_attention import ActionHistory
+    from vllm_kvmem.serving.prefill_attention import PrefillHistory
+    from vllm_kvmem.serving.block_graph import BlockGraph
     starts,counts,history=[0,32,37,64],[32,5,27,3],[0,32,32,64]
     compact=canonical_segments(starts,counts,history,67,32)
     assert compact.tolist()==[[0,32,0],[32,32,32],[64,3,64]]
@@ -177,6 +177,6 @@ def test_logical_page_coalescing_preserves_output_prefill_and_graph_checkpoint(n
 
 
 def test_canonical_segments_bound_repeated_page_fragments_without_changing_mass_domain():
-    from vllm_kvmem.native_attention_planning import canonical_segments
+    from vllm_kvmem.serving.native_attention_planning import canonical_segments
     result=canonical_segments([0,32,64],[32,32,7],[0,0,0],71,32)
     assert result.tolist()==[[0,32,0],[32,32,0],[64,7,0]]

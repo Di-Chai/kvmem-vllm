@@ -94,7 +94,7 @@ def test_live_checkout_cannot_execute_prepared_experiment(tmp_path):
 
 def test_resolved_public_profile_roundtrips_without_saving_native_only_controls(tmp_path):
     from test_serving_launcher import nvfp4_profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile = nvfp4_profile(tmp_path)
     profile.update(draft_method='mtp', draft_tokens=4, max_num_seqs=4,
                    max_model_len=1048576, query_replay_budget=16384)
@@ -131,7 +131,7 @@ def test_trace_preparation_preserves_all_per_user_inputs_and_adds_only_cleanup_e
 def test_preparation_freezes_matching_native_slots_and_all_user_plans(tmp_path, monkeypatch, concurrency):
     import json
     from test_serving_launcher import nvfp4_profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
 
     example = Path(__file__).parents[1] / 'examples/qwen-nvfp4-offline-agent-k128-g128.json'
     profile = json.loads(example.read_text())

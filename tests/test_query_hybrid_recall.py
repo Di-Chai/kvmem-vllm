@@ -8,10 +8,10 @@ import torch
 from test_query_group_picker import finish
 from test_core import append
 from vllm_kvmem import _native
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.query_hybrid_recall import preview_hybrid_selection
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.query_hybrid_recall import preview_hybrid_selection
 
 
 def populated(*, count=256, budget=128, repository=16, sink=1, recent=0):
@@ -101,14 +101,14 @@ def test_zero_first_stage_quota_and_runtime_budget_do_not_expand_to_configured_b
 
 def test_actual_authority_exports_two_independent_full_domain_scores(tmp_path, monkeypatch):
     from test_query_key_fps_integration import actual
-    from vllm_kvmem.authority import _Ready
-    from vllm_kvmem.retrieval import mean_key_scores
+    from vllm_kvmem.serving.authority import _Ready
+    from vllm_kvmem.core.retrieval import mean_key_scores
     authority, archive, _ = actual(tmp_path, select_budget=128)
     authority.graph_options.query_fps_halo_blocks = 1
     authority.graph_options.query_mean_quota_fraction = .5
     authority.graph_options.graph_trace = True
     authority.graph_report_path = tmp_path/'block_graph.jsonl'
-    monkeypatch.setattr('vllm_kvmem.query_key_fps.score_authority_fps',
+    monkeypatch.setattr('vllm_kvmem.serving.query_key_fps.score_authority_fps',
         lambda *args: (torch.tensor([0., .5, .4, .9, .001, .002]), {}))
     queries = torch.ones(1,1,1,2)
     plan = authority.select_for_queries(queries)
@@ -135,7 +135,7 @@ def test_failure_precedes_assembly_and_does_not_mutate_another_owner(tmp_path, m
     before = authority.memory._store.working_records()
     def fail(*args, **kwargs):
         raise OSError('hybrid diagnostic failure')
-    monkeypatch.setattr('vllm_kvmem.graph_integration.emit_graph_report', fail)
+    monkeypatch.setattr('vllm_kvmem.serving.graph_integration.emit_graph_report', fail)
     with pytest.raises(OSError, match='hybrid diagnostic'):
         authority.select_for_queries(torch.ones(1,1,1,2))
     assert authority.memory.phase is Phase.READY and authority.memory._plan is None

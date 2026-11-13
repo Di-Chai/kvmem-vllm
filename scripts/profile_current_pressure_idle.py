@@ -137,7 +137,7 @@ def serve(root,dry_run=False):
     fixture=base.read(arm/'fixture.json')
     args=memory.server_command(arm,fixture)[5:]
     if not args or args[0]!='--config':raise ValueError('Unexpected frozen serving command')
-    from vllm_kvmem import serve as serving
+    from vllm_kvmem.serving import serve as serving
     original=serving.build_launch
     def diagnostic_launch(*args,**kwargs):
         launch=original(*args,**kwargs)

@@ -42,7 +42,7 @@ def hashes(root):
 
 
 def resolve_profile(profile, base, run_dir):
-    from vllm_kvmem.serve import PATHS, build_launch
+    from vllm_kvmem.serving.serve import PATHS, build_launch
     plan = build_launch(profile, base, run_dir)
     resolved = json.loads(json.dumps(profile))
     # build_launch also converts public settings to native internal controls
@@ -81,7 +81,7 @@ def prepare_fixture(fixture, args, profile, tokenizer=None):
 
 
 def prepare(args):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     base = read(args.config.resolve())

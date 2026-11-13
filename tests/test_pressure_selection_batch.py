@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from test_layerwise_pressure import controller, native_authority, options, finish
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.core.memory import Phase
 
 
 def require_batch(memory):
@@ -121,7 +121,7 @@ def test_controller_batch_preserves_each_selected_record_and_original_evidence(b
 
 @pytest.mark.parametrize('fault', ['phase', 'gc', 'scope', 'missing_picker', 'decode', 'layers'])
 def test_batch_scope_fails_explicitly_before_native_ranking(fault):
-    from vllm_kvmem.pressure_selection_batch import prepare_pressure_batch
+    from vllm_kvmem.serving.pressure_selection_batch import prepare_pressure_batch
     c = controller()
     calls = []
     store = NS(pick_pressure_batch=lambda *args: calls.append(args))

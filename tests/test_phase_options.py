@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 
 
 def profile():
@@ -31,7 +31,7 @@ def test_phase_is_explicit_opt_in_and_roundtrips_public_connector_settings():
 
 
 def test_disabled_phase_does_not_restrict_existing_small_generation_budgets():
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     resolved = RuntimeOptions(memory=KVMemConfig(gen_budget=1024))
     assert not resolved.offline_phase_policy and resolved.memory.gen_budget == 1024
 

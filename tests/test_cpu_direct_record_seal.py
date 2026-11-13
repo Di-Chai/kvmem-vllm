@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem import _native, memory_storage
-from vllm_kvmem.memory_storage import MemoryArchive, MemorySpan, MemoryTier
-from vllm_kvmem.storage import AsyncArchive, make_shared_archive
+from vllm_kvmem import _native; from vllm_kvmem.core import memory_storage
+from vllm_kvmem.core.memory_storage import MemoryArchive, MemorySpan, MemoryTier
+from vllm_kvmem.core.storage import AsyncArchive, make_shared_archive
 
 
 @pytest.fixture
@@ -326,7 +326,7 @@ def test_direct_seal_admission_refusal_allocates_no_owned_record(tmp_path, monke
 
 
 def test_shared_cpu_archive_receives_direct_seal_switch(tmp_path):
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     options = RuntimeOptions(archive_backend='cpu', cpu_read_cache_bytes=8192,
                              async_seal=True, cpu_direct_record_seal=True)
     archive = make_shared_archive(options, tmp_path, 4096, 1)

@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem import cuda_scoring as scoring
+from vllm_kvmem.core import cuda_scoring as scoring
 
 
 @pytest.mark.parametrize('dtype', [torch.float16, torch.bfloat16])

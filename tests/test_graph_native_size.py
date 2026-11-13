@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from vllm_kvmem import _native, block_graph
-from vllm_kvmem.block_graph import GraphPartial
+from vllm_kvmem import _native; from vllm_kvmem.serving import block_graph
+from vllm_kvmem.serving.block_graph import GraphPartial
 
 pytestmark = pytest.mark.skipif(not hasattr(_native, 'graph_size'), reason='Requires the rebuilt extension')
 

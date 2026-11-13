@@ -13,11 +13,11 @@ def test_retired_admitted_window_rebuilds_correct_bytes_and_frees_cpu_before_gpu
     import torch
     from vllm import _custom_ops as ops
     from vllm_kvmem import _native as n
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.codec import native_vllm_fp8_views, neox_rope
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.codec import native_vllm_fp8_views, neox_rope
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
 
     cfg = KVMemConfig(block_tokens=16, select_budget=32, gen_budget=32,
                       repository_blocks=8, sink_blocks=0, recent_blocks=0)

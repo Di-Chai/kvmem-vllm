@@ -6,7 +6,7 @@ torch = pytest.importorskip("torch")
 pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1",
                                 reason="Explicit GPU qualification only")
 
-from vllm_kvmem.transfer import PackedDownloads
+from vllm_kvmem.core.transfer import PackedDownloads
 
 
 def test_completed_download_cannot_be_reused_until_cpu_consumer_releases():
@@ -33,7 +33,7 @@ def test_decode_capture_dma_completes_before_delayed_bulk_stream(tmp_path):
     """The production split packet has its own event/slot, not a shared fence."""
     from types import SimpleNamespace as NS
     import numpy as np
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     runtime = CaptureRuntime.__new__(CaptureRuntime)
     runtime.raw_dtype = torch.float8_e4m3fn
     runtime.names = ('target',)

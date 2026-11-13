@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.native_pages import kernel_table, kernel_expansions, stored_expansions
+from vllm_kvmem.core.native_pages import kernel_table, kernel_expansions, stored_expansions
 
 
 def logical_runner():
@@ -24,7 +24,7 @@ def test_logical_and_expanded_tables_address_the_same_kv_pages():
 
 
 def test_latest_restore_witness_counts_allocator_pages_but_returns_kernel_pages(monkeypatch):
-    from vllm_kvmem.restore_lease import FreshRestoreLease
+    from vllm_kvmem.serving.restore_lease import FreshRestoreLease
     runner = logical_runner()
     runner.block_tables.num_blocks.np[0, 0] = 2
     runner.req_states = NS(req_id_to_index={'r': 0})

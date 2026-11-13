@@ -60,7 +60,7 @@ def qualification_profile(source, port):
 
 def validate_fixture(fixture, profile):
     """Keep original IDs/messages; fixed qualification quotas are separate."""
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     cap.require(type(fixture.get('eos')) is int and fixture['eos'] >= 0,
                 'Validated tokenizer EOS required before GPU admission')
     # Source output quotas are provenance, not the qualification quota. Do not
@@ -79,7 +79,7 @@ def validate_fixture(fixture, profile):
                     profile['query_replay_budget'], 'Complete Query exceeds qualified replay budget')
         # The original semantic validator verifies hard pins against the same
         # K=32K capacity. No Query clipping or pin removal is permitted.
-        from vllm_kvmem.config import KVMemConfig
+        from vllm_kvmem.core.config import KVMemConfig
         memory = KVMemConfig(select_budget=32768,gen_budget=4096,block_tokens=32,
             sink_blocks=profile['kvmem'].get('sink_blocks',0),
             recent_blocks=profile['kvmem'].get('recent_blocks',0))

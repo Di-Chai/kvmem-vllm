@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.request_swap import FencedPageSwap, SwapPhase
+from vllm_kvmem.serving.request_swap import FencedPageSwap, SwapPhase
 
 
 class Pool:

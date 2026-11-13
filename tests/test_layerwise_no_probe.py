@@ -3,10 +3,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.async_refresh import RefreshJob
-from vllm_kvmem.layerwise_no_probe import window_geometry, validate_options, commit_layer_zero
-from vllm_kvmem.layerwise_query import LayerwiseQuery
-from vllm_kvmem.memory import Phase
+from vllm_kvmem.serving.async_refresh import RefreshJob
+from vllm_kvmem.serving.layerwise_no_probe import window_geometry, validate_options, commit_layer_zero
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+from vllm_kvmem.core.memory import Phase
 from test_layerwise_query import runner
 from test_recall_experiment import native_authority, ScoringAuthority, finish
 
@@ -53,7 +53,7 @@ def setup(monkeypatch,tmp_path,no_probe,native_batches=False,partial_tail=False)
     monkeypatch.delenv('KVMEM_LAYERWISE_PREFILL_PRESSURE',raising=False)
     monkeypatch.setattr(torch.cuda,'Event',Fence)
     monkeypatch.setattr(torch.cuda,'current_stream',lambda *a:Fence())
-    from vllm_kvmem import cuda_scoring, retrieval
+    from vllm_kvmem.core import cuda_scoring, retrieval
     monkeypatch.setattr(cuda_scoring,'mean_key_scores',retrieval.mean_key_scores)
     history=233 if partial_tail else 256
     base=native_authority(count=history,budget=96,recent=int(partial_tail))
@@ -207,7 +207,7 @@ def test_failed_completion_fence_never_publishes_canonical_frame(monkeypatch,tmp
 
 def test_cli_keeps_original_path_by_default_and_declares_mtp_control(monkeypatch,tmp_path,capsys):
     import json
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     profile=dict(max_num_seqs=8,execution_mode='compiled_graph',kvmem=dict(async_refresh=True))
     path=tmp_path/'profile.json';path.write_text(json.dumps(profile))
     monkeypatch.setattr(serve,'build_launch',lambda p,*a:dict(profile=p,environment={}))
@@ -228,7 +228,7 @@ def test_cli_keeps_original_path_by_default_and_declares_mtp_control(monkeypatch
 
 def test_async_admission_never_enters_probe_restore_or_global_assembly(monkeypatch,tmp_path):
     import numpy as np
-    from vllm_kvmem import async_refresh, prompt_spans
+    from vllm_kvmem.serving import async_refresh, prompt_spans
     c,refresh,job,_=setup(monkeypatch,tmp_path,True)
     engine=c.runner
     engine._kvmem_layerwise_query=c

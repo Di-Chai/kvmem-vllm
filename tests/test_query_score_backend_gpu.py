@@ -11,8 +11,8 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',
 @pytest.mark.parametrize('pages', [1,3,8183,8192,8193])
 @pytest.mark.parametrize('dtype', [torch.float16,torch.bfloat16])
 def test_forced_tiled_scores_keep_mask_mass_and_current_stream(pages,dtype):
-    from vllm_kvmem.cuda_scoring import prepare_mean_key_index,prepared_layer_scores
-    from vllm_kvmem.retrieval import mean_key_scores as reference
+    from vllm_kvmem.core.cuda_scoring import prepare_mean_key_index,prepared_layer_scores
+    from vllm_kvmem.core.retrieval import mean_key_scores as reference
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         generator = torch.Generator(device='cuda').manual_seed(481)

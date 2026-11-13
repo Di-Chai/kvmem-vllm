@@ -61,7 +61,7 @@ class PreparedRegionReader:
             from .. import _native
             from .memory_storage import region_gather_parallel_min_bytes
             CPU_REGION_GATHER_PARALLEL_MIN_BYTES = region_gather_parallel_min_bytes()
-            from ..serving.pressure_reader import layerwise_gc
+            from .archive_flags import layerwise_gc
             if (not archive.memory_only or
                     (getattr(archive, '_native_payload_arena', None) is not None and not layerwise_gc())):
                 # KVMEM_LAYERWISE_HISTORICAL_GC: the sources are read rights

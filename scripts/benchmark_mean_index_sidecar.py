@@ -32,8 +32,8 @@ def sha(path):
 @torch.inference_mode()
 def fixture(tokens, *, geometry=None, seed=738):
     """Use the real fused capture packer; preserve its header/raw/V layout."""
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.capture_pack import PackLimits
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_pack import PackLimits
     geometry = geometry or Geometry()
     geometry.sizes(tokens)
     names = tuple(f'target.{i}.attn' for i in range(geometry.scoring_layers))
@@ -111,9 +111,9 @@ def index_once(env, mode):
 
 @torch.inference_mode()
 def append_once(env, mode):
-    from vllm_kvmem.authority import RequestAuthority,append_authority_batch
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.authority import RequestAuthority,append_authority_batch
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
     g = env.geometry
     cfg = KVMemConfig(block_tokens=32,select_budget=32768,gen_budget=16384,
                      repository_blocks=2048,sink_blocks=32,recent_blocks=64)

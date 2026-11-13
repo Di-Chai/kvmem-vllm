@@ -6,7 +6,7 @@ import pytest
 import torch
 
 import test_native_attention_stats_gpu as existing
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
                                reason='Explicit aligned FA2 CUDA qualification')

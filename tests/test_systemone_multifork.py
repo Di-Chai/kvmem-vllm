@@ -2,7 +2,7 @@
 from types import SimpleNamespace as NS
 import pytest
 from test_systemone_fork import setup, acquire
-from vllm_kvmem.systemone_fork import ForkPagePool, ForkDecisions
+from vllm_kvmem.serving.systemone_fork import ForkPagePool, ForkDecisions
 
 
 @pytest.mark.parametrize('branches', [2, 4])
@@ -115,7 +115,7 @@ def test_finishing_or_cancelling_one_admitted_member_preserves_peers(monkeypatch
 
 def test_four_private_batches_have_independent_logits_positions_and_slots():
     from test_query_replay_batch import batch
-    from vllm_kvmem.query_replay_batch import merge_query_batch
+    from vllm_kvmem.serving.query_replay_batch import merge_query_batch
     public = batch(('parent',), (2,), (4,), (1,))
     merged = public
     for i, count in enumerate((16, 32, 24, 8)):

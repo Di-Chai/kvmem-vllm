@@ -6,9 +6,9 @@ import json
 import pytest
 
 from test_graph_options import model_profile, runtime, settings, worker_payload
-from vllm_kvmem.elastic_serve import build_launch as build_elastic
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def fps_settings(**updates):
@@ -51,7 +51,7 @@ def test_prebuild_defaults_off_and_toggle_changes_only_execution_option():
 @pytest.mark.parametrize('enabled', [False, True])
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])
 def test_direct_profile_and_serve_cli_roundtrip_without_policy_or_budget_changes(tmp_path, capsys, halo, enabled, device):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     profile = model_profile(tmp_path)
     profile['kvmem'] = fps_settings(query_fps_prebuild=enabled, query_fps_halo_blocks=halo,
         query_fps_prebuild_device=device)

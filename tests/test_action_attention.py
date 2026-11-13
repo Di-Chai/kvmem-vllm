@@ -4,9 +4,9 @@ import math
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.action_attention import ActionHistory,window_segments
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory
+from vllm_kvmem.serving.action_attention import ActionHistory,window_segments
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory
 from test_core import append,Event
 
 
@@ -42,7 +42,7 @@ def test_non_thinking_scope_prompt_state_and_terminal_discard():
 
 def test_stateless_action_scope_uses_exact_native_prompt_and_initializes_once():
     import torch
-    from vllm_kvmem.action_attention import ActionRuntime
+    from vllm_kvmem.serving.action_attention import ActionRuntime
     runtime=ActionRuntime.__new__(ActionRuntime)
     runtime.runner=SimpleNamespace(_kvmem_sessions=SimpleNamespace(bindings={}),
         req_states=SimpleNamespace(req_id_to_index={'a':0},prompt_len=SimpleNamespace(np=[2]),
@@ -162,5 +162,5 @@ def test_page_boundary_p_replay_keeps_m_evidence_only_for_verified_continuation(
 @pytest.mark.parametrize('key,value',[('action_interval',0),('action_interval',True),
     ('action_decay',math.nan),('action_decay',1.1),('action_scope','all'),('action_layers','1,1')])
 def test_invalid_runtime_options_fail_before_loading_model(key,value):
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     with pytest.raises(ValueError):RuntimeOptions(**{key:value})

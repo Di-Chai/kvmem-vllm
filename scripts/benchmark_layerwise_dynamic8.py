@@ -91,7 +91,7 @@ def freeze(source, destination):
 
 def validate_profile(profile, source, destination):
     sys.path.insert(0, str(source/'src'))
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     plan = build_launch(profile, source, destination/'run/server', check_paths=False)
     if plan['profile']['max_num_batched_tokens'] != 16424:
         raise ValueError('Effective native batch ceiling changed')

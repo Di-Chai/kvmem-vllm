@@ -6,11 +6,11 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.http_sessions import normalize_query_plan
-from vllm_kvmem.request_plan import RequestCapacityError, RequestPlan
-from vllm_kvmem.session_control import SessionLedger, _Entry
-from vllm_kvmem.prompt_checkpoints import token_bytes
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.http_sessions import normalize_query_plan
+from vllm_kvmem.serving.request_plan import RequestCapacityError, RequestPlan
+from vllm_kvmem.serving.session_control import SessionLedger, _Entry
+from vllm_kvmem.serving.prompt_checkpoints import token_bytes
 
 
 def config():
@@ -114,7 +114,7 @@ def test_mixed_message_query_preserves_roles_and_atomic_bounds():
 def test_elastic_joint_rejection_releases_history_and_allows_retry(tmp_path):
     httpx=pytest.importorskip('httpx')
     from test_elastic_gateway import configuration
-    from vllm_kvmem.elastic_gateway import create_app
+    from vllm_kvmem.apps.elastic_gateway import create_app
     cfg=configuration(tmp_path)
     cfg.update(context_mode='meank',request_planning=True,active_context_tokens=128,
         gen_budget_tokens=128,block_tokens=32,sink_blocks=1,recent_blocks=1,

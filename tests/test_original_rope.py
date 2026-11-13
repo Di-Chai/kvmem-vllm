@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.original_rope import record_positions, MTPPositions
+from vllm_kvmem.adapters.original_rope import record_positions, MTPPositions
 
 
 def test_sparse_logical_positions_are_independent_of_packed_storage():
@@ -12,8 +12,8 @@ def test_sparse_logical_positions_are_independent_of_packed_storage():
 
 
 def test_bridge_keeps_original_rope_but_dense_attention_lengths(monkeypatch):
-    from vllm_kvmem.window_bridge import install_window_bridge
-    from vllm_kvmem.window_batch import _active_lengths
+    from vllm_kvmem.serving.window_bridge import install_window_bridge
+    from vllm_kvmem.serving.window_batch import _active_lengths
     monkeypatch.setenv('KVMEM_LAYERWISE_ORIGINAL_ROPE','1')
     seen=[]
     state=NS(prepare_attn=lambda *a:seen.append(_active_lengths.get()),
@@ -50,7 +50,7 @@ def test_mtp_rotates_original_per_owner_without_modifying_dense_slot_positions()
 
 
 def test_rope_extension_preserves_prefix_bytes_and_same_frequencies():
-    from vllm_kvmem.original_rope import extend_rope_table
+    from vllm_kvmem.adapters.original_rope import extend_rope_table
     old=torch.randn(8,4,dtype=torch.bfloat16)
     rope=NS(cos_sin_cache=old.clone(),base=10000.,max_position_embeddings=8,
             _compute_inv_freq=lambda base:torch.tensor([1.,.01]))
@@ -62,7 +62,7 @@ def test_rope_extension_preserves_prefix_bytes_and_same_frequencies():
 
 
 def test_original_rope_bounds_are_checked_separately_from_physical_slots(monkeypatch):
-    from vllm_kvmem.window_assembly import _validate_destinations
+    from vllm_kvmem.serving.window_assembly import _validate_destinations
     monkeypatch.setenv('KVMEM_LAYERWISE_ORIGINAL_ROPE','1')
     remap=NS(block_id=1,n_tokens=32,to_base=0)
     layer=NS(kernel_page_table=torch.zeros(2),key=torch.zeros((2,32,1,2)),
@@ -74,8 +74,8 @@ def test_original_rope_bounds_are_checked_separately_from_physical_slots(monkeyp
 
 @pytest.mark.parametrize('indices',[(0,1),(1,)])
 def test_archive_keeps_dense_append_coordinates_after_original_rope(monkeypatch,indices):
-    from vllm_kvmem.capture import CapturedLayer
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.adapters.capture import CapturedLayer
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     monkeypatch.setenv('KVMEM_LAYERWISE_ORIGINAL_ROPE','1')
     runtime=CaptureRuntime.__new__(CaptureRuntime)
     runtime.runner=NS(_kvmem_window_batch=NS(positions=torch.tensor([36864,36865,40000,40001])))

@@ -109,7 +109,7 @@ class RequestSwapWorker:
         if checkpoint_ssd_bytes:
             if checkpoint_directory is None:
                 raise ValueError('SSD checkpoints require a process-local directory')
-            from ..core.checkpoint_storage import CheckpointStore
+            from .checkpoint_storage import CheckpointStore
             self.store = CheckpointStore(checkpoint_directory, max_checkpoint_bytes, checkpoint_ssd_bytes)
         self.ledger = ResourceLedger({'checkpoint_bytes': checkpoint_ssd_bytes or max_checkpoint_bytes})
         self.checkpoints = {}

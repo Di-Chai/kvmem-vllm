@@ -144,7 +144,7 @@ def prepare(root, source, graph_alpha=.2, overlap_reference=None):
     profile = profile_for_overlap(read((overlap_reference/ARM/'profile.json') if overlap_reference else
         (source/'mean_k/profile.json')), graph_alpha)
     paired_proof = overlap_reference_proof(overlap_reference, fixture, profile) if overlap_reference else None
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(profile, repo, root/ARM/'preflight-only')
     target_source = repo/'artifacts/ruler-failures-20261022/analysis.json'
     targets = {r['id']:r['references'][0]['spans'][0] for r in read(target_source)['rows']
@@ -188,7 +188,7 @@ def prepare(root, source, graph_alpha=.2, overlap_reference=None):
 def audit_selection(query, graph, inputs, profile):
     """Recompute transport and native picking from exported, answer-blind seeds."""
     import analyze_block_graph as offline
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.graph_scoring import score_graph
     alpha = validate_alpha(profile['kvmem']['graph_alpha'])
     stats = query.get('query_window_scoring', {})
     require(query.get('query_scoring_method') == ARM and stats.get('method') == ARM and

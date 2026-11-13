@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.action_attention import mixed_terminal_plans
+from vllm_kvmem.serving.action_attention import mixed_terminal_plans
 from test_mixed_decode_candidates import Resolved, fixture
 
 

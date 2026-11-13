@@ -8,9 +8,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_metadata_upload import PackedActionMetadata
-from vllm_kvmem.action_scoring import page_attention
-from vllm_kvmem.action_attention import ActionHistory
+from vllm_kvmem.serving.action_metadata_upload import PackedActionMetadata
+from vllm_kvmem.serving.action_scoring import page_attention
+from vllm_kvmem.serving.action_attention import ActionHistory
 
 
 @pytest.fixture(autouse=True)

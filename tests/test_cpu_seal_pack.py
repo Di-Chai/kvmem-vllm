@@ -8,7 +8,7 @@ import pytest
 
 from test_cpu_direct_record_seal import repository, reclaim_all
 from vllm_kvmem import _native
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def archive_at(path, workers=4, **kwargs):

@@ -45,9 +45,9 @@ class _CommitWorkerMixin:
         scopes=getattr(self,'_prefill_phase_probe',None)
         if scopes is None:return
         if not hasattr(self,'_commit_timings'):
-            from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+            from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
             from vllm_kvmem._prefill_state_native import State
-            from vllm_kvmem.logical_publication import LogicalPublicationCursor
+            from vllm_kvmem.serving.logical_publication import LogicalPublicationCursor
             self._commit_timings=CommitTimings(scopes)
             self._commit_timings.wrap(BufferedPrefillHistory,'accept','cpu_commit.buffered_accept')
             self._commit_timings.wrap(State,'committed','cpu_commit.native_committed')

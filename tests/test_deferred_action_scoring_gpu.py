@@ -9,8 +9,8 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.action_scoring import page_attention
-from vllm_kvmem.deferred_action_scoring import (
+from vllm_kvmem.serving.action_scoring import page_attention
+from vllm_kvmem.serving.deferred_action_scoring import (
     FrozenLayerInput, FrozenOwnerInput, FrozenScoreLimits, FrozenScorePool)
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',

@@ -23,8 +23,8 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'scripts'))
 import qualify_decode as q
 from qualify_multi_user import distribution, load_users
-from vllm_kvmem.elastic import HistoryStore
-import vllm_kvmem.elastic_gateway as gateway
+from vllm_kvmem.apps.elastic import HistoryStore
+import vllm_kvmem.apps.elastic_gateway as gateway
 
 
 def metrics(raw):

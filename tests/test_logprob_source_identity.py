@@ -12,8 +12,8 @@ from importlib.metadata import PackageNotFoundError
 
 import pytest
 
-from vllm_kvmem.compat import _LabelLoader
-from vllm_kvmem.engine_api import engine_root
+from vllm_kvmem.adapters.compat import _LabelLoader
+from vllm_kvmem.adapters.engine_api import engine_root
 
 
 def rewrite(source):
@@ -45,7 +45,7 @@ def native_source():
 
 
 def test_fake_triton_reads_compiled_source_without_changing_original(tmp_path, monkeypatch):
-    from vllm_kvmem import logprob_patch
+    from vllm_kvmem.adapters import logprob_patch
     monkeypatch.setattr(logprob_patch, 'patch_rejection_source', rewrite)
     path = tmp_path / 'sampler.py'
     original = '# original comments shift the kernel\n\n\ndef helper():\n    return 7\n\n\n@jit\ndef kernel(x):\n    return x + 1\n'
@@ -66,7 +66,7 @@ def test_fake_triton_reads_compiled_source_without_changing_original(tmp_path, m
 
 
 def test_source_versions_keep_independent_immutable_inspection(tmp_path, monkeypatch):
-    from vllm_kvmem import logprob_patch
+    from vllm_kvmem.adapters import logprob_patch
     monkeypatch.setattr(logprob_patch, 'patch_rejection_source', rewrite)
     path = tmp_path / 'sampler.py'
     path.write_text('# old source\n@jit\ndef kernel():\n    return 1\n')
@@ -86,7 +86,7 @@ def test_source_versions_keep_independent_immutable_inspection(tmp_path, monkeyp
 
 
 def test_native_support_passthrough_keeps_native_filename(tmp_path, monkeypatch):
-    from vllm_kvmem import logprob_patch
+    from vllm_kvmem.adapters import logprob_patch
     monkeypatch.setattr(logprob_patch, 'patch_rejection_source', bytes.decode)
     path = tmp_path / 'sampler.py'
     path.write_text('@jit\ndef kernel():\n    return 1\n')
@@ -98,7 +98,7 @@ def test_native_support_passthrough_keeps_native_filename(tmp_path, monkeypatch)
 
 def test_real_sampler_compiled_function_sources_match_ast_without_import():
     """Check every native module-level function without importing torch/vLLM."""
-    from vllm_kvmem.logprob_patch import patch_rejection_source
+    from vllm_kvmem.adapters.logprob_patch import patch_rejection_source
     path = native_source()
     original = path.read_bytes()
     expected = {n.name: n for n in ast.parse(patch_rejection_source(original)).body
@@ -132,9 +132,9 @@ import inspect
 import json
 import linecache
 import torch
-from vllm_kvmem.compat import enable_label_logprobs
-from vllm_kvmem.engine_api import engine_root
-from vllm_kvmem.logprob_patch import patch_rejection_source
+from vllm_kvmem.adapters.compat import enable_label_logprobs
+from vllm_kvmem.adapters.engine_api import engine_root
+from vllm_kvmem.adapters.logprob_patch import patch_rejection_source
 path = engine_root() / 'v1/worker/gpu/spec_decode/rejection_sampler.py'
 original = path.read_bytes()
 adapted = ast.parse(patch_rejection_source(original))

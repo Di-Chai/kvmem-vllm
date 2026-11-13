@@ -7,8 +7,8 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.checkpoint_storage import CheckpointStore
-from vllm_kvmem.request_checkpoint import checkpoint_size
+from vllm_kvmem.serving.checkpoint_storage import CheckpointStore
+from vllm_kvmem.serving.request_checkpoint import checkpoint_size
 from test_request_checkpoint import native_fixture
 
 

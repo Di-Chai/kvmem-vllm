@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from test_graph_options import model_profile, runtime, settings, worker_payload
-from vllm_kvmem.elastic_serve import build_launch as build_elastic
-from vllm_kvmem.options import RuntimeOptions, canonical_policy_payload
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
+from vllm_kvmem.core.options import RuntimeOptions, canonical_policy_payload
+from vllm_kvmem.serving.serve import build_launch
 
 
 def v2_settings(**updates):

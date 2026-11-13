@@ -234,7 +234,7 @@ def test_full_public_counter_rejects_recomputation_not_hides_it(tmp_path):
 
 def test_real_launcher_profiles_and_manifest_preserve_exactly_one_cap_difference(tmp_path):
     from test_coordination_qualification import native_profile
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     candidate = json.loads(native_profile(tmp_path).read_text())
     candidate['kvmem'].update(block_tokens=32, repository_blocks=32768,
         gen_budget=131072, select_budget=131072, cpu_read_cache_bytes=100_000_000_000,

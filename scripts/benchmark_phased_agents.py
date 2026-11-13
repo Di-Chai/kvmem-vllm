@@ -20,7 +20,7 @@ spec.loader.exec_module(benchmark)
 
 def phase_profiles(candidate, wave_tokens, max_wait_ms):
     import copy
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profiles = {}
     for arm in ('A0', 'P1'):
         profile = copy.deepcopy(candidate)

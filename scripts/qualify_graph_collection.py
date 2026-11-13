@@ -10,7 +10,7 @@ import time
 from types import SimpleNamespace
 
 from tokenizers import Tokenizer
-from vllm_kvmem.offline_queue import OfflineQueue, OfflineTask
+from vllm_kvmem.serving.offline_queue import OfflineQueue, OfflineTask
 
 import benchmark_graph_collection as control
 import graph_v2_protocol as protocol

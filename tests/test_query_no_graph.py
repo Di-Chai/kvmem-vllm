@@ -6,10 +6,10 @@ import pytest
 
 from test_query_hybrid_recall import populated, index
 from test_query_group_picker import finish
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
-from vllm_kvmem.query_hybrid_recall import preview_hybrid_selection, quota_summary
-from vllm_kvmem.query_no_graph import select_without_graph
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.query_boundary_history import QueryBoundaryHistory
+from vllm_kvmem.serving.query_hybrid_recall import preview_hybrid_selection, quota_summary
+from vllm_kvmem.serving.query_no_graph import select_without_graph
 
 
 def authority(tmp_path, *, count=384, fraction=.5, halo=1, trace=False):
@@ -86,7 +86,7 @@ def test_diagnostic_failure_happens_before_native_selection_transaction(tmp_path
     obj, rows = authority(tmp_path)
     before = obj.memory._store.working_records()
     def fail(*_): raise OSError('diagnostic disk failure')
-    monkeypatch.setattr('vllm_kvmem.query_no_graph._write_evidence', fail)
+    monkeypatch.setattr('vllm_kvmem.serving.query_no_graph._write_evidence', fail)
     with pytest.raises(OSError, match='disk'):
         select_without_graph(obj, rows, [1.]*len(rows), [True]*len(rows), mean_scores=[1.]*len(rows))
     assert obj.memory.phase is Phase.READY and obj.memory._plan is None

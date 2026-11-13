@@ -5,9 +5,9 @@ import pytest
 
 torch = pytest.importorskip('torch')
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority, _Ready
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 from test_authority import payload, drain
 
 
@@ -15,7 +15,7 @@ def setup(tmp_path, background=False, cached=False):
     memory = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=8,
                         repository_blocks=8, sink_blocks=1, recent_blocks=0)
     if cached:
-        from vllm_kvmem.cached_storage import CachedArchive
+        from vllm_kvmem.core.cached_storage import CachedArchive
         archive = CachedArchive(str(tmp_path), 48, 8, cache_bytes=384, namespace_bytes=384)
     else:
         archive = AsyncArchive(str(tmp_path), 48, 8)
@@ -91,7 +91,7 @@ def test_full_scoring_snapshot_prevents_policy_retirement_until_selection(tmp_pa
         del del_plan
         assert authority.append(*payload(16, 8), history_begin=16, local_rope_begin=8)
         drain(authority)
-        original = __import__('vllm_kvmem.retrieval', fromlist=['mean_key_scores']).mean_key_scores
+        original = __import__('vllm_kvmem.core.retrieval', fromlist=['mean_key_scores']).mean_key_scores
         calls = []
         def score(*args):
             before = authority.gc.worker.stats['retired']
@@ -99,7 +99,7 @@ def test_full_scoring_snapshot_prevents_policy_retirement_until_selection(tmp_pa
             assert authority.gc.worker.stats['retired'] == before
             calls.append(True)
             return original(*args)
-        monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores', score)
+        monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores', score)
         plan = select(authority)
         del plan
         assert calls and authority.gc.worker.stats['reader_conflicts'] > 0
@@ -165,7 +165,7 @@ def test_background_ingestion_reclaims_without_artificial_request_steps(tmp_path
 
 
 def test_retirement_accounts_for_gc_without_claiming_deleted_records_verified(tmp_path):
-    from vllm_kvmem.retirement import retire_authority
+    from vllm_kvmem.core.retirement import retire_authority
     authority, archive = setup(tmp_path)
     assert authority.append(*payload(0, 16), history_begin=0, local_rope_begin=0)
     drain(authority)
@@ -194,7 +194,7 @@ def test_scoring_exception_releases_snapshot_leases_for_gc(tmp_path, monkeypatch
         drain(authority)
         def fail(*args):
             raise RuntimeError('injected scorer failure')
-        monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores', fail)
+        monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores', fail)
         with pytest.raises(RuntimeError, match='injected scorer'):
             authority.select_for_queries(torch.ones(2, 1, 2, 2))
         advance(authority.gc.worker)

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem import native_attention as na
+from vllm_kvmem.serving import native_attention as na
 
 
 def stats(masses, selected, selected_slots, slots):

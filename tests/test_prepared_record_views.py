@@ -6,10 +6,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.core.options import RuntimeOptions
 
 
 def make_owner(dtype, enabled, *, backend='qw3_cuda', resident=4, layers=2, heads=1, dim=64, block=4):
@@ -111,7 +111,7 @@ def test_refused_archive_preserves_views_until_retry(monkeypatch):
 @pytest.mark.parametrize('enabled',[False,True])
 def test_worker_profile_transport(tmp_path,enabled):
     from test_graph_options import model_profile,runtime,worker_payload
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile=model_profile(tmp_path);profile['kvmem']['cpu_reuse_record_views']=enabled
     assert runtime(worker_payload(build_launch(profile,tmp_path,tmp_path/'out'))).cpu_reuse_record_views is enabled
     assert RuntimeOptions().cpu_reuse_record_views is False

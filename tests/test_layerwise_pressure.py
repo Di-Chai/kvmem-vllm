@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure, extend_records
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure, extend_records
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 from test_recall_experiment import native_authority, finish
 
 

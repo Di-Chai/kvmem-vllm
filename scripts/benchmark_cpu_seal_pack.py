@@ -113,7 +113,7 @@ def thread_affinity():
 
 
 def make_archive(directory, count, workers):
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.core.memory_storage import MemoryArchive
     return MemoryArchive(str(directory / 'unused-memory-only'), RECORD_BYTES, count,
         workers=2, max_pending=2, io_max_bytes=2 * count * RECORD_BYTES,
         cpu_direct_record_seal=True, cpu_seal_pack_workers=workers,

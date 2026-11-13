@@ -26,7 +26,7 @@ def install_layerwise_scopes(worker, *, modules=None):
             scopes.wrap(owner, method, prefix + '.' + method)
 
     if modules is None:
-        from vllm_kvmem import cuda_scoring, native_pages, window_assembly
+        from vllm_kvmem.core import cuda_scoring, native_pages; from vllm_kvmem.serving import window_assembly
         modules = dict(cuda_scoring=cuda_scoring, native_pages=native_pages,
                        window_assembly=window_assembly)
     window = modules['window_assembly']

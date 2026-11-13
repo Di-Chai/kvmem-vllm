@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionPacket, ActionRuntime, decode_action_before_mtp
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.action_attention import ActionPacket, ActionRuntime, decode_action_before_mtp
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 from test_prefill_action_before_mtp import install_wrapper
 
 

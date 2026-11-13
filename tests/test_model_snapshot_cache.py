@@ -6,7 +6,7 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.model_snapshot_cache import ModelSnapshotCache
+from vllm_kvmem.adapters.model_snapshot_cache import ModelSnapshotCache
 from test_session_state import fixture
 
 

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import triton
 from vllm_gguf_plugin import ops
-from vllm_kvmem.q8_tensorcore import q8_tensorcore_linear
+from vllm_kvmem.adapters.q8_tensorcore import q8_tensorcore_linear
 
 
 def main():

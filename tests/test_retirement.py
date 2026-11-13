@@ -6,8 +6,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 pytest.importorskip('vllm')
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.core.options import RuntimeOptions
 from test_authority import setup, payload
 
 
@@ -46,7 +46,7 @@ def test_retirement_drains_real_archive_and_labels_optional_readback(tmp_path, m
 
 
 def test_async_retirement_is_nonblocking_and_preserves_other_archive_namespaces(tmp_path, monkeypatch):
-    from vllm_kvmem.retirement import RetirementQueue
+    from vllm_kvmem.core.retirement import RetirementQueue
     a, archive = setup(tmp_path / 'archive')
     b, _ = setup(tmp_path / 'unused', name='b', archive=archive)
     assert a.append(*payload(0, 5), history_begin=0, local_rope_begin=0)
@@ -95,7 +95,7 @@ def test_async_retirement_is_nonblocking_and_preserves_other_archive_namespaces(
 
 
 def test_retirement_queue_bound_and_checksum_failure_cannot_acknowledge_cleanup(tmp_path):
-    from vllm_kvmem.retirement import RetirementQueue
+    from vllm_kvmem.core.retirement import RetirementQueue
     from test_authority import drain
     authority, archive = setup(tmp_path)
     authority.append(*payload(0, 5), history_begin=0, local_rope_begin=0)
@@ -116,7 +116,7 @@ def test_retirement_queue_bound_and_checksum_failure_cannot_acknowledge_cleanup(
 
 
 def test_background_reclamation_waits_for_external_generation_lease(tmp_path):
-    from vllm_kvmem.retirement import RetirementQueue
+    from vllm_kvmem.core.retirement import RetirementQueue
     from test_authority import drain
     authority, archive = setup(tmp_path)
     authority.append(*payload(0, 5), history_begin=0, local_rope_begin=0)

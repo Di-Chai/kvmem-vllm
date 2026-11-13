@@ -85,7 +85,7 @@ def test_only_decode_requests_create_no_owner(monkeypatch, tmp_path):
 
 def test_scheduler_option_validation(monkeypatch):
     monkeypatch.setenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', 'yes')
-    from vllm_kvmem.multiowner_prefill import coalesce_with_decode
+    from vllm_kvmem.serving.multiowner_prefill import coalesce_with_decode
     with pytest.raises(ValueError, match='KVMEM_PREFILL_COALESCE_WITH_DECODE'):
         coalesce_with_decode()
 
@@ -97,7 +97,7 @@ def batch(prefilling):
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_worker_cohort_check_allows_decode_rows_only_when_enabled(monkeypatch, enabled):
-    from vllm_kvmem.multiowner_prefill import owners_prefilling
+    from vllm_kvmem.serving.multiowner_prefill import owners_prefilling
     monkeypatch.setenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '1' if enabled else '0')
     assert owners_prefilling(batch((True, False, True)), {'r', 's'}) == enabled
     assert owners_prefilling(batch((True, True, True)), {'r', 's'})
@@ -107,7 +107,7 @@ def test_worker_cohort_check_allows_decode_rows_only_when_enabled(monkeypatch, e
 
 def test_capture_owner_plans_with_decode_row(monkeypatch, tmp_path):
     from test_multiowner_prefill import owners
-    from vllm_kvmem.multiowner_prefill import capture_owner_plans
+    from vllm_kvmem.serving.multiowner_prefill import capture_owner_plans
     with owners(tmp_path) as (r, p, a, b):
         r.runner._kvmem_logical_prefill_step = 7
         mixed_batch = NS(num_reqs=3, req_ids=('r', 'd', 's'), is_prefilling_np=(True, False, True),
@@ -121,7 +121,7 @@ def test_capture_owner_plans_with_decode_row(monkeypatch, tmp_path):
 
 
 def test_default_decode_coalescing_requires_a_physical_multi_owner_profile(monkeypatch):
-    from vllm_kvmem.multiowner_prefill import coalesce_with_decode
+    from vllm_kvmem.serving.multiowner_prefill import coalesce_with_decode
     monkeypatch.setenv('KVMEM_LEGACY_DEFAULTS', '0')
     monkeypatch.delenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', raising=False)
     assert not coalesce_with_decode(available=False)

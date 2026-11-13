@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.scheduler import Scheduler
-from vllm_kvmem.admission import QueryPolicy
+from vllm_kvmem.serving.admission import QueryPolicy
 from test_phase_scheduler import scheduler as base_scheduler, request, NATIVE_RESERVE
 
 
@@ -80,7 +80,7 @@ def test_only_single_owner_ordinary_work_merges(monkeypatch, tmp_path, kind):
     if kind == 'guided': r._kvmem_guided_epoch = object()
     if kind == 'draft': r.spec_token_ids = [1,2,3,4]
     s._prepare_logical_prefill()
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     plan = request_plan(r, 32, 16384)
     assert s._logical_prefill_group(r, plan, 8192, 0, 16424, 2048) is None
 
@@ -115,7 +115,7 @@ def test_archive_admission_checks_entire_physical_group(monkeypatch, tmp_path):
 
 
 def test_connector_receipt_tracks_actual_single_owner_and_idle_confirmation(monkeypatch, tmp_path):
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     s, r = setup(monkeypatch, tmp_path)
     assert reserve(s, r) == 4096
     s._bounded_target = False  # Skip unrelated refresh plumbing in this transport check.
@@ -160,7 +160,7 @@ def test_maximum_keeps_largest_legal_original_prefix(monkeypatch,tmp_path,maximu
 
 @pytest.mark.parametrize('ready,expected',[(256,8192),(192,6144),(128,4096),(64,2048),(63,0)])
 def test_archive_credit_chooses_smaller_group_before_single_final_admission(monkeypatch,tmp_path,ready,expected):
-    from vllm_kvmem.archive_admission import ArchiveAdmission,ArchiveCapacity
+    from vllm_kvmem.core.archive_admission import ArchiveAdmission,ArchiveCapacity
     s,r = setup(monkeypatch,tmp_path)
     s.prefill_physical_max_chunks = 4
     s.archive_admission = gate = ArchiveAdmission(32,1024)

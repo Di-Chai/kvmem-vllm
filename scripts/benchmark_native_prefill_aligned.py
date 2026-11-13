@@ -18,9 +18,9 @@ from types import SimpleNamespace as NS
 
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime
-from vllm_kvmem.action_download_pool import ActionDownloadPool
-import vllm_kvmem.native_attention as native
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime
+from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
+import vllm_kvmem.serving.native_attention as native
 
 
 @contextmanager

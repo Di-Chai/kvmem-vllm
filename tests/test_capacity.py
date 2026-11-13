@@ -7,8 +7,8 @@ import torch
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm_kvmem.capacity import ReservedKVCacheManager
-from vllm_kvmem.window_manager import WorkingSetManager
+from vllm_kvmem.serving.capacity import ReservedKVCacheManager
+from vllm_kvmem.serving.window_manager import WorkingSetManager
 
 
 def make_gate(blocks=9):
@@ -197,7 +197,7 @@ def test_native_speculative_hybrid_reservation_covers_recycled_draft_and_gdn_row
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, MambaSpec, SlidingWindowSpec
     from vllm.v1.request import Request
-    from vllm_kvmem.draft_contract import DraftContract
+    from vllm_kvmem.adapters.draft_contract import DraftContract
 
     specs = [FullAttentionSpec(block_size=16, num_kv_heads=2, head_size=64, dtype=torch.uint8),
              MambaSpec(block_size=1024, shapes=((1024,),), dtypes=(torch.float32,), num_speculative_blocks=7),
@@ -238,7 +238,7 @@ def test_real_native_hybrid_connector_import_bounds_target_but_preserves_gdn_dra
     from vllm.v1.core.kv_cache_manager import KVCacheManager
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, MambaSpec, SlidingWindowSpec
     from vllm.v1.request import Request
-    from vllm_kvmem.draft_contract import DraftContract
+    from vllm_kvmem.adapters.draft_contract import DraftContract
 
     specs = [FullAttentionSpec(block_size=16, num_kv_heads=2, head_size=64, dtype=torch.uint8),
              MambaSpec(block_size=1024, shapes=((1024,),), dtypes=(torch.float32,), num_speculative_blocks=7),

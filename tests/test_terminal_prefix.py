@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.terminal import TerminalPrefix
 
 
 def request(computed, inflight, total, outputs, status='FINISHED_STOPPED'):
@@ -46,8 +46,8 @@ def test_terminal_packet_is_clipped_before_archive_and_preserves_batch_neighbour
     torch = pytest.importorskip('torch')
     pytest.importorskip('vllm')
     from test_authority import setup, payload, drain
-    from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+    from vllm_kvmem.core.options import RuntimeOptions
     a, archive = setup(tmp_path / 'archive')
     b, _ = setup(tmp_path / 'unused', 'b', archive)
     for owner in (a, b):

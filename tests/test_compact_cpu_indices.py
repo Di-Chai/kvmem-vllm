@@ -6,15 +6,15 @@ from threading import RLock
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority, _Ready, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.options import RuntimeOptions
-import vllm_kvmem.query_key_fps as fps
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.core.options import RuntimeOptions
+import vllm_kvmem.serving.query_key_fps as fps
 from test_query_fps_incremental_cache import fixture, prebuild, snapshot, exact
 from test_graph_options import runtime, model_profile, worker_payload
 from test_query_fps_prebuild_options import fps_settings
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def test_every_finite_original_fp8_code_roundtrips_through_old_cache_exactly():

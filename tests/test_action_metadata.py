@@ -4,7 +4,7 @@ import random
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, action_metadata
+from vllm_kvmem.serving.action_attention import ActionHistory, action_metadata
 
 
 def batch(device='cpu'):

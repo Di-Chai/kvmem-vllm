@@ -80,7 +80,7 @@ def test_close_retires_spilled_records():
 
 
 def tier(tmp_path, capacity=8, record=4096):
-    from vllm_kvmem.native_memory_storage import NativeMemoryTier
+    from vllm_kvmem.core.native_memory_storage import NativeMemoryTier
     t = NativeMemoryTier(record, capacity)
     t.enable_spill(str(tmp_path), max_bytes=1 << 20, segment_bytes=1 << 16)
     return t
@@ -137,7 +137,7 @@ def test_releasing_a_spilled_record_frees_its_ssd_extent(tmp_path):
 
 
 def test_full_spill_store_keeps_the_rest_in_ram(tmp_path):
-    from vllm_kvmem.native_memory_storage import NativeMemoryTier
+    from vllm_kvmem.core.native_memory_storage import NativeMemoryTier
     t = NativeMemoryTier(4096, 8)
     t.enable_spill(str(tmp_path), max_bytes=2 * 4096, segment_bytes=4096)
     allocs, data = publish(t, range(4))
@@ -148,7 +148,7 @@ def test_full_spill_store_keeps_the_rest_in_ram(tmp_path):
 
 
 def test_drop_cache_spill_and_promote_keep_identical_bytes(tmp_path):
-    from vllm_kvmem.native_memory_storage import NativeMemoryTier
+    from vllm_kvmem.core.native_memory_storage import NativeMemoryTier
     t = NativeMemoryTier(4096, 8)
     t.enable_spill(str(tmp_path), max_bytes=1 << 20, segment_bytes=1 << 16, drop_cache=True)
     assert t._spill_store.drop_cache
@@ -161,7 +161,7 @@ def test_drop_cache_spill_and_promote_keep_identical_bytes(tmp_path):
 
 
 def test_flush_skips_released_extents(tmp_path):
-    from vllm_kvmem.tiered_storage import _SegmentStore
+    from vllm_kvmem.core.tiered_storage import _SegmentStore
     store = _SegmentStore(str(tmp_path), 4096, 1 << 20, 1 << 16, drop_cache=True)
     a, b = store.write(os.urandom(4096)), store.write(os.urandom(4096))
     assert store.release(a)
@@ -173,7 +173,7 @@ def test_flush_skips_released_extents(tmp_path):
 
 
 def test_tiering_drop_cache_flag(monkeypatch):
-    from vllm_kvmem.native_memory_storage import tiering_drop_cache
+    from vllm_kvmem.core.native_memory_storage import tiering_drop_cache
     monkeypatch.delenv('KVMEM_TIERING_DROP_CACHE', raising=False)
     assert tiering_drop_cache()
     monkeypatch.setenv('KVMEM_TIERING_DROP_CACHE', '0')
@@ -184,7 +184,7 @@ def test_tiering_drop_cache_flag(monkeypatch):
 
 
 def test_spill_device_bench_uses_parallel_io(tmp_path):
-    from vllm_kvmem.planner.hardware import bench_spill_device
+    from vllm_kvmem.apps.planner.hardware import bench_spill_device
     out = bench_spill_device(str(tmp_path), size=8 << 20, threads=4)
     assert out['spill_threads'] == 4 and out['spill_read_gbps'] > 0 and out['spill_write_gbps'] > 0
     assert not os.listdir(tmp_path)
@@ -192,8 +192,8 @@ def test_spill_device_bench_uses_parallel_io(tmp_path):
 
 def test_session_spill_flushes_once_for_all_parallel_chunks(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    from vllm_kvmem.native_memory_storage import NativeMemoryTier
-    from vllm_kvmem.session_tiering import SessionTiering
+    from vllm_kvmem.core.native_memory_storage import NativeMemoryTier
+    from vllm_kvmem.serving.session_tiering import SessionTiering
     t = NativeMemoryTier(4096, 128)
     t.enable_spill(str(tmp_path), max_bytes=1 << 20, segment_bytes=1 << 16, drop_cache=True)
     allocs, data = publish(t, range(100))
@@ -232,7 +232,7 @@ def test_native_batch_detects_corruption_on_disk(tmp_path):
 
 def test_concurrent_promotions_restore_each_record_once(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
-    from vllm_kvmem.native_memory_storage import NativeMemoryTier
+    from vllm_kvmem.core.native_memory_storage import NativeMemoryTier
     t = NativeMemoryTier(4096, 256)
     t.enable_spill(str(tmp_path), max_bytes=1 << 21, segment_bytes=1 << 15, drop_cache=True)
     allocs, data = publish(t, range(200))

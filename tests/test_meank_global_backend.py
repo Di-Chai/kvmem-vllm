@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from vllm_kvmem import cuda_scoring
+from vllm_kvmem.core import cuda_scoring
 
 
 def test_global_scoring_backend_is_legacy_by_default_and_tiled_only_when_enabled(monkeypatch):

@@ -35,7 +35,7 @@ def main():
     vllm_kvmem._native = native
     if not hasattr(native, 'copy_record_slices'):
         raise ValueError('Benchmark requires the new isolated host extension')
-    from vllm_kvmem import memory_storage
+    from vllm_kvmem.core import memory_storage
     old = load_module('vllm_kvmem._publish_baseline', args.baseline_source.resolve())
     modules = {'baseline': old, 'native_copy': memory_storage}
     source = b'x' * total

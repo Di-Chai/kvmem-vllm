@@ -57,7 +57,7 @@ def prepare(root, reference, repo):
         profile['kvmem'].update(select_budget=budget,
             guided_query_tokens=0,graph_alpha=0.,graph_trace=False,prefill_physical_coalescing=False)
         if arm=='full':profile['kvmem']['repository_blocks']=32768
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         build_launch(profile,repo,directory/'preflight-server')
         save(directory/'profile.json',profile)
     save(root/'status.json',dict(status='prepared',cases=CASES,at=time.time()))

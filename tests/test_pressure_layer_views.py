@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 import torch
-from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
 
 
 def parent_view():

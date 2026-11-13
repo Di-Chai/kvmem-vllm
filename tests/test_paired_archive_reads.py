@@ -6,11 +6,11 @@ import torch
 from test_native_memory_storage import eventually
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import record_key
-from vllm_kvmem.cached_storage import CachedArchive
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.packed_assembly import read_packed_records
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import record_key
+from vllm_kvmem.core.cached_storage import CachedArchive
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.packed_assembly import read_packed_records
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def archive_fixture(tmp_path, backend):

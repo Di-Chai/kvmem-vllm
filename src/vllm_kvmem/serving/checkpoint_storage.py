@@ -16,7 +16,7 @@ import uuid
 
 import torch
 
-from ..serving.request_checkpoint import ExactRequestCheckpoint, CopyCompletion
+from .request_checkpoint import ExactRequestCheckpoint, CopyCompletion
 
 
 @dataclass(frozen=True)

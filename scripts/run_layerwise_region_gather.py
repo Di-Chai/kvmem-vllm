@@ -25,7 +25,7 @@ def component(path):
 
 def prepare(root,source,previous,tests):
     from run_layerwise_query_efficiency import source_audit
-    from vllm_kvmem import _native,memory_storage
+    from vllm_kvmem import _native; from vllm_kvmem.core import memory_storage
     source_audit(source);component(tests)
     if root.exists():raise ValueError('Use a fresh qualification root')
     if memory_storage.CPU_REGION_GATHER_PARALLEL_MIN_BYTES!=32*1024**2:

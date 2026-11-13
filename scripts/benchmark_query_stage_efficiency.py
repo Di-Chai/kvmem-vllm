@@ -42,7 +42,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from vllm_kvmem import serve
+try:
+    from vllm_kvmem import serve           # a runtime from before the layer directories
+except ImportError:
+    from vllm_kvmem.serving import serve
 
 def main():
     if os.environ.get('QUERY_STAGE_NATIVE_BINARY_JSON'):

@@ -6,16 +6,16 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.graph_scoring import score_graph
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.query_hybrid_recall import preview_hybrid_selection, quota_summary
-from vllm_kvmem.query_group_recall import halo_summary
+from vllm_kvmem.serving.graph_scoring import score_graph
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.query_hybrid_recall import preview_hybrid_selection, quota_summary
+from vllm_kvmem.serving.query_group_recall import halo_summary
 
 
 @pytest.mark.parametrize('native', [False, True])
 def test_actual_authority_propagates_both_original_seeds_before_reserving_quota(tmp_path, monkeypatch, native):
     from test_query_key_fps_integration import actual
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     authority, archive, graph = actual(tmp_path,select_budget=128)
     opts = authority.graph_options
     opts.query_fps_halo_blocks = 1
@@ -24,7 +24,7 @@ def test_actual_authority_propagates_both_original_seeds_before_reserving_quota(
     opts.graph_native_propagation = native
     opts.graph_trace = True
     authority.graph_report_path = tmp_path/'block_graph.jsonl'
-    monkeypatch.setattr('vllm_kvmem.query_key_fps.score_authority_fps',
+    monkeypatch.setattr('vllm_kvmem.serving.query_key_fps.score_authority_fps',
         lambda *args: (torch.tensor([0.,.05,.15,.25,.15,.4]), {}))
     plan = authority.select_for_queries(torch.ones(1,1,1,2))
     trace = json.loads((tmp_path/'block_graph_inputs.jsonl').read_text())
@@ -73,7 +73,7 @@ def test_second_branch_failure_releases_first_branch_before_any_assembly(tmp_pat
         if len(calls) == 2:
             raise BufferError('second seed capacity')
         return score_graph(*args,**kwargs)
-    monkeypatch.setattr('vllm_kvmem.graph_scoring.score_graph',fail_second)
+    monkeypatch.setattr('vllm_kvmem.serving.graph_scoring.score_graph',fail_second)
     with pytest.raises(BufferError,match='second seed capacity'):
         authority.select_for_queries(torch.ones(1,1,1,2))
     assert len(calls) == 2
@@ -163,8 +163,8 @@ def test_launch_roundtrip_preserves_explicit_hybrid_graph(tmp_path):
     from test_graph_options import model_profile,runtime,worker_payload
     from test_query_mean_quota_options import quota_settings
     from test_query_fps_prebuild_options import elastic_profile
-    from vllm_kvmem.serve import build_launch
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.serving.serve import build_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
     profile = model_profile(tmp_path)
     profile['kvmem'] = quota_settings(graph_alpha=.2)
     worker = worker_payload(build_launch(profile,tmp_path,tmp_path/'direct'))

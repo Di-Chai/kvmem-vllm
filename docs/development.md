@@ -70,7 +70,7 @@ directory or exercise GPU kernels.
 To check an upstream vLLM source tree without loading its GPU implementation:
 
 ```sh
-PYTHONPATH=src python3.12 -m vllm_kvmem.engine_api \
+PYTHONPATH=src python3.12 -m vllm_kvmem.adapters.engine_api \
   --source /absolute/path/to/vllm/vllm --systemone
 ```
 

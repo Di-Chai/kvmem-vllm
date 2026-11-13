@@ -37,7 +37,7 @@ def test_profiles_differ_only_in_two_declared_scoring_fields():
 
 @pytest.mark.parametrize('arm',controller.ARMS)
 def test_real_launcher_preserves_historical_batch_and_chunk_limits(tmp_path,arm):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg=controller.profiles(base(),1234)[arm]
     cfg.update(model_format='safetensors',hf_config_path='model')
     launch=build_launch(cfg,tmp_path,tmp_path/'server',check_paths=False)
@@ -51,7 +51,7 @@ def test_real_launcher_preserves_historical_batch_and_chunk_limits(tmp_path,arm)
 
 @pytest.mark.parametrize('mutation',['batch','query','chunk','mtp','eager'])
 def test_effective_launch_drift_is_rejected_before_case_submission(tmp_path,mutation):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg=controller.profiles(base(),1234)['multi']
     cfg.update(model_format='safetensors',hf_config_path='model')
     launch=build_launch(cfg,tmp_path,tmp_path/'server',check_paths=False)

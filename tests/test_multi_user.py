@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from vllm_kvmem.multi_user import MultiUserMiddleware, validate_config
+from vllm_kvmem.serving.multi_user import MultiUserMiddleware, validate_config
 
 
 @pytest.fixture

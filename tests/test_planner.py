@@ -5,13 +5,13 @@ import random
 
 import pytest
 
-from vllm_kvmem.planner.costs import Costs, SWAP_STACKS, STACK_ENV
-from vllm_kvmem.planner.emit import overlay, environment, merge
-from vllm_kvmem.planner.geometry import Geometry, from_cache_geometry, from_model_config
-from vllm_kvmem.planner.memory import Machine, Placement, plan_memory
-from vllm_kvmem.planner.search import candidates, evaluate, choose, requirements
-from vllm_kvmem.planner.simulate import simulate
-from vllm_kvmem.planner.workload import LogNormalWait, MixtureWait, EmpiricalWait, preset
+from vllm_kvmem.apps.planner.costs import Costs, SWAP_STACKS, STACK_ENV
+from vllm_kvmem.apps.planner.emit import overlay, environment, merge
+from vllm_kvmem.apps.planner.geometry import Geometry, from_cache_geometry, from_model_config
+from vllm_kvmem.apps.planner.memory import Machine, Placement, plan_memory
+from vllm_kvmem.apps.planner.search import candidates, evaluate, choose, requirements
+from vllm_kvmem.apps.planner.simulate import simulate
+from vllm_kvmem.apps.planner.workload import LogNormalWait, MixtureWait, EmpiricalWait, preset
 
 # Qwen3.8-27B NVFP4 + MTP4 on the 48 GiB pool (cache-geometry.json of the 11-12 sweep).
 GEOMETRY = dict(schema=2, capacity_bytes=51536592896, native_blocks=916, cpu_archive_bytes_per_token=34816,
@@ -143,7 +143,7 @@ def test_emit_overlay_and_environment():
 
 
 def test_report_lists_only_simulated_candidates(geometry):
-    from vllm_kvmem.planner.emit import report
+    from vllm_kvmem.apps.planner.emit import report
     w = preset('toolwait-sim', 32)
     cands = [Placement(slots=8, residency_fraction=0.5), Placement(slots=30)]   # second is illegal
     ev = evaluate(geometry, w, MACHINE, Costs(), cands, seeds=(1,), duration=30, warmup=10)
@@ -152,7 +152,7 @@ def test_report_lists_only_simulated_candidates(geometry):
 
 
 def test_validate_reports_errors(geometry):
-    from vllm_kvmem.planner import validate as v
+    from vllm_kvmem.apps.planner import validate as v
     rows = v.MEASURED[:2]
     old, v.MEASURED = v.MEASURED, rows
     try:
@@ -164,7 +164,7 @@ def test_validate_reports_errors(geometry):
 
 
 def test_cli_compile_writes_plan_overlay_and_report(geometry, tmp_path):
-    from vllm_kvmem.planner.__main__ import main
+    from vllm_kvmem.apps.planner.__main__ import main
     gpath = tmp_path / 'g.json'
     gpath.write_text(json.dumps(GEOMETRY))
     base = tmp_path / 'base.json'
@@ -189,7 +189,7 @@ def test_learned_expected_wait_runs_in_the_simulator(geometry):
 
 
 def test_batch_sizing_scales_planning_batch_and_query_capture_with_slots():
-    from vllm_kvmem.planner import emit
+    from vllm_kvmem.apps.planner import emit
     base = dict(max_num_seqs=8, max_num_batched_tokens=16424, request_planning_batch_tokens=16424,
                 query_replay_budget=16384, draft_tokens=4,
                 kvmem=dict(gen_budget=16384, historical_gc=dict(policy_params=dict(
@@ -206,8 +206,8 @@ def test_batch_sizing_scales_planning_batch_and_query_capture_with_slots():
 
 def test_max_context_bounds_slots_by_cpu_ram(geometry):
     from dataclasses import replace
-    from vllm_kvmem.planner.memory import Machine, Placement, plan_memory
-    from vllm_kvmem.planner.workload import preset
+    from vllm_kvmem.apps.planner.memory import Machine, Placement, plan_memory
+    from vllm_kvmem.apps.planner.workload import preset
     machine = Machine(ram_bytes=126 << 30, ram_reserved_bytes=19 << 30, memlock_bytes=float('inf'))
     work = replace(preset('toolwait-sim', 32), max_context_tokens=262144)
     legal = {slots: plan_memory(geometry, work, Placement(slots=slots), machine).legal for slots in (8, 12, 16)}

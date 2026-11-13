@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.connector import ControlMetadata, RefreshCommand, RestoreCommand
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.connector import ControlMetadata, RefreshCommand, RestoreCommand
 from test_scheduler_transactions import setup_scheduler
 
 
@@ -56,7 +56,7 @@ def test_first_eager_refresh_initializes_window_mapping_and_keeps_existing_neigh
 
 
 def test_refresh_removes_only_owner_and_public_replay_does_not_refresh_twice(monkeypatch,tmp_path):
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     scheduler,request,_=setup_scheduler()
     scheduler._bounded_target=True
     scheduler.query_policy=QueryPolicy(16,32,32)
@@ -94,7 +94,7 @@ def test_cancelled_async_refresh_keeps_old_pages_until_native_free():
 
 
 def test_padded_final_query_refresh_never_scores_placeholder_tokens(monkeypatch,tmp_path):
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     scheduler,request,_=setup_scheduler()
     scheduler._bounded_target=True;scheduler.async_refresh=True;scheduler.prepared_refreshes={}
     scheduler.query_policy=QueryPolicy(16,32,32)

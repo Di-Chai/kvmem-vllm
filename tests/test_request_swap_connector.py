@@ -8,8 +8,8 @@ pytest.importorskip('vllm')
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.worker.gpu import kv_connector as native
 
-from vllm_kvmem.connector import ControlMetadata, RefreshCommand
-from vllm_kvmem.request_swap_worker import SwapCommand
+from vllm_kvmem.serving.connector import ControlMetadata, RefreshCommand
+from vllm_kvmem.serving.request_swap_worker import SwapCommand
 from test_connector import Event, pair, poll, send
 
 
@@ -131,7 +131,7 @@ def test_native_cancel_keeps_slot_admission_until_drop_and_deferred_free():
     from types import MethodType
     from vllm.v1.core.sched.scheduler import Scheduler
     from vllm.v1.request import RequestStatus
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     from test_request_swap_control import fixture, admit, ack
     from test_incremental_capacity import request
 

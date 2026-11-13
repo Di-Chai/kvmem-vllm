@@ -265,7 +265,7 @@ python -m vllm_kvmem --draft-load-compat vllm serve ...
 This checks the loader's draft configuration selection and applies the fix only
 when needed. New upstream loaders already handle it and are left intact.
 Installed vLLM files remain unchanged; the plugin propagates the adapter to workers.
-It is not an unmodified upstream reference. See `src/vllm_kvmem/compat.py` for
+It is not an unmodified upstream reference. See `src/vllm_kvmem/adapters/compat.py` for
 upstream provenance. No performance or KVMem functionality is implied by this fix.
 
 GPU setup for the current release on this CUDA 13 / SM120 machine:

@@ -3,9 +3,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.layerwise_decode import DecodeHistory, sample_rows, validate_configuration
-from vllm_kvmem.action_attention import ActionHistory, ActionPacket
-from vllm_kvmem.block_graph import BlockGraph
+from vllm_kvmem.serving.layerwise_decode import DecodeHistory, sample_rows, validate_configuration
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionPacket
+from vllm_kvmem.serving.block_graph import BlockGraph
 from test_layerwise_pressure import controller, options, native_authority, finish
 from test_graph_capture import action, options as action_options
 
@@ -149,14 +149,14 @@ def test_rolling_launch_requires_explicit_supported_contract():
 
 
 def test_rolling_native_producer_covers_each_target_decode_layer():
-    from vllm_kvmem.native_attention import statistic_layer_names
+    from vllm_kvmem.serving.native_attention import statistic_layer_names
     names = tuple(f'language_model.model.layers.{n}.self_attn' for n in range(3, 64, 4))
     runner = NS(_kvmem_layers=names, _kvmem_layerwise_pressure=NS(names=names, rolling_decode=True))
     assert statistic_layer_names(runner, NS(action_layers='spread3')) == (names, names)
 
 
 def test_finished_query_allows_only_explicit_rolling_decode():
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
     query = LayerwiseQuery.__new__(LayerwiseQuery)
     query.finished = {'r'}
     visited = []
@@ -177,7 +177,7 @@ def test_finished_query_allows_only_explicit_rolling_decode():
 
 
 def test_g4_keeps_16k_output_limit_and_schedules_decode_refresh_after_query():
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     plan = RequestPlan((107324, 107359), block_tokens=32, gen_budget=4096,
                        output_tokens=16384, reserve_query_output=True, rolling_active_window=True)
     capacity, prompt = 16384 + 4096, 107366
@@ -192,9 +192,9 @@ def test_g4_keeps_16k_output_limit_and_schedules_decode_refresh_after_query():
 @pytest.mark.parametrize('tail', [1, 2, 7, 8, 15, 28, 31])
 @pytest.mark.parametrize('count', [1, 2, 5, 32])
 def test_native_merged_partial_tail_has_same_logical_identity(tail, count):
-    from vllm_kvmem.layerwise_decode import segment_identities
-    from vllm_kvmem.action_attention import window_segments
-    from vllm_kvmem.native_attention_planning import canonical_segments
+    from vllm_kvmem.serving.layerwise_decode import segment_identities
+    from vllm_kvmem.serving.action_attention import window_segments
+    from vllm_kvmem.serving.native_attention_planning import canonical_segments
     records = [(0, 1, 0, 32, 0), (1, 1, 128, tail, 32)]
     ls, lc, lh = window_segments(records, 128+tail, 32+tail, count, 32)
     canonical = canonical_segments(ls, lc, lh, 32+tail+count, 32)
@@ -204,6 +204,6 @@ def test_native_merged_partial_tail_has_same_logical_identity(tail, count):
 
 
 def test_native_merge_cannot_mix_two_layers_distinct_logical_blocks():
-    from vllm_kvmem.layerwise_decode import segment_identities
+    from vllm_kvmem.serving.layerwise_decode import segment_identities
     with pytest.raises(RuntimeError, match='different logical blocks'):
         segment_identities([(0, 1, 0, 32, 0)], 128, 32, 5, [0], [37])

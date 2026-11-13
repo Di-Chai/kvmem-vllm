@@ -234,7 +234,7 @@ def audit_seed_mass(mean, fps, query, inputs, profile):
 def audit_selection(query, graph, inputs, profile, *, expected_budget=None):
     """Replay the two stages independently of the production quota helper."""
     import analyze_block_graph as offline
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.graph_scoring import score_graph
     k = profile['kvmem']; stats = query.get('query_key_fps_scoring', {})
     require(k['query_mean_quota_fraction'] == inputs.get('query_mean_quota_fraction') == .5 and
         k['graph_alpha'] in (0,.2) and k['query_fps_halo_blocks'] == 1 and

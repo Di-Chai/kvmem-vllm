@@ -12,13 +12,13 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 
 @pytest.mark.parametrize('delay_read', [False, True])
 def test_prefetch_matches_bytes_for_three_chunks_partial_tail_and_cold_restore(tmp_path, monkeypatch, delay_read):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem import split_assembly
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving import split_assembly
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
 
     block, layers, heads, dim, page = 32, 2, 2, 64, 16
     count = 600*block+7

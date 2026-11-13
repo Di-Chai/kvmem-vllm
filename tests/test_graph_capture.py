@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, ActionPacket, ActionRuntime
-from vllm_kvmem.block_graph import BlockGraph
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionPacket, ActionRuntime
+from vllm_kvmem.serving.block_graph import BlockGraph
 
 
 def options(**changes):
@@ -217,7 +217,7 @@ def test_graph_failure_precedes_query_and_parser_in_publication(tmp_path):
 
 def test_publication_without_action_runtime_advances_only_retained_prefix(tmp_path):
     from test_request_publication import fixture,packet,close
-    from vllm_kvmem.terminal import TerminalPrefix
+    from vllm_kvmem.serving.terminal import TerminalPrefix
     from test_terminal_prefix import request
     runtime,a,b,archive = fixture(tmp_path)
     a.block_graph = BlockGraph('a',4,initial_position=4)

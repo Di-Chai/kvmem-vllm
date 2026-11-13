@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const root = path.resolve(__dirname, '../../src/vllm_kvmem/webui/static');
+const root = path.resolve(__dirname, '../../src/vllm_kvmem/apps/webui/static');
 const profile = {model:'/models/main',tokenizer:'/models/tokenizer',hf_config_path:'/models/main',model_format:'safetensors',served_model_name:'fixture',host:'127.0.0.1',port:8000,max_model_len:32768,max_num_seqs:2,max_num_batched_tokens:1024,gpu_memory_utilization:0.6,prefill_chunk_tokens:128,query_replay_budget:1024,draft_method:'mtp',draft_tokens:1,execution_mode:'eager',kvmem:{select_budget:2048,gen_budget:2048,cpu_read_cache_bytes:2147483648,session_capacity:8,repository_blocks:1024,block_tokens:32,sink_blocks:1,recent_blocks:1,unexposed_fixture:true}};
 let state = 'stopped', active = null, instance = 'fixture-1', failNext = false;
 const posts = [], errors = [], timers = new Set();

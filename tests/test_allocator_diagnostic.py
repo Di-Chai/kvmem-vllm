@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.allocator_diagnostic import AllocatorDiagnostic, FIELDS, install
+from vllm_kvmem.serving.allocator_diagnostic import AllocatorDiagnostic, FIELDS, install
 
 
 class Backend:
@@ -43,7 +43,7 @@ def records(d):
 
 def test_default_off_does_not_construct_backend_or_touch_output(tmp_path, monkeypatch):
     monkeypatch.delenv('KVMEM_ALLOCATOR_DIAGNOSTIC', raising=False)
-    monkeypatch.setattr('vllm_kvmem.allocator_diagnostic.TorchAllocator',
+    monkeypatch.setattr('vllm_kvmem.serving.allocator_diagnostic.TorchAllocator',
                         lambda *_: pytest.fail('Disabled diagnosis imported/initialized CUDA'))
     assert install(tmp_path, 'cuda') is None
     assert not list(tmp_path.iterdir())

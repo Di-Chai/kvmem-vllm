@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import analyze_block_graph as offline
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.graph_scoring import score_graph
 
 _source = Path(__file__).resolve().parents[1]/'scripts/test_ruler_overlap_answers.py'
 _spec = importlib.util.spec_from_file_location('overlap_answer_campaign', _source)
@@ -103,8 +103,8 @@ def test_overlap_trace_is_not_exhausted_by_previous_pressure_diagnostics(tmp_pat
 
 def test_overlap_trace_keeps_a_complete_bounded_256k_four_edge_graph(tmp_path):
     from test_graph_v2_ablation import export_fixture
-    from vllm_kvmem.block_graph import GraphRow
-    from vllm_kvmem.graph_integration import record_query_inputs
+    from vllm_kvmem.serving.block_graph import GraphRow
+    from vllm_kvmem.serving.graph_integration import record_query_inputs
     authority,rows,snapshot = export_fixture(tmp_path,nodes=8192)
     authority.query_score_mode = experiment.ARM
     snapshot.rows = tuple(GraphRow(i*32,tuple((i-j)*32 for j in range(1,min(i,4)+1)),

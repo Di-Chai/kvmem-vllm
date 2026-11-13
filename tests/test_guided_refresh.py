@@ -4,11 +4,11 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.guided_refresh import (
+from vllm_kvmem.serving.guided_refresh import (
     RefreshInput, RequestEpoch, refresh_decision, requires_pressure,
     text_safe, prepare_request, scheduled_refresh, admit_epoch,
 )
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 def test_qw3_initial_grace_then_one_private_refresh():
@@ -125,7 +125,7 @@ def test_decode_never_reads_draft_suffix_and_emergency_skips_private_generation(
 
 def test_seed_is_bounded_immutable_and_never_valid_before_its_query():
     import torch
-    from vllm_kvmem.guided_seed import publish_seed, original_queries
+    from vllm_kvmem.serving.guided_seed import publish_seed, original_queries
     class Owner:
         pass
     runtime, first, other = NS(), Owner(), Owner()
@@ -140,7 +140,7 @@ def test_seed_is_bounded_immutable_and_never_valid_before_its_query():
 
 def test_seed_memory_exhaustion_cannot_leave_previous_query_as_current(monkeypatch):
     import torch
-    import vllm_kvmem.guided_seed as seed
+    import vllm_kvmem.serving.guided_seed as seed
     class Owner:
         pass
     runtime, first, second = NS(), Owner(), Owner()

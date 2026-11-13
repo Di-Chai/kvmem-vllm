@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem import native_attention_build as build
-from vllm_kvmem.native_attention import NativeAttentionStats, _layout_array, static_aligned_frame
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving import native_attention_build as build
+from vllm_kvmem.serving.native_attention import NativeAttentionStats, _layout_array, static_aligned_frame
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 from test_native_prefill_aligned_pieces import host_bank
 
@@ -65,7 +65,7 @@ def test_arm_failure_empty_and_disarm_cannot_reuse_previous_qualification(monkey
 
 
 def dispatch_fixture(monkeypatch):
-    import vllm_kvmem.native_attention as module
+    import vllm_kvmem.serving.native_attention as module
     builds=[];calls=[];capturing=[False];fail_static=[False]
     def factory(*args,**kw):
         builds.append(kw)

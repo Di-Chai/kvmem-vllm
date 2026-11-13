@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from vllm_kvmem.elastic import ActiveBudget, CacheGeometry, HistoryStore, select_context
+from vllm_kvmem.apps.elastic import ActiveBudget, CacheGeometry, HistoryStore, select_context
 
 
 def test_history_isolation_version_and_transactional_reservations():

@@ -2,9 +2,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def setup(tmp_path, name="a", archive=None, resident=4):
@@ -114,7 +114,7 @@ def test_query_selection_uses_archived_accepted_keys_and_append_keeps_logical_hi
     assert plan.total_window_tokens == 8
     assert [r.block_id for r in plan.remaps] == [handles[0].slot, handles[2].slot]
     assert torch.equal(authority.read_record(handles[2])[0], raw[:, 8:12])
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     authority.memory.attach_completion(_Ready())
     assert authority.memory.commit_selection()
     del plan
@@ -127,7 +127,7 @@ def test_query_selection_uses_archived_accepted_keys_and_append_keeps_logical_hi
 
 def test_shared_queue_progress_can_come_from_another_request(tmp_path):
     from threading import Event
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     archive = AsyncArchive(str(tmp_path), 48, 16, workers=1, max_pending=1)
     a, _ = setup(tmp_path, "a", archive, resident=1)
     b, _ = setup(tmp_path, "b", archive, resident=1)

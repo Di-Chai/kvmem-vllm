@@ -5,10 +5,10 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.query_key_fps import (KeyFPSCache, key_fps_scores,
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.query_key_fps import (KeyFPSCache, key_fps_scores,
     select_key_representatives, select_key_representatives_optimized)
 
 

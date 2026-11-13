@@ -4,7 +4,7 @@ import time
 import pytest
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def eventually(predicate):
@@ -182,8 +182,8 @@ def test_history_gc_requires_native_storage_and_setup_before_archive_use(tmp_pat
 
 @pytest.mark.parametrize('keep', [True, False])
 def test_configured_factory_parameters_control_real_archive_reclamation(tmp_path, keep):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.historical_gc import HistoricalGcSettings
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.historical_gc import HistoricalGcSettings
 
     memory = KVMemConfig(block_tokens=4, select_budget=8, gen_budget=12,
                          repository_blocks=8, sink_blocks=0, recent_blocks=0)

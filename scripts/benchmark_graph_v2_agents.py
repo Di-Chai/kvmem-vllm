@@ -70,7 +70,7 @@ def prepare(args):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(diff)
         save(root/'qualification-checklist.json', qualifications)
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         profile_hashes, runtime_hashes, launches = {}, {}, {}
         (root/'runtime').mkdir()
         for job in jobs:

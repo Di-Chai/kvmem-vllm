@@ -8,9 +8,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import NativeAttentionStats
-from vllm_kvmem import native_attention_build as build
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
+from vllm_kvmem.serving import native_attention_build as build
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -101,7 +101,7 @@ def test_option_default_validation_and_public_config_keep_both_flags_independent
 @pytest.mark.parametrize('aligned', [False,True])
 @pytest.mark.parametrize('gate', [False,True])
 def test_dispatch_abi_and_module_cache_keys_are_independent(monkeypatch,aligned,gate):
-    import vllm_kvmem.native_attention as module
+    import vllm_kvmem.serving.native_attention as module
     builds=[]; calls=[]
     def factory(*args,**kwargs):
         builds.append((args,kwargs));return NS(paged_run=lambda *args:calls.append(args))

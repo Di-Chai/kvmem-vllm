@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from vllm_kvmem.deferred_evidence import DeferredEvidence, serialize
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.deferred_evidence import DeferredEvidence, serialize
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 
 
 def record(layers=16, candidates=300):

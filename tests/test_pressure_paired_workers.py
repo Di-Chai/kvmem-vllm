@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.pressure_reader import prepare_pressure_reader
+from vllm_kvmem.serving.pressure_reader import prepare_pressure_reader
 from test_prepared_pressure_reader import authority_fixture
 from test_query_paired_gather import reference_pair
 

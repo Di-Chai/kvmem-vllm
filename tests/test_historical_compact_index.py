@@ -8,10 +8,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import Record, RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.historical_gc import HistoricalAuthorityGc
-from vllm_kvmem.memory_storage import MemoryArchive, SplitHistoricalIndexOwner
+from vllm_kvmem.serving.authority import Record, RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.historical_gc import HistoricalAuthorityGc
+from vllm_kvmem.core.memory_storage import MemoryArchive, SplitHistoricalIndexOwner
 
 
 def allocate(arena, shape=(2, 2), **kwargs):

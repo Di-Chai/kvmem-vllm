@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionPacket
-from vllm_kvmem.logical_action import project_logical_scores
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.action_attention import ActionPacket
+from vllm_kvmem.serving.logical_action import project_logical_scores
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_logical_action import fixture as score_fixture, state, consumer, publish
 from test_logical_action_runtime import runtime as action_fixture
 from test_logical_capture_publication import runtime_fixture
@@ -165,7 +165,7 @@ def test_dynamic_confirmation_and_explicit_lease_release_after_last_ack(tmp_path
 @pytest.mark.parametrize('chunks',[3,4,7,8])
 def test_every_score_slice_and_exported_numpy_view_retain_the_single_pool_lease(chunks):
     from test_action_download_pool import Backend
-    from vllm_kvmem.action_download_pool import ActionDownloadPool
+    from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
     group,plans,rows,source=score_fixture(chunks=chunks)
     # Exactly one source allocation; never enlarge slot count or rely on GC.
     pool=ActionDownloadPool(max(1<<20,1 << (source.nbytes-1).bit_length()),1,backend=Backend())
@@ -194,8 +194,8 @@ def test_actual_group_can_be_shorter_than_configured_limit(monkeypatch,chunks):
 def test_physical_extent_consumers_keep_full_group_and_partial_checkpoint_rule(monkeypatch,chunks,retained):
     from test_native_publication_step import row
     from test_session_state import fixture
-    from vllm_kvmem.publication_step import native_publication_step
-    from vllm_kvmem.native_state import canonicalize_before_non_speculative_batch
+    from vllm_kvmem.serving.publication_step import native_publication_step
+    from vllm_kvmem.serving.native_state import canonicalize_before_non_speculative_batch
     logical=row(retained,chunks=chunks)
     physical=native_publication_step(logical)
     assert physical['scheduled']==chunks*2048 and physical['accepted']==retained
@@ -206,7 +206,7 @@ def test_physical_extent_consumers_keep_full_group_and_partial_checkpoint_rule(m
     runner.speculative_config=object()
     runner.model_state.num_accepted_tokens_gpu[0]=3
     runner._kvmem_capture_runtime=NS(drain_requests=lambda *_a,**_kw:True,last_steps={'a':[logical]})
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState',lambda _:adapter.recurrent)
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState',lambda _:adapter.recurrent)
     batch=NS(num_reqs=1,req_ids=['a'],num_draft_tokens_per_req=[0],is_prefilling_np=[False],
              num_computed_tokens_np=[8192+retained])
     before_conv,before_ssm=conv.clone(),ssm.clone()

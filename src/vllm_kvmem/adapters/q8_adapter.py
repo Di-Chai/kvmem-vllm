@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def enable_q8_tensorcore():
-    from ..serving.integration import check_engine_version
+    from .engine_api import check_engine_version
     check_engine_version()
     from vllm_gguf_plugin import ops
     from vllm_gguf_plugin.quantization import linear

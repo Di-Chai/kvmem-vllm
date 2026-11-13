@@ -1,10 +1,10 @@
 from types import SimpleNamespace as NS
 import pytest
-from vllm_kvmem.prefill_cohort_gate import CohortGate
+from vllm_kvmem.serving.prefill_cohort_gate import CohortGate
 
 
 def fixture(monkeypatch):
-    import vllm_kvmem.request_plan as module
+    import vllm_kvmem.serving.request_plan as module
     monkeypatch.setattr(module,'request_plan',lambda r,*_:NS(query=(8000,8100),replay_begin=8000))
     def owner(rid,n):
         return NS(request_id=rid,num_prompt_tokens=n,num_computed_tokens=0,finished=False,

@@ -11,12 +11,12 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Expl
 @pytest.mark.parametrize('count',[32,35])
 @pytest.mark.parametrize('key_scale',[.037, .04052734375])
 def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(tmp_path,mode,count,key_scale):
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.codec import native_vllm_fp8_views,neox_rope
-    from vllm_kvmem.gpu_raw_cache import GpuRawCache
-    from vllm_kvmem.window_assembly import LayerWindow,NativeWindowAssembler
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.core.codec import native_vllm_fp8_views,neox_rope
+    from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
+    from vllm_kvmem.serving.window_assembly import LayerWindow,NativeWindowAssembler
     cfg=KVMemConfig(block_tokens=16,select_budget=32,gen_budget=32,
                    repository_blocks=12,sink_blocks=0,recent_blocks=0)
     layers,heads,dim=2,2,64
@@ -83,7 +83,7 @@ def test_fp8_authority_restores_dense_pages_and_reselection_against_cpu_oracle(t
 
 def test_native_capture_quantizes_raw_k_before_d2h_and_preserves_upstream_qkv(tmp_path):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     import numpy as np
     runtime=CaptureRuntime.__new__(CaptureRuntime)
     runtime.raw_dtype=torch.float8_e4m3fn
@@ -109,8 +109,8 @@ def test_native_capture_quantizes_raw_k_before_d2h_and_preserves_upstream_qkv(tm
 
 
 def test_fp8_rebuild_real_model_scale_uses_rounded_division():
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.codec import neox_rope
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.core.codec import neox_rope
     count,heads,dim=512,4,256
     generator=torch.Generator().manual_seed(6671)
     raw=torch.randn(count,heads,dim,generator=generator).mul(3).to(torch.float8_e4m3fn)

@@ -4,11 +4,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem import capture_opaque as opaque
-from vllm_kvmem.capture import CapturedLayer, _project_with_capture
-from vllm_kvmem.capture_compile import (CAPTURE_COMPILE_KEY,
+from vllm_kvmem.adapters import capture_opaque as opaque
+from vllm_kvmem.adapters.capture import CapturedLayer, _project_with_capture
+from vllm_kvmem.adapters.capture_compile import (CAPTURE_COMPILE_KEY,
     capture_compile_fingerprint, validate_capture_compile_config)
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -64,7 +64,7 @@ def host_op(monkeypatch):
 
     monkeypatch.setattr(opaque, '_forward_context', lambda: context)
     monkeypatch.setattr(opaque, 'fused_qk_rmsnorm_rope_gate', kernel)
-    import vllm_kvmem.capture as capture
+    import vllm_kvmem.adapters.capture as capture
     monkeypatch.setattr(capture, 'fused_qk_rmsnorm_rope_gate', kernel)
     library = torch.library.Library('kvmem', 'FRAGMENT')
     try:
@@ -92,7 +92,7 @@ def test_option_strict_boolean_and_worker_roundtrip():
 
 
 def test_compile_identity_is_required_only_on_and_sensitive_to_each_source(tmp_path, monkeypatch):
-    import vllm_kvmem.capture_compile as module
+    import vllm_kvmem.adapters.capture_compile as module
     assert validate_capture_compile_config(NS(), False) is None
     with pytest.raises(ValueError, match='Disabled opaque capture projection'):
         validate_capture_compile_config(NS(additional_config={CAPTURE_COMPILE_KEY: 'stale'}), False)
@@ -241,7 +241,7 @@ def test_ordered_effect_survives_dead_outputs_duplicate_calls_and_gate_changes(h
 
 
 def test_runner_rejects_missing_compile_identity_before_native_load(monkeypatch):
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     loaded = []
     class Base:
         def load_model(self): loaded.append(True)

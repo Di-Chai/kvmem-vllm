@@ -16,7 +16,7 @@ spec.loader.exec_module(benchmark)
 
 
 def coalesced_profiles(candidate, maximum):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     result={}
     for arm in ('A0','P1'):
         p=copy.deepcopy(candidate)

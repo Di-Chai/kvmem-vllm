@@ -29,7 +29,7 @@ def native_profile(tmp_path):
 def test_prepared_profiles_change_only_coordination_not_model_or_memory(tmp_path):
     source = native_profile(tmp_path)
     profiles=qualification.make_profiles(source,tmp_path)
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     for arm in profiles.values():
         build_launch(arm,tmp_path,tmp_path/'roundtrip')
         arm['kvmem'].pop('cpu_history_coordination')
@@ -48,7 +48,7 @@ def test_v2_profiles_keep_fair_timing_and_disable_features_in_baseline(tmp_path,
     source.write_text(json.dumps(base))
     profiles = qualification.make_profiles(source, tmp_path, arms=('B0', 'B2', 'B3', 'B4'),
                                            step_latency_interval=interval)
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     for name, profile in profiles.items():
         build_launch(profile, tmp_path, tmp_path/'roundtrip')
         options = profile['kvmem']
@@ -87,8 +87,8 @@ def test_v2_requires_a_real_pm_restore_profile(tmp_path):
 
 def test_v2_elastic_example_validates_and_propagates_flags_without_loading_model(tmp_path):
     from test_serving_launcher import nvfp4_profile
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.serving.serve import build_launch
     model = nvfp4_profile(tmp_path)
     example = Path(__file__).parents[1]/'examples/qwen-nvfp4-coordinated-v2-elastic.json'
     profile = json.loads(example.read_text())
@@ -160,8 +160,8 @@ def test_stream_counts_are_checked_and_synthetic_requests_keep_prefix_ids():
 
 
 def test_session_reset_explicitly_clears_old_mandatory_spans(monkeypatch):
-    from vllm_kvmem.http_sessions import normalize_query_plan
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(dict(
         block_tokens=32, gen_budget=16384, select_budget=36864, max_model_len=1048576)))
     plans = []

@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.pressure_query_capture import (
+from vllm_kvmem.serving.pressure_query_capture import (
     PressureQueryWindow, configured_method, pressure_query_required, PRESSURE_QUERY_WINDOW)
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
 
 
 @pytest.mark.parametrize('prefill,decode,required', [
@@ -218,7 +218,7 @@ def test_capture_disabled_does_not_copy_or_require_new_fields():
 
 @pytest.mark.parametrize('valid,drained', [(True, True), (False, True), (True, False)])
 def test_authority_rewind_mutates_q_epoch_only_after_valid_drained_request(valid, drained):
-    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.serving.authority import RequestAuthority
     window = PressureQueryWindow()
     window.accept(0, 64, queries(64), prefill=True)
     checkpoint = NS(position=32)

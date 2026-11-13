@@ -19,8 +19,8 @@ def test_actual_b12x_projection_capture_preserves_native_outputs_and_mtp_prefix(
     from vllm.models.qwen4_exp.nvidia.b12x_qsa import Qwen4ExpQSAAttention
     from vllm.model_executor.layers.layernorm import GemmaRMSNorm
     from vllm.model_executor.layers.rotary_embedding import get_rope
-    from vllm_kvmem.capture import capture_to
-    from vllm_kvmem.qsa_adapter import install_qsa_projection, is_b12x_qsa
+    from vllm_kvmem.adapters.capture import capture_to
+    from vllm_kvmem.adapters.qsa_adapter import install_qsa_projection, is_b12x_qsa
     # Instantiate the real projection implementation without loading MoE/PLE.
     layer = Qwen4ExpQSAAttention.__new__(Qwen4ExpQSAAttention)
     torch.nn.Module.__init__(layer)
@@ -67,7 +67,7 @@ def test_actual_b12x_projection_capture_preserves_native_outputs_and_mtp_prefix(
     # Native full graphs bypass Python on replay. Prefix capture must be baked
     # into its own graph; speculative draft replay must leave all raw planes
     # untouched, including the BF16 selector plane.
-    from vllm_kvmem.capture import CapturedLayer
+    from vllm_kvmem.adapters.capture import CapturedLayer
     layer._kvmem_capture_buffers = CapturedLayer('main', positions,
         torch.empty_like(expected_raw_query), torch.empty_like(expected_raw_key),
         torch.empty(16, 2, 256, device='cuda', dtype=torch.bfloat16))
@@ -112,7 +112,7 @@ def test_actual_b12x_projection_capture_preserves_native_outputs_and_mtp_prefix(
 def test_native_mtp_prefill_broadcasts_dense_positions_to_every_mrope_axis():
     import torch
     from vllm.v1.worker.gpu.spec_decode.autoregressive.speculator import prepare_prefill_inputs
-    from vllm_kvmem.qsa_adapter import install_qsa_mtp_positions
+    from vllm_kvmem.adapters.qsa_adapter import install_qsa_mtp_positions
     device = 'cuda'
     dense = torch.tensor([8192, 8193, 8194, 8195, 4096, 4097, 4098, 4099], device=device)
     batch = NS(num_reqs=2, positions=dense,
@@ -143,10 +143,10 @@ def test_qsa_rebuild_moves_main_kv_selector_tail_and_request_ring(monkeypatch, c
     import torch
     from vllm.models.qwen4_exp.nvidia.b12x_qsa import Qwen4ExpQSAImpl
     from vllm.models.qwen4_exp.common.b12x_qsa_cache import qsa_compressed_cache_view
-    from vllm_kvmem.qsa_assembly import QSAWindowAssembler
-    from vllm_kvmem.qsa_adapter import finish_qsa_refresh
-    from vllm_kvmem.codec import KVFormat, materialize_k, neox_rope
-    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.serving.qsa_assembly import QSAWindowAssembler
+    from vllm_kvmem.adapters.qsa_adapter import finish_qsa_refresh
+    from vllm_kvmem.core.codec import KVFormat, materialize_k, neox_rope
+    from vllm_kvmem.core.memory import Phase
     from b12x.attention.qsa.reference import stream_compress_reference
     torch.manual_seed(113)
     device = 'cuda'
@@ -178,7 +178,7 @@ def test_qsa_rebuild_moves_main_kv_selector_tail_and_request_ring(monkeypatch, c
         req_states=NS(req_id_to_index={'r': 1}),
         kv_cache_config=NS(kv_cache_groups=[NS(layer_names=['main'])]),
         model_state=NS(qsa_committed_num_accepted_tokens_gpu=torch.tensor([1, 3], device=device)))
-    monkeypatch.setattr('vllm_kvmem.qsa_assembly.kernel_table', lambda *args: table)
+    monkeypatch.setattr('vllm_kvmem.serving.qsa_assembly.kernel_table', lambda *args: table)
     monkeypatch.setattr('vllm.forward_context.get_forward_context', lambda: NS(additional_kwargs={}))
     keys = torch.randn(n, heads, dim).to(torch.float8_e4m3fn)
     values = torch.randn(n, heads, dim).to(torch.float8_e4m3fn)

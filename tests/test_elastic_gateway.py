@@ -6,7 +6,7 @@ httpx = pytest.importorskip('httpx')
 pytest.importorskip('fastapi')
 from fastapi.testclient import TestClient
 
-from vllm_kvmem.elastic_gateway import create_app
+from vllm_kvmem.apps.elastic_gateway import create_app
 
 
 def configuration(tmp_path):

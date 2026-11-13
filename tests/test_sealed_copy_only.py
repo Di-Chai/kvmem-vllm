@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem import authority as authority_module
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving import authority as authority_module
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def native_job(dtype=torch.float8_e4m3fn, *, count=8, offset=0):

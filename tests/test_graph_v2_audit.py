@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.request_plan import RequestPlan, RequestCapacityError
+from vllm_kvmem.serving.request_plan import RequestPlan, RequestCapacityError
 from test_graph_lifecycle import fixture, complete
 from test_graph_pressure_v2 import configure
 
@@ -22,7 +22,7 @@ def test_refresh_entry_reaches_native_pressure_below_query_recent_budget(
     state = configure(authority, alpha=0, policy='attention' if policy == 'legacy_attention' else policy)
     state.scores = {4: 1.}
     if all_fit:
-        from vllm_kvmem.prefill_attention import select_pressure
+        from vllm_kvmem.serving.prefill_attention import select_pressure
         previous = select_pressure(authority, max_tokens=8)
         complete(authority)
         del previous
@@ -51,11 +51,11 @@ def test_refresh_entry_reaches_native_pressure_below_query_recent_budget(
         assert plan.total_window_tokens == 8
         raise AssemblyReached  # The genuine picker ran; no GPU copy is needed.
 
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     monkeypatch.setattr(NativeWindowAssembler, 'from_runner',
                         lambda *a, **kw: NS(assemble=assemble))
     if entry == 'async':
-        from vllm_kvmem.async_refresh import AsyncRefresh
+        from vllm_kvmem.serving.async_refresh import AsyncRefresh
         monkeypatch.setattr(torch.cuda, 'device', lambda *a: nullcontext())
         monkeypatch.setattr(torch.cuda, 'stream', lambda *a: nullcontext())
         manager = NS(options=options, runner=NS(device='cpu'), runtime=runtime,
@@ -64,8 +64,8 @@ def test_refresh_entry_reaches_native_pressure_below_query_recent_budget(
         job = NS(command=command, authority=authority, history=24, graph_binding=graph.binding)
         run = lambda: AsyncRefresh._assemble(manager, job, None, None)
     else:
-        from vllm_kvmem import bounded_runtime
-        from vllm_kvmem.options import RuntimeOptions
+        from vllm_kvmem.serving import bounded_runtime
+        from vllm_kvmem.core.options import RuntimeOptions
         monkeypatch.setenv('KVMEM_WINDOW_METADATA', '1')
         monkeypatch.setattr(RuntimeOptions, 'from_vllm', lambda _: options)
         monkeypatch.setattr(bounded_runtime, 'full_attention_groups', lambda _: (0,))
@@ -118,9 +118,9 @@ def test_capacity_admission_distinguishes_pressure_from_query(policy):
 
 @pytest.mark.parametrize('policy', ['recency', 'attention', 'graph'])
 def test_native_http_and_session_admission_receive_pressure_policy(monkeypatch, policy):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.http_sessions import normalize_query_plan
-    from vllm_kvmem.session_control import SessionLedger
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.session_control import SessionLedger
     config = dict(block_tokens=4, select_budget=16, gen_budget=16,
                   sink_blocks=1, recent_blocks=2, pressure_policy=policy)
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(config))
@@ -155,7 +155,7 @@ def test_checkpoint_mandatory_fit_uses_shrunken_pressure_budget(tmp_path, partia
 
 @pytest.mark.parametrize('sink,spans', [(1, ()), (0, ((0, 4, 'explicit'),))])
 def test_partial_tail_cannot_soften_fixed_sink_or_explicit_evidence(sink, spans):
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     cfg = KVMemConfig(block_tokens=4, select_budget=4, gen_budget=16,
                       sink_blocks=sink, recent_blocks=0)
     plan = RequestPlan(None, block_tokens=4, mandatory=spans)

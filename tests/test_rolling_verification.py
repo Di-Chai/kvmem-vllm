@@ -5,7 +5,7 @@ import json
 import pytest
 import torch
 
-from vllm_kvmem.rolling_verification import RollingPressureOracle
+from vllm_kvmem.serving.rolling_verification import RollingPressureOracle
 
 
 def oracle_fixture(monkeypatch, tmp_path):
@@ -16,7 +16,7 @@ def oracle_fixture(monkeypatch, tmp_path):
         assert value is bundle
         if generation[0] != 7:
             raise ValueError('Request incarnation changed')
-    monkeypatch.setattr('vllm_kvmem.native_state.NativeRecurrentState',
+    monkeypatch.setattr('vllm_kvmem.serving.native_state.NativeRecurrentState',
         lambda _: NS(borrow=lambda ids: bundle, validate=validate))
     expected = torch.arange(128, dtype=torch.uint8)
     actual = expected.clone()

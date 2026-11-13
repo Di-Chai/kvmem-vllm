@@ -46,7 +46,7 @@ def arm_plan(plan, arm):
 
 
 def plan_contract(tokens, plan, profile):
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     kv = profile['kvmem']
     parsed = RequestPlan.parse(plan, len(tokens), kv['block_tokens'], kv['gen_budget'])
     return dict(token_ids_sha256=digest(tokens), query=parsed.query, replay=parsed.replay,
@@ -184,7 +184,7 @@ def prepare(args):
         base = json.loads((args.profile or source/'profile.json').read_text())
         configs = profiles(base, args.port)
         validate_profiles(configs)
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         for arm, profile in configs.items():
             build_launch(profile, ROOT, root/arm/'server')
             save(root/(arm+'.json'), profile)

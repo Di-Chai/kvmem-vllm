@@ -16,12 +16,12 @@ class CurrentPressureIdleWorker(_MultiOwnerMixin, _CommitWorkerMixin,
             self._python_gc_phase_probe = GCPhaseProbe(scopes)
         import os
         self._python_gc_phase_probe.save(os.environ.get('PREFILL_PHASE_PROBE_OUTPUT'))
-        from vllm_kvmem.pressure_reader import PressureReader
-        from vllm_kvmem.prepared_regions import PreparedRegionReader
-        from vllm_kvmem.memory_storage import MemoryArchive
-        from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+        from vllm_kvmem.serving.pressure_reader import PressureReader
+        from vllm_kvmem.core.prepared_regions import PreparedRegionReader
+        from vllm_kvmem.core.memory_storage import MemoryArchive
+        from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
         from vllm_kvmem._prefill_state_native import State
-        from vllm_kvmem.capture_runtime import CaptureRuntime
+        from vllm_kvmem.serving.capture_runtime import CaptureRuntime
         from vllm_kvmem import _native
         for owner,prefix,names in (
             (PressureReader,'pressure_reader',('read',)),

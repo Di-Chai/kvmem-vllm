@@ -352,7 +352,7 @@ def build_launch(profile, base, run_dir):
         raise ValueError('Explicit linear backends currently require the MeanK profile')
     cfg['draft_method'] = 'mtp'
     transfer = {'kv_connector': 'KVMemElasticConnector', 'kv_role': 'kv_both',
-        'kv_connector_module_path': 'vllm_kvmem.elastic_connector',
+        'kv_connector_module_path': 'vllm_kvmem.apps.elastic_connector',
         'kv_connector_extra_config': {'cpu_bytes_to_use': cfg['cpu_kv_bytes'],
             'blocks_per_chunk': 1, 'offload_prompt_only': False, 'kvmem_report_dir': str(run_dir)}}
     argv = [sys.executable, '-m', 'vllm.entrypoints.cli.main', 'serve', cfg['model'],
@@ -368,7 +368,7 @@ def build_launch(profile, base, run_dir):
         '--compilation-config', json.dumps({'cudagraph_mode': 'FULL_AND_PIECEWISE'}),
         '--kv-transfer-config', json.dumps(transfer), '--enable-per-request-metrics',
         '--per-request-spec-decode-metrics', 'summary',
-        '--middleware', 'vllm_kvmem.elastic_control.ElasticControlMiddleware']
+        '--middleware', 'vllm_kvmem.apps.elastic_control.ElasticControlMiddleware']
     if cfg['profiler_config'] is not None:
         argv += ['--profiler-config', json.dumps(cfg['profiler_config'])]
     return canonical_policy_payload(cfg, cfg), argv

@@ -66,7 +66,7 @@ def serve(root):
     plan=verify(root);memory=memory_driver(root);candidate=root/'candidate'
     args=memory.server_command(candidate,read(candidate/'fixture.json'))[5:]
     assert args[0]=='--config'
-    from vllm_kvmem.serve import main as build
+    from vllm_kvmem.serving.serve import main as build
     output=io.StringIO()
     with contextlib.redirect_stdout(output):build([*args,'--dry-run'])
     launch=json.loads(output.getvalue());argv=launch['vllm_argv']
@@ -81,10 +81,10 @@ def serve(root):
     os.environ['PREFILL_PRESSURE_RANGE']=json.dumps(plan['window'])
     os.environ['PREFILL_PHASE_PROBE_OUTPUT']=str(root/'probe')
     if launch['profile']['model_adapter']=='qwen38_flash_next_b12x':
-        from vllm_kvmem.qsa_config_compat import enable
+        from vllm_kvmem.adapters.qsa_config_compat import enable
         enable()
     if launch['profile']['draft_method']=='dflash':
-        from vllm_kvmem.compat import enable_draft_load_config_fix
+        from vllm_kvmem.adapters.compat import enable_draft_load_config_fix
         enable_draft_load_config_fix()
     (candidate/'run/server/capture').mkdir(parents=True,exist_ok=False)
     save_new(candidate/'run/server/launch.json',launch)

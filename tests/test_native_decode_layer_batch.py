@@ -11,7 +11,7 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from vllm_kvmem import layerwise_decode
+from vllm_kvmem.serving import layerwise_decode
 from test_native_decode_segments import (_as_items, _controller, _mass_case, _python_identities,
                                          columns, outcome)
 
@@ -286,7 +286,7 @@ def _pend(begin, count, interval):
 
 def _run_chain(seed, interval, steps=30, requests=4, layers=16):
     """Interleaved decode steps of several requests: attach, accept, commit."""
-    from vllm_kvmem.layerwise_decode import DecodeHistory
+    from vllm_kvmem.serving.layerwise_decode import DecodeHistory
     rng = random.Random(seed)
     c, origin, total = _controller(rng, layers=layers, blocks=80)
     state = {'r': [origin, total, origin]}

@@ -137,7 +137,7 @@ Do not remove old messages or alter task input to manufacture reuse. The serving
 gateway must supply an appropriate `cache_salt`/session scope for its clients;
 these fields are namespace identifiers, not authentication.
 
-The profile installs `vllm_kvmem.http_sessions.validate_prompt_session` through
+The profile installs `vllm_kvmem.serving.http_sessions.validate_prompt_session` through
 vLLM's public `--middleware` option. Session IDs and salts used for reuse are
 limited to 1024 characters and rejected with HTTP 400 before scheduler dispatch.
 Body/header/`vllm_xargs` precedence matches the pinned engine. Native ASGI host

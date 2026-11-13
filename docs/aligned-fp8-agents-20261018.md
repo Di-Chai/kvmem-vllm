@@ -272,7 +272,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
   --reference artifacts/fp8-weight-performance-20261017-r1 --runtime "$PWD" \
   --alignment-qualification artifacts/qw3-alignment-20261018-sealed-copy-natural-async-r1 \
   --baseline artifacts/aligned-fp8-agents-20261018-baseline-r3 \
-  --allow-production-change src/vllm_kvmem/authority.py \
+  --allow-production-change src/vllm_kvmem/serving/authority.py \
   --allow-production-change csrc/bindings.cpp \
   --allow-production-change src/vllm_kvmem/_native.cpython-312-x86_64-linux-gnu.so \
   --port 18616

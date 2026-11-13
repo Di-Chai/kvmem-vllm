@@ -11,7 +11,7 @@ from scripts import analyze_deepswe
 
 
 def test_cold_preflight_has_owned_session_and_releases_it_without_changing_tokens(tmp_path,monkeypatch):
-    from vllm_kvmem.http_sessions import validate_session_payload
+    from vllm_kvmem.serving.http_sessions import validate_session_payload
     monkeypatch.setenv('KVMEM_REQUIRE_OWNED_SESSION','1')
     seen=[]
     class HTTP:

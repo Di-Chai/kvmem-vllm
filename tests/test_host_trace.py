@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 import pytest
-from vllm_kvmem.host_trace import HostTrace
+from vllm_kvmem.serving.host_trace import HostTrace
 
 
 def test_nested_timing_retains_result_exception_and_no_payload(tmp_path):

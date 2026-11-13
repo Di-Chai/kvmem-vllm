@@ -193,8 +193,8 @@ def device_identity():
 
 
 def fixture_bounds(fixture, profile):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.serving.request_plan import RequestPlan
     contract = helper('prepare_g16_context_epoch_fixture.py')
     cap.require(fixture.get('experiment_kind') == contract.EXPERIMENT
         and fixture.get('context_epoch_contract') == contract.CONTRACT

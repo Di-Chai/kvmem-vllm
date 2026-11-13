@@ -32,7 +32,7 @@
     "build": {
       "command": "python3 scripts/build_webui.py",
       "dependency_lock": "ui/chat/package-lock.json",
-      "output": "src/vllm_kvmem/webui/static",
+      "output": "src/vllm_kvmem/apps/webui/static",
       "node_minimum_major": 22,
       "source_maps": false,
       "dependency_notices": [

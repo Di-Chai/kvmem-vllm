@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 from test_layerwise_query import runner
 
 
@@ -33,7 +33,7 @@ def test_default_off_and_rejects_missing_execution_prerequisites(monkeypatch):
 def test_dispatch_and_counter_are_scoped_to_public_query(monkeypatch, kind, enabled, inline_decode):
     # Opt-in KVMEM_DECODE_INLINE_READS: decode pressure also reads inline.
     monkeypatch.setenv('KVMEM_DECODE_INLINE_READS', inline_decode)
-    from vllm_kvmem import packed_assembly, window_assembly, layerwise_pressure_efficiency
+    from vllm_kvmem.serving import packed_assembly, window_assembly, layerwise_pressure_efficiency
     no_op = lambda *args: None
     stream = NS(wait_event=no_op, synchronize=no_op)
     monkeypatch.setattr(torch.cuda, 'current_stream', lambda *args: stream)

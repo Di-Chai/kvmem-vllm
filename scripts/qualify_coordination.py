@@ -117,7 +117,7 @@ def make_profiles(config, output, *, arms=('B0', 'B1', 'B2'), step_latency_inter
     if base['kvmem']['session_capacity'] < 8 or base['max_num_seqs'] < 8:
         raise ValueError('Qualification requires eight checkpoint slots and native requests')
     profiles = {}
-    from vllm_kvmem.serve import build_launch, DEFAULTS, PATHS
+    from vllm_kvmem.serving.serve import build_launch, DEFAULTS, PATHS
     if not arms or any(arm not in ARMS for arm in arms):
         raise ValueError('Unknown or empty qualification arms')
     if type(step_latency_interval) is not int or not 0 <= step_latency_interval <= 1024:

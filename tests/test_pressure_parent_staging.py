@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.pressure_parent_staging import prepare_parent_pressure_copy
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.pressure_parent_staging import prepare_parent_pressure_copy
 
 
 def fixture(monkeypatch, count=1152):
@@ -89,8 +89,8 @@ def test_unsupported_sources_explicitly_keep_original_path(monkeypatch, unsuppor
 
 
 def test_decode_retains_original_rolling_path_with_prefill_candidate_enabled(monkeypatch):
-    from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
-    from vllm_kvmem import window_assembly, pressure_parent_staging
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
+    from vllm_kvmem.serving import window_assembly, pressure_parent_staging
     monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING','1')
     monkeypatch.setattr(pressure_parent_staging,'assemble_parent_pressure_layers',
                         lambda *a:pytest.fail('Prefill helper entered rolling decode'))
@@ -116,7 +116,7 @@ def test_decode_retains_original_rolling_path_with_prefill_candidate_enabled(mon
 
 
 def test_failed_submit_retains_packed_addressing_on_parent(monkeypatch):
-    from vllm_kvmem import pressure_parent_staging, layerwise_pressure_efficiency
+    from vllm_kvmem.serving import pressure_parent_staging, layerwise_pressure_efficiency
     parent,c,s,p,chosen,names=fixture(monkeypatch,2)
     parent._metadata_owners=[]
     s['packed_layer_addressing']=('key',object(),object())
@@ -134,8 +134,8 @@ def test_failed_submit_retains_packed_addressing_on_parent(monkeypatch):
 
 
 def test_failure_after_first_chunk_uses_outer_dma_fence_and_preserves_sources(monkeypatch):
-    from vllm_kvmem import pressure_parent_staging,layerwise_pressure_efficiency
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving import pressure_parent_staging, layerwise_pressure_efficiency
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     parent,c,s,p,chosen,names=fixture(monkeypatch,600)
     parent._metadata_owners=[];parent._restore_lease=None;parent.raw_cache=None
     s['packed_layer_addressing']=('key',object(),object())

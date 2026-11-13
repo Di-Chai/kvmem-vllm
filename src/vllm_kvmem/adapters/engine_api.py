@@ -185,5 +185,13 @@ def main():
                       'gpu_qualified': False}, indent=2))
 
 
+def check_engine_version() -> str:
+    """Retain the public diagnostic entry, without an exact-version gate."""
+    require_contract('runner')
+    from importlib.metadata import version
+    return version("vllm")
+
+
 if __name__ == '__main__':
     main()
+

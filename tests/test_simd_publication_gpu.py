@@ -3,9 +3,9 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def make_owner(dtype, enabled, *, resident, layers, heads, dim, block):
@@ -17,7 +17,7 @@ def make_owner(dtype, enabled, *, resident, layers, heads, dim, block):
         scoring_layers=layers-1,mean_k_backend='qw3_cuda',resident_records=resident,
         cpu_mean_index_simd=enabled)
     return owner,archive
-from vllm_kvmem.authority import append_authority_batch
+from vllm_kvmem.serving.authority import append_authority_batch
 
 pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Exclusive GPU byte check')
 

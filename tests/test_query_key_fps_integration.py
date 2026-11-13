@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from test_graph_options import model_profile, runtime, settings, worker_payload
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def fps_settings(**updates):
@@ -16,7 +16,7 @@ def fps_settings(**updates):
 
 
 def test_fps_switch_reserves_cache_and_roundtrips_launch_without_changing_budget(tmp_path):
-    from vllm_kvmem.query_window_budget import split_cpu_history_budget
+    from vllm_kvmem.core.query_window_budget import split_cpu_history_budget
     profile = model_profile(tmp_path)
     profile['kvmem'] = fps_settings(query_window_cache_bytes=1048576)
     original = deepcopy(profile)
@@ -49,7 +49,7 @@ def test_unqualified_fps_policies_fail_before_launch(update, match):
 
 
 def test_fps_rejects_competing_token_experiment(tmp_path, monkeypatch):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     profile = model_profile(tmp_path)
     profile['kvmem'] = fps_settings()
     config = tmp_path/'profile.json'
@@ -63,7 +63,7 @@ def test_fps_rejects_competing_token_experiment(tmp_path, monkeypatch):
 
 
 def test_elastic_launcher_preserves_fps_mode_and_rejects_full_context(tmp_path):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
     local = model_profile(tmp_path)
     users = tmp_path/'users.json'
     users.write_text(json.dumps({'users': [{'id': 'fps-test', 'api_key': 'local-test-only'}]}))
@@ -88,10 +88,10 @@ def test_elastic_launcher_preserves_fps_mode_and_rejects_full_context(tmp_path):
 
 def actual(tmp_path, capacity=65536, *, select_budget=64):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.block_graph import BlockGraph, GraphSample
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.serving.block_graph import BlockGraph, GraphSample
     from test_authority import drain
     cfg = KVMemConfig(block_tokens=32, select_budget=select_budget, gen_budget=128,
         repository_blocks=16, sink_blocks=1, recent_blocks=0,
@@ -114,8 +114,8 @@ def actual(tmp_path, capacity=65536, *, select_budget=64):
 
 
 def test_fps_seed_identity_native_picker_fixed_keep_budget_and_release(tmp_path):
-    from vllm_kvmem.authority import query_score_frame, _Ready
-    from vllm_kvmem.query_key_fps import score_authority_fps
+    from vllm_kvmem.serving.authority import query_score_frame, _Ready
+    from vllm_kvmem.serving.query_key_fps import score_authority_fps
     from test_graph_lifecycle import selected_starts
     a, archive, graph = actual(tmp_path)
     q = torch.tensor([[[[2., 1.], [1., -2.]]]])
@@ -140,7 +140,7 @@ def test_fps_seed_identity_native_picker_fixed_keep_budget_and_release(tmp_path)
 
 @pytest.mark.parametrize('fault', ['read', 'capacity', 'stale_graph'])
 def test_failed_fps_prepare_cannot_partially_commit(tmp_path, monkeypatch, fault):
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     a, archive, graph = actual(tmp_path, capacity=1024 if fault == 'capacity' else 65536)
     before = a.memory.phase, graph.binding, graph.budget.used
     if fault == 'read':

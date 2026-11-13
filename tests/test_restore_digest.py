@@ -4,12 +4,12 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem import restore_digest as d
+from vllm_kvmem.serving import restore_digest as d
 
 
 def test_streaming_fp8_reference_matches_original_full_byte_oracle(monkeypatch):
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.session_worker import SessionWorker
     torch.manual_seed(19)
     block,heads,dim,layers_count=32,2,8,2
     counts=[32]*34+[7];tokens=sum(counts)
@@ -32,7 +32,7 @@ def test_streaming_fp8_reference_matches_original_full_byte_oracle(monkeypatch):
 
 
 def test_target_stream_covers_every_byte_and_partial_final_page(monkeypatch):
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     tokens=2051;block=32;heads=2;width=4
     layers=[];expected=[]
     for i in range(2):

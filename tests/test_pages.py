@@ -1,6 +1,6 @@
 import pytest
 
-from vllm_kvmem.pages import EnginePageLeases
+from vllm_kvmem.core.pages import EnginePageLeases
 
 
 def test_actual_vllm_pool_waits_for_correct_worker_ack():

@@ -1,6 +1,6 @@
 import threading
 import pytest
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 from test_authority import setup, payload, drain
 
 
@@ -101,7 +101,7 @@ def test_cached_write_is_not_readable_before_archive_write_completes_and_failure
 
 @pytest.mark.parametrize('cached', [False, True])
 def test_archive_reads_directly_into_owned_destination_without_bypassing_leases(tmp_path, cached):
-    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.core.storage import AsyncArchive
     size = 2*4*1*2*3
     kwargs = dict(cache_bytes=size, namespace_bytes=size) if cached else {}
     archive = (CachedArchive if cached else AsyncArchive)(str(tmp_path), size, 8, **kwargs)

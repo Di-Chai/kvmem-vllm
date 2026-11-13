@@ -54,11 +54,11 @@
 
 参照代码：qw3 的 `src/qw3_server.cpp`、`src/kvmem_refresh_policy.hpp`、
 `src/kvmem_request_plan.hpp`、`src/kvmem_prefix_reuse_policy.hpp` 和
-`src/qwen_native_backend.cpp`；本集成的 [Query 计划](../src/vllm_kvmem/request_plan.py)、
-[HTTP 规划入口](../src/vllm_kvmem/http_sessions.py)、
-[会话恢复 gate](../src/vllm_kvmem/session_control.py)、
-[检查点生命周期](../src/vllm_kvmem/prompt_checkpoints.py)、
-[在线选择调用](../src/vllm_kvmem/bounded_runtime.py)。
+`src/qwen_native_backend.cpp`；本集成的 [Query 计划](../src/vllm_kvmem/serving/request_plan.py)、
+[HTTP 规划入口](../src/vllm_kvmem/serving/http_sessions.py)、
+[会话恢复 gate](../src/vllm_kvmem/serving/session_control.py)、
+[检查点生命周期](../src/vllm_kvmem/serving/prompt_checkpoints.py)、
+[在线选择调用](../src/vllm_kvmem/serving/bounded_runtime.py)。
 证据文件记录对应来源哈希，避免将参考工作树变化与本次结论混淆。
 
 ## 已复现的具体差异

@@ -23,7 +23,7 @@ def main():
     tok=AutoTokenizer.from_pretrained(cfg['tokenizer'],local_files_only=True)
     def expected_samples(tokens,prompt_tokens):
         from types import SimpleNamespace
-        from vllm_kvmem.action_attention import ActionHistory
+        from vllm_kvmem.serving.action_attention import ActionHistory
         ids=[tok.convert_tokens_to_ids(s) for s in ('<tool_call>','</tool_call>','<think>','</think>','<|im_start|>')]
         state=ActionHistory(SimpleNamespace(action_scope=cfg['kvmem']['action_scope'],
             action_interval=cfg['kvmem']['action_interval']),ids)

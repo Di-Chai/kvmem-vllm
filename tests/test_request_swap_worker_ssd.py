@@ -6,8 +6,8 @@ import time
 import pytest
 import torch
 
-from vllm_kvmem.request_checkpoint import CacheRows, capture_exact, restore_exact
-from vllm_kvmem.request_swap_worker import RequestSwapWorker
+from vllm_kvmem.serving.request_checkpoint import CacheRows, capture_exact, restore_exact
+from vllm_kvmem.serving.request_swap_worker import RequestSwapWorker
 from test_request_swap_worker import fixture, command, usage, Adapter
 
 

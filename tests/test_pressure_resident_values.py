@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.pressure_resident_values import resident_bases
+from vllm_kvmem.serving.pressure_resident_values import resident_bases
 
 
 def records(*starts):

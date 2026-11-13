@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.async_refresh import RefreshJob
-from vllm_kvmem.async_restore import step_restore
-from vllm_kvmem.connector import RestoreCommand
+from vllm_kvmem.serving.async_refresh import RefreshJob
+from vllm_kvmem.serving.async_restore import step_restore
+from vllm_kvmem.serving.connector import RestoreCommand
 
 
 def waiting_manager(tmp_path, *, enabled):
@@ -17,7 +17,7 @@ def waiting_manager(tmp_path, *, enabled):
 
 
 def test_disabled_diagnostics_never_construct_a_timer(monkeypatch, tmp_path):
-    from vllm_kvmem import restore_timing
+    from vllm_kvmem.serving import restore_timing
     monkeypatch.setattr(restore_timing, 'RestoreTiming', lambda **kwargs: pytest.fail('disabled timer'))
     manager = waiting_manager(tmp_path, enabled=False)
     job = RefreshJob(RestoreCommand('new', -1, 1, 64, 32, ()))

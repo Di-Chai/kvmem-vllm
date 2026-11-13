@@ -52,7 +52,7 @@ def prepare(root,source,*,qualification=False):
             'one qualification wave, no answer-based selection or full-RULER score.' if qualification else
             'Original index 0..9 of each of the 13 RULER v1 tasks; no answer-based selection.')}
     budget=policy.validate_execution(profile,fixture)
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(profile,REPO,root/'preflight-only')
     ruler.load_scorer(Path(fixture['upstream_path']))
     require(sha(Path(profile['tokenizer'])/'tokenizer.json')==fixture['tokenizer_sha256'],'Original tokenizer changed')
@@ -151,7 +151,7 @@ def run_client(root):
     import numpy as np
     from tokenizers import Tokenizer
     from benchmark_client_io import CaptureSlice
-    from vllm_kvmem.offline_queue import OfflineQueue,OfflineTask
+    from vllm_kvmem.serving.offline_queue import OfflineQueue,OfflineTask
     assert_frozen_controller(root);fixture,profile=verify(root)
     output=root/'run/answers';output.mkdir(parents=True,exist_ok=False)
     capture=root/'run/server/capture';save(output/'launch-audit.json',actual_launch(profile,capture))

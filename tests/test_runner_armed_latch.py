@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("vllm")
-from vllm_kvmem.runner import _probe_armed
+from vllm_kvmem.serving.runner import _probe_armed
 
 
 def runner(tmp_path):

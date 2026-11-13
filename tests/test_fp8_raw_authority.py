@@ -5,9 +5,9 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def owner(tmp_path, name='fp8', *, backend='qw3_cuda', archive=None):
@@ -101,7 +101,7 @@ def test_invalid_later_fp8_scatter_does_not_mutate_prior_destination():
 
 
 def test_fp8_rewind_preserves_sealed_index_and_rejects_old_suffix(tmp_path):
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     a,archive=owner(tmp_path)
     raw=torch.arange(2*12*64).reshape(2,12,1,64).float().remainder(100).to(torch.float8_e4m3fn)
     values=raw.view(torch.uint8).clone()
@@ -124,7 +124,7 @@ def test_fp8_rewind_preserves_sealed_index_and_rejects_old_suffix(tmp_path):
 
 def test_live_archive_geometry_charges_fp8_target_and_mtp_without_recurrent_history():
     from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec
-    from vllm_kvmem.cache_manifest import archive_bytes_per_token
+    from vllm_kvmem.adapters.cache_manifest import archive_bytes_per_token
     attention=FullAttentionSpec(block_size=1616,num_kv_heads=4,head_size=256,dtype=torch.float8_e4m3fn)
     recurrent=MambaSpec(block_size=262144,shapes=((16,),),dtypes=(torch.float32,))
     cfg=NS(kv_cache_groups=[NS(kv_cache_spec=attention,layer_names=[str(i) for i in range(17)]),
@@ -134,13 +134,13 @@ def test_live_archive_geometry_charges_fp8_target_and_mtp_without_recurrent_hist
 
 
 def test_fp8_raw_cache_accounts_one_byte_per_element():
-    from vllm_kvmem.gpu_raw_cache import GpuRawCache
+    from vllm_kvmem.serving.gpu_raw_cache import GpuRawCache
     cache=GpuRawCache(4096,(2,4,1,64),torch.device('cpu'),2,4,dtype=torch.float8_e4m3fn)
     assert cache.record_bytes==512 and cache.index.slots==8 and cache.capacity_bytes==4096
 
 
 def test_fp8_rope_widens_without_requantizing_before_destination_scale():
-    from vllm_kvmem.codec import neox_rope,materialize_k,KVFormat
+    from vllm_kvmem.core.codec import neox_rope,materialize_k,KVFormat
     raw=torch.tensor([[[.3125,1.75,3.,-2.5]]]).to(torch.float8_e4m3fn)
     cos=torch.tensor([[.73,.81]]);sin=torch.tensor([[.68,.59]])
     expected=torch.cat((raw.float()[...,:2]*cos[:,None]-raw.float()[...,2:]*sin[:,None],
@@ -157,8 +157,8 @@ def test_fp8_rope_widens_without_requantizing_before_destination_scale():
 def test_restore_checks_cold_fp8_oracle_and_preserves_hot_native_oracle(
         tmp_path,monkeypatch,resident,pressure,corrupt):
     import json
-    from vllm_kvmem.session_worker import SessionWorker
-    from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
+    from vllm_kvmem.serving.session_worker import SessionWorker
+    from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
     monkeypatch.setenv('KVMEM_VERIFY_SESSION_RESTORE','1')
     worker=SessionWorker.__new__(SessionWorker)
     # The synchronous fixture has no outstanding model-copy event; use the real

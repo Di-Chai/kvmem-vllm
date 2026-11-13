@@ -7,7 +7,7 @@ pytest.importorskip("vllm")
 
 @pytest.mark.parametrize('failed', [False, True])
 def test_runner_shutdown_drains_retirement_before_releasing_native_gpu_state(failed):
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     calls = []
     class Base:
         def shutdown(self):
@@ -27,7 +27,7 @@ def test_runner_shutdown_drains_retirement_before_releasing_native_gpu_state(fai
 
 
 def test_unarmed_native_warmup_does_not_access_temporarily_disabled_connector(monkeypatch, tmp_path):
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     import vllm.distributed.kv_transfer as transfer
 
     native_calls = []
@@ -59,7 +59,7 @@ def test_unarmed_native_warmup_does_not_access_temporarily_disabled_connector(mo
 
 
 def test_startup_reservation_closes_even_without_a_first_request():
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     closed = []
     class Base:
         def shutdown(self): closed.append('native')
@@ -70,9 +70,9 @@ def test_startup_reservation_closes_even_without_a_first_request():
 
 
 def test_prompt_session_controls_start_after_native_warmup(tmp_path):
-    from vllm_kvmem.runner import make_probe_runner
-    from vllm_kvmem.connector import ControlMetadata
-    from vllm_kvmem.session_control import SessionCommands
+    from vllm_kvmem.serving.runner import make_probe_runner
+    from vllm_kvmem.serving.connector import ControlMetadata
+    from vllm_kvmem.serving.session_control import SessionCommands
 
     class Base:
         def execute_model(self, *args, **kwargs):
@@ -97,8 +97,8 @@ def test_prompt_session_controls_start_after_native_warmup(tmp_path):
 
 
 def test_serving_arms_at_first_native_metadata_before_the_forward(tmp_path):
-    from vllm_kvmem.runner import make_probe_runner
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.runner import make_probe_runner
+    from vllm_kvmem.serving.connector import ControlMetadata
 
     armed_at_forward = []
     received = []
@@ -123,8 +123,8 @@ def test_serving_arms_at_first_native_metadata_before_the_forward(tmp_path):
 
 def test_terminal_clipping_precedes_both_deferrals_and_only_ready_owners_retire(monkeypatch, tmp_path):
     from dataclasses import replace
-    from vllm_kvmem.runner import make_probe_runner
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.runner import make_probe_runner
+    from vllm_kvmem.serving.connector import ControlMetadata
     import vllm.distributed.kv_transfer as transfer
 
     calls = []

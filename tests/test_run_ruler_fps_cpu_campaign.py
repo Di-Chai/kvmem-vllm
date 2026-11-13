@@ -6,9 +6,9 @@ import pytest
 import run_ruler_fps_cpu_campaign as campaign
 from test_graph_options import model_profile,runtime,worker_payload
 from test_query_fps_prebuild_options import fps_settings,elastic_profile
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
-from vllm_kvmem.elastic_serve import build_launch as build_elastic
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
+from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
 
 
 def test_query_trace_limit_defaults_bounded_and_roundtrips_both_launchers(tmp_path):

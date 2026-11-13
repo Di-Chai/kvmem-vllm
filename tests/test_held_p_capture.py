@@ -4,14 +4,14 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.session_control import SessionCapture, held_p_capture
+from vllm_kvmem.serving.session_control import SessionCapture, held_p_capture
 from test_session_worker import worker_fixture
 
 
 # -- scheduler: the final piece leaves this batch and is held ----------------
 
 def scheduler(**extra):
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     s = KVMemScheduler.__new__(KVMemScheduler)
     s.requests = {'r': NS(request_id='r', num_prompt_tokens=300, num_computed_tokens=256, spec_token_ids=[])}
     s.transactions = {}
@@ -62,7 +62,7 @@ def test_a_mismatched_command_fails_loudly():
 # -- connector: held until the worker reports the capture ----------------------
 
 def scheduler_connector():
-    from vllm_kvmem.connector import KVMemConnector
+    from vllm_kvmem.serving.connector import KVMemConnector
     c = KVMemConnector.__new__(KVMemConnector)
     for name in ('tp_feedback', 'scheduler_step_feedback', 'scheduler_restore_feedback', 'history_admission',
                  'active_residency', 'sessions', 'publication_live'):
@@ -74,7 +74,7 @@ def scheduler_connector():
 
 
 def feed(c, *, blocked=(), done=()):
-    from vllm_kvmem.connector import ControlCompletions
+    from vllm_kvmem.serving.connector import ControlCompletions
     meta = ControlCompletions([], {})
     meta.publication_sequence = c.publication_sequence + 1
     meta.publication_blocked = set(blocked)

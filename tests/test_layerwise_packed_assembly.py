@@ -3,11 +3,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.layerwise_pressure_efficiency import packed_layer_chunk
+from vllm_kvmem.serving.layerwise_pressure_efficiency import packed_layer_chunk
 
 
 def test_full_block_addressing_reuses_existing_kernel_and_keeps_skipped_destinations(monkeypatch):
-    from vllm_kvmem import split_assembly
+    from vllm_kvmem.serving import split_assembly
     calls=[]
     def launch(raw,ri,values,vi,bases,layer,**kw):
         calls.append(dict(raw=raw.clone(),values=values.clone(),ri=ri.tolist(),vi=vi.tolist(),
@@ -44,7 +44,7 @@ def test_packed_geometry_fails_before_any_write(count,half,cursor):
 
 
 def test_packed_assembly_cannot_change_rope_or_unoptimized_path(monkeypatch):
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_MODE','sequential')
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES','1')
     monkeypatch.setenv('KVMEM_LAYERWISE_PACKED_ASSEMBLY','1')

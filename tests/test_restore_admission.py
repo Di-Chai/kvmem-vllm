@@ -2,7 +2,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.restore_admission import RestoreAdmission
+from vllm_kvmem.serving.restore_admission import RestoreAdmission
 
 
 def entry(rid, namespace=None):
@@ -45,7 +45,7 @@ def test_resident_pipeline_keeps_each_lease_until_its_own_ack(resident_slots):
     from test_active_residency import save
     from test_window_manager import (
         BlockPool, FullAttentionManager, FullAttentionSpec, WorkingSetManager, torch)
-    from vllm_kvmem.active_residency import ActiveResidency
+    from vllm_kvmem.serving.active_residency import ActiveResidency
 
     # Keep an additional real resident view waiting behind the occupied lane.
     # Size the native page pool for every independent view, including that waiter.

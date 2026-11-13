@@ -2,8 +2,8 @@
 from types import SimpleNamespace as NS
 import pytest
 
-from vllm_kvmem.systemone_fork import ForkPagePool
-from vllm_kvmem.window_manager import WorkingSetManager
+from vllm_kvmem.serving.systemone_fork import ForkPagePool
+from vllm_kvmem.serving.window_manager import WorkingSetManager
 
 
 class Pool:
@@ -112,9 +112,9 @@ def test_zero_shared_pages_still_has_balanced_lifecycle():
 def test_projection_excludes_private_hidden_metadata_and_archive(monkeypatch):
     import torch
     from test_query_replay_batch import batch,ExecuteState
-    from vllm_kvmem.query_replay_batch import merge_query_batch
-    from vllm_kvmem.capture import CapturedLayer
-    from vllm_kvmem.systemone_fork import ForkLane as ForkDecisions
+    from vllm_kvmem.serving.query_replay_batch import merge_query_batch
+    from vllm_kvmem.adapters.capture import CapturedLayer
+    from vllm_kvmem.serving.systemone_fork import ForkLane as ForkDecisions
     public=batch(('parent',),(2,),(1,),(1,))
     private=batch(('child',),(16,),(0,),None)
     combined=merge_query_batch(public,private)
@@ -140,7 +140,7 @@ def test_projection_excludes_private_hidden_metadata_and_archive(monkeypatch):
 
 @pytest.mark.parametrize('terminal,refresh,expected',[(True,False,'finish'),(False,True,'detach'),(False,False,None)])
 def test_terminal_and_refresh_fences_run_before_native_execution(terminal,refresh,expected):
-    from vllm_kvmem.systemone_fork import ForkLane as ForkDecisions
+    from vllm_kvmem.serving.systemone_fork import ForkLane as ForkDecisions
     fork=object.__new__(ForkDecisions)
     fork.active=dict(binding=NS(request_id='parent'))
     fork.expire=lambda:None

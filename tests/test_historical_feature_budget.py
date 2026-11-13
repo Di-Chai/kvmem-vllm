@@ -4,12 +4,12 @@ import time
 
 import pytest
 
-from vllm_kvmem.historical_feature_budget import (
+from vllm_kvmem.core.historical_feature_budget import (
     REDUNDANCY_Q_STAGING_BYTES, THINKING_STAGING_BYTES, redundancy_policy_metadata_bytes,
     split_historical_feature_budget,
 )
-from vllm_kvmem.historical_gc import HistoricalGcSettings
-from vllm_kvmem.query_window_budget import split_cpu_history_budget
+from vllm_kvmem.core.historical_gc import HistoricalGcSettings
+from vllm_kvmem.core.query_window_budget import split_cpu_history_budget
 from test_historical_options import settings
 
 
@@ -93,9 +93,9 @@ def test_logical_publication_modes_are_not_excluded_by_redundancy(flag):
 
 
 def test_native_archive_and_scheduler_charge_identical_feature_reservations(tmp_path):
-    from vllm_kvmem.historical_admission import HistoricalHistoryAdmission
-    from vllm_kvmem.historical_gc import historical_record_charge
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.serving.historical_admission import HistoricalHistoryAdmission
+    from vllm_kvmem.core.historical_gc import historical_record_charge
+    from vllm_kvmem.core.storage import make_shared_archive
     options = replace(settings('off'), cpu_read_cache_bytes=4*1024**3,
         historical_gc={'policy': 'redundancy', 'mode': 'off',
                        'policy_params': {'feature_cache_bytes': 1024**2,
@@ -122,7 +122,7 @@ def test_redundancy_public_profile_roundtrip_preserves_policy_knobs(tmp_path):
     import json
     from copy import deepcopy
     from test_graph_options import model_profile, worker_payload, runtime
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile = model_profile(tmp_path)
     gc = dict(mode='shadow', policy='redundancy', policy_params={
         'representative_similarity': 0.92, 'candidate_blocks': 96,

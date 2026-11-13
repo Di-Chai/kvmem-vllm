@@ -748,7 +748,7 @@ class MemoryArchive(AsyncArchive):
         not reset them). Sources, keys and lease lifetimes are otherwise identical.
         """
         from .prepared_regions import PreparedRegionReader
-        from ..serving.pressure_reader import layerwise_gc
+        from .archive_flags import layerwise_gc
         arena = self._native_payload_arena is not None
         if (arena and not layerwise_gc()) or not leases:
             raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')
@@ -761,7 +761,7 @@ class MemoryArchive(AsyncArchive):
         owned = []
         native = None
         if adopt:
-            from ..serving.pressure_reader import native_reader
+            from .archive_flags import native_reader
             if native_reader():
                 native = getattr(_native, 'archive_region_sources', None)
         with self._lock:
@@ -804,7 +804,7 @@ class MemoryArchive(AsyncArchive):
         """KVMEM_PRESSURE_READER_EXTEND: prepare_region_reader's adopt path for
         further records of the same plan (same entry checks, sources, unique
         identities and pin validity), appended to an open native reader."""
-        from ..serving.pressure_reader import layerwise_gc
+        from .archive_flags import layerwise_gc
         arena = self._native_payload_arena is not None
         if (arena and not layerwise_gc()) or not keys or not hasattr(leases, 'valid'):
             raise ValueError('Prepared CPU regions require nonempty no-GC immutable sources')

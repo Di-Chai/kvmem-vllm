@@ -115,9 +115,9 @@ def install_pressure_scopes(worker):
         scopes.wrap(authority, 'publish_sealed', 'authority.publish_sealed')
     if not getattr(runner, '_kvmem_serving', False):
         return
-    from vllm_kvmem import packed_assembly, prefill_attention, split_assembly
-    from vllm_kvmem.window_assembly import NativeWindowAssembler, _AssemblyStaging
-    from vllm_kvmem.transfer import PackedTransfers
+    from vllm_kvmem.serving import packed_assembly, prefill_attention, split_assembly
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler, _AssemblyStaging
+    from vllm_kvmem.core.transfer import PackedTransfers
     for owner, prefix, methods in (
         (NativeWindowAssembler, 'assembly', ('assemble', '_assemble_split', '_upload_metadata')),
         (_AssemblyStaging, 'staging', ('destination', 'consumed')),

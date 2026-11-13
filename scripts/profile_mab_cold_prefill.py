@@ -11,7 +11,7 @@ import urllib.request
 
 from audit_layerwise_gilopt import read,save_new,sha,tree
 from benchmark_mab_direct_restore import run as run_arm
-from vllm_kvmem.profiling import native_profiler_config,summarize_trace
+from vllm_kvmem.serving.profiling import native_profiler_config,summarize_trace
 
 REPO = next(p for p in Path(__file__).resolve().parents if (p/'pyproject.toml').exists())
 SOURCE = REPO/'artifacts/mab-efficiency-20261105-r1/prefill-pipeline-qualification/candidate'

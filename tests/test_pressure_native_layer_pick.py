@@ -10,7 +10,7 @@ import pytest
 
 from vllm_kvmem import _native
 from vllm_kvmem import _prefill_state_native as prefill_native
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
 
 pytestmark = pytest.mark.skipif(
     not hasattr(_native.Store, 'pressure_layer_pick') or not hasattr(prefill_native.State, 'scores_for'),
@@ -139,7 +139,7 @@ def test_unexpected_shapes_fall_back_before_any_side_effect():
 
 
 def test_flag_validation(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import native_layer_pick
+    from vllm_kvmem.serving.layerwise_pressure import native_layer_pick
     monkeypatch.setenv('KVMEM_PRESSURE_NATIVE_LAYER_PICK', 'on')
     with pytest.raises(ValueError, match='NATIVE_LAYER_PICK'):
         native_layer_pick()

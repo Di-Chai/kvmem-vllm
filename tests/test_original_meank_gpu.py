@@ -34,7 +34,7 @@ def original_kernel(tmp_path_factory):
                                                       (2048, 17, 8, 16)])
 def test_mean_scores_and_topk_match_original_cuda(original_kernel, blocks, tokens, sink, recent):
     import torch
-    from vllm_kvmem.retrieval import mean_key_scores
+    from vllm_kvmem.core.retrieval import mean_key_scores
     generator = torch.Generator(device='cuda').manual_seed(7341)
     layers, heads, kv_heads, dim = 3, 24, 4, 256
     queries = torch.randn(layers, tokens, heads, dim, generator=generator, device='cuda')

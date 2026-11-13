@@ -109,7 +109,7 @@ def main():
                 process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 report['server_pid'] = process.pid
                 save()
-                from vllm_kvmem.telemetry import ResourceMonitor
+                from vllm_kvmem.serving.telemetry import ResourceMonitor
                 monitor = ResourceMonitor(out / 'resources.jsonl', process.pid).start()
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 deadline = time.monotonic() + 900

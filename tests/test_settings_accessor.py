@@ -1,11 +1,11 @@
-"""Every KVMEM_* read in the package goes through vllm_kvmem.settings (layering step 6)."""
+"""Every KVMEM_* read in the package goes through vllm_kvmem.core.settings (layering step 6)."""
 import ast
 from pathlib import Path
 
 import pytest
 
 import vllm_kvmem
-from vllm_kvmem import settings
+from vllm_kvmem.core import settings
 
 PACKAGE = Path(vllm_kvmem.__file__).parent
 # settings.py is the accessor; defaults.py writes the default-on preset into the environment.
@@ -82,7 +82,7 @@ def test_profile_settings_become_the_launch_environment():
 
 
 def test_effective_settings_name_their_source():
-    from vllm_kvmem.defaults import DEFAULTS
+    from vllm_kvmem.core.defaults import DEFAULTS
     effective = settings.effective({'KVMEM_GIL_GATE_MS': '0'})
     assert effective['KVMEM_GIL_GATE_MS'] == ('0', 'launch')
     other = next(name for name in DEFAULTS if name != 'KVMEM_GIL_GATE_MS')

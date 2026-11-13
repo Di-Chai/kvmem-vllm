@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
-from vllm_kvmem.restore_timing import RestoreTiming
-from vllm_kvmem.session_worker import SessionWorker
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.serving.restore_timing import RestoreTiming
+from vllm_kvmem.serving.session_worker import SessionWorker
 from test_native_restore_frame import Event, commit, fixture, plan_value
 from test_options import config
 

@@ -5,20 +5,20 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.session_control import SessionLedger, SessionNotice, SessionBinding, SessionCommands, SessionEviction
-from vllm_kvmem.async_restore import RestoreContext, step_restore
-from vllm_kvmem.async_refresh import AsyncRefresh, RefreshJob
-from vllm_kvmem.connector import RestoreCommand
-from vllm_kvmem.prompt_checkpoints import CheckpointPhase
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.session_control import SessionLedger, SessionNotice, SessionBinding, SessionCommands, SessionEviction
+from vllm_kvmem.serving.async_restore import RestoreContext, step_restore
+from vllm_kvmem.serving.async_refresh import AsyncRefresh, RefreshJob
+from vllm_kvmem.serving.connector import RestoreCommand
+from vllm_kvmem.serving.prompt_checkpoints import CheckpointPhase
 from test_core import Event
 from test_session_control import request, first_turn
 from test_session_worker import worker_fixture, wait_retirement
 from test_authority import payload, drain
 from test_graph_lifecycle import attach
 from test_prefill_attention import options
-from vllm_kvmem.action_attention import ActionHistory
-from vllm_kvmem.block_graph import GraphSample
+from vllm_kvmem.serving.action_attention import ActionHistory
+from vllm_kvmem.serving.block_graph import GraphSample
 
 
 def settings(**changes):

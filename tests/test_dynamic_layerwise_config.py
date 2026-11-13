@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_kvmem import serve
+from vllm_kvmem.serving import serve
 
 
 def profile():

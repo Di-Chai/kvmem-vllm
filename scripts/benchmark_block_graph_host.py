@@ -14,8 +14,8 @@ import statistics
 import time
 import tracemalloc
 
-from vllm_kvmem.block_graph import BlockGraph, GraphBudget, GraphSample
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget, GraphSample
+from vllm_kvmem.serving.graph_scoring import score_graph
 
 
 class MeterBudget(GraphBudget):

@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -25,7 +25,7 @@ def test_invalid_assembly_chunk_option_fails_before_allocation(value):
 
 
 def test_default_assembly_chunk_and_cpu_archive_admission_fit_128_records(tmp_path):
-    from vllm_kvmem.storage import make_shared_archive
+    from vllm_kvmem.core.storage import make_shared_archive
     assert RuntimeOptions().assembly_chunk_blocks == 32
     # Serving uses FP8 raw K + FP8 V, 17 layers, block=32, 4 KV heads, dim=256.
     record_bytes = 17 * 32 * 4 * 256 * 2
@@ -44,7 +44,7 @@ def test_runner_uses_configured_chunks_and_explicit_override_then_freezes_stagin
     torch = pytest.importorskip('torch')
     pytest.importorskip('vllm')
     import numpy as np
-    from vllm_kvmem import window_assembly as window
+    from vllm_kvmem.serving import window_assembly as window
     key = torch.zeros((4, 4, 1, 4), dtype=torch.float8_e4m3fn)
     module = NS(num_kv_heads=1, head_dim=4,
         rotary_emb=NS(cos_sin_cache=torch.zeros(16, 4)),

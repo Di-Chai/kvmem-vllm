@@ -17,7 +17,7 @@ def run(args):
     kv = profile['kvmem']
     require(kv['guided_reselect'] == 'both' and profile['verify_session_restore'],
             'Use both triggers and exact native-state verification')
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     from types import SimpleNamespace as NS
     options = RuntimeOptions.from_vllm(NS(kv_transfer_config=NS(
         kv_connector_extra_config={'kvmem': kv}), cache_config=NS(cache_dtype='fp8_e4m3')))

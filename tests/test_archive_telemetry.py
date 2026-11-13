@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.archive_telemetry import ArchiveResourceReporter
-from vllm_kvmem.memory_storage import MemoryArchive, MemoryTier
+from vllm_kvmem.core.archive_telemetry import ArchiveResourceReporter
+from vllm_kvmem.core.memory_storage import MemoryArchive, MemoryTier
 
 
 def test_cpu_publication_peak_survives_unsampled_full_reclamation(tmp_path):
@@ -75,7 +75,7 @@ def test_compact_reporter_throttles_in_step_counters_and_host_reads_independentl
 
 
 def test_worker_feedback_publishes_lightweight_metrics_outside_publication_lock():
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     runtime = CaptureRuntime.__new__(CaptureRuntime)
     lock = RLock()
     runtime._publication_lock = lambda: lock
@@ -117,7 +117,7 @@ def test_checkpoint_storage_observations_are_separate_from_history(tmp_path):
 
 
 def test_always_installed_publication_feedback_observes_live_cpu_without_repository_gc(tmp_path):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     archive = MemoryArchive(str(tmp_path), 8, 4)
     repo = _native.Repository(4, 4)
     leases = [repo.reserve(i*4, 4).commit() for i in range(2)]

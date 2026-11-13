@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_kvmem.process_memory import sample_process_memory
+from vllm_kvmem.core.process_memory import sample_process_memory
 
 
 def fixture(tmp_path):

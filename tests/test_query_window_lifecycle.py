@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_window_scoring import WindowMeanCache, score_authority_windows
+from vllm_kvmem.serving.query_window_scoring import WindowMeanCache, score_authority_windows
 
 
 def synthetic(length=71, archive=None, value=1.):
@@ -66,10 +66,10 @@ def test_global_capacity_evicts_inactive_owner_but_never_active_scoring():
 
 
 def actual(tmp_path, *, capacity=65536):
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
-    from vllm_kvmem.block_graph import BlockGraph,GraphSample
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
+    from vllm_kvmem.serving.block_graph import BlockGraph,GraphSample
     from test_authority import drain
     cfg=KVMemConfig(block_tokens=32,select_budget=64,gen_budget=128,
         repository_blocks=16,sink_blocks=1,recent_blocks=0,
@@ -90,8 +90,8 @@ def actual(tmp_path, *, capacity=65536):
 
 
 def test_native_picker_exact_graph_scores_keep_budget_and_no_neighbor_expansion(tmp_path):
-    from vllm_kvmem.authority import query_score_frame,_Ready
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.authority import query_score_frame,_Ready
+    from vllm_kvmem.serving.graph_scoring import score_graph
     from test_graph_lifecycle import selected_starts
     a,archive,graph=actual(tmp_path)
     q=torch.tensor([[[[2.,1.],[1.,-2.]]]])
@@ -116,7 +116,7 @@ def test_native_picker_exact_graph_scores_keep_budget_and_no_neighbor_expansion(
 
 @pytest.mark.parametrize('fault',['read','capacity','stale_graph'])
 def test_failures_precede_native_commit_and_leave_no_partial_update(tmp_path,monkeypatch,fault):
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     a,archive,graph=actual(tmp_path,capacity=1024 if fault=='capacity' else 65536)
     before=a.memory.phase,graph.binding,graph.budget.used
     if fault=='read':
@@ -223,10 +223,10 @@ def test_concurrent_owner_cannot_evict_a_snapshot_between_read_and_cpu_consumpti
 
 
 def test_real_native_rewind_clears_derived_means_and_rebuilds_changed_branch_generations(tmp_path):
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.block_graph import BlockGraph
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.storage import AsyncArchive
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.serving.block_graph import BlockGraph
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.storage import AsyncArchive
     from test_authority import drain
     from test_authority_rewind import complete_rewind
     from test_core import Event

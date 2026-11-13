@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 from test_prefill_pipeline_options import profile
 

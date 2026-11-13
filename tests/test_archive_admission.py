@@ -1,6 +1,6 @@
 import pytest
 
-from vllm_kvmem.archive_admission import ArchiveAdmission, ArchiveCapacity
+from vllm_kvmem.core.archive_admission import ArchiveAdmission, ArchiveCapacity
 
 
 def test_pending_dma_and_speculation_debit_ready_space_without_changing_query_size():
@@ -81,7 +81,7 @@ def test_native_connector_returns_capacity_even_without_model_or_refresh_work():
 def test_feedback_cannot_publish_candidate_rows_before_native_eos_clipping():
     pytest.importorskip('vllm')
     from types import SimpleNamespace
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     runtime = CaptureRuntime.__new__(CaptureRuntime)
     def premature_drain(*args, **kwargs):
         raise AssertionError('EOS clipping has not arrived; do not drain capture')
@@ -96,8 +96,8 @@ def test_scheduler_preserves_native_query_and_only_defers_request_without_credit
     pytest.importorskip('vllm')
     from types import SimpleNamespace
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm_kvmem.scheduler import KVMemScheduler
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.admission import QueryPolicy
     monkeypatch.setattr(Scheduler, '_reserve_prefill_lookahead', lambda self, request, history, tokens: tokens)
     scheduler = KVMemScheduler.__new__(KVMemScheduler)
     scheduler.connector = SimpleNamespace(publication_blocked=set())

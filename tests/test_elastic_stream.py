@@ -4,7 +4,7 @@ import json
 import pytest
 httpx = pytest.importorskip('httpx')
 
-from vllm_kvmem.elastic_stream import generate
+from vllm_kvmem.apps.elastic_stream import generate
 
 
 def event(choices, usage=None):

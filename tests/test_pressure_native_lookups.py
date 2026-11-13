@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 
 from vllm_kvmem import _prefill_state_native as native
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
-from vllm_kvmem.layerwise_pressure import native_lookup_scores, same_snapshot
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
+from vllm_kvmem.serving.layerwise_pressure import native_lookup_scores, same_snapshot
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 
 pytestmark = pytest.mark.skipif(not hasattr(native.State, 'scores_for'),
                                 reason='Requires the rebuilt prefill state extension')
@@ -63,7 +63,7 @@ def test_same_snapshot_matches_python_comparison(monkeypatch, change):
 def test_pressure_seed_lookup_matches_dict(tmp_path, monkeypatch, prefill):
     from test_graph_lifecycle import fixture
     from test_graph_pressure_v2 import configure
-    from vllm_kvmem.prefill_attention import pressure_seed
+    from vllm_kvmem.serving.prefill_attention import pressure_seed
     a, archive, graph = fixture(tmp_path, sink=1)
     state = configure(a, policy='attention')
     state.prefill.values = {k: list(v) for k, v in prefill.items()}

@@ -12,14 +12,14 @@ import pytest
 import torch
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority, _Ready, query_score_frame
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
-from vllm_kvmem.query_fps_prebuild import FPSPrebuildManager
-from vllm_kvmem.query_hybrid_recall import preview_hybrid_selection
-from vllm_kvmem.query_key_fps import key_fps_scores, select_key_representatives
-from vllm_kvmem.retrieval import mean_key_scores
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready, query_score_frame
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.query_boundary_history import QueryBoundaryHistory
+from vllm_kvmem.serving.query_fps_prebuild import FPSPrebuildManager
+from vllm_kvmem.serving.query_hybrid_recall import preview_hybrid_selection
+from vllm_kvmem.serving.query_key_fps import key_fps_scores, select_key_representatives
+from vllm_kvmem.core.retrieval import mean_key_scores
 
 
 def eventually(callback):
@@ -68,7 +68,7 @@ def harness(tmp_path, monkeypatch, *, owners=1, background=False):
     authorities = [make_authority(archive, manager, f'hybrid-lru-{i}', owners=owners)
                    for i in range(owners)]
     # Preserve the native score representation's FP16 Query input conversion.
-    monkeypatch.setattr('vllm_kvmem.cuda_scoring.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.cuda_scoring.mean_key_scores',
         lambda q, means, mask: mean_key_scores(q.half(), means, mask))
     expected = [{} for _ in range(owners)]
     try:
@@ -204,7 +204,7 @@ def test_gc_cannot_retire_query_inputs_during_scoring_and_native_quota_pick(tmp_
             assert authority.gc.scope.stats['retired'] == before
             observations.append(True)
             return original_mean(q.half(), means, mask)
-        monkeypatch.setattr('vllm_kvmem.cuda_scoring.mean_key_scores', score)
+        monkeypatch.setattr('vllm_kvmem.core.cuda_scoring.mean_key_scores', score)
         plan = authority.select_for_queries(torch.ones(1, 2, 2, 8))
         assert observations and plan.total_window_tokens <= 224
         authority.memory.attach_completion(_Ready())
@@ -225,7 +225,7 @@ def test_query_exception_releases_all_policy_holds_for_later_gc(tmp_path, monkey
             advance(authority, worker)
             assert authority.gc.scope.stats['retired'] == 0
             raise OSError('injected second-branch scorer failure')
-        monkeypatch.setattr('vllm_kvmem.cuda_scoring.mean_key_scores', fail)
+        monkeypatch.setattr('vllm_kvmem.core.cuda_scoring.mean_key_scores', fail)
         with pytest.raises(OSError, match='second-branch'):
             authority.select_for_queries(torch.ones(1, 2, 2, 8))
         advance(authority, worker)
@@ -332,7 +332,7 @@ def test_real_background_gc_protects_queries_and_recycles_compact_fps_rows(tmp_p
             assert scope.stats['retired'] == before['retired']
             observations.append(scope.stats['ticks'])
             return mean_key_scores(q.half(), means, mask)
-        monkeypatch.setattr('vllm_kvmem.cuda_scoring.mean_key_scores', score)
+        monkeypatch.setattr('vllm_kvmem.core.cuda_scoring.mean_key_scores', score)
         slab = None
         for _ in range(12):
             # The original-FP8 oracle also verifies real native FPS, means,

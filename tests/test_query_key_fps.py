@@ -7,11 +7,11 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_key_fps import (
+from vllm_kvmem.serving.query_key_fps import (
     KeyFPSCache, RawKeyFPSCache, key_fps_scores, score_authority_fps,
     select_key_representatives,
 )
-from vllm_kvmem.query_window_scoring import WindowMeanCache
+from vllm_kvmem.serving.query_window_scoring import WindowMeanCache
 
 
 def selected_offsets_oracle(keys, counts):
@@ -190,7 +190,7 @@ def test_scoreable_block_without_any_representative_fails_explicitly():
 
 
 def test_scoring_scratch_limit_checked_before_layer_materialization(monkeypatch):
-    import vllm_kvmem.query_key_fps as module
+    import vllm_kvmem.serving.query_key_fps as module
     monkeypatch.setattr(module, 'SCRATCH_LIMIT', 1)
     representatives, indices = select_key_representatives(torch.ones(1, 1, 1, 1, 1), [1])
     with pytest.raises(MemoryError, match='512 MiB'):

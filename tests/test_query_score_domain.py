@@ -5,10 +5,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, _Ready, query_score_frame
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready, query_score_frame
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def fixture(tmp_path, *, mode='off', budget=8, sink=0, recent=0, pages=3):

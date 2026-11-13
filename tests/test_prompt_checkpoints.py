@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool, CheckpointPhase, token_bytes
 from test_authority import setup, payload, drain
 from test_core import Event
 from test_session_state import fixture
@@ -30,7 +30,7 @@ def ready(pool, checkpoint):
 
 
 def test_guided_original_query_restores_saved_version_and_charges_payload(tmp_path):
-    from vllm_kvmem.guided_seed import QuerySeed
+    from vllm_kvmem.serving.guided_seed import QuerySeed
     pool, old, authority, archive, adapter, _ = saved(tmp_path)
     base_bytes = old.payload_bytes
     seed = QuerySeed(8, torch.arange(16).reshape(1, 2, 2, 4).float())
@@ -55,7 +55,7 @@ def test_guided_original_query_restores_saved_version_and_charges_payload(tmp_pa
 
 
 def test_guided_seed_checkpoint_quota_failure_preserves_previous_version(tmp_path):
-    from vllm_kvmem.guided_seed import QuerySeed
+    from vllm_kvmem.serving.guided_seed import QuerySeed
     pool, old, authority, archive, adapter, _ = saved(tmp_path)
     previous = pool.payload_bytes
     authority.guided_seed = QuerySeed(8, torch.ones(4096))
@@ -168,7 +168,7 @@ def test_pressure_import_reselects_without_reusing_retired_gpu_pages(tmp_path, a
     adapter.runner.req_states.prefill_len.np[0] = 16
     if action_enabled:
         from test_prefill_attention import options
-        from vllm_kvmem.action_attention import ActionHistory
+        from vllm_kvmem.serving.action_attention import ActionHistory
         authority.action_history=ActionHistory(options(),[10,11,12,13,14])
         authority.action_history.prefill.values={4:[1.,1.]}
     checkpoint = pool.capture(old.namespace, 'a', authority, list(range(16)), adapter, replace=True)
@@ -255,8 +255,8 @@ def test_live_checkpoint_replacement_is_atomic_and_reuses_its_byte_credit(tmp_pa
 
 @pytest.mark.parametrize('pressure', [False, True])
 def test_terminal_checkpoint_keeps_partial_accepted_raw_kv_tail_and_fences_import(tmp_path, pressure):
-    from vllm_kvmem.historical_gc import RedundancyHistory
-    from vllm_kvmem.session_control import SessionBinding
+    from vllm_kvmem.core.historical_gc import RedundancyHistory
+    from vllm_kvmem.serving.session_control import SessionBinding
     from test_historical_redundancy_capture import Scope
     pool, old, authority, archive, adapter, _ = saved(tmp_path)
     authority.redundancy_history = features = RedundancyHistory(Scope(), 1, 1, 2, 3)
@@ -616,7 +616,7 @@ def test_retained_prompt_reimport_cannot_reuse_prior_claims_different_suffix_sco
 
 
 def test_eviction_drops_the_layerwise_snapshot_and_its_gc_hold_before_closing(tmp_path):
-    from vllm_kvmem.layerwise_checkpoints import LayerwisePrefix
+    from vllm_kvmem.serving.layerwise_checkpoints import LayerwisePrefix
     pool, checkpoint, authority, archive, adapter, _ = saved(tmp_path)
     hold = type('Hold', (), {})()
     import weakref
@@ -636,7 +636,7 @@ def test_eviction_drops_the_layerwise_snapshot_and_its_gc_hold_before_closing(tm
 
 
 def test_blocked_scope_close_is_retried_after_a_cycle_collection(tmp_path):
-    from vllm_kvmem import prompt_checkpoints as pc
+    from vllm_kvmem.serving import prompt_checkpoints as pc
     pool, checkpoint, authority, archive, adapter, _ = saved(tmp_path)
     class Cycle:
         pass

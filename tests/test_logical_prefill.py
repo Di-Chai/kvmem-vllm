@@ -3,9 +3,9 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from vllm_kvmem.logical_prefill import (LogicalPrefillEligibility,LogicalPrefillGroup,
+from vllm_kvmem.serving.logical_prefill import (LogicalPrefillEligibility,LogicalPrefillGroup,
     LogicalPrefillSpan,plan_logical_prefill,MAX_LOGICAL_PREFILL_CHUNKS)
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 def policy(**changes):

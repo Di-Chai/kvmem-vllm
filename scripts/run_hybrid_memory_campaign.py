@@ -58,7 +58,7 @@ def prepare(root, suite, *, qualification=False, graph_alpha=0.):
         longest = max(rows,key=lambda r:r['input_tokens'])['id']
         if longest not in ids:
             ids.append(longest)
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(profile,REPO,root/'preflight-only')
     root.mkdir(parents=True)
     runtime = root/'runtime'

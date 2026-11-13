@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.layerwise_query import LayerwiseQuery, top_set
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery, top_set
 
 
 def runner(*, eager=True, sequences=1):
@@ -49,7 +49,7 @@ def test_prohibits_later_refresh_with_a_shared_history_mapping(monkeypatch):
 @pytest.mark.parametrize('first_arena', ['main', 'layerwise'])
 def test_single_layer_query_scratch_and_full_checkpoint_restore_do_not_collide(monkeypatch, first_arena):
     import torch
-    from vllm_kvmem import native_pages, window_assembly
+    from vllm_kvmem.core import native_pages; from vllm_kvmem.serving import window_assembly
     names = ('a', 'b')
     cache = torch.zeros((4,32,1,2), dtype=torch.float8_e4m3fn)
     modules = {name: SimpleNamespace(
@@ -126,8 +126,8 @@ def test_optimized_logging_flushes_layer_evidence_at_completion(monkeypatch,tmp_
 
 def test_persistent_capture_reads_the_just_computed_query_rows(monkeypatch):
     import torch
-    import vllm_kvmem.layerwise_query as implementation
-    from vllm_kvmem.capture import CapturedLayer
+    import vllm_kvmem.serving.layerwise_query as implementation
+    from vllm_kvmem.adapters.capture import CapturedLayer
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_MODE','sequential')
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES','1')
     monkeypatch.setattr(implementation,'install_native_query_dispatch',lambda _:None)

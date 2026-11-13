@@ -77,14 +77,14 @@ def test_serve_patch_only_adds_explicit_opt_in_flags(tmp_path):
 
 @pytest.mark.parametrize('blocks,layers,expected',[(32,17,256),(32,1,32),(8,17,136),(256,17,256)])
 def test_single_layer_batch_stays_within_existing_full_frame_byte_allowance(blocks,layers,expected):
-    from vllm_kvmem.layerwise_pressure_efficiency import layer_read_blocks
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import layer_read_blocks
     actual=layer_read_blocks(blocks,layers)
     assert actual==expected and actual<=blocks*layers
 
 
 def test_larger_read_groups_preserve_every_dense_destination_and_skip():
     from types import SimpleNamespace as NS
-    from vllm_kvmem.layerwise_pressure_efficiency import assembly_groups
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import assembly_groups
     records=[NS(history_begin=i*64,count=32) for i in range(1152)]
     records[-1].count=17
     skip={records[3].history_begin,records[515].history_begin}

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1' or not torch.cuda.is_available(),
                                 reason='opt-in native attention CUDA qualification')
@@ -203,7 +203,7 @@ def test_graph_many_tiny_segments_with_different_causal_quad_tails(tmp_path):
 
 @pytest.mark.parametrize('produce,interval',[(False,1),(True,16)])
 def test_actual_decode_candidates_keep_exact_scope_and_safe_fallback(tmp_path,produce,interval):
-    from vllm_kvmem.action_attention import ActionHistory,ActionRuntime,action_metadata
+    from vllm_kvmem.serving.action_attention import ActionHistory,ActionRuntime,action_metadata
     bank,plan,execute,oracle,q,_,_,(k,v),table = geometry(tmp_path,'decode',5)
     bank.arm({'r':plan});execute()  # observe a supported backend
     graph=None
@@ -238,7 +238,7 @@ def test_actual_decode_candidates_keep_exact_scope_and_safe_fallback(tmp_path,pr
     action.q_dtypes=action.prefill_q_dtypes={name:q.dtype}
     action.runner=SimpleNamespace(req_states=SimpleNamespace(req_id_to_index={'r':0}),
         block_tables=SimpleNamespace(block_tables=[SimpleNamespace(gpu=table)]))
-    from vllm_kvmem.native_attention_planning import make_decode_frame
+    from vllm_kvmem.serving.native_attention_planning import make_decode_frame
     action.native_cache={'r':dict(generation=0,offset=0,
         **make_decode_frame(plan['starts'],plan['counts'],plan['starts'],254,254,5,bank.context,32))}
     positions=torch.arange(254,259,device='cuda')
@@ -304,7 +304,7 @@ def test_graph_replay_reuses_stable_storage_and_clears_old_rows(tmp_path, phase)
 
 
 def test_native_candidates_only_commit_the_accepted_mtp_prefix(tmp_path):
-    from vllm_kvmem.action_attention import ActionHistory
+    from vllm_kvmem.serving.action_attention import ActionHistory
     bank, plan, execute, oracle, *_ = geometry(tmp_path, 'decode', 5)
     bank.arm({'r':plan}); execute()
     mass = bank.score('model.layers.3.attn', 'r', False)
@@ -319,7 +319,7 @@ def test_native_candidates_only_commit_the_accepted_mtp_prefix(tmp_path):
 
 def test_ragged_xqa_separates_request_rows_and_contexts(tmp_path):
     from flashinfer.decode import xqa_batch_decode_with_kv_cache
-    from vllm_kvmem.native_attention import _active
+    from vllm_kvmem.serving.native_attention import _active
     bank, plan, _, _, _, _, _, (k,v), table = geometry(tmp_path, 'decode', 5)
     q = torch.randn(7,8,128,device='cuda',dtype=torch.bfloat16)
     table = torch.cat((table,table.roll(2,1)),0)
@@ -353,10 +353,10 @@ def test_ragged_xqa_separates_request_rows_and_contexts(tmp_path):
 
 
 def test_native_scores_preserve_query_pressure_mandatory_and_checkpoint_policy(tmp_path):
-    from vllm_kvmem.action_attention import ActionHistory
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory import RequestMemory
-    from vllm_kvmem.prefill_attention import pressure_seed
+    from vllm_kvmem.serving.action_attention import ActionHistory
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory import RequestMemory
+    from vllm_kvmem.serving.prefill_attention import pressure_seed
     from test_core import append
     bank, plan, execute, oracle, q, _, _, (k,_), table = geometry(tmp_path,'decode',5)
     q.fill_(.125)
@@ -406,9 +406,9 @@ def test_resolve_keeps_exact_plans_armed_beside_decode_candidates(tmp_path):
     """A mixed batch arms one exact (prefill) plan and one decode candidate."""
     import numpy as np
     from flashinfer.decode import xqa_batch_decode_with_kv_cache
-    from vllm_kvmem.action_attention import ActionRuntime
-    from vllm_kvmem.native_attention import _active
-    from vllm_kvmem.native_attention_planning import make_decode_frame
+    from vllm_kvmem.serving.action_attention import ActionRuntime
+    from vllm_kvmem.serving.native_attention import _active
+    from vllm_kvmem.serving.native_attention_planning import make_decode_frame
     bank, plan, _, _, _, _, _, (k,v), table = geometry(tmp_path, 'decode', 5)
     name = 'model.layers.3.attn'
     q = torch.randn(7,8,128,device='cuda',dtype=torch.bfloat16)

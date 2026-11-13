@@ -7,9 +7,9 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import record_key
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.query_region_reader import QueryRegionReader
+from vllm_kvmem.serving.authority import record_key
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.query_region_reader import QueryRegionReader
 from test_native_memory_storage import eventually
 from test_paired_archive_reads import archive_fixture
 
@@ -289,7 +289,7 @@ def test_failed_context_entry_releases_the_empty_archive_guard(tmp_path):
 
 @pytest.mark.parametrize('mutation',['native_generation','archive_namespace','runtime_owner'])
 def test_warm_import_uses_archive_namespace_and_native_request_generation_separately(tmp_path,mutation):
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
     a,records,pins,polls,generation,repo,leases,values=fixture(tmp_path)
     query=object.__new__(LayerwiseQuery)
     native_id='native-warm-prefix-request'
@@ -318,7 +318,7 @@ def test_warm_import_uses_archive_namespace_and_native_request_generation_separa
 
 @pytest.mark.parametrize('missing',[False,True])
 def test_controller_rejects_unbound_authority_before_creating_source_reader(tmp_path,missing):
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
     a,records,pins,polls,generation,repo,leases,values=fixture(tmp_path)
     query=object.__new__(LayerwiseQuery)
     native_id='native-warm-prefix-request'

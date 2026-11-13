@@ -4,7 +4,7 @@ import ast
 
 import pytest
 
-from vllm_kvmem.compat import OLD, NEW, patched_source
+from vllm_kvmem.adapters.compat import OLD, NEW, patched_source
 
 
 def test_loader_patch_changes_only_load_config_and_accepts_unrelated_edits():

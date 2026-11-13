@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.retrieval_diagnostic_math import content_distributions
+from vllm_kvmem.serving.retrieval_diagnostic_math import content_distributions
 
 
 def test_page_average_can_reverse_a_strong_token_match():
@@ -37,20 +37,20 @@ def test_global_token_softmax_gqa_mask_and_partial_page():
 
 
 def test_no_attention_observation_for_pressure_or_missing_query():
-    from vllm_kvmem.retrieval_diagnostics import capture_native,capture_archive
+    from vllm_kvmem.serving.retrieval_diagnostics import capture_native,capture_archive
     capture_native(None,NS(command=NS(selection='pressure')),torch.ones(1))
     capture_native(None,NS(command=NS(selection='query')),None)
     capture_archive(None,NS(),None)
 
 
 def test_guided_input_is_rejected_by_observer():
-    from vllm_kvmem.retrieval_diagnostics import capture_native
+    from vllm_kvmem.serving.retrieval_diagnostics import capture_native
     with pytest.raises(ValueError,match='original explicit Query'):
         capture_native(None,NS(command=NS(selection='query',query_span=(0,1)),guided_rows=[1]),torch.ones(1))
 
 
 def test_launcher_retains_only_explicit_diagnostic_switch(tmp_path,monkeypatch,capsys):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     p=tmp_path/'profile.json';p.write_text(json.dumps({'kvmem':{'guided_query_tokens':0}}))
     monkeypatch.setattr(serve,'build_launch',lambda *a:dict(profile={},environment={}))
     serve.main(['--config',str(p),'--run-dir',str(tmp_path/'server'),'--dry-run','--retrieval-diagnostics'])
@@ -63,7 +63,7 @@ def test_launcher_retains_only_explicit_diagnostic_switch(tmp_path,monkeypatch,c
 def test_single_token_probe_does_not_change_compressed_prefill_pressure():
     from dataclasses import replace
     from pathlib import Path
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     fixture=Path('artifacts/ruler-pooling-queue-20261022-r1/query_only/fixture.json')
     if not fixture.exists():pytest.skip('Frozen local fixture absent')
     rows=json.loads(fixture.read_text())['rows']

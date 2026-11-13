@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.block_graph import BlockGraph, GraphBudget, GraphPartial, GraphRow
-from vllm_kvmem.graph_scoring import score_graph, scoring_scratch_bytes
+from vllm_kvmem.serving.block_graph import BlockGraph, GraphBudget, GraphPartial, GraphRow
+from vllm_kvmem.serving.graph_scoring import score_graph, scoring_scratch_bytes
 
 
 def snapshot(rows=(), *, spans=(), ends_known=None, completed=128, partial=None):

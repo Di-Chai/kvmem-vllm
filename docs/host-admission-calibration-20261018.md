@@ -248,10 +248,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$CUDA_GC_REFERENCE/runtime/rolling-candida
   --baseline artifacts/calibrated-fp8-agents-20261018-baseline-r1 \
   --host-calibration artifacts/host-admission-calibration-20261018-r1/calibration.json \
   --cuda-allocator-policy native_gc_90 \
-  --allow-production-change src/vllm_kvmem/authority.py \
+  --allow-production-change src/vllm_kvmem/serving/authority.py \
   --allow-production-change csrc/bindings.cpp \
   --allow-production-change src/vllm_kvmem/_native.cpython-312-x86_64-linux-gnu.so \
-  --allow-production-change src/vllm_kvmem/serve.py
+  --allow-production-change src/vllm_kvmem/serving/serve.py
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$CUDA_GC_REPRO/runtime/rolling-candidate-v2/src" \
   /home/chaidi/kvmem-vllm/.venv/bin/python -B \

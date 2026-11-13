@@ -7,7 +7,7 @@ from collections import Counter
 
 import pytest
 
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 
 
 class Flags:
@@ -66,7 +66,7 @@ def bank_fixture(monkeypatch, *, dirty=True, values=(1, 1, 1),
         created.append(event)
         return event
 
-    monkeypatch.setattr('vllm_kvmem.native_attention.torch.cuda.Event', event_factory)
+    monkeypatch.setattr('vllm_kvmem.serving.native_attention.torch.cuda.Event', event_factory)
     bank = NativeAttentionStats.__new__(NativeAttentionStats)
     bank.rows = None
     bank.names = ('layer-a', 'layer-b', 'layer-c')

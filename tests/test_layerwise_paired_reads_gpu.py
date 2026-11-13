@@ -16,14 +16,14 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',
 @pytest.mark.parametrize('tiled',[False,True])
 def test_paired_pinned_layer_assembly_preserves_every_gpu_kv_byte(tmp_path,monkeypatch,layer_index,tail,page,tiled):
     from vllm_kvmem import _native
-    from vllm_kvmem.authority import record_key
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem import packed_assembly
-    from vllm_kvmem import split_assembly
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.pressure_reader import prepare_pressure_reader
-    from vllm_kvmem.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
+    from vllm_kvmem.serving.authority import record_key
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving import packed_assembly
+    from vllm_kvmem.serving import split_assembly
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.serving.pressure_reader import prepare_pressure_reader
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler,LayerWindow,_AssemblyStaging
     gather = split_assembly.gather_resident_values
     def selected_gather(*args, **kwargs):
         kwargs['tiled'] = tiled

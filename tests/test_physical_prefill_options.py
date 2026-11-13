@@ -3,8 +3,8 @@ from copy import deepcopy
 import pytest
 
 from test_graph_options import model_profile, runtime, settings, worker_payload
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def payload(**changes):

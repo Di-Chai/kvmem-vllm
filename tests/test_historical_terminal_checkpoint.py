@@ -10,10 +10,10 @@ import weakref
 import pytest
 
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm_kvmem.connector import ControlMetadata
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.session_control import SessionCapture, SessionCommands
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.connector import ControlMetadata
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.session_control import SessionCapture, SessionCommands
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_session_worker import worker_fixture, wait_retirement
 
 

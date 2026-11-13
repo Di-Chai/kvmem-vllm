@@ -8,9 +8,9 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-from vllm_kvmem.session_control import SessionBinding
-from vllm_kvmem.thinking_history import ThinkingHistory, thinking_token_layout
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.serving.session_control import SessionBinding
+from vllm_kvmem.serving.thinking_history import ThinkingHistory, thinking_token_layout
 
 
 MARKERS = [100, 101, 102, 103]
@@ -274,9 +274,9 @@ def test_sidecar_uses_device_starts_and_does_not_commit_rejected_close_marker():
 
 def test_real_authority_seal_before_token_publication_and_native_counts(tmp_path):
     import time
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
 
     config = KVMemConfig(block_tokens=32, select_budget=64, gen_budget=64,
         repository_blocks=32, sink_blocks=1, recent_blocks=0)

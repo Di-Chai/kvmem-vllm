@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
-from vllm_kvmem.full_history_benchmark import validate_full_history
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.full_history_benchmark import validate_full_history
+from vllm_kvmem.serving.serve import build_launch
 from run_full_mab_comparison import method_profile, audit_global, load_source, BASE, read, explicit_execution
 
 
@@ -73,7 +73,7 @@ def test_optional_execution_preserves_legacy_fixture_and_rejects_budget_changes(
 
 def test_full_history_native_planner_uses_bounded_window_without_changing_logical_limit(tmp_path,monkeypatch):
     from test_logical_capacity import config,specs
-    from vllm_kvmem.logical_capacity import physical_config,wrap_planner
+    from vllm_kvmem.serving.logical_capacity import physical_config,wrap_planner
     from vllm.v1.core.kv_cache_utils import get_kv_cache_configs
     cfg=config(tmp_path)
     cfg.model_config.max_model_len=cfg.model_config.original_max_model_len=2097152

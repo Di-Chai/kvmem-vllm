@@ -7,9 +7,9 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Expl
 
 
 def test_packed_original_key_matches_direct_rope_at_sparse_positions():
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.packed_assembly import assemble_packed_layer
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.packed_assembly import assemble_packed_layer
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     torch.manual_seed(8)
     raw=torch.randn((64,1,8),device='cuda').to(torch.float8_e4m3fn)
     v=torch.randn_like(raw.float()).to(torch.float8_e4m3fn)
@@ -33,8 +33,8 @@ def test_packed_original_key_matches_direct_rope_at_sparse_positions():
 
 @pytest.mark.parametrize('fused',[False,True])
 def test_attention_uses_original_rotation_but_dense_causal_boundary(fused):
-    from vllm_kvmem.action_scoring import page_attention
-    from vllm_kvmem.codec import neox_rope
+    from vllm_kvmem.serving.action_scoring import page_attention
+    from vllm_kvmem.core.codec import neox_rope
     torch.manual_seed(3)
     q=torch.randn((2,2,8),device='cuda',dtype=torch.bfloat16)
     key=torch.randn((2,32,1,8),device='cuda').to(torch.float8_e4m3fn)

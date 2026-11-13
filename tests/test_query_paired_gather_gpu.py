@@ -15,11 +15,11 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 def test_query_native_paired_gather_keeps_full_gpu_cache(tmp_path, monkeypatch,
                                                         layer_index, tail, page):
     from vllm_kvmem import _native
-    from vllm_kvmem.authority import record_key
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
-    from vllm_kvmem.memory import Phase
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.window_assembly import NativeWindowAssembler, LayerWindow, _AssemblyStaging
+    from vllm_kvmem.serving.authority import record_key
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.core.memory import Phase
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler, LayerWindow, _AssemblyStaging
 
     assert callable(getattr(_native, 'gather_record_regions', None))
     torch.manual_seed(571)

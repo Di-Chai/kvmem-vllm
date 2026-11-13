@@ -4,8 +4,8 @@ import random
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory, _native_publish_selection
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory, _native_publish_selection
 
 
 class Event:

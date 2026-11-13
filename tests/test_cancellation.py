@@ -3,7 +3,7 @@ import json
 from threading import Event, Thread
 import time
 
-from vllm_kvmem.cancellation import cancel_during_refresh
+from vllm_kvmem.core.cancellation import cancel_during_refresh
 
 
 def test_socket_shutdown_interrupts_blocked_stream_without_waiting_for_http_read_lock(tmp_path):

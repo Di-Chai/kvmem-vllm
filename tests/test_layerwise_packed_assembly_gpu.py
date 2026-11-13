@@ -12,9 +12,9 @@ pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Excl
 @pytest.mark.parametrize('rotary',[64,256])
 @pytest.mark.parametrize('read_blocks',[8,256])
 def test_packed_layer_chunk_is_byte_exact_with_token_addressed_assembly(scale,rotary,read_blocks):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.layerwise_pressure_efficiency import packed_layer_chunk
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import packed_layer_chunk
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     torch.manual_seed(1209)
     total,page,heads,dim=36864,64,4,256
     pages=(total+page-1)//page+3

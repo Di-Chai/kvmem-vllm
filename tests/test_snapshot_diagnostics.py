@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.snapshot_diagnostics import SnapshotCadence
+from vllm_kvmem.serving.snapshot_diagnostics import SnapshotCadence
 
 
 def test_periodic_snapshots_publish_state_transitions_and_forced_final_state():
@@ -45,7 +45,7 @@ def test_session_snapshot_hashes_immutable_prefix_once_and_invalidates_on_replac
         hashed.append(tokens)
         return original(tokens)
 
-    monkeypatch.setattr('vllm_kvmem.session_control.hashlib.sha256', sha256)
+    monkeypatch.setattr('vllm_kvmem.serving.session_control.hashlib.sha256', sha256)
     first = control.snapshot()
     for _ in range(50):
         assert control.snapshot() == first
@@ -64,7 +64,7 @@ def test_session_snapshot_hashes_immutable_prefix_once_and_invalidates_on_replac
 
 def make_scheduler(tmp_path, monkeypatch):
     pytest.importorskip('vllm')
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     from test_capacity import make_gate, request
 
     gate, _, pool = make_gate(blocks=5)

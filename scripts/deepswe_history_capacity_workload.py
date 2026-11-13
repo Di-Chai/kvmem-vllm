@@ -87,7 +87,7 @@ def validate_fixture(fixture):
             and all(type(t) is int and 0 <= t < 2**31 for t in tokens)
             and type(token) is int and 0 <= token < 2**31
             and core.token_bytes_sha256(tokens) == row['sha256'], 'Full real input or continuation changed')
-        from vllm_kvmem.request_plan import RequestPlan
+        from vllm_kvmem.serving.request_plan import RequestPlan
         RequestPlan.parse(row['request_plan'], len(tokens), 32, 32768)
         ids.add(row['id']); hashes.add(row['sha256'])
     require(len(ids) == len(hashes) == 8, 'Require eight distinct snapshots, no replicated prompts')

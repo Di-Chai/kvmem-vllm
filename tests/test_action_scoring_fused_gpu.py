@@ -1,7 +1,7 @@
 """Fixed operands isolate bypass fusion from native QK reuse."""
 import pytest
 import torch
-from vllm_kvmem.action_scoring import page_attention
+from vllm_kvmem.serving.action_scoring import page_attention
 
 pytestmark=pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA qualification')
 

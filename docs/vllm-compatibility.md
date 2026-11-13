@@ -12,7 +12,7 @@ For the current released vLLM and the default safetensors serving profile:
 
 ```sh
 bash scripts/setup_gpu.sh --latest
-.venv/bin/python -m vllm_kvmem.engine_api --systemone
+.venv/bin/python -m vllm_kvmem.adapters.engine_api --systemone
 ```
 
 The installer resolves vLLM and its dependencies together. The old
@@ -26,7 +26,7 @@ An upstream source checkout can be checked without installing or importing its
 GPU implementation:
 
 ```sh
-PYTHONPATH=src python -m vllm_kvmem.engine_api --source /path/to/vllm/vllm --systemone
+PYTHONPATH=src python -m vllm_kvmem.adapters.engine_api --source /path/to/vllm/vllm --systemone
 KVMEM_TEST_VLLM_SOURCE=/path/to/vllm/vllm KVMEM_TEST_REQUIRE_SYSTEMONE=1 \
   PYTHONPATH=src python -m pytest tests/test_engine_api.py -q
 ```

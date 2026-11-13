@@ -21,8 +21,8 @@ settings and are refused in the profile.
                  "system": {"KVMEM_GIL_GATE_MS": "50"},
                  "strategy": {"KVMEM_LAYERWISE_DECODE_SCOPE": "all"}}
 
-    python -m vllm_kvmem.settings table             # every setting, its namespace and preset value
-    python -m vllm_kvmem.settings effective LAUNCH  # a launch.json's effective settings and sources
+    python -m vllm_kvmem.core.settings table             # every setting, its namespace and preset value
+    python -m vllm_kvmem.core.settings effective LAUNCH  # a launch.json's effective settings and sources
 """
 import os
 import re

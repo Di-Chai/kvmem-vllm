@@ -5,12 +5,12 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_phase_options import profile, options
 
 
 def test_rolling_is_opt_in_and_preserves_server_plan_and_connector(tmp_path):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     cfg = profile()
     assert not options(cfg['kvmem']).rolling_active_window
     cfg['kvmem']['rolling_active_window'] = True
@@ -39,7 +39,7 @@ def test_rolling_switch_is_strictly_boolean(value):
 
 def rolling_scheduler(monkeypatch, tmp_path):
     from test_scheduler_transactions import setup_scheduler
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     scheduler, request, pools = setup_scheduler()
     scheduler._bounded_target = scheduler.async_refresh = scheduler.rolling_active_window = True
     scheduler.prepared_refreshes = {}
@@ -107,7 +107,7 @@ def test_zero_replay_requires_explicit_pressure_contract(selection, enabled):
 
 
 def test_zero_replay_pressure_consumes_owner_checkpoint_without_private_forward(monkeypatch):
-    import vllm_kvmem.async_refresh as ar
+    import vllm_kvmem.serving.async_refresh as ar
     from test_async_refresh import manager, command
     obj = manager()
     obj.options.rolling_active_window = True

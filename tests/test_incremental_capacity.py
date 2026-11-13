@@ -10,11 +10,11 @@ from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, FullAttentionSpec, MambaSpec
 from vllm.v1.request import Request
 
-from vllm_kvmem.capacity import ReservedKVCacheManager
-from vllm_kvmem.draft_contract import DraftContract
-from vllm_kvmem.incremental_capacity import IncrementalKVCacheManager
-from vllm_kvmem.request_swap import FencedPageSwap
-from vllm_kvmem.window_manager import WorkingSetManager, RefreshRequired
+from vllm_kvmem.serving.capacity import ReservedKVCacheManager
+from vllm_kvmem.adapters.draft_contract import DraftContract
+from vllm_kvmem.serving.incremental_capacity import IncrementalKVCacheManager
+from vllm_kvmem.serving.request_swap import FencedPageSwap
+from vllm_kvmem.serving.window_manager import WorkingSetManager, RefreshRequired
 
 
 READY = SimpleNamespace(query=lambda: True)
@@ -155,7 +155,7 @@ def test_guided_probe_reserve_is_not_lost_in_incremental_preview(monkeypatch):
     gate.allocate_slots(peer, 32)
     gate.guided_reserve = 32
     gate.guided_block_tokens = 16
-    monkeypatch.setattr('vllm_kvmem.request_plan.request_plan',
+    monkeypatch.setattr('vllm_kvmem.serving.request_plan.request_plan',
         lambda *args: SimpleNamespace(query=(0, 8), replay_begin=0, pressure_probe_tokens=0))
     req = request('query')
     assert not gate.can_schedule(req, 8)
@@ -197,7 +197,7 @@ def test_restore_page_protection_composes_once_with_native_connector_credit():
 
 
 def test_cold_operation_revokes_only_idle_pages_using_its_actual_extent():
-    from vllm_kvmem.active_residency import ActiveResidency, ActiveView
+    from vllm_kvmem.serving.active_residency import ActiveResidency, ActiveView
     gate, managers, pool, _ = make_gate(blocks=5)
     idle, peer, incoming = map(request, ('idle', 'peer', 'incoming'))
     gate.allocate_slots(idle, 32)

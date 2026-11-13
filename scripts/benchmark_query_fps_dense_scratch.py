@@ -10,7 +10,7 @@ import time
 
 import torch
 from benchmark_niah import save,sha
-from vllm_kvmem import query_key_fps as fps
+from vllm_kvmem.serving import query_key_fps as fps
 
 
 def run(output):

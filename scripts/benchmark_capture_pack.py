@@ -91,7 +91,7 @@ class Candidate:
 
 
 def fixture(tokens, layers, heads, dim, requests, strided):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     if tokens < requests:
         raise ValueError('Each owner must contain at least one input row')
     stride = 2 if strided else 1

@@ -8,7 +8,7 @@ from threading import Event
 import pytest
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.tiered_storage import TieredArchive
+from vllm_kvmem.core.tiered_storage import TieredArchive
 
 
 RECORD = 4096

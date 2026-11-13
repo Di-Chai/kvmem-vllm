@@ -6,11 +6,11 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import RequestAuthority, _Ready
-from vllm_kvmem.cached_storage import CachedArchive
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.repository_gc import serving_gc_config
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority, _Ready
+from vllm_kvmem.core.cached_storage import CachedArchive
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.repository_gc import serving_gc_config
+from vllm_kvmem.core.storage import AsyncArchive
 from test_authority import setup, payload, drain
 from test_core import Event
 

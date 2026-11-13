@@ -3,7 +3,7 @@ import pytest
 import torch
 import os
 
-import vllm_kvmem.query_key_fps as fps
+import vllm_kvmem.serving.query_key_fps as fps
 
 
 @pytest.mark.parametrize('query_half', [False,True])

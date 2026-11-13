@@ -4,8 +4,8 @@ import gc
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory
 
 
 class Ready:

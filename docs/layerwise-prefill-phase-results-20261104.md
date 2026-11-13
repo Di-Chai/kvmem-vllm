@@ -10,7 +10,7 @@
 
 ## 本轮代码与控制
 
-- 新增 `src/vllm_kvmem/prefill_phase_gate.py`：仅测量使用的有限 cohort gate。
+- 新增 `src/vllm_kvmem/serving/prefill_phase_gate.py`：仅测量使用的有限 cohort gate。
   八个 owner 全部完成原始历史 prefill 后才放行最终 Query；pressure 始终可执行。
   默认不安装，冻结测量副本显式启用。拒绝重复 owner、提前执行 Query 或超出容量。
 - 新增 `scripts/benchmark_layerwise_prefill_phase.py`：事先冻结 A1/B1/B2/A2 四轮顺序；

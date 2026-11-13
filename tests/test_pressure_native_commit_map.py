@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.pressure_commit import prepare_commit
+from vllm_kvmem.serving.pressure_commit import prepare_commit
 
 pytestmark = pytest.mark.skipif(not hasattr(_native, 'commit_map'), reason='Requires the rebuilt extension')
 

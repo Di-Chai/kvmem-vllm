@@ -11,16 +11,16 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import layerwise_checkpoints as lc
-from vllm_kvmem import layerwise_gc_holds as holds
-from vllm_kvmem.layerwise_checkpoints import (
+from vllm_kvmem.serving import layerwise_checkpoints as lc
+from vllm_kvmem.serving import layerwise_gc_holds as holds
+from vllm_kvmem.serving.layerwise_checkpoints import (
     LayerwisePrefix, StateRows, capture, finish_async_restore, install_restored, prepare_restore,
     restore_pressure_sync, restored_decode,
 )
-from vllm_kvmem.layerwise_decode import DecodeHistory
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
-from vllm_kvmem.prefill_attention import PrefillHistory
-from vllm_kvmem.prompt_checkpoints import token_bytes
+from vllm_kvmem.serving.layerwise_decode import DecodeHistory
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.prompt_checkpoints import token_bytes
 from test_layerwise_pressure import options
 
 NAMES = ('a', 'b', 'c')
@@ -311,7 +311,7 @@ def test_restore_errors_are_identical(monkeypatch, kind, fault):
 @pytest.mark.parametrize('kind', KINDS)
 def test_missed_retirement_prune_is_applied_like_before(monkeypatch, kind):
     import types
-    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.serving.authority import RequestAuthority
     results = []
     for on in (False, True):
         for seed in range(11, 60):       # a retired block that had layer-zero scores and left every window
@@ -594,7 +594,7 @@ def test_unusual_decode_keys_and_positions_take_the_original_expressions(monkeyp
 
 def test_native_decode_history_rows_match(monkeypatch):
     from vllm_kvmem import _native
-    from vllm_kvmem.layerwise_decode import NativeDecodeHistory
+    from vllm_kvmem.serving.layerwise_decode import NativeDecodeHistory
     if not hasattr(_native, 'DecodeMassMap'):
         pytest.skip('extension without DecodeMassMap')
     mass = {64: 0.5, 0: 0.25, 320: 1e-9, 32: 7.0}
@@ -614,8 +614,8 @@ class Frame:
 
 
 def history_fixture(seed, blocks=60):
-    from vllm_kvmem.authority import VersionedRecords
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.authority import VersionedRecords
+    from vllm_kvmem.serving.session_worker import SessionWorker
     rnd = random.Random(seed)
     records = VersionedRecords()
 
@@ -726,7 +726,7 @@ def test_idle_history_rows_fall_back_for_frames_without_a_cache(monkeypatch):
 
 def test_authority_counts_archive_completions():
     import inspect
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     source = inspect.getsource(authority)
     assert source.count('.archived = True') == 1 and source.count('self.archived_epoch += 1') == 1
     assert source.index('self.archived_epoch += 1') < source.index('.archived = True')

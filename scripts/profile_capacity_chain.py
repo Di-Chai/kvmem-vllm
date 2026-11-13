@@ -50,7 +50,7 @@ def verified_reference(reference):
 
 
 def configuration(base, root, port):
-    from vllm_kvmem.profiling import native_profiler_config
+    from vllm_kvmem.serving.profiling import native_profiler_config
     cap.require(base.get('profiler_config') is None and base.get('max_num_seqs') == 8,
                 'Require the unprofiled eight-user reference')
     cap.require(type(port) is int and 1024 <= port <= 65535, 'Dedicated loopback port required')

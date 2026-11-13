@@ -9,7 +9,7 @@ import argparse
 import json,time,hashlib
 import numpy as np
 import torch
-from vllm_kvmem.query_key_fps import select_key_representatives_optimized,key_fps_scores
+from vllm_kvmem.serving.query_key_fps import select_key_representatives_optimized,key_fps_scores
 from analyze_query_key_fps import native_selections
 r=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)

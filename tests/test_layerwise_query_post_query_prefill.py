@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 
 
 def controller(rolling):

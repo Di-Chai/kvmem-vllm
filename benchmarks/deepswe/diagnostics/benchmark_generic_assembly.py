@@ -176,11 +176,11 @@ def execute(args, runtimes, modules, trace, evidence):
     sys.path.insert(0, str(runtimes[reference]/'src'))
     import torch
     from vllm_kvmem import _native
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
     if Path(_native.__file__).resolve() != modules[reference]['native_extension']:
         raise ValueError('Imported native extension is outside the frozen reference runtime')
     arms = {}
@@ -267,7 +267,7 @@ def execute(args, runtimes, modules, trace, evidence):
     last_result = None
     stages = StageTimes() if args.instrument_stages else None
     if stages:
-        from vllm_kvmem import packed_assembly, transfer
+        from vllm_kvmem.serving import packed_assembly; from vllm_kvmem.core import transfer
         stages.patch(archive,'read','archive.read_submit')
         stages.patch(packed_assembly.PackedRead,'result','reader.result_wait')
         stages.patch(transfer.PackedTransfers,'upload','transfer.upload')

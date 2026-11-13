@@ -183,7 +183,7 @@ def select(run, paths):
 
 
 def canonical_evidence(source, agent, planner, bridge, config):
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     state, evidence = bridge.Trajectory(), []
     history = list(agent['initial_tokens'])
     minimal = len(history)
@@ -247,7 +247,7 @@ def freeze(args):
     from transformers import AutoTokenizer
     import transformers
     import tokenizers
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     from vllm_kvmem import _native
     tokenizer_path = Path(base.read(run/'profile.json')['tokenizer']).resolve()
     tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), local_files_only=True)
@@ -263,10 +263,10 @@ def freeze(args):
         evidence.append(canonical_evidence(source, agent, planner, bridge, config))
         print(json.dumps(dict(event='canonical_task_end', at=time.time(), task=source['task'],
                               canonical_initial_tokens=len(agent['initial_tokens']))), flush=True)
-    request_plan = sys.modules['vllm_kvmem.request_plan']
+    request_plan = sys.modules['vllm_kvmem.serving.request_plan']
     if not Path(request_plan.__file__).resolve().is_relative_to(frozen_src):
         raise ValueError('RequestPlan is outside the original source frozen tree')
-    paths.update((bridge_path, Path(request_plan.__file__), Path(sys.modules['vllm_kvmem.config'].__file__),
+    paths.update((bridge_path, Path(request_plan.__file__), Path(sys.modules['vllm_kvmem.core.config'].__file__),
                   Path(_native.__file__)))
     paths.update(p for p in (run/'protocol').rglob('*') if p.is_file())
     # Hash every consulted source, including rejected candidate length/output

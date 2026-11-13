@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.window_assembly import _validate_destinations
+from vllm_kvmem.serving.window_assembly import _validate_destinations
 
 pytestmark = pytest.mark.skipif(not hasattr(_native, 'check_pressure_plan'),
                                 reason='Requires the rebuilt native extension')

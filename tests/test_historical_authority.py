@@ -5,10 +5,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.retirement import retire_authority
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.core.retirement import retire_authority
 
 
 class Ready:

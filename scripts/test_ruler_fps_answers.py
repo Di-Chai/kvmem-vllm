@@ -145,7 +145,7 @@ def prepare(root, source, overlap_reference):
         require(sha(path) == row['served_sha256'] and path.stat().st_size == row['served_input_tokens']*4,
                 'Original complete input changed')
     repo = Path(__file__).resolve().parents[1]
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     build_launch(profile, repo, root/ARM/'preflight-only')
     targets = read(overlap_reference/'target-spans.json')
     require(set(targets) == set(CASE_IDS), 'Missing offline-only reference spans')
@@ -184,7 +184,7 @@ def prepare(root, source, overlap_reference):
 def audit_selection(query, graph, inputs, profile):
     """Recompute transport and native picking from exported, answer-blind seeds."""
     import analyze_block_graph as offline
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.graph_scoring import score_graph
     alpha = profile['kvmem']['graph_alpha']
     require(type(alpha) in (int, float) and alpha == 0, 'FPS experiment requires graph alpha=0')
     stats = query.get('query_key_fps_scoring', {})

@@ -2,8 +2,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.action_attention import ActionHistory
-from vllm_kvmem.prefill_attention import pressure_seed, select_pressure
+from vllm_kvmem.serving.action_attention import ActionHistory
+from vllm_kvmem.serving.prefill_attention import pressure_seed, select_pressure
 from test_graph_lifecycle import fixture, complete, graph_checkpoints
 
 

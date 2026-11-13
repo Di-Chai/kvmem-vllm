@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.layerwise_pressure import DeferredPreparedCommit, PendingMaps
+from vllm_kvmem.serving.layerwise_pressure import DeferredPreparedCommit, PendingMaps
 
 
 def run(deferred, build_before_commit):
@@ -110,7 +110,7 @@ def test_deferred_maps_release_fails_waiting_consumers_and_times_out():
 
 
 def test_discarded_deferred_maps_drop_their_builder_and_refuse_late_use():
-    from vllm_kvmem.layerwise_pressure import DeferredPreparedCommit
+    from vllm_kvmem.serving.layerwise_pressure import DeferredPreparedCommit
     import pytest as _pytest
     built = []
     deferred = DeferredPreparedCommit(lambda: built.append(1) or 'maps', frozenset())

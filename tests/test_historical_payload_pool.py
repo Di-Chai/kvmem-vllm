@@ -59,7 +59,7 @@ def test_prefault_requires_a_pool():
 
 
 def test_python_config_is_opt_in(monkeypatch):
-    from vllm_kvmem.native_memory_storage import payload_pool_config
+    from vllm_kvmem.core.native_memory_storage import payload_pool_config
     monkeypatch.delenv('KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB', raising=False)
     monkeypatch.delenv('KVMEM_CPU_PAYLOAD_POOL_AHEAD', raising=False)
     assert payload_pool_config() == {}

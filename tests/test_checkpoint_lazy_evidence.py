@@ -6,10 +6,10 @@ import time
 
 import pytest
 
-from vllm_kvmem.deferred_evidence import DeferredEvidence
-from vllm_kvmem.layerwise_checkpoints import (LayerwisePrefix, _list_sha256, emit_prefix_evidence,
+from vllm_kvmem.serving.deferred_evidence import DeferredEvidence
+from vllm_kvmem.serving.layerwise_checkpoints import (LayerwisePrefix, _list_sha256, emit_prefix_evidence,
                                               lazy_evidence)
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 
 
 def snapshot(layers=5, rows=40):

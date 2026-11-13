@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.layerwise_pressure_efficiency import assembly_groups, isolate_partial_records
+from vllm_kvmem.serving.layerwise_pressure_efficiency import assembly_groups, isolate_partial_records
 
 
 def rec(begin, count=32, archived=True):

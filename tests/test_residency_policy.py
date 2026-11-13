@@ -1,8 +1,8 @@
 """Opt-in active_resident_victim=expected_wait: revoke the session expected to stay away longest."""
 import pytest
 
-from vllm_kvmem.active_residency import ActiveResidency
-from vllm_kvmem.residency_policy import ReturnGapModel
+from vllm_kvmem.serving.active_residency import ActiveResidency
+from vllm_kvmem.serving.residency_policy import ReturnGapModel
 from test_active_residency import save
 from test_window_manager import make_manager
 
@@ -65,7 +65,7 @@ def test_victim_configuration_is_validated(victim, model):
 
 
 def test_option_accepts_only_known_victims():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     import inspect
     source = inspect.getsource(RuntimeOptions)
     assert "active_resident_victim must be 'fifo' or 'expected_wait'" in source

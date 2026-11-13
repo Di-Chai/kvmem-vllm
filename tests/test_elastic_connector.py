@@ -10,16 +10,16 @@ pytest.importorskip('vllm')
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec, UniformTypeKVCacheSpecs
 
-from vllm_kvmem.elastic import CacheGeometry
-from vllm_kvmem.elastic_connector import KVMemElasticConnector
+from vllm_kvmem.apps.elastic import CacheGeometry
+from vllm_kvmem.apps.elastic_connector import KVMemElasticConnector
 
 
 @pytest.fixture
 def native_geometry(monkeypatch, tmp_path):
     # Exercise the real connector's manifest generation without starting an
     # offload worker or allocating a GPU. Specs and admission are native types.
-    monkeypatch.setattr('vllm_kvmem.elastic_connector.check_engine_version', lambda: None)
-    monkeypatch.setattr('vllm_kvmem.elastic_connector.OffloadingConnector.__init__',
+    monkeypatch.setattr('vllm_kvmem.apps.elastic_connector.check_engine_version', lambda: None)
+    monkeypatch.setattr('vllm_kvmem.apps.elastic_connector.OffloadingConnector.__init__',
                         lambda self, config, role, cache: None)
     attention = FullAttentionSpec(block_size=4, num_kv_heads=1, head_size=8,
                                   dtype=torch.float8_e4m3fn)

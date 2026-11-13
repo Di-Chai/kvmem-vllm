@@ -98,7 +98,7 @@ async def workload(root, profile):
         if answer['phase'] == 'warm':
             continue
         matched = [row for row in proofs if row['request_id'].startswith(answer['id']+'-')]
-        from vllm_kvmem.request_plan import RequestPlan
+        from vllm_kvmem.serving.request_plan import RequestPlan
         warm_plan = dict(fixture['00004']['plan'])
         warm_plan.pop('kvmem_query_span', None)
         warm_plan['kvmem_reselect'] = 'off'

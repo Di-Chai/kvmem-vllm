@@ -40,7 +40,7 @@ def percentile(values, quantile):
 def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen_budget,
                          enforce_output_budget=True):
     """Validate frozen external traces without changing IDs, plans or quotas."""
-    from vllm_kvmem.request_plan import FIELDS, RequestPlan
+    from vllm_kvmem.serving.request_plan import FIELDS, RequestPlan
     version = fixture.get('schema_version', 1)
     if type(version) is not int or version not in (1, 2):
         raise ValueError('Unsupported frozen agent trace schema version')
@@ -106,7 +106,7 @@ def validate_agent_plans(fixture, *, concurrency, warmup_turns, epoch_turns, gen
                 raise ValueError('External output length exceeds configured gen_budget')
             tokens(row['tool_tokens'], 'external tool')
             if version == 2:
-                from vllm_kvmem.prompt_spans import normalize_spans, normalize_provenance
+                from vllm_kvmem.serving.prompt_spans import normalize_spans, normalize_provenance
                 normalize_spans(row.get('tool_locality_spans', []), len(row['tool_tokens']))
                 if row.get('tool_locality_provenance'):
                     normalize_provenance(row['tool_locality_provenance'])

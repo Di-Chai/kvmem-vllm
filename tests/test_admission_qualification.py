@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from vllm_kvmem.multi_user import MultiUserMiddleware
+from vllm_kvmem.serving.multi_user import MultiUserMiddleware
 
 
 scripts = Path(__file__).parents[1] / 'scripts'

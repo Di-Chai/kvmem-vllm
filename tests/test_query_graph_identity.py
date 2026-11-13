@@ -4,8 +4,8 @@ import json
 import pytest
 import torch
 
-from vllm_kvmem.authority import _Ready, query_score_frame
-from vllm_kvmem.query_window_scoring import score_authority_windows
+from vllm_kvmem.serving.authority import _Ready, query_score_frame
+from vllm_kvmem.serving.query_window_scoring import score_authority_windows
 from test_graph_lifecycle import selected_starts
 from test_query_window_lifecycle import actual
 
@@ -13,7 +13,7 @@ from test_query_window_lifecycle import actual
 @pytest.mark.parametrize('native', [False, True])
 @pytest.mark.parametrize('trace', [False, True])
 def test_alpha_zero_passes_exact_overlap_seeds_to_picker_and_reports_no_propagation(tmp_path, monkeypatch, native, trace):
-    from vllm_kvmem import graph_scoring
+    from vllm_kvmem.serving import graph_scoring
     authority, archive, graph = actual(tmp_path)
     options = authority.graph_options
     options.graph_alpha = 0.

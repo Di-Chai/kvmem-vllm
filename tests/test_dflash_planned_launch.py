@@ -6,11 +6,11 @@ import subprocess
 import sys
 import pytest
 from test_serving_launcher import nvfp4_profile
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def test_default_deployment_matches_editable_profile_and_keeps_bounded_dflash(tmp_path):
-    from vllm_kvmem.default_profile import load_default_profile
+    from vllm_kvmem.serving.default_profile import load_default_profile
     cfg=load_default_profile()
     assert cfg==json.loads((Path(__file__).parents[1]/'examples/serve-default.json').read_text())
     plan=build_launch(cfg,tmp_path,tmp_path/'run',check_paths=False)
@@ -34,8 +34,8 @@ def test_default_cli_works_outside_checkout_without_engine_or_side_effects(tmp_p
     model=nvfp4_profile(tmp_path)
     paths={k:str(tmp_path/model[k]) for k in ('model','tokenizer','hf_config_path','draft_model')}
     code='''import json,os,sys
-from vllm_kvmem import default_profile
-from vllm_kvmem.serve import main
+from vllm_kvmem.serving import default_profile
+from vllm_kvmem.serving.serve import main
 default_profile._PROFILE.update(json.loads(sys.argv[1]))
 before=dict(os.environ)
 main(['--run-dir','owned-run','--dry-run'])
@@ -52,8 +52,8 @@ assert 'vllm' not in sys.modules and 'torch' not in sys.modules
 
 
 def test_explicit_mtp_profile_bypasses_default_dflash_selection(tmp_path,monkeypatch,capsys):
-    from vllm_kvmem import default_profile
-    from vllm_kvmem.serve import main
+    from vllm_kvmem.serving import default_profile
+    from vllm_kvmem.serving.serve import main
     def refuse_default():
         raise AssertionError('An explicit profile must not read or merge the default deployment')
     monkeypatch.setattr(default_profile,'load_default_profile',refuse_default)

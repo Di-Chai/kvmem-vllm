@@ -5,7 +5,7 @@ import os
 import pytest
 
 torch = pytest.importorskip('torch')
-from vllm_kvmem.query_capture_buffer import (
+from vllm_kvmem.serving.query_capture_buffer import (
     append_query_chunk, query_for_submit, release_query_buffer)
 
 

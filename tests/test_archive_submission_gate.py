@@ -4,13 +4,13 @@ from threading import Event
 
 import pytest
 
-from vllm_kvmem import _native, storage
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem import _native; from vllm_kvmem.core import storage
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 
 def archive_fixture(tmp_path, *, cached=False):
     if cached:
-        from vllm_kvmem.cached_storage import CachedArchive
+        from vllm_kvmem.core.cached_storage import CachedArchive
         archive = CachedArchive(str(tmp_path), 64, 4, cache_bytes=256, namespace_bytes=256)
     else:
         archive = MemoryArchive(str(tmp_path), 64, 4)

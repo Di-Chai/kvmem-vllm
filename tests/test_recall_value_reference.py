@@ -4,9 +4,9 @@ import json
 import pytest
 import torch
 
-from vllm_kvmem import recall_experiment as experiment
-from vllm_kvmem.recall_value_reference import prepare_reference, score_value_records
-from vllm_kvmem.recall_value_scoring import REFERENCE_METHODS, aggregate_scores
+from vllm_kvmem.serving import recall_experiment as experiment
+from vllm_kvmem.serving.recall_value_reference import prepare_reference, score_value_records
+from vllm_kvmem.serving.recall_value_scoring import REFERENCE_METHODS, aggregate_scores
 from test_recall_experiment import ScoringAuthority, native_authority, finish, metadata
 from test_recall_value_scoring import direct_oracle
 
@@ -132,7 +132,7 @@ def test_same_state_diagnostics_use_full_selected_set_and_restore_actual_picker(
 
 
 def test_real_state_profile_restores_backend_and_compares_native_selections(monkeypatch):
-    from vllm_kvmem.recall_value_profile import compare_query_backends
+    from vllm_kvmem.serving.recall_value_profile import compare_query_backends
     monkeypatch.setenv('KVMEM_VALUE_RECALL_BACKEND','streaming_packed')
     monkeypatch.setenv('KVMEM_RECALL_BLOCK_BATCH','1024')
     a=native_authority(count=256,budget=160,sink=1,recent=1)

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
-from vllm_kvmem import session_worker as sw
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.serving import session_worker as sw
 from test_authority import setup, payload, drain
 from test_session_state import fixture
 

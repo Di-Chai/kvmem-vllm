@@ -9,9 +9,9 @@ pytest.importorskip('vllm')
 
 def test_geometry_charges_shared_padded_pages_once_for_capacity(monkeypatch, tmp_path):
     from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec
-    from vllm_kvmem.cache_manifest import write_mean_k_geometry
-    from vllm_kvmem.elastic import CacheGeometry
-    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: NS(
+    from vllm_kvmem.adapters.cache_manifest import write_mean_k_geometry
+    from vllm_kvmem.apps.elastic import CacheGeometry
+    monkeypatch.setattr('vllm_kvmem.core.options.RuntimeOptions.from_vllm', lambda _: NS(
         cpu_read_cache_bytes=100000, cpu_history_coordination=True, cpu_progress_reserve=True,
         memory=NS(select_budget=16, gen_budget=8,
             repository_blocks=2, block_tokens=128)))

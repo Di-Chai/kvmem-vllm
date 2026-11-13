@@ -64,8 +64,8 @@ def build_modules(output):
     from flashinfer.jit import env
     from flashinfer.jit.attention import gen_customize_batch_prefill_module
     from flashinfer.jit.core import jit_spec_registry
-    from vllm_kvmem.native_attention_build import prefill_module,source_overlay,_write
-    from vllm_kvmem.native_prefill_readonly import CheckedReadonlyPrefillModule
+    from vllm_kvmem.serving.native_attention_build import prefill_module,source_overlay,_write
+    from vllm_kvmem.serving.native_prefill_readonly import CheckedReadonlyPrefillModule
     geometry=(torch.bfloat16,torch.float8_e4m3fn,torch.bfloat16,torch.int32,256)
     old=source_overlay(None,prefill_static_aligned=True)
     if old.name!='d7b326c5139bf4d9':

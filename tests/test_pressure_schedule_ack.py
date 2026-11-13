@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.connector import ControlCompletions, KVMemConnector
+from vllm_kvmem.serving.connector import ControlCompletions, KVMemConnector
 from test_pressure_pipeline_handoff import handoff
 
 
@@ -101,7 +101,7 @@ def test_connector_rejects_dispatch_without_completed_job():
 
 def test_scheduler_applies_completions_through_native_connector_path(monkeypatch):
     from vllm.distributed import kv_transfer
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     meta = ControlCompletions([('r', 7)], {'r': 36864})
     seen = []
     w = NS(take_schedule_completions=lambda: meta)
@@ -119,7 +119,7 @@ def test_scheduler_applies_completions_through_native_connector_path(monkeypatch
 
 def test_scheduler_refuses_its_own_connector(monkeypatch):
     from vllm.distributed import kv_transfer
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     own = NS(take_schedule_completions=lambda: None)
     monkeypatch.setattr(kv_transfer, 'has_kv_transfer_group', lambda: True)
     monkeypatch.setattr(kv_transfer, 'get_kv_transfer_group', lambda: own)
@@ -154,7 +154,7 @@ def test_idle_wait_is_bounded_and_does_not_dispatch_unprepared_plans():
 @pytest.mark.parametrize('runnable', [False, True])
 def test_scheduler_waits_only_when_nothing_else_is_schedulable(monkeypatch, runnable):
     from vllm.distributed import kv_transfer
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     waits = []
     def take(wait=0.):
         waits.append(wait)

@@ -31,7 +31,7 @@ def prepare(args):
     for arm in ('A0', 'P1'):
         profile = json.loads(json.dumps(common))
         profile['kvmem'].update({name: arm == 'P1' for name in FEATURES})
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         build_launch(profile, root, root / 'validation-host' / arm)
         benchmark.q.save(root / (arm + '.json'), profile)
     manifest = benchmark.read(root / 'manifest.json')

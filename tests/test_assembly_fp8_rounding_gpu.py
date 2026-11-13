@@ -11,11 +11,11 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 @pytest.mark.parametrize('implementation', ['direct', 'packed', 'split', 'fused'])
 @pytest.mark.parametrize('scale_value', [1., .04052734375])
 def test_assembly_rounds_fp32_to_fp8_once(implementation, scale_value):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.packed_assembly import assemble_packed_layer
-    from vllm_kvmem.split_assembly import (
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.packed_assembly import assemble_packed_layer
+    from vllm_kvmem.serving.split_assembly import (
         assemble_split_layer, assemble_split_layers, prepare_fused_layer_rows)
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.serving.window_assembly import LayerWindow
 
     positive = torch.arange(127, dtype=torch.uint8).view(torch.float8_e4m3fn).float()
     midpoint = (positive[:-1] + positive[1:]) * .5

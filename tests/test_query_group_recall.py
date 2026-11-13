@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_group_recall import build_halo_groups, describe_halo_selection, halo_summary
+from vllm_kvmem.serving.query_group_recall import build_halo_groups, describe_halo_selection, halo_summary
 
 
 def records(starts, counts=None):
@@ -67,7 +67,7 @@ def test_description_counts_displacement_and_deduplicated_physical_budget():
 def test_switches_are_independent_and_launch_roundtrip(tmp_path):
     from test_graph_options import model_profile, runtime, worker_payload
     from test_query_key_fps_integration import fps_settings
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile = model_profile(tmp_path)
     profile['kvmem'] = fps_settings(query_fps_halo_blocks=1, query_fps_optimized=True)
     original = deepcopy(profile)
@@ -98,13 +98,13 @@ def test_invalid_switches_are_rejected_before_serving(update):
 def test_actual_query_selects_atomic_neighbors_with_native_budget_and_exports(tmp_path, monkeypatch):
     from test_query_key_fps_integration import actual
     from test_graph_lifecycle import selected_starts
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     a, archive, graph = actual(tmp_path, select_budget=128)
     a.graph_options.query_fps_halo_blocks = 1
     a.graph_options.graph_trace = True
     a.graph_report_path = tmp_path/'block_graph.jsonl'
     values = torch.tensor([0., .5, .4, .9, .001, .002])
-    monkeypatch.setattr('vllm_kvmem.query_key_fps.score_authority_fps', lambda *args: (values, {}))
+    monkeypatch.setattr('vllm_kvmem.serving.query_key_fps.score_authority_fps', lambda *args: (values, {}))
     plan = a.select_for_queries(torch.ones(1,1,1,2), max_tokens=128)
     assert selected_starts(a, plan) == [0,64,96,128]
     assert plan.total_window_tokens == 128
@@ -124,11 +124,11 @@ def test_actual_query_selects_atomic_neighbors_with_native_budget_and_exports(tm
 
 def test_group_trace_failure_precedes_assembly_and_keeps_budget(tmp_path, monkeypatch):
     from test_query_key_fps_integration import actual
-    from vllm_kvmem.memory import Phase
+    from vllm_kvmem.core.memory import Phase
     a, archive, graph = actual(tmp_path, select_budget=128)
     a.graph_options.query_fps_halo_blocks = 1
     def fail(*args, **kwargs): raise OSError('injected group trace error')
-    monkeypatch.setattr('vllm_kvmem.graph_integration.emit_graph_report', fail)
+    monkeypatch.setattr('vllm_kvmem.serving.graph_integration.emit_graph_report', fail)
     with pytest.raises(OSError, match='group trace'):
         a.select_for_queries(torch.ones(1,1,1,2), max_tokens=128)
     assert a.memory.phase is Phase.READY and a.memory._store.runtime_select_budget == 0

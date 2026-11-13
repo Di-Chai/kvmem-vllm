@@ -260,8 +260,8 @@ def test_unproven_partial_stream_never_gets_a_template_closure(boundary_tokenize
 
 
 def test_canonical_fallback_agrees_with_accepted_assistant_eos(boundary_tokenizer):
-    from vllm_kvmem.block_graph import _merge_spans
-    from vllm_kvmem.prompt_spans import normalize_spans
+    from vllm_kvmem.serving.block_graph import _merge_spans
+    from vllm_kvmem.serving.prompt_spans import normalize_spans
     planner = bridge.Planner(renderer, boundary_tokenizer)
     state = bridge.Trajectory()
     payload = dict(messages=[dict(role='user', content='hello')],

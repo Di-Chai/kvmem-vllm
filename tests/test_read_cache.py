@@ -1,5 +1,5 @@
 import pytest
-from vllm_kvmem.read_cache import RecordReadCache
+from vllm_kvmem.core.read_cache import RecordReadCache
 
 
 def test_cache_bounds_generations_and_read_ownership_survive_eviction():

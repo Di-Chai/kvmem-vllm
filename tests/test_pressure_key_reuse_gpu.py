@@ -18,7 +18,7 @@ def trig_table(positions):
 
 
 def make_layer(blocks, scale):
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     pages = blocks * T // PAGE
     key = torch.zeros((pages, PAGE, HEADS, DIM), dtype=torch.float8_e4m3fn, device='cuda')
     table = torch.randperm(pages, generator=torch.Generator().manual_seed(3)).to(torch.int32).cuda()
@@ -32,7 +32,7 @@ def block_bytes(cache, table, base):
 
 
 def write_exact(layer, raw, values, bases):
-    from vllm_kvmem.split_assembly import assemble_split_layer
+    from vllm_kvmem.serving.split_assembly import assemble_split_layer
     n = bases.numel()
     index = torch.arange(n, device='cuda')
     assemble_split_layer(raw.flatten(), index, values.flatten(), index, bases, layer, layer_index=0,
@@ -52,7 +52,7 @@ def reuse_reference(old_key_bytes, delta, trig):
 
 def run_reuse(layer, raw, moves):
     """The assemble_reused GPU sequence without staging: whole snapshots, then reloads."""
-    from vllm_kvmem.pressure_key_reuse import REUSE, gather_rows, scatter_rows, write_keys
+    from vllm_kvmem.serving.pressure_key_reuse import REUSE, gather_rows, scatter_rows, write_keys
     upload = lambda xs: torch.tensor(xs, dtype=torch.int64, device='cuda')
     pages = layer.kernel_page_table
     reuse = [m for m in moves if m[5] == REUSE]
@@ -72,7 +72,7 @@ def run_reuse(layer, raw, moves):
 
 
 def test_in_place_reuse_matches_references():
-    from vllm_kvmem.pressure_key_reuse import REUSE, plan_layer
+    from vllm_kvmem.serving.pressure_key_reuse import REUSE, plan_layer
     torch.manual_seed(0)
     blocks, scale = 12, .0625
     layer = make_layer(blocks, scale)
@@ -107,7 +107,7 @@ def test_in_place_reuse_matches_references():
 
 
 def test_reused_keys_stay_close_to_a_fresh_rotation_after_many_moves():
-    from vllm_kvmem.pressure_key_reuse import REUSE
+    from vllm_kvmem.serving.pressure_key_reuse import REUSE
     torch.manual_seed(1)
     scale = .0625
     layer = make_layer(4, scale)

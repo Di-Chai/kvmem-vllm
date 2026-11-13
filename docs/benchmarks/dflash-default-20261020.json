@@ -2,7 +2,7 @@
   "date": "2026-10-20",
   "change": "User-approved larger GPU KV DFlash2 configuration is the default direct-serving deployment when --config is omitted.",
   "default_profile": "examples/serve-default.json",
-  "bundled_profile": "src/vllm_kvmem/default_profile.py",
+  "bundled_profile": "src/vllm_kvmem/serving/default_profile.py",
   "settings": {
     "draft_method": "dflash",
     "draft_tokens": 7,
@@ -44,7 +44,7 @@
     "artifacts/dflash-default-20261020/default-equivalence.json": "4000393f986e6b49c42cae1d167ae7c56adb773ca22685d634ac15446256f856",
     "artifacts/dflash-default-20261020/default-dry-run.json": "760e854d57429717aab4353b12937c81893c31565db32993bd0560028d6fe65c",
     "artifacts/dflash-default-20261020/host-regression.txt": "5ff3fa2060885e91a27488db8ac8afb318278f5b29a2a49a6dabd5ee156c6c0d",
-    "src/vllm_kvmem/default_profile.py": "6cbc0edb60c367ae37a54528d61a92521ab1a8857f5e09d3c3080dc0918d4cb9",
+    "src/vllm_kvmem/serving/default_profile.py": "6cbc0edb60c367ae37a54528d61a92521ab1a8857f5e09d3c3080dc0918d4cb9",
     "examples/serve-default.json": "b70400f5ef7f44fcde81d486e841e286e999d56ebb0068e734dfe52fe5122bfa"
   }
 }

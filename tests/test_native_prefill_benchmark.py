@@ -19,10 +19,10 @@ def launch():
         'serve', '/model', '--port', '18853', '--max-num-batched-tokens', '16424',
         '--kv-cache-dtype', 'fp8_e4m3', '--no-enable-prefix-caching',
         '--no-async-scheduling', '--long-prefill-token-threshold', '0',
-        '--scheduler-cls', 'vllm_kvmem.scheduler.KVMemScheduler',
+        '--scheduler-cls', 'vllm_kvmem.serving.scheduler.KVMemScheduler',
         '--kv-transfer-config', json.dumps({'kv_connector': 'KVMemConnector'}),
         '--speculative-config', json.dumps({'method': 'mtp', 'num_speculative_tokens': 4}),
-        '--middleware', 'vllm_kvmem.http_sessions.validate_prompt_session'])
+        '--middleware', 'vllm_kvmem.serving.http_sessions.validate_prompt_session'])
 
 
 def test_native_removes_only_extension_pairs_and_changes_port(benchmark):

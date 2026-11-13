@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from vllm_kvmem.webui.server import ConsoleServer
-from vllm_kvmem.webui.telemetry import Telemetry, parse_metrics
+from vllm_kvmem.apps.webui.server import ConsoleServer
+from vllm_kvmem.apps.webui.telemetry import Telemetry, parse_metrics
 
 
 class Manager:

@@ -13,8 +13,8 @@ import time
 
 import torch
 
-from vllm_kvmem.recall_value_scoring import REFERENCE_METHODS, aggregate_scores, iter_attention_moments
-from vllm_kvmem.recall_value_streaming import streaming_scores, streaming_value_norm
+from vllm_kvmem.serving.recall_value_scoring import REFERENCE_METHODS, aggregate_scores, iter_attention_moments
+from vllm_kvmem.serving.recall_value_streaming import streaming_scores, streaming_value_norm
 
 
 def benchmark(args):

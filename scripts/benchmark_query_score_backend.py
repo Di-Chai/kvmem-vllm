@@ -30,7 +30,7 @@ def comparison(before, after, quota):
 
 
 def measure_case(tokens, pages, warmup, rounds, output_dir):
-    from vllm_kvmem.cuda_scoring import prepare_mean_key_index,prepared_layer_scores
+    from vllm_kvmem.core.cuda_scoring import prepare_mean_key_index,prepared_layer_scores
     generator=torch.Generator(device='cuda').manual_seed(7901+tokens)
     means=torch.randn(1,pages+41,4,256,device='cuda',dtype=torch.bfloat16,generator=generator)
     mask=torch.ones(pages+41,device='cuda',dtype=torch.bool);mask[:41]=False
@@ -79,12 +79,12 @@ def main():
     args=parser.parse_args()
     if args.warmup<1 or args.rounds<1: parser.error('Require positive warmup and rounds')
     args.output_dir.mkdir(parents=True,exist_ok=False)
-    from vllm_kvmem.cuda_scoring import kernel
+    from vllm_kvmem.core.cuda_scoring import kernel
     kernel()  # Exclude extension compilation and loading from timing.
     report=dict(scope='Synthetic geometry kernel diagnostic only; does not prove real Query ranks, '
                       'full output equivalence, TTFT or prefill throughput.',
         seed_rule='7901 + Query tokens',device=torch.cuda.get_device_name(),cases=[])
-    package=Path(__import__('vllm_kvmem.cuda_scoring',fromlist=['x']).__file__).parent
+    package=Path(__import__('vllm_kvmem.core.cuda_scoring',fromlist=['x']).__file__).parent
     report['source_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in
         (package/'cuda_scoring.py',package/'cuda_sources/qw3_mean_k.cu',
          package/'cuda_sources/qw3_mean_k_kernel.cuh',package/'cuda_sources/qw3_mean_k_tiled.cuh')}

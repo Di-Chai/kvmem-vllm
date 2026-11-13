@@ -42,7 +42,7 @@ def prepared_args(tmp_path, monkeypatch, *, arms=('P1', 'Ppressure'), cap=2048):
 
 
 def test_explicit_cap_survives_arm_defaults_real_launcher_and_saved_profiles(tmp_path, monkeypatch):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     args = prepared_args(tmp_path, monkeypatch)
     asyncio.run(qualification.main(args))
     assert json.loads((args.output / 'status.json').read_text()) == {'status': 'prepared', 'gpu_started': False}

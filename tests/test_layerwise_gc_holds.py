@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import layerwise_gc_holds as holds
+from vllm_kvmem.serving import layerwise_gc_holds as holds
 
 
 class Scope:
@@ -97,7 +97,7 @@ def test_flag_is_validated(monkeypatch):
 
 
 def test_gc_aware_prepared_sources_are_read_rights_and_refuse_retired_records(monkeypatch):
-    from vllm_kvmem.memory_storage import MemoryArchive
+    from vllm_kvmem.core.memory_storage import MemoryArchive
     archive = MemoryArchive.__new__(MemoryArchive)
     archive.record_bytes = 8
     ready = NS(ready=True, allocation=NS(slot=1, generation=1))
@@ -115,8 +115,8 @@ def test_gc_aware_prepared_sources_are_read_rights_and_refuse_retired_records(mo
 
 
 def test_prepared_reader_gate_accepts_historical_gc_only_with_the_opt_in(monkeypatch):
-    from vllm_kvmem import pressure_reader
-    from vllm_kvmem.historical_gc import HistoricalAuthorityGc
+    from vllm_kvmem.serving import pressure_reader
+    from vllm_kvmem.core.historical_gc import HistoricalAuthorityGc
     gc = HistoricalAuthorityGc.__new__(HistoricalAuthorityGc)
     archive = NS(memory_only=True, _native_payload_arena=object(), prepare_region_reader=lambda *a, **k: None)
     a = NS(archive=archive, gc=gc, memory=NS(_history_scope=object()))
@@ -159,8 +159,8 @@ def test_checkpoint_hold_refusal_raises_and_releases_its_pause(monkeypatch):
 
 
 def test_lazy_query_reader_accepts_historical_gc_only_with_the_opt_in(monkeypatch):
-    from vllm_kvmem.historical_gc import HistoricalAuthorityGc
-    from vllm_kvmem.query_region_reader import QueryRegionReader
+    from vllm_kvmem.core.historical_gc import HistoricalAuthorityGc
+    from vllm_kvmem.serving.query_region_reader import QueryRegionReader
     gc = HistoricalAuthorityGc.__new__(HistoricalAuthorityGc)
     archive = NS(memory_only=True, _native_payload_arena=object(), _history_worker=object(), record_bytes=8)
     a = NS(archive=archive, gc=gc, memory=NS(_history_scope=object(), request_id='r'), history_end=64,
@@ -180,7 +180,7 @@ def test_lazy_query_reader_accepts_historical_gc_only_with_the_opt_in(monkeypatc
 
 
 def test_pressure_reader_keeps_admission_rights_only_with_the_opt_in(monkeypatch):
-    from vllm_kvmem.pressure_reader import PressureReader
+    from vllm_kvmem.serving.pressure_reader import PressureReader
     reader = PressureReader.__new__(PressureReader)
     monkeypatch.delenv('KVMEM_LAYERWISE_HISTORICAL_GC', raising=False)
     with pytest.raises(ValueError, match='bypass native payload admission'):
@@ -194,7 +194,7 @@ def test_pressure_reader_keeps_admission_rights_only_with_the_opt_in(monkeypatch
 
 
 def test_reads_outside_the_native_window_pin_plainly_only_with_the_opt_in(monkeypatch):
-    from vllm_kvmem.memory import Phase, RequestMemory
+    from vllm_kvmem.core.memory import Phase, RequestMemory
     class Plan:
         def admitted_read(self, handle):
             if handle == 'in':
@@ -213,7 +213,7 @@ def test_reads_outside_the_native_window_pin_plainly_only_with_the_opt_in(monkey
 
 
 def test_historical_admission_reports_per_owner_lease_views():
-    from vllm_kvmem.historical_admission import HistoricalHistoryAdmission, HistoricalTurnReservation
+    from vllm_kvmem.serving.historical_admission import HistoricalHistoryAdmission, HistoricalTurnReservation
     adm = HistoricalHistoryAdmission(64*1024, 1024, 64, 32)
     key = ('session', 'a', 'a')
     adm.ledger.reservations[key] = HistoricalTurnReservation(key, 1, 'r-1', 0, 100, 4, 2, 2)

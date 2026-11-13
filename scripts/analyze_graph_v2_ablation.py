@@ -49,7 +49,7 @@ def replay(record, arm):
     # Reuse the existing native replay path, including its full baseline and
     # generation/mask validation. There is no second Python page picker here.
     import analyze_block_graph as native
-    from vllm_kvmem.graph_scoring import score_graph
+    from vllm_kvmem.serving.graph_scoring import score_graph
     original_hash = digest(record)
     derived = derived_record(record, arm)
     whole = native.analyze_record(derived)
@@ -111,7 +111,7 @@ def compare(left, right):
 
 
 def effective_boundaries(record):
-    from vllm_kvmem.graph_scoring import locality_boundary
+    from vllm_kvmem.serving.graph_scoring import locality_boundary
     block = record['config']['block_tokens']
     graph = record['graph']
     available = {start:(score,keep) for start,score,keep in

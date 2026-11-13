@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.connector import ControlMetadata, RefreshCommand
-from vllm_kvmem.pressure_commit import prepare_commit
+from vllm_kvmem.serving.connector import ControlMetadata, RefreshCommand
+from vllm_kvmem.serving.pressure_commit import prepare_commit
 from test_pressure_pipeline_handoff import handoff
 
 

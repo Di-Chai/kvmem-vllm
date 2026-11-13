@@ -9,7 +9,7 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import (
+from vllm_kvmem.serving.native_attention import (
     DetachedValidationResult,
     NativeAttentionStats,
 )

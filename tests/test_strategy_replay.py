@@ -112,7 +112,7 @@ def test_a_run_with_trace_scores_compares_equal_to_one_without(tmp_path):
 
 def test_only_policy_retirements_are_logged_as_evictions(tmp_path):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.serving.authority import RequestAuthority
     stats = {'retired': 0}
     auth = NS(archive=NS(history_scope_metrics_path=tmp_path / 'historical_gc_scopes.jsonl', _history_policy='lru'),
               gc=NS(scope=NS(stats=stats)), memory=NS(request_id='r'))

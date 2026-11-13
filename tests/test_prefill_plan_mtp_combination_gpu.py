@@ -8,7 +8,7 @@ import os
 import pytest
 import torch
 
-import vllm_kvmem.action_attention as module
+import vllm_kvmem.serving.action_attention as module
 from test_prefill_action_before_mtp_gpu import fixture, snapshot
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',

@@ -13,10 +13,10 @@ import random
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem import layerwise_checkpoints as lc
-from vllm_kvmem.authority import VersionedRecords
-from vllm_kvmem.layerwise_checkpoints import MassRows, capture, records_by_begin, restored_decode
-from vllm_kvmem.layerwise_decode import NativeDecodeHistory
+from vllm_kvmem.serving import layerwise_checkpoints as lc
+from vllm_kvmem.serving.authority import VersionedRecords
+from vllm_kvmem.serving.layerwise_checkpoints import MassRows, capture, records_by_begin, restored_decode
+from vllm_kvmem.serving.layerwise_decode import NativeDecodeHistory
 from test_checkpoint_fast_state import NAMES, build, summary
 from test_session_fast_turn import _env, bits, mode, session, state  # noqa: F401  (autouse fixture)
 

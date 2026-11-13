@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.checkpoint_prewarm import prewarm_checkpoint_payloads, prewarm_count
+from vllm_kvmem.serving.checkpoint_prewarm import prewarm_checkpoint_payloads, prewarm_count
 
 
 def test_reservation_accounts_for_allocator_rounding_and_concurrency():
@@ -18,7 +18,7 @@ def test_disabled_does_not_access_runner_or_allocate():
 
 
 def test_no_gpu_data_or_snapshot_lifetime_changed(monkeypatch, tmp_path):
-    import vllm_kvmem.native_state as native
+    import vllm_kvmem.serving.native_state as native
     a=torch.ones((7,3,5),dtype=torch.float32)
     b=torch.ones((7,2,4),dtype=torch.float32)
     monkeypatch.setattr(native, 'NativeRecurrentState', lambda _:SimpleNamespace(groups={0:{'layer':(a,b)}}))
@@ -50,7 +50,7 @@ def test_session_retained_checkpoints_raise_the_concurrency_cap():
 
 
 def test_environment_overrides_the_profile_count(monkeypatch):
-    from vllm_kvmem.checkpoint_prewarm import requested_count
+    from vllm_kvmem.serving.checkpoint_prewarm import requested_count
     options = SimpleNamespace(checkpoint_pinned_prewarm_count=3)
     monkeypatch.delenv('KVMEM_CHECKPOINT_PINNED_PREWARM', raising=False)
     assert requested_count(options) == 3
@@ -68,7 +68,7 @@ def test_environment_overrides_the_profile_count(monkeypatch):
 def test_warming_follows_the_startup_graph_capture(monkeypatch, eager):
     # torch.cuda.graph() empties the pinned host cache on entry, so blocks
     # warmed before the startup capture would be gone at the first checkpoint.
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     events = []
 
     class Base:
@@ -82,10 +82,10 @@ def test_warming_follows_the_startup_graph_capture(monkeypatch, eager):
     runner = make_probe_runner(Base)()
     runner.vllm_config = object()
     runner.model_config = SimpleNamespace(enforce_eager=eager)
-    monkeypatch.setattr('vllm_kvmem.profile_scopes.install_profile_scopes', lambda _: None)
-    monkeypatch.setattr('vllm_kvmem.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw: None)
-    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: 'options')
-    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads',
+    monkeypatch.setattr('vllm_kvmem.serving.profile_scopes.install_profile_scopes', lambda _: None)
+    monkeypatch.setattr('vllm_kvmem.serving.recurrent_table_journal.install_recurrent_table_journal', lambda *a, **kw: None)
+    monkeypatch.setattr('vllm_kvmem.core.options.RuntimeOptions.from_vllm', lambda _: 'options')
+    monkeypatch.setattr('vllm_kvmem.serving.checkpoint_prewarm.prewarm_checkpoint_payloads',
                         lambda r, options, stage: events.append((options, stage)))
     runner.initialize_kv_cache(is_profiling=True)
     runner.initialize_kv_cache()
@@ -99,7 +99,7 @@ def test_warming_follows_the_startup_graph_capture(monkeypatch, eager):
 
 
 def test_graph_memory_profile_does_not_consume_checkpoint_prewarm(monkeypatch):
-    from vllm_kvmem.runner import make_probe_runner
+    from vllm_kvmem.serving.runner import make_probe_runner
     events = []
 
     class Base:
@@ -109,8 +109,8 @@ def test_graph_memory_profile_does_not_consume_checkpoint_prewarm(monkeypatch):
 
     runner = make_probe_runner(Base)()
     runner.vllm_config = object()
-    monkeypatch.setattr('vllm_kvmem.options.RuntimeOptions.from_vllm', lambda _: 'options')
-    monkeypatch.setattr('vllm_kvmem.checkpoint_prewarm.prewarm_checkpoint_payloads',
+    monkeypatch.setattr('vllm_kvmem.core.options.RuntimeOptions.from_vllm', lambda _: 'options')
+    monkeypatch.setattr('vllm_kvmem.serving.checkpoint_prewarm.prewarm_checkpoint_payloads',
                         lambda r, options, stage: events.append((options, stage)))
 
     assert runner.capture_model(profile_only=True) == 11

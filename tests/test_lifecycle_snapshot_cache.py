@@ -3,7 +3,7 @@ are byte-identical to json.dumps(SessionLedger.snapshot())."""
 import json
 import types
 
-from vllm_kvmem.session_control import SessionLedger, _Entry
+from vllm_kvmem.serving.session_control import SessionLedger, _Entry
 
 
 def ledger(entries):
@@ -70,7 +70,7 @@ def test_scheduler_file_bytes_match_with_and_without_the_cache(tmp_path, monkeyp
     from types import SimpleNamespace
     sys.path.insert(0, str(Path(__file__).parent))
     from test_capacity import make_gate, request
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     gate, _, _ = make_gate(blocks=5)
     req = request('a')
     assert gate.allocate_slots(req, 64) is not None

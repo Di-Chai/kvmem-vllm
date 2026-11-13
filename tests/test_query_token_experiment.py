@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_token_experiment import token_page_scores, select_token_queries
+from vllm_kvmem.serving.query_token_experiment import token_page_scores, select_token_queries
 
 
 @pytest.mark.parametrize('chunk', [1, 2, 128])
@@ -33,7 +33,7 @@ def test_token_selection_preserves_native_transaction_and_graph_version(tmp_path
     from test_core import Event
     a,archive,graph=fixture(tmp_path,mode='multi')
     a.graph_options.graph_alpha=0.;a.graph_options.pressure_policy='attention'
-    monkeypatch.setattr('vllm_kvmem.query_token_experiment.token_page_scores',
+    monkeypatch.setattr('vllm_kvmem.serving.query_token_experiment.token_page_scores',
         lambda *args:([.01,.10,.15,.12,.02,.60],dict(method='test')))
     plan=select_token_queries(a,torch.zeros(2,1,1,2),(),max_tokens=12)
     assert selected_starts(a,plan)==[8,12,20]
@@ -50,7 +50,7 @@ def test_archive_read_error_precedes_selection_and_releases_snapshot(tmp_path,mo
     a.graph_options.graph_alpha=0.;a.graph_options.pressure_policy='attention'
     before=a.memory.phase,graph.binding,graph.budget.used
     def fail(*args):raise OSError('archive failure')
-    monkeypatch.setattr('vllm_kvmem.query_token_experiment.token_page_scores',fail)
+    monkeypatch.setattr('vllm_kvmem.serving.query_token_experiment.token_page_scores',fail)
     with pytest.raises(OSError,match='archive failure'):
         select_token_queries(a,torch.zeros(2,1,1,2),(),max_tokens=12)
     assert (a.memory.phase,graph.binding,graph.budget.used)==before
@@ -58,7 +58,7 @@ def test_archive_read_error_precedes_selection_and_releases_snapshot(tmp_path,mo
 
 
 def test_token_launcher_is_explicit_and_rejects_graph_or_guided(tmp_path,monkeypatch,capsys):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     settings=dict(guided_query_tokens=0,graph_alpha=0.,graph_mode='multi',block_tokens=32)
     p=tmp_path/'profile.json';p.write_text('{}')
     monkeypatch.setattr(serve,'build_launch',lambda *a:dict(profile={'kvmem':settings},environment={}))

@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import pressure_promise
+from vllm_kvmem.serving import pressure_promise
 
 
 def test_flag_is_opt_in_and_validated(monkeypatch):

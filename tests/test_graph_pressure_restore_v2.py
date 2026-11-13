@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.prefill_attention import select_pressure
+from vllm_kvmem.serving.prefill_attention import select_pressure
 from test_core import Event
 from test_graph_lifecycle import graph_checkpoints, complete
 from test_graph_pressure_v2 import configure
@@ -62,7 +62,7 @@ def test_partial_terminal_pressure_keeps_tail_and_uses_saved_candidates(tmp_path
 
 
 def test_async_prepare_passes_incoming_metadata_before_any_model_or_page_copy(tmp_path):
-    from vllm_kvmem.async_restore import _step_restore
+    from vllm_kvmem.serving.async_restore import _step_restore
     pool, prompt, terminal, authority, archive, adapter, graph = graph_checkpoints(tmp_path)
     configure(authority)
     binding = NS(namespace=prompt.namespace,generation=3,history=8,window=8,
@@ -111,7 +111,7 @@ def test_pressure_quota_failure_is_retryable_before_native_selection(tmp_path):
 
 def test_pressure_trace_io_failure_leaves_ready_state_and_releases_all_graph_leases(tmp_path, monkeypatch):
     from test_graph_lifecycle import fixture
-    import vllm_kvmem.graph_integration as integration
+    import vllm_kvmem.serving.graph_integration as integration
     authority, archive, graph = fixture(tmp_path)
     state = configure(authority)
     state.scores = {20:1.}

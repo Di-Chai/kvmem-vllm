@@ -19,7 +19,7 @@ import torch
 
 import analyze_block_graph as offline
 from analyze_ruler_overlap_answers import ranks, span_coverage
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.core.config import KVMemConfig
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,7 +62,7 @@ def build_representatives(keys, counts, *, device='cpu', batch_pages=128):
     Indices are offsets inside original blocks. Padding never participates.
     The FP16 cache exactly represents this experiment's original FP8 values.
     """
-    from vllm_kvmem.query_key_fps import select_key_representatives
+    from vllm_kvmem.serving.query_key_fps import select_key_representatives
     require(len(keys.shape) == 4 and len(counts) > 0 and
         all(type(n) is int and 0 < n <= 32 for n in counts) and
         sum(counts) == keys.shape[1] and type(batch_pages) is int and
@@ -108,7 +108,7 @@ def build_representatives(keys, counts, *, device='cpu', batch_pages=128):
 
 def score_capture(queries, keys, meta, *, device='cpu', batch_pages=128):
     """No target metadata or answers accepted by the scorer."""
-    from vllm_kvmem.query_key_fps import key_fps_scores
+    from vllm_kvmem.serving.query_key_fps import key_fps_scores
     require(meta['dtype'] == 'float8_e4m3fn' and meta['raw_k_scale'] == 1.0,
         'This replay is qualified for the captured unit-scale raw FP8 content Keys only')
     require(list(keys.shape) == meta['key_shape'] and keys.dtype == np.uint8,

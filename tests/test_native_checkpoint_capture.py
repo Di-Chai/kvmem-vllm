@@ -5,7 +5,7 @@ import random
 import pytest
 
 from test_native_restore_frame import fixture, append, plan_value
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
 
 
 @pytest.mark.parametrize('kind', ['dense', 'sparse', 'partial'])
@@ -72,7 +72,7 @@ def test_pool_capture_and_restore_preserve_state(tmp_path, enabled):
 
 def test_options_are_explicit_booleans():
     from test_options import config
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     for name in ('native_checkpoint_capture', 'host_stage_timing'):
         assert not getattr(RuntimeOptions.from_vllm(config({})), name)
         assert getattr(RuntimeOptions.from_vllm(config({'kvmem': {name: True}})), name)

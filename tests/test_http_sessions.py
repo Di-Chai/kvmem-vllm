@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from vllm_kvmem.http_sessions import validate_session_payload, validate_prompt_session
+from vllm_kvmem.serving.http_sessions import validate_session_payload, validate_prompt_session
 
 
 def test_native_session_precedence_and_namespace_limits():
@@ -158,8 +158,8 @@ def test_rolling_rejects_unplanned_entries_before_shared_engine_and_keeps_token_
 
 def test_rolling_cold_headroom_uses_actual_input_and_preserves_output_limit(monkeypatch):
     import json
-    from vllm_kvmem.http_sessions import normalize_query_plan
-    from vllm_kvmem.request_plan import RequestCapacityError
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.request_plan import RequestCapacityError
     cfg = dict(block_tokens=16, gen_budget=32, select_budget=32)
     payload = dict(prompt=[1]*40, max_tokens=32, kvmem_prefill_window='keep_selected')
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(cfg))
@@ -172,8 +172,8 @@ def test_rolling_cold_headroom_uses_actual_input_and_preserves_output_limit(monk
 
 def test_graph_only_metadata_moves_to_transport_without_planning_side_effects(monkeypatch):
     import json
-    from vllm_kvmem.http_sessions import normalize_query_plan
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps(dict(
         block_tokens=4, gen_budget=32, select_budget=64)))
     ids = list(range(24))

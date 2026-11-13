@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from vllm_kvmem import _prefill_state_native as native
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
-from vllm_kvmem.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
 
 pytestmark = pytest.mark.skipif(not hasattr(native.State, 'same_state'), reason='Requires rebuilt extension')
 
@@ -57,7 +57,7 @@ def test_same_state_has_dict_equality_semantics():
 
 
 def test_same_snapshot_both_native(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import same_snapshot
+    from vllm_kvmem.serving.layerwise_pressure import same_snapshot
     monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT', '1')
     g, h = BufferedPrefillHistory(options()), BufferedPrefillHistory(options())
     g.values = h.values = {4: [1., 2.], 8: [0., 1.]}

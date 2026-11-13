@@ -83,8 +83,8 @@ def test_mab_preflight_rejects_the_insufficient_cold_niah_graph_limits(limit):
 
 
 def test_one_million_token_graph_retained_prefix_and_staging_fit_mab_capacity():
-    from vllm_kvmem.block_graph import BlockGraph, GraphSample, GraphBudget
-    from vllm_kvmem.prompt_spans import install_graph_metadata
+    from vllm_kvmem.serving.block_graph import BlockGraph, GraphSample, GraphBudget
+    from vllm_kvmem.serving.prompt_spans import install_graph_metadata
     per_owner, total = protocol.frozen_prefix_graph_capacity(32768, 8)
     pool = GraphBudget(total)
     graph = BlockGraph('mab', 32, budget=pool, max_bytes_per_session=per_owner)
@@ -141,7 +141,7 @@ def test_invalid_or_unfair_arms_are_rejected(mutation):
 
 @pytest.mark.parametrize('arm', protocol.ARMS)
 def test_real_launch_audits_v2_worker_transport_and_actual_budgets(tmp_path, arm):
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     profile = protocol.profiles(base(), 1234)[arm]
     launch = build_launch(profile, tmp_path, tmp_path/'server', check_paths=False)
     (tmp_path/'server').mkdir()

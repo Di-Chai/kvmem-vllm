@@ -14,8 +14,8 @@ from vllm.v1.core.sched.request_queue import FCFSRequestQueue
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.request import RequestStatus
 
-from vllm_kvmem.offline_policy import OfflineAgentPolicy
-from vllm_kvmem.prefill_control import BatchPrefillBudget
+from vllm_kvmem.serving.offline_policy import OfflineAgentPolicy
+from vllm_kvmem.serving.prefill_control import BatchPrefillBudget
 from test_phase_scheduler import NATIVE_RESERVE, request, scheduler as phase_scheduler
 
 
@@ -182,7 +182,7 @@ def test_atomic_query_is_not_a_fair_share_and_preserves_native_mtp_lookahead(mon
 def test_prepared_replay_is_bounded_by_original_reservation_and_not_reselected(monkeypatch, tmp_path):
     from dataclasses import replace
     from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     from test_scheduler_transactions import setup_scheduler
     s, r, _ = setup_scheduler()
     s._bounded_target = s.request_planning = True
@@ -205,7 +205,7 @@ def test_prepared_replay_is_bounded_by_original_reservation_and_not_reselected(m
 
 @pytest.mark.parametrize('decode_ready,cap', [(False, 64), (True, 64), (True, 32)])
 def test_shared_cap_does_not_strand_mtp_before_required_generation_checkpoint(monkeypatch, tmp_path, decode_ready, cap):
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     s = setup(monkeypatch, tmp_path, cap=cap)
     s.query_policy = QueryPolicy(32, 128, 128)
     s.num_prefill_lookahead = 4
@@ -217,7 +217,7 @@ def test_shared_cap_does_not_strand_mtp_before_required_generation_checkpoint(mo
     # currently qualified one-module MTP GPU profile (whose lookahead is 1).
     assert reserve(s, r, 35) == 32  # Visit 128, never an unresumable 127.
     r.num_computed_tokens = 128
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     plan = request_plan(r, 32, 128)
     assert plan.action(128, 131, 0, 256) == 'pressure'
     # Simulate the completed selection's mapped offset, not a model forward.
@@ -229,7 +229,7 @@ def test_shared_cap_does_not_strand_mtp_before_required_generation_checkpoint(mo
 
 def native_restore_setup(monkeypatch, tmp_path, *, hot=False):
     from test_native_readiness_admission import native_fixture, checkpoint, decode, enqueue, request as native_request
-    from vllm_kvmem.admission import QueryPolicy
+    from vllm_kvmem.serving.admission import QueryPolicy
     s, window, sessions, residency, gate, _ = native_fixture(monkeypatch, tmp_path, max_seqs=4)
     # The fixture normally exercises allocation without bounded forwarding.
     # Enable the actual bounded metadata hook so restore is stripped to control.
@@ -265,8 +265,8 @@ def native_restore_setup(monkeypatch, tmp_path, *, hot=False):
 @pytest.mark.parametrize('allocation_fails', [False, True])
 def test_native_restore_control_bypasses_spent_forward_cap_but_not_allocation(monkeypatch, tmp_path, hot, allocation_fails):
     from vllm.v1.outputs import KVConnectorOutput
-    from vllm_kvmem.connector import ControlCompletions, RestoreCommand
-    from vllm_kvmem.session_control import SessionNotice
+    from vllm_kvmem.serving.connector import ControlCompletions, RestoreCommand
+    from vllm_kvmem.serving.session_control import SessionNotice
     from test_core import Event
     s, window, sessions, residency, gate, r = native_restore_setup(monkeypatch, tmp_path, hot=hot)
     if allocation_fails:
@@ -316,7 +316,7 @@ def test_cancelled_restore_lookup_loses_cap_exemption_and_returns_provisional_re
 
 def test_stale_waiting_publication_preserves_share_and_does_not_hide_restore_behind_it(monkeypatch, tmp_path):
     from test_native_readiness_admission import enqueue, request as native_request
-    from vllm_kvmem.connector import RestoreCommand
+    from vllm_kvmem.serving.connector import RestoreCommand
     s, _, _, _, gate, restored = native_restore_setup(monkeypatch, tmp_path)
     older = native_request('older-prefill', prompt=129)
     older.arrival_time = restored.arrival_time - 1

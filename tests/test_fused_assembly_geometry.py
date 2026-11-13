@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem import split_assembly
+from vllm_kvmem.serving import split_assembly
 
 
 class TensorMetadata:

@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_key_fps import (
+from vllm_kvmem.serving.query_key_fps import (
     KeyFPSCache, select_key_representatives, select_key_representatives_optimized,
 )
 

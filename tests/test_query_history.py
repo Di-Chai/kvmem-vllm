@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.query_history import QueryRelevance
+from vllm_kvmem.serving.query_history import QueryRelevance
 
 
 def test_original_normalization_decay_and_replay_are_logical_rounds():
@@ -59,14 +59,14 @@ def test_original_extreme_values_and_invalid_scores():
 
 def test_history_changes_actual_topk_selection(tmp_path,monkeypatch):
     from test_authority import setup,payload,drain
-    from vllm_kvmem.authority import _Ready
+    from vllm_kvmem.serving.authority import _Ready
     a,archive=setup(tmp_path)
     a.append(*payload(0,16),history_begin=0,local_rope_begin=0);drain(a)
     a.query_history=QueryRelevance(1)
     a.query_history.begin('old',range(12));a.query_history.preview({4:1});a.query_history.commit()
     a.query_history.begin('new',range(16))
     # Instantaneous relevance favours page 8. Retained evidence makes page 4 win.
-    monkeypatch.setattr('vllm_kvmem.retrieval.mean_key_scores',
+    monkeypatch.setattr('vllm_kvmem.core.retrieval.mean_key_scores',
         lambda *args:torch.tensor([0.,.4,.6,0.]))
     plan=a.select_for_queries(torch.ones(2,1,2,2))
     handles={r.handle.slot:r.history_begin for r in a.records.values()}
@@ -78,7 +78,7 @@ def test_history_changes_actual_topk_selection(tmp_path,monkeypatch):
 
 def test_private_batch_preserves_public_inputs_and_native_identity():
     from vllm.v1.worker.gpu.input_batch import InputBatch,InputBuffers
-    from vllm_kvmem.guided_query import private_batch
+    from vllm_kvmem.serving.guided_query import private_batch
     batch=InputBatch.make_dummy(2,8,InputBuffers(2,8,torch.device('cpu')))
     batch.idx_mapping[1]=7
     batch.idx_mapping_np[1]=7
@@ -91,7 +91,7 @@ def test_private_batch_preserves_public_inputs_and_native_identity():
 
 def test_guided_and_history_options_can_be_enabled_together():
     from test_options import config
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     payload={'kvmem':{'request_planning':True,'query_history':True,'guided_query_tokens':32,
         'session_capacity':8,'session_checkpoint_bytes':1024,'async_archive_retirement':True,
         'repository_blocks':8192}}
@@ -100,7 +100,7 @@ def test_guided_and_history_options_can_be_enabled_together():
 
 
 def test_guided_reserve_is_accounted_before_query_admission():
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     p=RequestPlan.parse({'kvmem_query_span':[48000,50000]},50000,128,16384,384)
     boundary=p.prefill_boundary(45000,49152)
     assert boundary+(p.replay_end-p.replay_begin)+384+128 <= 49152
@@ -110,8 +110,8 @@ def test_guided_reserve_is_accounted_before_query_admission():
 
 @pytest.mark.parametrize('restored',[False,True])
 def test_query_capture_cannot_publish_unconfirmed_mtp_neighbour(restored):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.session_control import SessionBinding
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.session_control import SessionBinding
     import numpy as np
     ns=SimpleNamespace
     runtime=CaptureRuntime.__new__(CaptureRuntime)

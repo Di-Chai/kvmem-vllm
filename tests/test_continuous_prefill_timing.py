@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from benchmark_active_prefill import (STEADY_SHAPES, continuous_phase_span,
                                       continuous_steady_phases)
 from native_prefill_shape_probe import NativeTiming
-from vllm_kvmem.step_timing import StepTiming
+from vllm_kvmem.serving.step_timing import StepTiming
 
 
 class EventClock:

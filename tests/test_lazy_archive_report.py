@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-import vllm_kvmem.capture_runtime as capture
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.report_writer import LatestReportWriter, lazy_archive_report
+import vllm_kvmem.serving.capture_runtime as capture
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.serving.report_writer import LatestReportWriter, lazy_archive_report
 
 
 def _runtime(tmp_path, monkeypatch):

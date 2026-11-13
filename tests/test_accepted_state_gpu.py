@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 def test_canonical_state_matches_native_prefix_conv_and_gdn(dim_first, retained):
     from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_update
     from vllm.third_party.flash_linear_attention.ops.fused_sigmoid_gating import fused_sigmoid_gating_delta_rule_update
-    from vllm_kvmem.native_state import NativeRecurrentState, verify_state_sources
+    from vllm_kvmem.serving.native_state import NativeRecurrentState, verify_state_sources
     verify_state_sources()
     torch.manual_seed(913)
     query, width, features, blocks = 8, 4, 128, 11

@@ -8,11 +8,11 @@ import numpy as np
 import pytest
 import torch
 
-import vllm_kvmem.action_attention as module
-import vllm_kvmem.action_scoring as scoring
-from vllm_kvmem.action_attention import ActionRuntime
-from vllm_kvmem.action_download_pool import ActionDownloadPool
-from vllm_kvmem.logical_action import LogicalActionResult
+import vllm_kvmem.serving.action_attention as module
+import vllm_kvmem.serving.action_scoring as scoring
+from vllm_kvmem.serving.action_attention import ActionRuntime
+from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
+from vllm_kvmem.serving.logical_action import LogicalActionResult
 from test_action_download_pool import Backend
 from test_logical_action import fixture, state
 

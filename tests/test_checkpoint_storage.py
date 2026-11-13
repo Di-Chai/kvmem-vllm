@@ -9,8 +9,8 @@ import weakref
 import pytest
 import torch
 
-from vllm_kvmem.checkpoint_storage import CheckpointStore
-from vllm_kvmem.request_checkpoint import CacheRows, capture_exact, restore_exact
+from vllm_kvmem.serving.checkpoint_storage import CheckpointStore
+from vllm_kvmem.serving.request_checkpoint import CacheRows, capture_exact, restore_exact
 
 
 def eventually(call):

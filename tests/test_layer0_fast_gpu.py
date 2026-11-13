@@ -22,7 +22,7 @@ def fp8_rows(n, generator):
 
 
 def layer_window(pages, generator):
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     key = torch.zeros((pages, PAGE, HEADS, DIM), dtype=torch.uint8, device='cuda').view(torch.float8_e4m3fn)
     value = torch.zeros_like(key)
     cos_sin = torch.randn((4096, DIM), generator=generator, device='cuda')
@@ -32,7 +32,7 @@ def layer_window(pages, generator):
 
 def reference(raw, val, sources, skip, layer):
     """The CPU path: contiguous non-skipped runs, each uploaded and assembled as one chunk."""
-    from vllm_kvmem.layerwise_pressure_efficiency import packed_layer_chunk
+    from vllm_kvmem.serving.layerwise_pressure_efficiency import packed_layer_chunk
     from types import SimpleNamespace as NS
     row_bytes = raw.shape[1]
     total = len(sources) * BLOCK
@@ -57,7 +57,7 @@ def reference(raw, val, sources, skip, layer):
 
 @pytest.mark.parametrize('seed', [0, 1, 2])
 def test_fast_window_assembly_is_byte_identical_to_cpu_chunks(seed):
-    from vllm_kvmem.layer0_fast import assemble_window
+    from vllm_kvmem.serving.layer0_fast import assemble_window
     generator = torch.Generator(device='cuda').manual_seed(seed)
     window, chunk = 24, 8
     pages = (window * BLOCK) // PAGE + 4
@@ -94,7 +94,7 @@ def test_failed_shadow_rebuild_drops_the_shadow_and_never_raises(monkeypatch):
     """A rebuild runs after the producer's own upload of a layer; if the plan ended
     meanwhile (the reader refuses), the refresh must continue without a shadow."""
     from types import SimpleNamespace as NS
-    from vllm_kvmem import layer0_fast
+    from vllm_kvmem.serving import layer0_fast
     monkeypatch.setenv('KVMEM_LAYER0_FAST', '1')
     monkeypatch.setenv('KVMEM_LAYER0_FAST_LAYERS', '2')
     fast = layer0_fast.Layer0Fast(NS(device=torch.device('cuda')))

@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import pressure_promise as pp
+from vllm_kvmem.serving import pressure_promise as pp
 
 
 def sessions(freeze=False, captures=(), terminals=(), checkpoint_at=None):

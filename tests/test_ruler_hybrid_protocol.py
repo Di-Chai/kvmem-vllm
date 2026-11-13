@@ -7,8 +7,8 @@ import analyze_block_graph as offline
 import ruler_hybrid_protocol as policy
 from test_ruler_fps_halo_answers import audit_fixture
 from test_ruler_fps_cpu_protocol import full_fixture
-from vllm_kvmem.query_hybrid_recall import preview_hybrid_selection, quota_summary
-from vllm_kvmem.query_group_recall import halo_summary
+from vllm_kvmem.serving.query_hybrid_recall import preview_hybrid_selection, quota_summary
+from vllm_kvmem.serving.query_group_recall import halo_summary
 
 
 def fixture():

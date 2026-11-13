@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.pressure_reader import prepare_pressure_reader
+from vllm_kvmem.serving.pressure_reader import prepare_pressure_reader
 from test_prepared_pressure_reader import authority_fixture
 from test_query_paired_gather import reference_pair
 
@@ -46,7 +46,7 @@ def test_pressure_pair_reuses_union_leases_and_reports_transaction_counters(tmp_
 
 @pytest.mark.parametrize('reason',['threshold','whole_record'])
 def test_pressure_pair_retains_existing_parallel_and_full_record_paths(tmp_path,monkeypatch,reason):
-    from vllm_kvmem import memory_storage
+    from vllm_kvmem.core import memory_storage
     monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER','1')
     monkeypatch.setattr(_native,'gather_record_regions',lambda *args:pytest.fail('Ineligible paired path'),raising=False)
     a,plan,records,_,_,_,values=authority_fixture(tmp_path)

@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.pressure_query_capture import PressureQueryWindow, validate_capture_options
+from vllm_kvmem.serving.pressure_query_capture import PressureQueryWindow, validate_capture_options
 from test_prefill_publication_pipeline import enabled_fixture, mark_pipeline
 from test_request_publication import packet, close
 from test_pressure_query_capture import batch

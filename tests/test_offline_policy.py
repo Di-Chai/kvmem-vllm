@@ -3,9 +3,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.offline_policy import OfflineAgentPolicy, ServiceCosts
+from vllm_kvmem.serving.offline_policy import OfflineAgentPolicy, ServiceCosts
 from vllm.v1.core.sched.request_queue import FCFSRequestQueue
-from vllm_kvmem.session_control import SessionLedger
+from vllm_kvmem.serving.session_control import SessionLedger
 
 
 def request(rid, prompt=512, computed=0, arrival=0.):
@@ -143,7 +143,7 @@ def test_cost_model_excludes_fixed_maintenance_and_requires_matching_decode_cont
 
 def test_cpu_preview_does_not_accumulate_waits_and_native_gpu_preview_counts_growth():
     from test_coordination import request as cpu_request
-    from vllm_kvmem.coordination import HistoryAdmission
+    from vllm_kvmem.serving.coordination import HistoryAdmission
     from test_capacity import make_gate,request as gpu_request
     cpu=HistoryAdmission(208,4,1,100)
     cpu.allocated(cpu_request('a'),1);cpu.allocated(cpu_request('b'),2)
@@ -174,7 +174,7 @@ def test_worker_uses_the_same_measured_readiness_costs_and_fifo_when_incomplete(
 
 
 def test_active_context_cost_bucket_uses_dense_window_not_full_cpu_history():
-    from vllm_kvmem.step_timing import StepTiming
+    from vllm_kvmem.serving.step_timing import StepTiming
     class Event:
         def record(self):pass
     t=StepTiming(1,None,event_factory=Event,clock=lambda:10.)
@@ -195,8 +195,8 @@ def test_restore_only_feedback_crosses_connector_without_waiting_for_a_model_ste
 
 
 def test_unified_policy_rejects_competing_controllers_before_model_start():
-    from vllm_kvmem.options import RuntimeOptions
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.options import RuntimeOptions
+    from vllm_kvmem.core.config import KVMemConfig
     settings=dict(memory=KVMemConfig(),offline_agent_policy=True,cpu_history_coordination=True,
         async_restore=True,active_resident_ttl_ms=5000,step_latency_interval=4,
         async_refresh=True,maintenance_max_steps=8,archive_backend='cpu',request_planning=True,

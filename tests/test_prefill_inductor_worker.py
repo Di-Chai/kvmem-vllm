@@ -273,7 +273,7 @@ def test_main_delegates_and_restores_original_launcher(modules, monkeypatch, tmp
 
 
 def test_real_serve_main_records_final_plan_and_keeps_compatibility_setup(modules, monkeypatch, tmp_path):
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
 
     source = tmp_path / 'profile.json'
     source.write_text('{}')
@@ -288,7 +288,7 @@ def test_real_serve_main_records_final_plan_and_keeps_compatibility_setup(module
     # process. Its ordinary compatibility and CLI entry points remain visible.
     monkeypatch.setattr(serve.os, 'environ', {'KVMEM_STALE': 'discard', 'UNCHANGED': 'yes'})
     monkeypatch.setattr(sys, 'argv', ['fixture'])
-    compatibility = ModuleType('vllm_kvmem.compat')
+    compatibility = ModuleType('vllm_kvmem.adapters.compat')
     compatibility.enable_draft_load_config_fix = lambda: events.append('compatibility')
     monkeypatch.setitem(sys.modules, compatibility.__name__, compatibility)
     cli = ModuleType('vllm.entrypoints.cli.main')

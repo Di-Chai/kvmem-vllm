@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.core.options import RuntimeOptions
 from test_capture_dma_isolation import configure, make_ready
 from test_options import config
 from test_prefill_pipeline_options import profile
@@ -113,7 +113,7 @@ def test_replay_terminal_or_mixed_decode_keep_original_capture_order(tmp_path, m
 
 
 def test_native_invalid_fallback_result_is_the_only_published_action_packet(tmp_path):
-    from vllm_kvmem.action_attention import ActionRuntime
+    from vllm_kvmem.serving.action_attention import ActionRuntime
     runtime, a, b, archive = fixture(tmp_path)
     configure(runtime)
     captures, batch, rejected = inputs(runtime, [('a', 4, 4, True)])

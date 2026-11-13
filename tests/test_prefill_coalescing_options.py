@@ -5,8 +5,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def profile():
@@ -53,5 +53,5 @@ def test_launch_requires_a_bounded_aligned_coalescing_range(baseline,maximum):
 
 
 def test_disabled_coalescing_preserves_small_generation_compatibility():
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     assert not RuntimeOptions(memory=KVMemConfig(gen_budget=1024)).offline_prefill_coalescing

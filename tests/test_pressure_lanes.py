@@ -3,8 +3,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.async_refresh import AsyncRefresh
-from vllm_kvmem.maintenance import MaintenancePolicy
+from vllm_kvmem.serving.async_refresh import AsyncRefresh
+from vllm_kvmem.serving.maintenance import MaintenancePolicy
 
 
 def policy():
@@ -85,13 +85,13 @@ def test_stream_is_per_lane_thread_local():
 
 
 def test_lane_staging_is_only_defined_for_refresh_assembly():
-    from vllm_kvmem.window_assembly import NativeWindowAssembler
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
     with pytest.raises(ValueError, match='only defined for refresh'):
         NativeWindowAssembler.from_runner(NS(), 'r', (), arena='pressure', staging_lane=1)
 
 
 def test_lanes_flag_requires_the_guarded_pipeline(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
     query = NS(runner=NS(model_config=NS(enforce_eager=True)), names=('l0',), optimized=True,
                native_batches=True, paired_reads=True)
     monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_LANES', '3')

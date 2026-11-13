@@ -5,10 +5,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.layerwise_query import LayerwiseQuery, top_set
-from vllm_kvmem.memory import RequestMemory
-from vllm_kvmem.query_record_index import QueryRecordIndex, query_record_index
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery, top_set
+from vllm_kvmem.core.memory import RequestMemory
+from vllm_kvmem.serving.query_record_index import QueryRecordIndex, query_record_index
 from test_core import append
 
 
@@ -103,7 +103,7 @@ def test_invalid_or_rebound_record_geometry_is_rejected(fault):
 @pytest.mark.parametrize('mode', ['global', 'sequential'])
 @pytest.mark.parametrize('diagnostics', [False, True])
 def test_complete_query_hooks_preserve_selection_and_evidence(tmp_path, monkeypatch, mode, diagnostics):
-    from vllm_kvmem import cuda_scoring
+    from vllm_kvmem.core import cuda_scoring
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_MODE', mode)
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_OPTIMIZED', '1')
     monkeypatch.setenv('KVMEM_LAYERWISE_PREPARED_INDEX', '1')

@@ -5,8 +5,8 @@ import weakref
 
 import pytest
 
-from vllm_kvmem.layerwise_pressure_efficiency import install_single_assembly
-from vllm_kvmem.window_assembly import NativeWindowAssembler
+from vllm_kvmem.serving.layerwise_pressure_efficiency import install_single_assembly
+from vllm_kvmem.serving.window_assembly import NativeWindowAssembler
 
 
 class Owner:

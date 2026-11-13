@@ -7,12 +7,12 @@ pytest.importorskip('vllm')
 
 
 def startup_runner(monkeypatch, tmp_path, *, serving, backend, loader):
-    import vllm_kvmem.runner as runner_module
-    import vllm_kvmem.cuda_scoring as scoring
-    import vllm_kvmem.draft_quantization as quantization
-    import vllm_kvmem.mtp_runtime as mtp
-    import vllm_kvmem.profile_scopes as scopes
-    from vllm_kvmem.options import RuntimeOptions
+    import vllm_kvmem.serving.runner as runner_module
+    import vllm_kvmem.core.cuda_scoring as scoring
+    import vllm_kvmem.adapters.draft_quantization as quantization
+    import vllm_kvmem.adapters.mtp_runtime as mtp
+    import vllm_kvmem.serving.profile_scopes as scopes
+    from vllm_kvmem.core.options import RuntimeOptions
 
     calls = []
 

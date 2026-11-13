@@ -75,6 +75,13 @@ class RequestMemory:
     picker = None
     # Optional slot -> (history_begin, count), for pickers that use positions.
     block_info = None
+    # Hooks serving installs; core imports no serving module (tests/test_layers.py).
+    # Tensor parallel: set with tp_records by serving.authority.
+    tp_records = None
+    tp_selected_slots = None
+    tp_admit_window = None
+    # The layer materialization class, registered by serving.pressure_pipeline.
+    layer_materialization_type = None
 
     def __init__(self, request_id: str, config: KVMemConfig):
         if not request_id:
@@ -165,8 +172,7 @@ class RequestMemory:
             selected = self.preview_selection(scores, mandatory_slots, action=action,
                 prefill_scores=prefill_scores, pressure_scores=pressure_scores, max_tokens=max_tokens)
             if getattr(self, 'tp_records', None) is not None:
-                from ..serving.tensor_parallel import selected_slots
-                selected = selected_slots(self.tp_records, selected)
+                selected = self.tp_selected_slots(self.tp_records, selected)
             if self.first_pick is None:
                 # The pure (const) native pick for these inputs; a report may reuse it.
                 self.first_pick = selected
@@ -198,7 +204,7 @@ class RequestMemory:
         try:
             return plan.admitted_read(handle)
         except ValueError:
-            from ..serving.pressure_reader import layerwise_gc
+            from .archive_flags import layerwise_gc
             if not layerwise_gc():
                 raise
             return None
@@ -278,8 +284,7 @@ class RequestMemory:
             selected = self.preview_group_selection(groups, group_scores, mandatory_slots,
                 max_tokens=max_tokens)
             if getattr(self, 'tp_records', None) is not None:
-                from ..serving.tensor_parallel import selected_slots
-                selected = selected_slots(self.tp_records, selected)
+                selected = self.tp_selected_slots(self.tp_records, selected)
             try:
                 plan = self._admit_slots(selected, expected=expected)
                 break
@@ -304,8 +309,7 @@ class RequestMemory:
             return self._store.select([self._store.handle(slot) for slot in selected])
         if getattr(self, 'tp_records', None) is None:
             return admit()
-        from ..serving.tensor_parallel import admit_window
-        return admit_window(admit)
+        return self.tp_admit_window(admit)
 
     def preview_group_selection(self, groups, group_scores, mandatory_slots=(), *, max_tokens=None):
         """Native atomic groups within the existing block budget and keep bands.
@@ -401,9 +405,9 @@ class RequestMemory:
         This is deliberately separate from commit_selection: an early first
         layer event is not a completion fence for the whole window.
         """
-        from ..serving.pressure_pipeline import LayerMaterialization
+        kind = RequestMemory.layer_materialization_type
         self._require(Phase.ASSEMBLING)
-        if (not isinstance(materialization, LayerMaterialization) or self._submitted or
+        if (kind is None or not isinstance(materialization, kind) or self._submitted or
                 self._layerwise_materialization is not None):
             raise RuntimeError('Invalid or overlapping layer materialization')
         materialization.validate_dispatch(self)

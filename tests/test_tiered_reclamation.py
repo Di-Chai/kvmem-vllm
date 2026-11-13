@@ -181,8 +181,8 @@ def test_explicit_close_keeps_last_file_charged_until_close_returns(tmp_path, mo
 
 @pytest.mark.parametrize('asynchronous', [False, True])
 def test_terminal_ack_waits_for_reap_and_forces_final_zero_report(tmp_path, monkeypatch, asynchronous):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.archive_telemetry import ArchiveResourceReporter
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.core.archive_telemetry import ArchiveResourceReporter
     from test_connector import pair, send, poll
     archive, repo, leases = spilled(tmp_path)
     entered, proceed = hold_close(monkeypatch, archive)
@@ -219,9 +219,9 @@ def test_terminal_ack_waits_for_reap_and_forces_final_zero_report(tmp_path, monk
 
 
 def test_session_eviction_keeps_namespace_until_reap_and_final_report(tmp_path, monkeypatch):
-    from vllm_kvmem.session_worker import SessionWorker
-    from vllm_kvmem.session_control import SessionEviction
-    from vllm_kvmem.archive_telemetry import ArchiveResourceReporter
+    from vllm_kvmem.serving.session_worker import SessionWorker
+    from vllm_kvmem.serving.session_control import SessionEviction
+    from vllm_kvmem.core.archive_telemetry import ArchiveResourceReporter
     archive, repo, leases = spilled(tmp_path)
     entered, proceed = hold_close(monkeypatch, archive)
     reporter = ArchiveResourceReporter(tmp_path, archive, memory_sampler=lambda: {})
@@ -251,8 +251,8 @@ def test_session_eviction_keeps_namespace_until_reap_and_final_report(tmp_path, 
 
 def test_idle_session_only_shutdown_waits_for_final_physical_release(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    from vllm_kvmem.capture_runtime import CaptureRuntime
-    from vllm_kvmem.session_worker import SessionWorker
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.session_worker import SessionWorker
     archive, repo, leases = spilled(tmp_path)
     entered, proceed = hold_close(monkeypatch, archive)
     runtime = CaptureRuntime.__new__(CaptureRuntime)
@@ -312,7 +312,7 @@ def test_write_rollback_close_error_retains_failed_extent_and_global_fence(tmp_p
 def test_tiered_terminal_fence_enabled_without_async_retirement():
     from vllm.config.kv_transfer import KVTransferConfig
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
-    from vllm_kvmem.connector import KVMemConnector
+    from vllm_kvmem.serving.connector import KVMemConnector
     config = NS(kv_transfer_config=KVTransferConfig(kv_connector='KVMemConnector', kv_role='kv_both',
         kv_connector_extra_config={'kvmem': {'archive_backend': 'tiered'}}),
         parallel_config=NS(tensor_parallel_size=1))

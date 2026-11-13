@@ -64,8 +64,8 @@ def experiment(source, tmp_path, monkeypatch):
             source_sha256=diagnostic.benchmark.hashes(frozen),
             fixture_sha256=diagnostic.benchmark.q.digest(fixture)))
 
-    import vllm_kvmem.serve
-    monkeypatch.setattr(vllm_kvmem.serve, 'build_launch', lambda *a, **kw: None)
+    import vllm_kvmem.serving.serve
+    monkeypatch.setattr(vllm_kvmem.serving.serve, 'build_launch', lambda *a, **kw: None)
     monkeypatch.setattr(diagnostic.benchmark, 'prepare', prepare)
     output = tmp_path / 'diagnostic'
     diagnostic.prepare(SimpleNamespace(source_experiment=source, output=output, port=18491))

@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.pressure_pipeline import LayerMaterialization, PressurePipeline
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.pressure_pipeline import LayerMaterialization, PressurePipeline
 from test_recall_experiment import native_authority
 
 
@@ -198,7 +198,7 @@ def test_reap_retains_all_resources_until_future_and_final_cuda_completion():
 def test_cancel_after_early_ack_still_defers_page_and_request_index_recycling():
     from dataclasses import replace
     from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     from test_async_refresh import manager
     refresh = manager()
     job = NS(done=True, cancelled=False)
@@ -223,7 +223,7 @@ def test_cancel_after_early_ack_still_defers_page_and_request_index_recycling():
 def test_pipeline_preserves_native_piecewise_compute_graphs(monkeypatch, mode):
     from vllm.config import CUDAGraphMode
     from vllm.v1.worker.gpu import model_runner
-    from vllm_kvmem.layerwise_query import install_native_query_dispatch
+    from vllm_kvmem.serving.layerwise_query import install_native_query_dispatch
     calls = []
     def dispatch(*args, **kwargs):
         calls.append(kwargs.copy())
@@ -290,7 +290,7 @@ def test_relaxed_dispatch_fails_closed_when_batch_holds_a_lease_owner(monkeypatc
 def test_full_graph_survives_a_foreign_lease_only(monkeypatch, member):
     from vllm.config import CUDAGraphMode
     from vllm.v1.worker.gpu import model_runner
-    from vllm_kvmem.layerwise_query import install_native_query_dispatch
+    from vllm_kvmem.serving.layerwise_query import install_native_query_dispatch
     calls = []
     def dispatch(*args, **kwargs):
         calls.append(kwargs.copy())

@@ -60,7 +60,7 @@ def test_prepared_reader_sources_are_gc_read_rights_with_exact_bytes(tmp_path, m
 
 def test_checkpoint_policy_hold_keeps_its_records_until_dropped(tmp_path, monkeypatch):
     from types import SimpleNamespace as NS
-    from vllm_kvmem.layerwise_gc_holds import checkpoint_hold
+    from vllm_kvmem.serving.layerwise_gc_holds import checkpoint_hold
     monkeypatch.setenv('KVMEM_LAYERWISE_HISTORICAL_GC', '1')
     archive, worker, repo, scope = actual_archive(tmp_path)
     leases, _ = append(archive, repo, scope)

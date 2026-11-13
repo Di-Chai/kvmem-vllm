@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def test_defaults_preserve_the_original_private_replay_path():

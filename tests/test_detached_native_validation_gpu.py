@@ -11,7 +11,7 @@ from threading import get_ident
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
 
 
 pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',

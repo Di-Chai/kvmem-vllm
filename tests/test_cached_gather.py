@@ -4,7 +4,7 @@ import threading
 import pytest
 
 from vllm_kvmem import _native
-from vllm_kvmem.cached_storage import CachedArchive
+from vllm_kvmem.core.cached_storage import CachedArchive
 
 
 def test_native_gather_keeps_miss_slots_and_disjoint_range_bytes():

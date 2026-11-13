@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.action_attention import ActionHistory
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.serving.action_attention import ActionHistory
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
 from test_authority import setup, payload, drain
 from test_context_continuation import Model
 from test_core import Event

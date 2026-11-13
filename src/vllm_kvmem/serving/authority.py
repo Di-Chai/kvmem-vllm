@@ -325,9 +325,11 @@ class RequestAuthority:
             raise ValueError("Archive record format does not match model geometry")
         self.resident_records = resident_records
         self.records: dict[tuple[int, int], Record] = VersionedRecords()
-        from .tensor_parallel import active
+        from .tensor_parallel import active, admit_window, selected_slots
         if active():
             self.memory.tp_records = self.records
+            # core.memory calls serving's collectives through these (it imports no serving module).
+            self.memory.tp_selected_slots, self.memory.tp_admit_window = selected_slots, admit_window
         # These contain only live, not-yet-published generations, so ordinary
         # decode bookkeeping does not grow with archived history. GC can only
         # remove archived records; rewind explicitly removes its live suffix.

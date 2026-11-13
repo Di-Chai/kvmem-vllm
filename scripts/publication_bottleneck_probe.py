@@ -64,16 +64,16 @@ class _PublicationMixin:
         scopes = getattr(self, '_prefill_phase_probe', None)
         if scopes is None or hasattr(self, '_publication_timings'):
             return
-        from vllm_kvmem import logical_publication, _native
-        from vllm_kvmem.capture_runtime import CaptureRuntime
-        from vllm_kvmem.authority import RequestAuthority
-        from vllm_kvmem.action_attention import ActionRuntime, _PreparedActionAcceptance
-        from vllm_kvmem.block_graph import GraphUpdate
-        from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
+        from vllm_kvmem.serving import logical_publication; from vllm_kvmem import _native
+        from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+        from vllm_kvmem.serving.authority import RequestAuthority
+        from vllm_kvmem.serving.action_attention import ActionRuntime, _PreparedActionAcceptance
+        from vllm_kvmem.serving.block_graph import GraphUpdate
+        from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
         from vllm_kvmem._prefill_state_native import State
-        from vllm_kvmem.memory_storage import MemoryArchive
-        from vllm_kvmem.logical_action import LogicalActionSlice
-        from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
+        from vllm_kvmem.core.memory_storage import MemoryArchive
+        from vllm_kvmem.serving.logical_action import LogicalActionSlice
+        from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
         self._publication_timings = timing = PublicationTimings(scopes)
         for owner, prefix, names in (
             (logical_publication, 'logical', ('append_authority_batch',)),

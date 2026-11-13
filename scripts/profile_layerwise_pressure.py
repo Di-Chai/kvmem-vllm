@@ -183,10 +183,10 @@ def serve(root):
     os.environ.update(PREFILL_PRESSURE_RANGE=json.dumps(plan['pressure_range']),
         PREFILL_PHASE_PROBE_OUTPUT=str(root/'probe'))
     if launch['profile']['model_adapter'] == 'qwen38_flash_next_b12x':
-        from vllm_kvmem.qsa_config_compat import enable
+        from vllm_kvmem.adapters.qsa_config_compat import enable
         enable()
     if launch['profile']['draft_method'] == 'dflash':
-        from vllm_kvmem.compat import enable_draft_load_config_fix
+        from vllm_kvmem.adapters.compat import enable_draft_load_config_fix
         enable_draft_load_config_fix()
     (root/'run/server/capture').mkdir(parents=True, exist_ok=False)
     save(root/'run/server/launch.json', dict(launch, vllm_argv=argv, diagnostic_only=True))

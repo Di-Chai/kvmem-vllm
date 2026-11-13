@@ -5,7 +5,7 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.query_window_scoring import (
+from vllm_kvmem.serving.query_window_scoring import (
     overlap_window_scores, window_layout, window_targets,
 )
 

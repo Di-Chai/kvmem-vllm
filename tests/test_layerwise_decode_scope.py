@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem import layerwise_decode as ld
-from vllm_kvmem.action_attention import ActionHistory, ActionPacket, _TwinParser, _layerwise_mask
-from vllm_kvmem.layerwise_decode import DecodeHistory, NativeDecodeHistory
+from vllm_kvmem.serving import layerwise_decode as ld
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionPacket, _TwinParser, _layerwise_mask
+from vllm_kvmem.serving.layerwise_decode import DecodeHistory, NativeDecodeHistory
 from test_graph_capture import options as action_options
 from test_layerwise_pressure import controller, packet as prefill_packet
 

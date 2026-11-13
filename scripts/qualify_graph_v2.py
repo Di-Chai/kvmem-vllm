@@ -9,7 +9,7 @@ import time
 
 from tokenizers import Tokenizer
 
-from vllm_kvmem.offline_queue import OfflineQueue, OfflineTask
+from vllm_kvmem.serving.offline_queue import OfflineQueue, OfflineTask
 import graph_v2_protocol as protocol
 import qualify_block_graph as q
 import qualify_graph_niah as old

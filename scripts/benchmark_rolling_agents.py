@@ -58,8 +58,8 @@ def profiles(source, port):
 
 
 def fixture_bounds(fixture, profile):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.serving.request_plan import RequestPlan
     cap.require(type(fixture.get('eos')) is int and fixture['eos'] >= 0, 'Validated EOS required')
     cap.require(len(fixture.get('agent_plans', [])) == USERS, 'Require exactly the original first eight users')
     plans = work.validate_agent_plans(fixture, concurrency=USERS, warmup_turns=WARMUP,

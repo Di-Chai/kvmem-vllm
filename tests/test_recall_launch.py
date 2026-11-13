@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def profile():
@@ -89,7 +89,7 @@ def test_value_method_rejects_missing_mandatory_normalization(tmp_path,method):
 
 def test_value_diagnostic_cli_survives_clean_worker_environment(tmp_path,monkeypatch,capsys):
     import json
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     config=profile();config['recall_experiment']['include_mandatory_in_softmax']=True
     path=tmp_path/'profile.json';path.write_text(json.dumps(config))
     monkeypatch.setattr(serve,'build_launch',lambda *args:dict(profile=config,environment={}))
@@ -167,7 +167,7 @@ def test_recall_parallelism_is_declared_and_cannot_change_kv_frame(tmp_path, own
 
 def test_value_profile_cli_is_explicit_and_survives_clean_worker_environment(tmp_path,monkeypatch,capsys):
     import json
-    from vllm_kvmem import serve
+    from vllm_kvmem.serving import serve
     config=profile();config['recall_experiment'].update(value_backend='streaming_packed',
         include_mandatory_in_softmax=True,method='block_value_norm')
     path=tmp_path/'profile.json';path.write_text(json.dumps(config))

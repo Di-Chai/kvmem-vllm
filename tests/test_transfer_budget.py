@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from vllm_kvmem.transfer_budget import TransferBudget
+from vllm_kvmem.core.transfer_budget import TransferBudget
 
 
 def test_idle_uploads_are_unrestricted_and_busy_burst_has_a_byte_bound():

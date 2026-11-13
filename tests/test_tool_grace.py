@@ -2,8 +2,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.active_residency import ActiveResidency
-from vllm_kvmem.tool_grace import ToolGrace
+from vllm_kvmem.serving.active_residency import ActiveResidency
+from vllm_kvmem.serving.tool_grace import ToolGrace
 from test_active_residency import save
 from test_capacity import make_gate, request
 
@@ -145,7 +145,7 @@ def test_pressure_prefers_expired_grace_but_never_reclaims_claimed_import():
 
 
 def test_restore_cost_excludes_queue_and_cancelled_inflight_restore():
-    from vllm_kvmem.restore_admission import RestoreAdmission
+    from vllm_kvmem.serving.restore_admission import RestoreAdmission
     from test_restore_admission import entry, command
     from test_active_residency import setup
     resident, _, _, now = setup(pressure_only=True)
@@ -169,8 +169,8 @@ def test_restore_cost_excludes_queue_and_cancelled_inflight_restore():
 
 
 def test_connector_defers_before_session_claim_and_observes_arrival():
-    from vllm_kvmem.connector import KVMemConnector
-    from vllm_kvmem.session_control import SessionLedger
+    from vllm_kvmem.serving.connector import KVMemConnector
+    from vllm_kvmem.serving.session_control import SessionLedger
     from test_active_residency import setup
     resident, _, _, now = setup(pressure_only=True)
     resident.tool_grace = p = policy(now)
@@ -186,7 +186,7 @@ def test_connector_defers_before_session_claim_and_observes_arrival():
 
 def test_public_options_roundtrip_and_defaults(tmp_path):
     from test_graph_options import runtime, settings, model_profile, worker_payload
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     assert runtime().active_tool_grace_ms == 0
     profile = model_profile(tmp_path)
     from test_agent_handoff_options import configured

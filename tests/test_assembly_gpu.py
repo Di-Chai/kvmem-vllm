@@ -8,8 +8,8 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1", reason=
 def test_assembly_matches_native_vllm_fp8_cache_and_retains_v(head_major):
     import torch
     from vllm import _custom_ops as ops
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.codec import neox_rope, native_vllm_fp8_views
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.core.codec import neox_rope, native_vllm_fp8_views
     torch.manual_seed(418)
     raw = torch.randn(23, 4, 256, device="cuda", dtype=torch.bfloat16)
     value = torch.randn_like(raw)

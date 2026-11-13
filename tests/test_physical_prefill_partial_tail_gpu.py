@@ -11,10 +11,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.logical_action import LogicalScorePlan, project_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.native_attention import NativeAttentionStats
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, project_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.request_plan import RequestPlan
 import test_physical_prefill_stats_gpu as base
 
 pytestmark = base.pytestmark

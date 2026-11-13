@@ -8,7 +8,7 @@ from vllm.config.kv_transfer import KVTransferConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 from vllm.v1.outputs import KVConnectorOutput
 
-from vllm_kvmem.connector import KVMemConnector, RefreshCommand, ControlCompletions
+from vllm_kvmem.serving.connector import KVMemConnector, RefreshCommand, ControlCompletions
 
 
 class Event:
@@ -35,7 +35,7 @@ def test_async_retirement_requires_bounded_admission_and_native_idle_hook(monkey
     monkeypatch.setenv('KVMEM_BOUNDED_TARGET', '1')
     scheduler, worker = pair(async_retirement=True)
     assert scheduler.async_retirement and worker.async_retirement
-    import vllm_kvmem.engine_api as api
+    import vllm_kvmem.adapters.engine_api as api
     def missing(name):
         assert name == 'retirement'
         raise api.UnsupportedEngine('Missing idle-worker completion hook')
@@ -179,7 +179,7 @@ def test_idle_native_worker_no_forward_delivers_retirement_acknowledgment(monkey
 
 
 def test_worker_selected_extent_is_carried_only_with_its_completed_command():
-    from vllm_kvmem.bounded_runtime import QueryJob
+    from vllm_kvmem.serving.bounded_runtime import QueryJob
     scheduler, worker = pair()
     event = Event()
     job = QueryJob(RefreshCommand("a", 7, ()), selected_tokens=123)

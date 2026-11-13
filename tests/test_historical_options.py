@@ -5,10 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.historical_gc import HistoricalGcSettings, historical_record_charge
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.storage import make_shared_archive
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.historical_gc import HistoricalGcSettings, historical_record_charge
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.core.storage import make_shared_archive
 from test_options import config
 
 
@@ -92,7 +92,7 @@ def test_invalid_policy_settings_fail_before_startup(value):
 @pytest.mark.parametrize('keep', [True, False])
 def test_policy_settings_survive_public_launch_worker_json_and_profile_replay(tmp_path, keep):
     from test_graph_options import model_profile, worker_payload, runtime
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
 
     profile = model_profile(tmp_path)
     gc = dict(mode='shadow', policy='lru', policy_params={'keep_mandatory': keep})

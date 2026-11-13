@@ -1,8 +1,8 @@
 import pytest
 torch = pytest.importorskip("torch")
 
-from vllm_kvmem.retrieval import mean_key_scores
-from vllm_kvmem.state import StateCheckpoints
+from vllm_kvmem.core.retrieval import mean_key_scores
+from vllm_kvmem.core.state import StateCheckpoints
 
 
 def test_checkpoint_isolation_schema_and_branch_invalidation():

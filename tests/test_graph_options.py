@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.options import GRAPH_DEFAULTS, RuntimeOptions, validate_graph_options
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.core.options import GRAPH_DEFAULTS, RuntimeOptions, validate_graph_options
+from vllm_kvmem.serving.serve import build_launch
 
 V1_GRAPH_DEFAULTS = {key: value for key, value in GRAPH_DEFAULTS.items() if key != 'graph_alpha'}
 
@@ -133,7 +133,7 @@ def test_direct_launcher_forwards_exact_graph_fields_and_replays_profile(tmp_pat
 
 @pytest.mark.parametrize('mode', ['off', 'collect', 'locality', 'attention', 'multi'])
 def test_elastic_launcher_validates_and_forwards_all_graph_fields(tmp_path, mode):
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
     direct = model_profile(tmp_path)
     users = tmp_path / 'users.json'
     users.write_text(json.dumps({'users': [{'id': 'graph-test', 'api_key': 'local-test-only'}]}))
@@ -165,7 +165,7 @@ def test_example_is_a_complete_profile_and_all_defaults_are_explicit(tmp_path):
     users = tmp_path / 'users.json'
     users.write_text(json.dumps({'users': [{'id': 'example-test', 'api_key': 'local-test-only'}]}))
     profile.update(model=local['model'], tokenizer=local['tokenizer'], users_file=str(users))
-    from vllm_kvmem.elastic_serve import build_launch as build_elastic
+    from vllm_kvmem.apps.elastic_serve import build_launch as build_elastic
     resolved, _ = build_elastic(profile, tmp_path, tmp_path / 'example')
     assert resolved['mean_k_backend_profile']['kvmem']['graph_mode'] == 'multi'
 

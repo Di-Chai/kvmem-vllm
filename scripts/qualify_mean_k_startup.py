@@ -202,7 +202,7 @@ def child_load(output, label):
             'Child must use the dedicated build root')
     package = output / 'snapshots' / label / 'vllm_kvmem'
     import torch
-    import vllm_kvmem.cuda_scoring as scoring
+    import vllm_kvmem.core.cuda_scoring as scoring
     require(Path(scoring.__file__).resolve() == package / 'cuda_scoring.py', 'Wrong snapshot imported')
     require(torch.cuda.is_available() and torch.cuda.device_count() == 1, 'CUDA numerical qualification requires one visible device')
     props = torch.cuda.get_device_properties(0)

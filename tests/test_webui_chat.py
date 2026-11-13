@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from vllm_kvmem.webui.chat import ChatBridge, _TextParser, _query_begin
+from vllm_kvmem.apps.webui.chat import ChatBridge, _TextParser, _query_begin
 
 
 class Tokenizer:
@@ -312,7 +312,7 @@ def test_context_discloses_supported_capabilities_without_backend_secrets():
 
 
 def test_metadata_is_bounded_and_contains_no_prompt_or_output_tokens(monkeypatch):
-    import vllm_kvmem.webui.chat as module
+    import vllm_kvmem.apps.webui.chat as module
     monkeypatch.setattr(module, 'MAX_RECORDS', 3)
     bridge, _ = make_bridge()
     for index in range(6):
@@ -333,7 +333,7 @@ def test_nonplanned_profile_uses_native_session_release_without_query_fields():
 
 
 def test_output_budget_and_history_capacity_errors_do_not_launch_generation(monkeypatch):
-    import vllm_kvmem.webui.chat as module
+    import vllm_kvmem.apps.webui.chat as module
     bridge, factory = make_bridge()
     monkeypatch.setattr(module, 'MAX_HISTORY_TOKENS', 1)
     result = consume(bridge)
@@ -422,7 +422,7 @@ def test_guided_query_reserve_matches_final_query_and_prefill_policies():
 
 @pytest.mark.parametrize('failure', ['context', 'replay', 'memory', 'output'])
 def test_invalid_edited_turn_does_not_release_previous_usable_checkpoint(monkeypatch, failure):
-    import vllm_kvmem.webui.chat as module
+    import vllm_kvmem.apps.webui.chat as module
     bridge, factory = make_bridge()
     consume(bridge)
     conversation = next(iter(bridge.conversations.values()))

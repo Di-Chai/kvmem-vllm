@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.pressure_pipeline import PressurePipeline
+from vllm_kvmem.serving.pressure_pipeline import PressurePipeline
 from test_pressure_pipeline import state, dispose, Fence, Stream
 
 
@@ -112,7 +112,7 @@ class Unwaited:
 
 
 def test_fresh_wait_flag_is_validated_and_defaults_to_the_bounded_wait(monkeypatch):
-    from vllm_kvmem import pressure_pipeline
+    from vllm_kvmem.serving import pressure_pipeline
     monkeypatch.delenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', raising=False)
     assert pressure_pipeline.fresh_handoff_wait() and handoff()[0].fresh_handoff_wait
     monkeypatch.setenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '0')
@@ -146,7 +146,7 @@ def test_without_fresh_wait_an_already_prepared_plan_is_still_acknowledged_at_on
 
 
 def test_without_fresh_wait_an_earlier_producer_keeps_the_bounded_wait(monkeypatch):
-    from vllm_kvmem import pressure_pipeline
+    from vllm_kvmem.serving import pressure_pipeline
     pipeline, refresh, job, trace = handoff()
     pipeline.fresh_handoff_wait = False
     job.stage = 'assembly'; job.future = Future()   # submitted at an earlier boundary

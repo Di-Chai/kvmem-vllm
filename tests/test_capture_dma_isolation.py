@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_authority import setup, drain
 from test_request_publication import fixture, close
 
@@ -92,7 +92,7 @@ def make_ready(runtime):
 @pytest.mark.parametrize('configured,env,enabled', [(True, None, True), (False, None, False),
     (True, '0', False), (False, '1', True)])
 def test_pool_capacity_is_fixed_and_flag_precedence_is_explicit(tmp_path, monkeypatch, configured, env, enabled):
-    import vllm_kvmem.capture_runtime as capture
+    import vllm_kvmem.serving.capture_runtime as capture
     monkeypatch.delenv('KVMEM_SPLIT_CAPTURE_DMA', raising=False)
     if env is not None:
         monkeypatch.setenv('KVMEM_SPLIT_CAPTURE_DMA', env)

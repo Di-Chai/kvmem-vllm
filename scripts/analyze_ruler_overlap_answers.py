@@ -14,7 +14,7 @@ import statistics
 import time
 
 import analyze_block_graph as offline
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.graph_scoring import score_graph
 
 
 ARM = 'overlap_16_8'

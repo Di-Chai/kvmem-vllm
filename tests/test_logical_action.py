@@ -6,14 +6,14 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionPacket, ActionRuntime
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.logical_action import (
+from vllm_kvmem.serving.action_attention import ActionPacket, ActionRuntime
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.serving.logical_action import (
     LogicalScorePlan, _score_geometry, plan_logical_scores, project_logical_scores,
 )
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.prefill_attention import PrefillHistory
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.prefill_attention import PrefillHistory
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 def fixture(dtype=np.float32, *, chunks=2):
@@ -200,7 +200,7 @@ def test_all_projection_geometry_is_checked_before_original_state_can_change(tmp
 
 def test_two_logical_packets_and_exported_views_retain_one_pool_lease_without_gc():
     from test_action_download_pool import Backend
-    from vllm_kvmem.action_download_pool import ActionDownloadPool
+    from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
     group, plans, rows, source = fixture()
     pool = ActionDownloadPool(131072, 1, backend=Backend())
     host, event = pool.copy(torch.from_numpy(source))
@@ -229,7 +229,7 @@ def test_acceptance_rejects_a_prefix_outside_the_physical_packet(retained):
 
 @pytest.mark.parametrize('interval', [2048, 4096, 8192])
 def test_plan_uses_two_original_extend_calls_and_does_not_advance_state(interval):
-    from vllm_kvmem.prefill_planning import freeze_prefill_frame
+    from vllm_kvmem.serving.prefill_planning import freeze_prefill_frame
     group, expected, _, _ = fixture()
     current = state(True)
     current.prefill.options.prefill_attention_interval = interval
@@ -261,7 +261,7 @@ def test_plan_uses_two_original_extend_calls_and_does_not_advance_state(interval
 
 @pytest.mark.parametrize('backends', [('fused', 'fused'), ('reference', 'fused'), ('fused', 'reference')])
 def test_reference_projection_preserves_actual_scorer_backend_through_pad_and_cat(monkeypatch, backends):
-    from vllm_kvmem.logical_action import reference_logical_scores
+    from vllm_kvmem.serving.logical_action import reference_logical_scores
     group, plans, rows, _ = fixture()
     calls = []
     def score(query, positions, key, table, trig, key_scale, starts, counts, length, **kwargs):
@@ -271,7 +271,7 @@ def test_reference_projection_preserves_actual_scorer_backend_through_pad_and_ca
         values._action_scoring_backend = backends[len(calls)]
         calls.append(length)
         return values
-    monkeypatch.setattr('vllm_kvmem.action_scoring.page_attention', score)
+    monkeypatch.setattr('vllm_kvmem.serving.action_scoring.page_attention', score)
     result = reference_logical_scores(group, plans, torch.zeros((128, 1, 4)),
         torch.tensor([64+row for row in rows]), None, None, None, None,
         torch.tensor(plans[-1].starts), torch.tensor(plans[-1].counts),

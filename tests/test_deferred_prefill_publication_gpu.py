@@ -5,7 +5,7 @@ import os
 import pytest
 import torch
 
-from vllm_kvmem.deferred_action_scoring import FrozenScoreLimits, FrozenScorePool
+from vllm_kvmem.serving.deferred_action_scoring import FrozenScoreLimits, FrozenScorePool
 from test_prefill_action_before_mtp_gpu import snapshot
 from test_prefill_early_ahead_combination_gpu import integrated, dispose, durable_snapshot
 from test_prefill_plan_mtp_combination_gpu import through_prepare
@@ -102,7 +102,7 @@ def test_two_detached_snapshots_can_resolve_after_new_graph_replay(tmp_path):
     results, expected = [], []
     # A larger existing score download budget supports two pending frames;
     # the new frozen input pool itself remains exactly two slots.
-    from vllm_kvmem.action_download_pool import ActionDownloadPool
+    from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
     action.download_pool = ActionDownloadPool(4096, 4)
     for marker in (.5, 1.75):
         q.mul_(marker)

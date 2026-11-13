@@ -53,7 +53,7 @@ def test_probe_uses_real_eos_and_exact_prior_acceptance_for_every_continuation(t
     assert calls[-1]['kv_transfer_params']['kvmem_release_session']
     # Use the production checkpoint validator against every actual continuation.
     # The last generated ID is not forward-consumed at a length-capped stop.
-    from vllm_kvmem.block_graph import _merge_spans
+    from vllm_kvmem.serving.block_graph import _merge_spans
     saved, known, checkpoint = (), (), 0
     for body in calls[:4]:
         saved, known = _merge_spans(saved, known, body['kvmem_message_spans'], checkpoint)

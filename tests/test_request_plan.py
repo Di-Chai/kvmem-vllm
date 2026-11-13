@@ -1,10 +1,10 @@
 import pytest
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 def test_query_replay_limit_is_independent_of_full_generation_budget(monkeypatch):
     import json
-    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', json.dumps(dict(
         block_tokens=32, gen_budget=131072, select_budget=131072,
         query_replay_budget=16384, max_model_len=1048576)))
@@ -73,7 +73,7 @@ def test_keep_selected_exhaustion_and_off_do_not_invent_query():
 def test_native_http_moves_plan_to_the_supported_metadata_channel(monkeypatch):
     import json
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'block_tokens':128,'gen_budget':4096,'select_budget':8192}))
-    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
     payload={'prompt':list(range(12000)), 'max_tokens':128, 'kvmem_query_span':[9001,11003],
         'kvmem_reselect':'force'}
     assert normalize_query_plan(payload)
@@ -96,7 +96,7 @@ def test_index_finalization_matches_original_serial_content_sum():
 
 def test_native_http_unbounded_null_output_is_normalized_within_g(monkeypatch):
     import json
-    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps({'block_tokens':128,'gen_budget':4096,'select_budget':8192}))
     payload={'prompt':[1,2,3], 'max_tokens':None}
     assert normalize_query_plan(payload) and payload['max_tokens']==16
@@ -115,8 +115,8 @@ def test_off_pressure_visits_boundary_before_native_mtp_page_allocation():
 
 
 def test_planning_rejects_g_without_pressure_replay_and_mtp_headroom():
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.options import RuntimeOptions
     with pytest.raises(ValueError,match='three blocks'):
         RuntimeOptions(memory=KVMemConfig(select_budget=8192,gen_budget=256),request_planning=True)
 
@@ -190,7 +190,7 @@ def test_layerwise_query_reserves_complete_assistant_suffix_before_layers_diverg
 def test_query_output_reservation_is_server_only_and_scoped_to_native_layerwise(
         monkeypatch, mode, native, enabled):
     from types import SimpleNamespace
-    from vllm_kvmem.request_plan import request_plan
+    from vllm_kvmem.serving.request_plan import request_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG', '{}')
     monkeypatch.delenv('KVMEM_LAYERWISE_QUERY_MODE', raising=False)
     monkeypatch.delenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES', raising=False)
@@ -238,7 +238,7 @@ def test_rolling_continuation_preserves_stable_query_and_pages_until_they_fill()
     assert rolling.mandatory == previous
     assert rolling.output_tokens == 16384
     # Native MTP clips every possible accepted suffix at the same sealed point.
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     policy = SpeculativeQueryPolicy(block_tokens=32,select_budget=36864,
         gen_budget=16384,max_query_tokens=5)
     offset, boundary = 1024, 53248 - 32
@@ -255,7 +255,7 @@ def test_rolling_continuation_preserves_stable_query_and_pages_until_they_fill()
 
 
 def test_dflash8_tool_rounds_share_window_and_clip_every_acceptance_at_capacity():
-    from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
+    from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
     p=RequestPlan((64,96),block_tokens=32,gen_budget=16384,
         output_tokens=16384,rolling_active_window=True)
     # A 129-token tool call and its 920-token tool result do not reserve a fresh G.
@@ -275,8 +275,8 @@ def test_dflash8_tool_rounds_share_window_and_clip_every_acceptance_at_capacity(
 def test_rolling_plan_is_server_only_and_survives_public_payload_roundtrip(monkeypatch):
     import json
     from types import SimpleNamespace
-    from vllm_kvmem.request_plan import request_plan
-    from vllm_kvmem.session_control import SessionLedger
+    from vllm_kvmem.serving.request_plan import request_plan
+    from vllm_kvmem.serving.session_control import SessionLedger
     request = SimpleNamespace(num_prompt_tokens=80, max_tokens=32,
         sampling_params=SimpleNamespace(max_tokens=32),
         kv_transfer_params={'kvmem_request_plan':{'kvmem_reselect':'off'}})
@@ -301,7 +301,7 @@ def test_rolling_plan_is_server_only_and_survives_public_payload_roundtrip(monke
 @pytest.mark.parametrize('rolling',[False,True])
 def test_only_rolling_window_can_generate_past_g_in_one_request(monkeypatch,rolling):
     import json
-    from vllm_kvmem.http_sessions import normalize_query_plan
+    from vllm_kvmem.serving.http_sessions import normalize_query_plan
     monkeypatch.setenv('KVMEM_REQUEST_PLAN_CONFIG',json.dumps(dict(
         block_tokens=32,gen_budget=32768,select_budget=65536,rolling_active_window=rolling)))
     payload = {'prompt':[1,2,3], 'max_tokens':32768}

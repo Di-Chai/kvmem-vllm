@@ -640,3 +640,8 @@ def swaps_enabled():
 
 def pipeline_for(refresh):
     return getattr(getattr(getattr(refresh, 'runner', None), '_kvmem_layerwise_pressure', None), 'pipeline', None)
+
+
+# core.memory checks layer materializations against this class without importing serving.
+from ..core.memory import RequestMemory as _RequestMemory  # noqa: E402
+_RequestMemory.layer_materialization_type = LayerMaterialization

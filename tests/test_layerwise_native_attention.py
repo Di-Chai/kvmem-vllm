@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.native_attention import statistic_layer_names
+from vllm_kvmem.serving.native_attention import statistic_layer_names
 
 
 def test_independent_pressure_covers_all_target_layers_without_changing_spread3():

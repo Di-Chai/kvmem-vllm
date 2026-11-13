@@ -91,10 +91,15 @@ def server_entry(root):
     # Explicit unchanged run_arm telemetry setting, not an inherited override.
     os.environ['VLLM_LOG_STATS_INTERVAL'] = '1'
     import vllm_kvmem
-    from vllm_kvmem import serve
     package = root/'runtime'/ARM/'src/vllm_kvmem'
+    try:
+        from vllm_kvmem import serve           # a runtime from before the layer directories
+        expected = package/'serve.py'
+    except ImportError:
+        from vllm_kvmem.serving import serve
+        expected = package/'serving/serve.py'
     cap.require(Path(vllm_kvmem.__file__).resolve() == package/'__init__.py'
-        and Path(serve.__file__).resolve() == package/'serve.py', 'Server imported a foreign runtime')
+        and Path(serve.__file__).resolve() == expected, 'Server imported a foreign runtime')
     original = serve.build_launch
     def configured(*values,**kwargs):
         plan = original(*values,**kwargs)

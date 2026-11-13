@@ -7,7 +7,7 @@ import pytest
 import torch
 
 import analyze_query_key_fps as diagnostic
-from vllm_kvmem.config import KVMemConfig
+from vllm_kvmem.core.config import KVMemConfig
 
 
 def test_padded_tail_does_not_become_a_representative_and_indices_reference_raw_keys():

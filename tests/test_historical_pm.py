@@ -6,11 +6,11 @@ import pytest
 import torch
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.prompt_checkpoints import PromptCheckpointPool
-from vllm_kvmem.session_worker import verify_preserved_authority
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.prompt_checkpoints import PromptCheckpointPool
+from vllm_kvmem.serving.session_worker import verify_preserved_authority
 from test_authority import payload
 from test_core import Event
 from test_session_state import fixture
@@ -39,7 +39,7 @@ def test_pm_frames_survive_lru_and_cancelled_successor_rebases_only_its_partial_
     worker = archive.enable_history_gc(settings)
     authority = RequestAuthority('a', config, archive, 2, 1, 2)
     if boundaries:
-        from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
+        from vllm_kvmem.serving.query_boundary_history import QueryBoundaryHistory
         authority.query_boundaries = QueryBoundaryHistory(('tenant', 's'), block_tokens=2)
         authority.query_boundaries.update_message_spans([(0, 8, 'user'), (8, 20, 'assistant')])
     pool = PromptCheckpointPool(2, 8192, retain_prompt=True, native_restore_frame=native_restore_frame)

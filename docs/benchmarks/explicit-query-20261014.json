@@ -1260,12 +1260,12 @@
   },
   "wheel_sha256": "625482c8aa55eb42153ca7643c7b4d3678326b4e56ea47d6c97afbebf22efd23",
   "source_sha256": {
-    "src/vllm_kvmem/request_plan.py": "77ef2a977557cbae5f350ae8ca6c0034d8d8b02ce76212f4f64aeb57621df506",
-    "src/vllm_kvmem/prompt_checkpoints.py": "eddb9432e5499b6301eeecff970631c24b7126cc1b65f8c005eb215a954a3500",
-    "src/vllm_kvmem/session_state.py": "354b7226a6652f1dc4edea331a2a840216c35721c1b07ff25c16492d759203d8",
-    "src/vllm_kvmem/session_worker.py": "33e47a0b6ee99410a55344216ff129f6f6bd87c9b6ff4f82afa0bc213c2c4ac2",
-    "src/vllm_kvmem/bounded_runtime.py": "12b6a170d4b23184d86e6ffa2aae7bc8742e313980207bf61c24b294c18f1043",
-    "src/vllm_kvmem/packed_assembly.py": "489a654599e6f6dc252b72e87c0705ef42104a092182e206b62b0f831c65174d",
+    "src/vllm_kvmem/serving/request_plan.py": "77ef2a977557cbae5f350ae8ca6c0034d8d8b02ce76212f4f64aeb57621df506",
+    "src/vllm_kvmem/serving/prompt_checkpoints.py": "eddb9432e5499b6301eeecff970631c24b7126cc1b65f8c005eb215a954a3500",
+    "src/vllm_kvmem/serving/session_state.py": "354b7226a6652f1dc4edea331a2a840216c35721c1b07ff25c16492d759203d8",
+    "src/vllm_kvmem/serving/session_worker.py": "33e47a0b6ee99410a55344216ff129f6f6bd87c9b6ff4f82afa0bc213c2c4ac2",
+    "src/vllm_kvmem/serving/bounded_runtime.py": "12b6a170d4b23184d86e6ffa2aae7bc8742e313980207bf61c24b294c18f1043",
+    "src/vllm_kvmem/serving/packed_assembly.py": "489a654599e6f6dc252b72e87c0705ef42104a092182e206b62b0f831c65174d",
     "csrc/qw3_mean_k.cu": "de4d8cb561b20eaa963a597f4a7cc9ae1ad2c6d4c66afb8524ef9045e08ebd05",
     "csrc/qw3_mean_k_kernel.cuh": "7d1cf7298a533d75d932fc9f97ec2c8c61652057996c52c7e2eb2f8a4712f777"
   },

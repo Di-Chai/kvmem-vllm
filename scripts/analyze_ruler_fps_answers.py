@@ -16,7 +16,7 @@ import time
 from analyze_ruler_overlap_answers import read, sha, require, verify_files, span_coverage, ranks, distribution
 import analyze_block_graph as offline
 import ruler_protocol as protocol
-from vllm_kvmem.graph_scoring import score_graph
+from vllm_kvmem.serving.graph_scoring import score_graph
 
 # Import by absolute filename: pytest has a test module with the same basename.
 _CONTROLLER = Path(__file__).with_name('test_ruler_fps_answers.py')

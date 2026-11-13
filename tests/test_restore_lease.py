@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from vllm_kvmem.restore_lease import FreshRestoreLease, verify_restore_allocation_sources
+from vllm_kvmem.serving.restore_lease import FreshRestoreLease, verify_restore_allocation_sources
 
 
 def allocation():
@@ -63,8 +63,8 @@ def test_invalid_native_pages_cannot_form_a_witness(blocks):
 
 
 def prepared_state(monkeypatch):
-    from vllm_kvmem.native_state import NativeRecurrentState
-    from vllm_kvmem.session_state import PromptStateAdapter, PromptModelState
+    from vllm_kvmem.serving.native_state import NativeRecurrentState
+    from vllm_kvmem.serving.session_state import PromptStateAdapter, PromptModelState
     runner, lease = allocation()
     conv, ssm = torch.arange(8*4.).reshape(8, 4), torch.arange(8*6.).reshape(8, 2, 3)
     recurrent = NativeRecurrentState.__new__(NativeRecurrentState)
@@ -113,7 +113,7 @@ def test_lease_path_does_not_silently_change_dflash_state_semantics(monkeypatch)
 
 
 def test_assembler_clones_leased_native_table_without_scalar_gpu_validation(monkeypatch):
-    from vllm_kvmem import window_assembly as window
+    from vllm_kvmem.serving import window_assembly as window
     runner, lease = allocation()
     key = torch.zeros((16, 4, 1, 4), dtype=torch.float8_e4m3fn)
     value = key.clone()
@@ -137,7 +137,7 @@ def test_assembler_clones_leased_native_table_without_scalar_gpu_validation(monk
 
 
 def test_generic_assembler_retains_its_gpu_table_validation():
-    from vllm_kvmem.window_assembly import NativeWindowAssembler, LayerWindow
+    from vllm_kvmem.serving.window_assembly import NativeWindowAssembler, LayerWindow
     key = torch.zeros((4, 4, 1, 4), dtype=torch.float8_e4m3fn)
     layer = LayerWindow(key, key.clone(), torch.zeros(16, 4), torch.tensor(1.), torch.tensor([0, 2]))
     with pytest.raises(ValueError, match='null or out-of-arena'):
@@ -147,7 +147,7 @@ def test_generic_assembler_retains_its_gpu_table_validation():
 def test_direct_restore_layer_borrows_leased_view_without_gpu_validation(monkeypatch):
     """KVMEM_RESTORE_DIRECT_LAYERS: a per-layer assembler built from the restore
     job's own lease-validated view needs no table clone or scalar GPU check."""
-    from vllm_kvmem import window_assembly as window
+    from vllm_kvmem.serving import window_assembly as window
     runner, lease = allocation()
     key = torch.zeros((16, 4, 1, 4), dtype=torch.float8_e4m3fn)
     module = SimpleNamespace(attn=SimpleNamespace(kv_cache_dtype='fp8_e4m3', layer_name='attn',

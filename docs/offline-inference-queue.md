@@ -4,7 +4,7 @@
 vLLM 继续负责已准入请求的 continuous batching、chunked prefill 和 decode。
 本层不重新实现 GPU batch，也不按整波等待或为了补位丢弃历史。
 
-实现为 `src/vllm_kvmem/offline_queue.py`，首个使用方为 256K 图评分对照。
+实现为 `src/vllm_kvmem/serving/offline_queue.py`，首个使用方为 256K 图评分对照。
 
 ## 固定策略
 

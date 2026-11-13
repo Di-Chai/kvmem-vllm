@@ -2,11 +2,10 @@
 
 vllm_kvmem is split into core, adapters, serving and apps; each imports only
 itself and the layers below it. The strategy package imports nothing outside
-itself and every layer may import it. The modules at the old flat paths are
-aliases of the moved ones, kept for one release.
+itself and every layer may import it. The old flat module paths were removed
+after the move; every reference uses the layer path.
 """
 import ast
-import importlib
 from pathlib import Path
 
 import pytest
@@ -18,18 +17,9 @@ LAYERS = ('core', 'adapters', 'serving', 'apps')
 BELOW = {layer: set(LAYERS[:i + 1]) for i, layer in enumerate(LAYERS)}
 # Native extensions stay at the package root; they are core.
 ROOT_CORE = {'_native', '_prefill_state_native'}
-# Imports that point up today. Each needs its dependency inverted; the list may
-# only shrink (a fixed entry fails test_exceptions_are_still_needed).
-EXCEPTIONS = frozenset({
-    ('adapters.q8_adapter', 'serving.integration'),
-    ('core.checkpoint_storage', 'serving.request_checkpoint'),
-    ('core.memory', 'serving.pressure_pipeline'),
-    ('core.memory', 'serving.pressure_reader'),
-    ('core.memory', 'serving.tensor_parallel'),
-    ('core.memory_storage', 'serving.pressure_reader'),
-    ('core.prepared_regions', 'serving.pressure_reader'),
-})
-SHIM_MARK = '(layering step 7). This alias is removed after the next release.'
+# Imports allowed to point up. Empty since the seven upward imports left after the
+# move were inverted (serving registers hooks on core instead of core importing it).
+EXCEPTIONS = frozenset()
 
 
 def _exists(dotted):
@@ -100,41 +90,42 @@ def test_exceptions_are_still_needed():
     assert EXCEPTIONS <= found, 'fixed, remove from EXCEPTIONS: %s' % sorted(EXCEPTIONS - found)
 
 
-def test_the_package_root_holds_only_glue_and_aliases():
-    for path in sorted(PACKAGE.glob('*.py')):
-        if path.name in ('__init__.py', '__main__.py'):
-            continue
-        assert SHIM_MARK in path.read_text(), path.name
-    for directory in sorted(p for p in PACKAGE.iterdir() if p.is_dir() and (p / '__init__.py').is_file()):
-        if directory.name in LAYERS or directory.name == 'strategy':
-            continue
-        for path in directory.rglob('*.py'):     # old subpackage paths: aliases only
-            assert 'Moved to vllm_kvmem.' in path.read_text(), path
+def test_the_package_root_holds_only_glue():
+    assert sorted(p.name for p in PACKAGE.glob('*.py')) == ['__init__.py', '__main__.py']
+    packages = sorted(p.name for p in PACKAGE.iterdir() if (p / '__init__.py').is_file())
+    assert packages == sorted(LAYERS + ('strategy',))
 
 
-@pytest.mark.parametrize('old,new', [('vllm_kvmem.serve', 'vllm_kvmem.serving.serve'),
-                                     ('vllm_kvmem.memory', 'vllm_kvmem.core.memory'),
-                                     ('vllm_kvmem.capture', 'vllm_kvmem.adapters.capture'),
-                                     ('vllm_kvmem.planner.costs', 'vllm_kvmem.apps.planner.costs'),
-                                     ('vllm_kvmem.settings', 'vllm_kvmem.core.settings')])
-def test_an_old_path_is_the_moved_module(old, new):
-    assert importlib.import_module(old) is importlib.import_module(new)
+def old_names():
+    """Every module name that once sat at the flat package root."""
+    names = set()
+    for layer in LAYERS:
+        names.update(p.stem for p in (PACKAGE / layer).glob('*.py') if p.stem != '__init__')
+        names.update(p.name for p in (PACKAGE / layer).iterdir() if (p / '__init__.py').is_file())
+    return names
 
 
-def test_every_old_path_aliases_a_moved_module():
-    # In a subprocess: several modules patch vLLM or process state when imported.
-    import subprocess
-    import sys
-    code = """
-import importlib, pathlib, sys, vllm_kvmem
-root = pathlib.Path(vllm_kvmem.__file__).parent
-names = [p.stem for p in root.glob('*.py') if p.stem not in ('__init__', '__main__')]
-for d in [p for p in root.iterdir() if (p / '__init__.py').is_file() and p.name not in %r]:
-    names += [d.name + '.' + p.stem for p in d.glob('*.py') if p.stem != '__init__']
-bad = [n for n in names if importlib.import_module('vllm_kvmem.' + n).__name__.split('.')[1] not in %r]
-print(len(names), bad)
-sys.exit(1 if bad or not names else 0)
-""" % (LAYERS + ('strategy',), LAYERS)
-    result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
-                            env=dict(__import__('os').environ, PYTHONPATH=str(PACKAGE.parent)))
-    assert result.returncode == 0, result.stdout + result.stderr[-2000:]
+def test_nothing_in_the_repository_uses_an_old_flat_path():
+    """The aliases at the old paths were removed; every reference uses the layer path."""
+    import re
+    repo = PACKAGE.parents[1]
+    alternatives = '|'.join(sorted(old_names(), key=len, reverse=True))
+    module = re.compile(r'\bvllm_kvmem\.(%s)\b' % alternatives)
+    either = re.compile(r'\bvllm_kvmem(?:\.|/)(%s)\b' % alternatives)
+    found = []
+    for top in ('src', 'tests', 'scripts', 'benchmarks', 'docs', 'examples', 'experiments', 'diagnostics', 'ui'):
+        # Experiment harnesses and their tests also handle frozen runtimes, whose
+        # files keep the flat layout: only module names are checked there.
+        pattern = module if top in ('scripts', 'tests') else either
+        for path in (repo / top).rglob('*') if (repo / top).is_dir() else ():
+            if (not path.is_file() or 'node_modules' in path.parts or '__pycache__' in path.parts or
+                    any(part.endswith('.egg-info') for part in path.parts) or
+                    path.suffix not in ('.py', '.md', '.json', '.toml', '.sh', '.cjs', '.js', '.txt', '.yml')):
+                continue
+            text = path.read_text(errors='ignore')
+            for match in pattern.finditer(text):
+                found.append('%s: %s' % (path.relative_to(repo), match.group(0)))
+    for name in ('pyproject.toml', 'setup.py', 'MANIFEST.in', 'README.md'):
+        if (repo / name).is_file():
+            found += ['%s: %s' % (name, m.group(0)) for m in either.finditer((repo / name).read_text())]
+    assert found == [], found[:20]

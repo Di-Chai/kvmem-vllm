@@ -133,11 +133,11 @@ These component bounds do not establish a global host-RAM limit or per-user
 history/storage quotas; deployment still needs sufficient RAM and free disk.
 
 The ownership and accounting above are implemented in
-[session_control.py](../src/vllm_kvmem/session_control.py),
-[capacity.py](../src/vllm_kvmem/capacity.py),
-[prompt_checkpoints.py](../src/vllm_kvmem/prompt_checkpoints.py),
-[session_worker.py](../src/vllm_kvmem/session_worker.py), and
-[storage.py](../src/vllm_kvmem/storage.py).
+[session_control.py](../src/vllm_kvmem/serving/session_control.py),
+[capacity.py](../src/vllm_kvmem/serving/capacity.py),
+[prompt_checkpoints.py](../src/vllm_kvmem/serving/prompt_checkpoints.py),
+[session_worker.py](../src/vllm_kvmem/serving/session_worker.py), and
+[storage.py](../src/vllm_kvmem/core/storage.py).
 
 ## API and overload behavior
 

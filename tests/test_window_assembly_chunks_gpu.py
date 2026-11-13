@@ -12,12 +12,12 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
 
 @pytest.mark.parametrize('candidate_chunk', [4, 16, 128, 256])
 def test_chunks_match_32_across_resident_moves_partial_tail_and_restore(tmp_path, candidate_chunk):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.window_assembly import LayerWindow, NativeWindowAssembler
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.window_assembly import LayerWindow, NativeWindowAssembler
 
     block, layers, heads, dim, page = 32, 2, 2, 64, 16
     count = 264 * block + 7

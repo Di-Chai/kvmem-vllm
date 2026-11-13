@@ -1,7 +1,7 @@
 import pytest
 torch=pytest.importorskip('torch')
-from vllm_kvmem.retrieval import mean_key_scores as reference
-from vllm_kvmem.cuda_scoring import mean_key_scores
+from vllm_kvmem.core.retrieval import mean_key_scores as reference
+from vllm_kvmem.core.cuda_scoring import mean_key_scores
 
 @pytest.mark.parametrize('empty_axis', range(4))
 def test_empty_query_geometry_is_rejected_before_chunking(empty_axis):
@@ -54,7 +54,7 @@ def test_large_history_qwen_head_geometry_on_current_nondefault_stream():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA qualification')
 @pytest.mark.parametrize('blocks', [41, 8201])
 def test_bounded_bf16_conversion_keeps_full_page_softmax(monkeypatch, blocks):
-    import vllm_kvmem.cuda_scoring as scoring
+    import vllm_kvmem.core.cuda_scoring as scoring
     from types import SimpleNamespace
     g = torch.Generator(device='cuda').manual_seed(319)
     q = torch.randn(2, 37, 8, 32, device='cuda', generator=g).bfloat16()

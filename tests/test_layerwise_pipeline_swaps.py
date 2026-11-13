@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import serve
+from vllm_kvmem.serving import serve
 from test_dynamic_layerwise_config import profile
 
 
@@ -49,7 +49,7 @@ class Pipeline:
 
 
 def refresh(admission, swap_layerwise):
-    from vllm_kvmem.async_refresh import AsyncRefresh
+    from vllm_kvmem.serving.async_refresh import AsyncRefresh
     r = AsyncRefresh.__new__(AsyncRefresh)
     r.options = NS(maintenance_max_steps=0, gpu_memory_admission=admission,
                    request_swap_layerwise=swap_layerwise)
@@ -85,7 +85,7 @@ def test_incremental_admission_needs_the_flag_and_layerwise_swaps(monkeypatch):
 
 
 def test_swap_witness_resolves_deferred_maps_before_identifying_state(monkeypatch):
-    from vllm_kvmem import layerwise_pressure as lp, layerwise_swap
+    from vllm_kvmem.serving import layerwise_pressure as lp, layerwise_swap
     pressure = lp.LayerwisePrefillPressure.__new__(lp.LayerwisePrefillPressure)
     built = (7, (('layer0',), ('layer1',)))
 
@@ -106,9 +106,9 @@ def test_swap_witness_resolves_deferred_maps_before_identifying_state(monkeypatc
 
 
 def test_request_swaps_do_not_force_an_eager_graph_batch():
-    from vllm_kvmem.connector import ControlMetadata, RefreshCommand, RestoreCommand
-    from vllm_kvmem.graph_runtime import needs_refresh_batch
-    from vllm_kvmem.request_swap_worker import SwapCommand
+    from vllm_kvmem.serving.connector import ControlMetadata, RefreshCommand, RestoreCommand
+    from vllm_kvmem.serving.graph_runtime import needs_refresh_batch
+    from vllm_kvmem.serving.request_swap_worker import SwapCommand
     swap = SwapCommand('r', 1, 1, 'capture', 64, block_ids=((1,),), checkpoint_bytes=4096)
     control = ControlMetadata(commands=[swap])
     assert not needs_refresh_batch(NS(kv_connector_metadata=control))
@@ -119,7 +119,7 @@ def test_request_swaps_do_not_force_an_eager_graph_batch():
 def test_verification_oracle_keeps_the_job_on_the_whole_window_path():
     # KVMEM_VERIFY_SESSION_RESTORE attaches a whole-window pressure oracle; the
     # pipeline must decline (not crash) so the job completes and verifies whole.
-    from vllm_kvmem.pressure_pipeline import PressurePipeline
+    from vllm_kvmem.serving.pressure_pipeline import PressurePipeline
     pipeline = PressurePipeline.__new__(PressurePipeline)
     pipeline.active = {}
     lease = NS(dispatchable=lambda: True)

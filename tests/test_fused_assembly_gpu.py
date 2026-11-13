@@ -20,9 +20,9 @@ pytestmark = pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS') != '1',
     (torch.float16,torch.int64,torch.float32,False),
 ])
 def test_fused_kernel_preserves_all_native_bytes(raw_dtype,table_dtype,trig_dtype,padded):
-    from vllm_kvmem.split_assembly import (assemble_split_layer,assemble_split_layers,
+    from vllm_kvmem.serving.split_assembly import (assemble_split_layer,assemble_split_layers,
                                          prepare_fused_layer_rows)
-    from vllm_kvmem.window_assembly import LayerWindow
+    from vllm_kvmem.serving.window_assembly import LayerWindow
     torch.manual_seed(12791)
     records,layers,block,heads,dim,page = 5,3,32,2,80,16
     shape = (records,layers,block,heads,dim)
@@ -67,12 +67,12 @@ def test_fused_kernel_preserves_all_native_bytes(raw_dtype,table_dtype,trig_dtyp
 
 @pytest.mark.parametrize('tail,prefetch',[(0,False),(0,True),(7,False),(7,True)])
 def test_full_assembly_matches_resident_and_restore_bytes(tmp_path,tail,prefetch):
-    from vllm_kvmem.assembly import assemble_fp8
-    from vllm_kvmem.authority import RequestAuthority
-    from vllm_kvmem.codec import native_vllm_fp8_views
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory_storage import MemoryArchive
-    from vllm_kvmem.window_assembly import LayerWindow,NativeWindowAssembler
+    from vllm_kvmem.adapters.assembly import assemble_fp8
+    from vllm_kvmem.serving.authority import RequestAuthority
+    from vllm_kvmem.core.codec import native_vllm_fp8_views
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory_storage import MemoryArchive
+    from vllm_kvmem.serving.window_assembly import LayerWindow,NativeWindowAssembler
     block,layers,heads,dim,page = 32,3,2,64,16
     count = 600*block+tail
     select_pages = 300+bool(tail)

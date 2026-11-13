@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace as NS
 
-from vllm_kvmem import telemetry
+from vllm_kvmem.serving import telemetry
 
 
 def test_gpu_sample_separates_foreign_work_before_aggregating_memory(monkeypatch):

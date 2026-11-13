@@ -11,7 +11,7 @@ launcher and the refresh paths (layering step 4):
   path are reported when the per-layer path is launched: there they shape the
   shared frame (and a global MTP selection) but no attention layer's window.
 
-    python -m vllm_kvmem.capabilities table     # strategy x path table (Markdown)
+    python -m vllm_kvmem.serving.capabilities table     # strategy x path table (Markdown)
 """
 import sys
 

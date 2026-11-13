@@ -98,7 +98,7 @@ def selected_profile(reference, port, root, diagnostic, *, cuda_allocator_policy
         cap.require(not diagnostic, 'Allocator ablation must have its own unprofiled qualification')
         profile['cuda_allocator_conf'] = dict(CUDA_CACHE_GC)
     if diagnostic:
-        from vllm_kvmem.profiling import native_profiler_config
+        from vllm_kvmem.serving.profiling import native_profiler_config
         profile['profiler_config'] = native_profiler_config(root/'traces', diagnostic)
     return profile
 

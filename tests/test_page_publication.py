@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm_kvmem.connector import ControlMetadata
-from vllm_kvmem.runner import make_probe_runner
+from vllm_kvmem.serving.connector import ControlMetadata
+from vllm_kvmem.serving.runner import make_probe_runner
 
 
 def publication():

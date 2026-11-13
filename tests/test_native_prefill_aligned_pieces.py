@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import NativeAttentionStats, _layout_array, aligned_piece_layout
+from vllm_kvmem.serving.native_attention import NativeAttentionStats, _layout_array, aligned_piece_layout
 
 
 @pytest.mark.parametrize('tail', range(1, 17))
@@ -47,7 +47,7 @@ class Kernel:
 
 
 def host_bank(monkeypatch, *, enabled=True):
-    import vllm_kvmem.native_attention as module
+    import vllm_kvmem.serving.native_attention as module
     monkeypatch.setattr(module, '_map_pieces', Kernel())
     monkeypatch.setattr(module, '_clear_lse', Kernel())
     monkeypatch.setattr(torch.cuda, 'Event', Event)
@@ -106,7 +106,7 @@ def test_disabled_arm_needs_no_additional_buffer(monkeypatch):
 
 @pytest.mark.parametrize('enabled', [False,True])
 def test_prefill_wrapper_keeps_old_abi_off_and_stable_runtime_pointer_on(monkeypatch,enabled):
-    import vllm_kvmem.native_attention as module
+    import vllm_kvmem.serving.native_attention as module
     builds=[]; calls=[]
     def build(*args,**kwargs):
         builds.append((args,kwargs))

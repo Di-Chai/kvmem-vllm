@@ -84,7 +84,7 @@ class Owner:
 
 def compiled_projection(layer, label):
     import torch
-    from vllm_kvmem.capture import _project_with_capture
+    from vllm_kvmem.adapters.capture import _project_with_capture
     def forward(qkv, positions):
         return _project_with_capture(layer, qkv, positions)
     # Distinct code objects keep one compiled segment per Attention owner. Do
@@ -100,9 +100,9 @@ def compiled_projection(layer, label):
 def fixture():
     import torch
     from vllm.forward_context import ForwardContext, override_forward_context
-    from vllm_kvmem.capture import CapturedLayer
-    from vllm_kvmem.capture_compile import capture_compile_fingerprint
-    from vllm_kvmem.capture_opaque import install_opaque_capture
+    from vllm_kvmem.adapters.capture import CapturedLayer
+    from vllm_kvmem.adapters.capture_compile import capture_compile_fingerprint
+    from vllm_kvmem.adapters.capture_opaque import install_opaque_capture
     generator = torch.Generator(device='cuda').manual_seed(7729)
     def random(*shape):
         return torch.randn(*shape,device='cuda',dtype=torch.bfloat16,generator=generator)
@@ -322,8 +322,8 @@ def run(directory, *, pairs, warmup, profile_repeats):
     os.environ['TRITON_CACHE_DIR']=str(directory/'triton_cache')
     sys.path.insert(0,str(directory/'runtime'))
     import torch
-    from vllm_kvmem.capture_compile import capture_compile_fingerprint
-    from vllm_kvmem import capture_opaque
+    from vllm_kvmem.adapters.capture_compile import capture_compile_fingerprint
+    from vllm_kvmem.adapters import capture_opaque
     if not str(Path(capture_opaque.__file__).resolve()).startswith(str((directory/'runtime').resolve())+'/'):
         raise ValueError('Imported live capture code instead of frozen source')
     torch.set_grad_enabled(False)

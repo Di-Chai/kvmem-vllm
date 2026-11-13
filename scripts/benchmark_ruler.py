@@ -217,7 +217,7 @@ def prepare(args):
 def run(args):
     import numpy as np
     from tokenizers import Tokenizer
-    from vllm_kvmem.offline_queue import OfflineQueue, OfflineTask
+    from vllm_kvmem.serving.offline_queue import OfflineQueue, OfflineTask
     import guided_benchmark_protocol as policy
     import qualify_block_graph as q
     import qualify_graph_niah as old

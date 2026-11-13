@@ -9,7 +9,7 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1", reason=
 def test_fused_capture_preserves_upstream_outputs(tokens, heads, kvheads, dim, rotary):
     import torch
     from vllm.model_executor.layers.fused_qk_norm_rope import fused_qk_rmsnorm_rope_gate as upstream
-    from vllm_kvmem._fused_capture import fused_qk_rmsnorm_rope_gate as captured
+    from vllm_kvmem.adapters._fused_capture import fused_qk_rmsnorm_rope_gate as captured
     generator = torch.Generator(device="cuda").manual_seed(764)
     def rand(*shape):
         return torch.randn(*shape, generator=generator, device="cuda", dtype=torch.bfloat16)
@@ -33,7 +33,7 @@ def test_fused_capture_preserves_upstream_outputs(tokens, heads, kvheads, dim, r
 
 def test_content_outputs_are_updated_by_graph_replay_without_python_callback():
     import torch
-    from vllm_kvmem._fused_capture import fused_qk_rmsnorm_rope_gate
+    from vllm_kvmem.adapters._fused_capture import fused_qk_rmsnorm_rope_gate
     tokens, heads, kvheads, dim, rotary = 8, 24, 4, 256, 64
     q = torch.randn(tokens, heads * 2 * dim, device='cuda', dtype=torch.bfloat16)
     k = torch.randn(tokens, kvheads * dim, device='cuda', dtype=torch.bfloat16)
@@ -66,7 +66,7 @@ def test_content_outputs_are_updated_by_graph_replay_without_python_callback():
 
 def test_native_compile_preserves_mutated_capture_buffers_across_replays():
     import torch
-    from vllm_kvmem._fused_capture import fused_qk_rmsnorm_rope_gate
+    from vllm_kvmem.adapters._fused_capture import fused_qk_rmsnorm_rope_gate
     heads, kvheads, dim, rotary = 24, 4, 256, 64
     q = torch.randn(8, heads * 2 * dim, device='cuda', dtype=torch.bfloat16)
     k = torch.randn(8, kvheads * dim, device='cuda', dtype=torch.bfloat16)
@@ -101,7 +101,7 @@ def test_native_compile_preserves_mutated_capture_buffers_across_replays():
 
 def test_compiled_device_gate_protects_all_prefix_captures_from_later_drafts():
     import torch
-    from vllm_kvmem._fused_capture import fused_qk_rmsnorm_rope_gate
+    from vllm_kvmem.adapters._fused_capture import fused_qk_rmsnorm_rope_gate
     q = torch.randn(4, 24 * 2 * 256, device='cuda', dtype=torch.bfloat16)
     k = torch.randn(4, 4 * 256, device='cuda', dtype=torch.bfloat16)
     v = torch.randn_like(k)

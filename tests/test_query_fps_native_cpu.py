@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.query_key_fps import select_key_representatives
+from vllm_kvmem.serving.query_key_fps import select_key_representatives
 
 
 def raw_fixture(dim=64, counts=(32, 31, 3, 1, 0)):

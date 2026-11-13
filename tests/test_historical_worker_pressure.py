@@ -2,12 +2,12 @@
 from types import SimpleNamespace as NS
 
 from vllm_kvmem import _native as n
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.prompt_checkpoints import CheckpointPhase
-from vllm_kvmem.session_control import HistoryCapacityRequest
-from vllm_kvmem.session_worker import SessionWorker
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.prompt_checkpoints import CheckpointPhase
+from vllm_kvmem.serving.session_control import HistoryCapacityRequest
+from vllm_kvmem.serving.session_worker import SessionWorker
 from test_historical_authority import payload, eventually
 
 

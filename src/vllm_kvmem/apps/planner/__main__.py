@@ -1,4 +1,4 @@
-"""CLI: python -m vllm_kvmem.planner {probe,calibrate,simulate,compile}."""
+"""CLI: python -m vllm_kvmem.apps.planner {probe,calibrate,simulate,compile}."""
 import argparse
 import json
 import math
@@ -68,7 +68,7 @@ def _machine(args):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='python -m vllm_kvmem.planner')
+    ap = argparse.ArgumentParser(prog='python -m vllm_kvmem.apps.planner')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     p = sub.add_parser('probe', help='machine limits (+ --bench copy bandwidths)')

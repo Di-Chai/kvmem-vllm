@@ -110,7 +110,7 @@ print('joined')
 def test_store_retains_gc_bridge_and_rejects_foreign_repository():
     import gc
     import weakref
-    from vllm_kvmem.config import KVMemConfig
+    from vllm_kvmem.core.config import KVMemConfig
     cfg = KVMemConfig(block_tokens=32, select_budget=64, gen_budget=64,
                       repository_blocks=8, sink_blocks=1, recent_blocks=0)
     repo = n.Repository(8, 32)

@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_authority import setup,payload,drain
 from test_terminal_prefix import request
 

@@ -16,11 +16,11 @@ NEW = ('if not aligned and not _kvmem_qsa_control_only(self, connector) '
 
 
 def control_only(config, connector):
-    if connector.__module__ != 'vllm_kvmem.connector' or connector.__name__ != 'KVMemConnector':
+    if connector.__module__ != 'vllm_kvmem.serving.connector' or connector.__name__ != 'KVMemConnector':
         return False
     transfer = config.kv_transfer_config
-    if (transfer.kv_connector_module_path != 'vllm_kvmem.connector' or
-            config.scheduler_config.scheduler_cls != 'vllm_kvmem.scheduler.KVMemScheduler'):
+    if (transfer.kv_connector_module_path != 'vllm_kvmem.serving.connector' or
+            config.scheduler_config.scheduler_cls != 'vllm_kvmem.serving.scheduler.KVMemScheduler'):
         return False
     from ..core.options import RuntimeOptions
     from .qsa_adapter import validate_qsa_config
@@ -32,7 +32,7 @@ def patch_source(source):
     if text.count(OLD) != 1:
         raise ImportError('Unrecognized vendor QSA connector guard; refusing adaptation')
     return (text.replace(OLD, NEW) +
-        '\nfrom vllm_kvmem.qsa_config_compat import control_only as _kvmem_qsa_control_only\n')
+        '\nfrom vllm_kvmem.adapters.qsa_config_compat import control_only as _kvmem_qsa_control_only\n')
 
 
 class _Loader(importlib.machinery.SourceFileLoader):

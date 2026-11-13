@@ -1,6 +1,6 @@
 import pytest
 
-from vllm_kvmem.gpu_raw_cache import RawCacheIndex
+from vllm_kvmem.serving.gpu_raw_cache import RawCacheIndex
 
 
 def test_raw_cache_is_generation_and_namespace_qualified():

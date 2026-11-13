@@ -54,7 +54,7 @@ def native_matches(row, event):
 def expected_output_samples(tokenizer, profile, prompt, output):
     """Independent parser replay uses only consumed, returned public tokens."""
     from types import SimpleNamespace
-    from vllm_kvmem.action_attention import ActionHistory
+    from vllm_kvmem.serving.action_attention import ActionHistory
     markers = [tokenizer.convert_tokens_to_ids(marker) for marker in (
         '<tool_call>', '</tool_call>', '<think>', '</think>', '<|im_start|>')]
     kv = profile['kvmem']
@@ -175,7 +175,7 @@ def validate_fixture(fixture, profile, concurrency, output_tokens):
     require(fixture.get('sha256') == digest({k: v for k, v in fixture.items() if k != 'sha256'}),
         'Fixture hash differs: use the same unmodified fixture across arms')
     require(len(fixture.get('agents', [])) == concurrency, 'Fixture concurrency differs')
-    from vllm_kvmem.request_plan import RequestPlan
+    from vllm_kvmem.serving.request_plan import RequestPlan
     kv = profile['kvmem']
     for agent in fixture['agents']:
         tokens = agent['initial_tokens']

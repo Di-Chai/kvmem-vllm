@@ -39,8 +39,5 @@ def register_plugin() -> None:
     _registered = True
 
 
-def check_engine_version() -> str:
-    """Retain the public diagnostic entry, without an exact-version gate."""
-    from ..adapters.engine_api import require_contract
-    require_contract('runner')
-    return version("vllm")
+# Defined with the engine contract it checks (layering step 7).
+from ..adapters.engine_api import check_engine_version  # noqa: E402,F401

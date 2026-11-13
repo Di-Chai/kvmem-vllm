@@ -8,7 +8,7 @@ import time
 import numpy as np
 import torch
 
-from vllm_kvmem.retrieval_diagnostic_math import content_distributions
+from vllm_kvmem.serving.retrieval_diagnostic_math import content_distributions
 
 
 def read(path):return json.loads(path.read_text())

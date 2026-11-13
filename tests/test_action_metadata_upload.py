@@ -6,8 +6,8 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_metadata_upload import PackedActionMetadata, typed_views
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.action_metadata_upload import PackedActionMetadata, typed_views
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -283,9 +283,9 @@ def test_options_are_off_by_default_and_explicit_enable_requires_action_scoring(
 
 def test_three_layer_actual_capture_preserves_metadata_packets_and_accepted_prefix(tmp_path, monkeypatch):
     """Exercise both production upload branches; only GPU storage/kernels are CPU fakes."""
-    from vllm_kvmem.action_attention import ActionRuntime
-    import vllm_kvmem.action_attention as action
-    import vllm_kvmem.action_scoring as scoring
+    from vllm_kvmem.serving.action_attention import ActionRuntime
+    import vllm_kvmem.serving.action_attention as action
+    import vllm_kvmem.serving.action_scoring as scoring
     empty = torch.empty
     monkeypatch.setattr(torch, 'empty', lambda *a, **k: empty(*a, **{n: v for n, v in k.items() if n != 'pin_memory'}))
     original_events = []

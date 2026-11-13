@@ -4,8 +4,8 @@ from threading import Event
 
 import pytest
 
-from vllm_kvmem import _native, memory_storage
-from vllm_kvmem.memory_storage import MemoryArchive, MemorySpan, MemoryTier
+from vllm_kvmem import _native; from vllm_kvmem.core import memory_storage
+from vllm_kvmem.core.memory_storage import MemoryArchive, MemorySpan, MemoryTier
 
 
 @pytest.mark.skipif(not hasattr(_native, 'copy_record_slices'), reason='New host extension required')

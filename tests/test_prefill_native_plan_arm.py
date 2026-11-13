@@ -4,8 +4,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-import vllm_kvmem.action_attention as module
-from vllm_kvmem.action_attention import ActionMetadata
+import vllm_kvmem.serving.action_attention as module
+from vllm_kvmem.serving.action_attention import ActionMetadata
 from test_prefill_planning import runtime
 
 

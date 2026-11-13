@@ -5,9 +5,9 @@ import pytest
 
 pytest.importorskip('vllm')
 from vllm.v1.outputs import KVConnectorOutput
-from vllm_kvmem.connector import ControlCompletions
-from vllm_kvmem.historical_admission import HistoricalHistoryAdmission
-from vllm_kvmem.session_control import SessionNotice
+from vllm_kvmem.serving.connector import ControlCompletions
+from vllm_kvmem.serving.historical_admission import HistoricalHistoryAdmission
+from vllm_kvmem.serving.session_control import SessionNotice
 from test_connector import pair
 from test_session_control import ledger, request
 

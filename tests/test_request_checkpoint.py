@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.request_checkpoint import (
+from vllm_kvmem.serving.request_checkpoint import (
     CacheRows, NativeRequestCheckpointAdapter, capture_exact, checkpoint_size, restore_exact,
 )
 
@@ -93,7 +93,7 @@ def test_capture_refuses_duplicate_names_and_duplicate_physical_rows():
 
 
 def native_fixture(device='cpu'):
-    from vllm_kvmem.native_state import NativeRecurrentState
+    from vllm_kvmem.serving.native_state import NativeRecurrentState
     target = torch.arange(12 * 4 * 2 * 8, device=device).remainder(256).to(torch.uint8).reshape(12, 4, 2, 8).transpose(1, 2)
     mtp = target.clone() + 1
     conv = torch.arange(12 * 5 * 4, dtype=torch.float32, device=device).reshape(12, 5, 4)

@@ -10,7 +10,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.pressure_pipeline import PressurePipeline, updates_live_window
+from vllm_kvmem.serving.pressure_pipeline import PressurePipeline, updates_live_window
 
 
 class Committed(Exception):

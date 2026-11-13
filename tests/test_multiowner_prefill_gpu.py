@@ -5,16 +5,16 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.native_attention import NativeAttentionStats
-from vllm_kvmem.logical_action import LogicalScorePlan, project_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.capture_runtime import CapturedPacket
-from vllm_kvmem.multiowner_prefill import attach_owner_views, bind_owner_payload
+from vllm_kvmem.serving.native_attention import NativeAttentionStats
+from vllm_kvmem.serving.logical_action import LogicalScorePlan, project_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.capture_runtime import CapturedPacket
+from vllm_kvmem.serving.multiowner_prefill import attach_owner_views, bind_owner_payload
 from test_physical_prefill_stats_gpu import plan, oracle, RTOL, ATOL
-from vllm_kvmem.authority import RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
+from vllm_kvmem.serving.authority import RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
 
 pytestmark=pytest.mark.skipif(os.getenv('KVMEM_RUN_GPU_TESTS')!='1',reason='Exclusive multiowner CUDA qualification')
 

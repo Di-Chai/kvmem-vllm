@@ -2,7 +2,7 @@
 
 This file belongs to a frozen benchmark, not the supported serving interface.
 All profile validation, compatibility setup and launch recording remain in
-vllm_kvmem.serve. The diagnostic worker is the sole argv addition.
+vllm_kvmem.serving.serve. The diagnostic worker is the sole argv addition.
 """
 from pathlib import Path
 
@@ -27,7 +27,10 @@ def audited_build_launch(original):
 
 
 def main(argv=None):
-    from vllm_kvmem import serve
+    try:
+        from vllm_kvmem import serve           # a runtime from before the layer directories
+    except ImportError:
+        from vllm_kvmem.serving import serve
 
     original = serve.build_launch
     serve.build_launch = audited_build_launch(original)

@@ -8,10 +8,10 @@ import pytest
 import torch
 
 from vllm_kvmem import _prefill_state_native as native
-from vllm_kvmem import deferred_fold
-from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory, accept_buffered_batch
-from vllm_kvmem.deferred_fold import DeferredFoldHistory, accept_deferred, deferrable, force_all
-from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure, _LayerwiseAcceptance
+from vllm_kvmem.serving import deferred_fold
+from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory, accept_buffered_batch
+from vllm_kvmem.serving.deferred_fold import DeferredFoldHistory, accept_deferred, deferrable, force_all
+from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure, _LayerwiseAcceptance
 
 L = 16
 
@@ -214,7 +214,7 @@ def test_invalid_spans_fail_at_publication_like_the_eager_batch(fault):
 def test_deferred_spans_release_the_download_pool_lease():
     """Queued folds must not pin action-download slots (N>=4 exhausted the pool)."""
     import gc
-    from vllm_kvmem.action_download_pool import ActionDownloadPool
+    from vllm_kvmem.serving.action_download_pool import ActionDownloadPool
 
     class Event:
         def query(self): return True

@@ -74,7 +74,7 @@ class _RunnerLoader(importlib.machinery.SourceFileLoader):
         source = self.get_data(self.path)
         from .engine_api import require_contract
         require_contract('runner')
-        extension = "\nfrom vllm_kvmem.runner import make_probe_runner\nGPUModelRunner = make_probe_runner(GPUModelRunner)\n"
+        extension = "\nfrom vllm_kvmem.serving.runner import make_probe_runner\nGPUModelRunner = make_probe_runner(GPUModelRunner)\n"
         return compile(source.decode() + extension, self.path, "exec")
 
 

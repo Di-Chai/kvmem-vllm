@@ -7,9 +7,9 @@ import pytest
 pytest.importorskip('vllm')
 from vllm.v1.request import RequestStatus
 from vllm.v1.core.sched.output import SchedulerOutput
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem.speculative_admission import SpeculativeQueryPolicy
-from vllm_kvmem.window_manager import RefreshRequired
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving.speculative_admission import SpeculativeQueryPolicy
+from vllm_kvmem.serving.window_manager import RefreshRequired
 from test_capacity import make_gate
 from test_scheduler_transactions import setup_scheduler
 

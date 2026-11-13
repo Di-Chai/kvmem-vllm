@@ -1,6 +1,6 @@
 import pytest
 
-from vllm_kvmem.phase_policy import PhasePolicy
+from vllm_kvmem.serving.phase_policy import PhasePolicy
 
 
 def policy(max_seqs=4, wave=8192, max_wait=1000):

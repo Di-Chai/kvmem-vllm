@@ -5,9 +5,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.capture_pack import PackLimits, SourceBinding, eligibility, source_signature, try_pack
-from vllm_kvmem.capture_runtime import CaptureRuntime
-from vllm_kvmem.options import RuntimeOptions
+from vllm_kvmem.serving.capture_pack import PackLimits, SourceBinding, eligibility, source_signature, try_pack
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime
+from vllm_kvmem.core.options import RuntimeOptions
 from test_options import config
 
 
@@ -136,7 +136,7 @@ def test_capacity_accounts_for_single_pinned_and_gpu_table_and_largest_payload()
 
 
 def test_cache_is_never_reallocated_after_geometry_change(monkeypatch):
-    import vllm_kvmem.capture_pack as pack
+    import vllm_kvmem.serving.capture_pack as pack
     captured, batch, rejected, scales, limits = metadata()
     existing = NS(limits=replace(limits, max_tokens=4096), device=scales.device)
     runtime = NS(scales=scales, raw_dtype=torch.float8_e4m3fn,

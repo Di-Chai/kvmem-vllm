@@ -49,7 +49,7 @@ def prepare(args):
     configs = profiles(read(old/'profile.json'))
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     manifests = {}
     for variant in VARIANTS:
         job = root/variant

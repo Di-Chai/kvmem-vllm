@@ -4,10 +4,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem import mtp_runtime
+from vllm_kvmem.adapters import mtp_runtime
 from test_authority import setup, drain
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def test_mtp_keys_never_change_original_target_meank_selection(tmp_path):
@@ -28,7 +28,7 @@ def test_mtp_keys_never_change_original_target_meank_selection(tmp_path):
     plans = [a.select_for_queries(queries) for a in (main, together)]
     assert [[r.block_id for r in p.remaps] for p in plans] == [[0, 2], [0, 2]]
     for authority in (main, together):
-        from vllm_kvmem.authority import _Ready
+        from vllm_kvmem.serving.authority import _Ready
         authority.memory.attach_completion(_Ready()); assert authority.memory.commit_selection()
     del plans
     assert main.close() and together.close() and archive.close() and other_archive.close()
@@ -42,7 +42,7 @@ class Batch:
 
 
 def test_mtp_prefix_is_published_after_proposal_in_dense_frame_and_failure_resets_mode(monkeypatch):
-    monkeypatch.setattr('vllm_kvmem.draft_contract.verify_mtp_sources', lambda: None)
+    monkeypatch.setattr('vllm_kvmem.adapters.draft_contract.verify_mtp_sources', lambda: None)
     module = NS()
     record = NS(name='layer', key=torch.zeros(4), value=torch.zeros(4))
     model = NS(named_modules=lambda: [('layer', module)])

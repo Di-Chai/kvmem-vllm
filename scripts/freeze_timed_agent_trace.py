@@ -208,7 +208,7 @@ def locality_mapper():
     # renderer and all of its original token/Query/mandatory behavior.
     name = 'timed_trace_locality_mapper'
     if name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(name, ROOT/'src/vllm_kvmem/prompt_spans.py')
+        spec = importlib.util.spec_from_file_location(name, ROOT/'src/vllm_kvmem/serving/prompt_spans.py')
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
@@ -335,12 +335,12 @@ def freeze(args):
     planner = bridge.Planner(bridge.Protocol(library), tokenizer, gen_budget=131072)
     agents = [make_agent_plan(source, planner, bridge) for source in sources]
     validate_initial_history(agents,max_history)
-    request_plan = sys.modules['vllm_kvmem.request_plan']
+    request_plan = sys.modules['vllm_kvmem.serving.request_plan']
     if not Path(request_plan.__file__).resolve().is_relative_to(frozen_src.resolve()):
         raise ValueError('RequestPlan was imported from outside the source frozen tree')
     paths = {run/name for name in ('manifest.json', 'run.json', 'profile.json', 'bridge/requests.jsonl')}
     paths.update((bridge_path, Path(request_plan.__file__).resolve(), Path(__file__).resolve(),
-                  ROOT/'src/vllm_kvmem/prompt_spans.py'))
+                  ROOT/'src/vllm_kvmem/serving/prompt_spans.py'))
     paths.update(path for path in (run/'protocol').rglob('*') if path.is_file())
     for source in sources:
         if fallback or max_history is not None:

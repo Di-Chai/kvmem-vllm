@@ -3,10 +3,10 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from vllm_kvmem.action_attention import ActionHistory, ActionRuntime, window_segments
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory import RequestMemory
-from vllm_kvmem.prefill_planning import freeze_prefill_frame
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionRuntime, window_segments
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory import RequestMemory
+from vllm_kvmem.serving.prefill_planning import freeze_prefill_frame
 from test_core import Event, append
 
 
@@ -231,8 +231,8 @@ def test_real_prepare_capture_and_delayed_accept_match_serial_packets(tmp_path, 
     """Exercise production metadata/planning/capture with CPU-backed GPU calls."""
     import torch
     from collections import Counter
-    import vllm_kvmem.action_attention as module
-    import vllm_kvmem.action_scoring as scoring
+    import vllm_kvmem.serving.action_attention as module
+    import vllm_kvmem.serving.action_scoring as scoring
     original_empty = torch.empty
     monkeypatch.setattr(torch, 'empty', lambda *a, **kw: original_empty(
         *a, **{k: v for k, v in kw.items() if k != 'pin_memory'}))

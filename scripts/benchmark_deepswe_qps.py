@@ -98,7 +98,7 @@ def validate_carry(source, cell, profile, runtime):
 def prepare(args):
     from scripts import benchmark_deepswe_first16 as runner
     from scripts.patch_deepswe_client_unicode import patch
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     from scripts.native_agent_launch import build_launch as native_launch
     root = args.output.resolve()
     if (root/'manifest.json').exists():

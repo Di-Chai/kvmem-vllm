@@ -5,8 +5,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 from vllm.v1.kv_cache_interface import FullAttentionSpec, MambaSpec, UniformTypeKVCacheSpecs
-from vllm_kvmem.cache_groups import full_attention_groups
-from vllm_kvmem.metadata import WorkingSetMetadata, WindowLengths
+from vllm_kvmem.adapters.cache_groups import full_attention_groups
+from vllm_kvmem.core.metadata import WorkingSetMetadata, WindowLengths
 
 
 def test_native_mamba_slot_mapping_is_not_attention_window_eligibility():

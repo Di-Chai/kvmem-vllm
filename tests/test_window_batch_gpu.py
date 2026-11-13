@@ -9,7 +9,7 @@ pytest.importorskip("vllm")
 pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1",
                                 reason="Explicit GPU qualification only")
 
-from vllm_kvmem.window_batch import WindowBatchAdapter
+from vllm_kvmem.serving.window_batch import WindowBatchAdapter
 
 
 def make_batch():
@@ -122,7 +122,7 @@ def random_batch(generator, requests, padded_requests, pad_tokens):
 
 @pytest.mark.parametrize("buffers", [False, True])
 def test_dynamic_translate_matches_the_specialized_kernel_and_compiles_once(monkeypatch, buffers):
-    from vllm_kvmem import window_batch
+    from vllm_kvmem.serving import window_batch
     generator = torch.Generator().manual_seed(7)
     adapters = []
     for value in ("0", "1"):
@@ -153,7 +153,7 @@ def test_dynamic_translate_matches_the_specialized_kernel_and_compiles_once(monk
 
 
 def test_translate_flag_is_off_by_default_and_validated(monkeypatch):
-    from vllm_kvmem.window_batch import translate_dynamic
+    from vllm_kvmem.serving.window_batch import translate_dynamic
     monkeypatch.delenv("KVMEM_WINDOW_TRANSLATE_DYNAMIC", raising=False)
     assert not translate_dynamic()
     monkeypatch.setenv("KVMEM_WINDOW_TRANSLATE_DYNAMIC", "yes")

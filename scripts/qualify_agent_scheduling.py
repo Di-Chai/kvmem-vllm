@@ -162,7 +162,7 @@ async def main(args):
     output.mkdir(parents=True, exist_ok=True)
     if any(output.glob('pair-*')):
         raise ValueError('Use a fresh output directory, never overwrite measurements')
-    from vllm_kvmem.serve import build_launch
+    from vllm_kvmem.serving.serve import build_launch
     if args.verify_restores and args.cases != ['agents']:
         raise ValueError('Byte-oracle qualification uses only the multi-round agents case')
     prefill_batch_tokens = getattr(args, 'prefill_batch_tokens', 0)
@@ -194,7 +194,7 @@ async def main(args):
         raise ValueError('Pressure correctness requires the fixed 32K retirement-barrier workload')
     base = json.loads(args.config.read_text())
     if prefill_batch_tokens:
-        from vllm_kvmem.config import KVMemConfig
+        from vllm_kvmem.core.config import KVMemConfig
         block = base['kvmem'].get('block_tokens', KVMemConfig.block_tokens)
         if type(block) is not int or block <= 0 or prefill_batch_tokens % block:
             raise ValueError('Shared prefill qualification budget must be positive and block aligned')

@@ -3,13 +3,13 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import layerwise_checkpoints as lc
-from vllm_kvmem.layerwise_checkpoints import (
+from vllm_kvmem.serving import layerwise_checkpoints as lc
+from vllm_kvmem.serving.layerwise_checkpoints import (
     capture, capture_for_pool, finish_async_restore, install_restored, prepare_restore,
     refresh_committed_snapshot, require_supported_restore, restore_pressure_sync,
     restored_decode, sessions_enabled,
 )
-from vllm_kvmem.layerwise_decode import DecodeHistory
+from vllm_kvmem.serving.layerwise_decode import DecodeHistory
 from test_layerwise_checkpoints import prefix
 from test_layerwise_pressure import options
 
@@ -148,7 +148,7 @@ def test_install_restored_publishes_maps_histories_and_decode(monkeypatch):
     assert c.maps['fresh'] == frame and c.histories['fresh'] is histories
     assert [d.mass for d in c.decode_histories['fresh']] == [{0: 0.25, 64: 0.5}, {128: 0.75}]
     # Without KVMEM_LAYERWISE_HISTORICAL_GC no hold is taken.
-    from vllm_kvmem.layerwise_gc_holds import holds_of
+    from vllm_kvmem.serving.layerwise_gc_holds import holds_of
     assert holds_of(c).holds == {}
 
 
@@ -336,7 +336,7 @@ def test_committed_snapshot_refresh_ignores_checkpoints_without_layer_state():
 
 # 9. finished request -> stash -> terminal capture
 def test_finished_state_is_stashed_for_the_terminal_capture_then_consumed(monkeypatch):
-    from vllm_kvmem.layerwise_gc_holds import holds_of
+    from vllm_kvmem.serving.layerwise_gc_holds import holds_of
     sessions(monkeypatch)
     c, a = prefix(); with_decode(c)
     holds = holds_of(c)
@@ -351,7 +351,7 @@ def test_finished_state_is_stashed_for_the_terminal_capture_then_consumed(monkey
 
 
 def test_stash_is_bounded_and_releases_the_oldest_hold(monkeypatch):
-    from vllm_kvmem.layerwise_gc_holds import holds_of
+    from vllm_kvmem.serving.layerwise_gc_holds import holds_of
     sessions(monkeypatch)
     monkeypatch.setattr(lc, 'MAX_RETIRED', 2)
     c, a = prefix()
@@ -374,8 +374,8 @@ def test_finish_drops_the_record_index_cached_under_the_session_namespace(monkey
 
 
 def test_retired_blocks_are_pruned_from_every_layer_like_the_shared_history(monkeypatch):
-    from vllm_kvmem.layerwise_pressure import LayerwisePrefillPressure
-    from vllm_kvmem.layerwise_decode import DecodeHistory
+    from vllm_kvmem.serving.layerwise_pressure import LayerwisePrefillPressure
+    from vllm_kvmem.serving.layerwise_decode import DecodeHistory
     sessions(monkeypatch)
     c, a = prefix()
     pressure = LayerwisePrefillPressure.__new__(LayerwisePrefillPressure)
@@ -533,7 +533,7 @@ def test_resident_restore_rebuilds_only_a_diverged_draft(monkeypatch, diverged):
 
 @pytest.mark.parametrize('case', ['diverged', 'aligned', 'flag_off', 'pressure'])
 def test_realign_commits_layer_zero_as_the_native_frame_after_publication(monkeypatch, case):
-    from vllm_kvmem import layerwise_no_probe
+    from vllm_kvmem.serving import layerwise_no_probe
     sessions(monkeypatch, case != 'flag_off')
     c, a = diverged_prefix() if case != 'aligned' else prefix()
     commits, committed = [], []
@@ -541,7 +541,7 @@ def test_realign_commits_layer_zero_as_the_native_frame_after_publication(monkey
         ([r.history_begin for r in state['layer_zero_records']], state['selected_tokens'])))
     c.query.emit = lambda *args, **kwargs: None
     origin, layers = c.maps['old']
-    from vllm_kvmem.layerwise_pressure import extend_records
+    from vllm_kvmem.serving.layerwise_pressure import extend_records
     c.maps['fresh'] = (288, tuple(tuple(extend_records(rows, origin, 288)) for rows in layers))
     # Resolve the extension rows to real records as a restore installs them.
     c.maps['fresh'] = (288, tuple(tuple((a.records[next(k for k, r in a.records.items() if r.history_begin == row[2])].handle.slot, 1,
@@ -557,7 +557,7 @@ def test_realign_commits_layer_zero_as_the_native_frame_after_publication(monkey
 
 @pytest.mark.parametrize('flag', [True, False])
 def test_query_commit_drops_stale_layer_maps_only_with_the_flag(monkeypatch, flag):
-    from vllm_kvmem.layerwise_pressure import PendingMaps
+    from vllm_kvmem.serving.layerwise_pressure import PendingMaps
     sessions(monkeypatch, flag)
     c, a = prefix()
     discarded = []
@@ -575,7 +575,7 @@ def test_query_commit_drops_stale_layer_maps_only_with_the_flag(monkeypatch, fla
 # authority pruned the shared prefill history alone.
 def retiring_prefix(monkeypatch):
     import types
-    from vllm_kvmem.authority import RequestAuthority
+    from vllm_kvmem.serving.authority import RequestAuthority
     sessions(monkeypatch)
     c, a = prefix(); with_decode(c)
     a.records[(4, 1)] = NS(history_begin=192, count=32, handle=NS(slot=4, generation=1))

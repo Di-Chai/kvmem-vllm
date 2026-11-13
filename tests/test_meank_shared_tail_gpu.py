@@ -8,8 +8,8 @@ not the original history length.
 import pytest
 
 torch = pytest.importorskip('torch')
-from vllm_kvmem.cuda_scoring import mean_key_scores
-from vllm_kvmem.retrieval import mean_key_scores as reference
+from vllm_kvmem.core.cuda_scoring import mean_key_scores
+from vllm_kvmem.core.retrieval import mean_key_scores as reference
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='CUDA qualification')
 

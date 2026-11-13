@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_kvmem.block_graph import BlockGraph
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.block_graph import BlockGraph
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_graph_capture import action, history, output_packet
 from test_request_publication import fixture, packet, close
 
@@ -62,7 +62,7 @@ def test_archive_backpressure_aborts_unconsumed_reservation_and_releases_lock(tm
     runtime, a, b, archive = fixture(tmp_path)
     a.block_graph = BlockGraph('a', 4, initial_position=4)
     shared = packet(runtime, [('a', 4, 1)])
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     monkeypatch.setattr(authority, 'append_authority_batch', lambda entries: 0)
     assert runtime._copy_source_owners(shared, [0], False) == []
     assert not shared.graph_updates and a.block_graph._pending_update is None
@@ -79,7 +79,7 @@ def test_append_exception_aborts_every_preflight_reservation(tmp_path, monkeypat
     runtime, a, b, archive = fixture(tmp_path)
     a.block_graph, b.block_graph = BlockGraph('a', 4, initial_position=4), BlockGraph('b', 4, initial_position=4)
     shared = packet(runtime, [('a', 4, 1), ('b', 4, 1)])
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     def failure(entries):
         raise RuntimeError('native append failed before committing')
     monkeypatch.setattr(authority, 'append_authority_batch', failure)
@@ -117,7 +117,7 @@ def test_partial_native_batch_keeps_only_consumed_graph_reservations(tmp_path, m
     runtime.options = replace(runtime.options, early_capture_slot_release=True)
     a.block_graph, b.block_graph = BlockGraph('a', 4, initial_position=4), BlockGraph('b', 4, initial_position=4)
     shared = packet(runtime, [('a', 4, 1), ('b', 4, 1)])
-    from vllm_kvmem import authority
+    from vllm_kvmem.serving import authority
     original = authority.append_authority_batch
     monkeypatch.setattr(authority, 'append_authority_batch', lambda entries: original(entries[:1]))
     assert runtime._copy_slot_owner_prefix('bulk')

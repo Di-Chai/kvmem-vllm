@@ -1,8 +1,8 @@
 """Bounded graph-free metadata, including sparse history and P/M replay."""
 import pytest
 
-from vllm_kvmem.query_boundary_history import QueryBoundaryHistory
-from vllm_kvmem.query_group_recall import build_halo_groups
+from vllm_kvmem.serving.query_boundary_history import QueryBoundaryHistory
+from vllm_kvmem.serving.query_group_recall import build_halo_groups
 from types import SimpleNamespace as NS
 
 

@@ -2,9 +2,9 @@
 import pytest
 import torch
 
-from vllm_kvmem.authority import MeanIndexStats, RequestAuthority, append_authority_batch
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.storage import AsyncArchive
+from vllm_kvmem.serving.authority import MeanIndexStats, RequestAuthority, append_authority_batch
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.storage import AsyncArchive
 
 
 def test_shared_execution_counters_and_snapshots_remain_consistent():

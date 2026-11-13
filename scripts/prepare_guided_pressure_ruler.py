@@ -48,7 +48,7 @@ def prepare(root, previous, repo):
         variant.update(execution_profile=PROFILE,source_fixture_sha256=sha(reference/'fixture.json'))
         variant.pop('pooling_arm',None)
         validate_execution(profile,variant)
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         build_launch(profile,repo,campaign/'preflight-server')
         save(campaign/'profile.json',profile);variant['profile_sha256']=sha(campaign/'profile.json')
         save(campaign/'fixture.json',variant)

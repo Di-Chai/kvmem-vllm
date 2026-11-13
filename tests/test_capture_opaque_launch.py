@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from test_graph_options import model_profile, runtime, settings, worker_payload
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.serve import build_launch
 
 
 def profile(tmp_path, enabled):
@@ -21,7 +21,7 @@ def test_disabled_preserves_original_compile_configuration(tmp_path):
 
 
 def test_opaque_source_is_bound_to_native_compile_key_and_saved_launch(tmp_path):
-    from vllm_kvmem.capture_compile import CAPTURE_COMPILE_KEY, capture_compile_fingerprint
+    from vllm_kvmem.adapters.capture_compile import CAPTURE_COMPILE_KEY, capture_compile_fingerprint
     config = profile(tmp_path, True)
     before = deepcopy(config)
     launch = build_launch(config, tmp_path, tmp_path/'run')
@@ -40,7 +40,7 @@ def test_opaque_source_is_bound_to_native_compile_key_and_saved_launch(tmp_path)
 
 
 def test_changed_projection_source_changes_compile_namespace(tmp_path, monkeypatch):
-    import vllm_kvmem.capture_compile as compile_key
+    import vllm_kvmem.adapters.capture_compile as compile_key
     config = profile(tmp_path, True)
     keys = []
     for fingerprint in ('1'*64, '2'*64):

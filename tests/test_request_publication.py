@@ -6,10 +6,10 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_attention import ActionHistory, ActionMetadata, ActionPacket, ActionRuntime
-from vllm_kvmem.capture_runtime import CaptureRuntime, CapturedPacket
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.terminal import TerminalPrefix
+from vllm_kvmem.serving.action_attention import ActionHistory, ActionMetadata, ActionPacket, ActionRuntime
+from vllm_kvmem.serving.capture_runtime import CaptureRuntime, CapturedPacket
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.terminal import TerminalPrefix
 from test_authority import setup, payload, drain
 from test_terminal_prefix import request
 
@@ -242,8 +242,8 @@ def test_action_parser_and_page_mapping_wait_only_for_its_owner(tmp_path, monkey
         assert runtime.start_cpu_scatter() and entered.wait(5)
         # Reject the old packet-wide API if Action tries to use it.
         monkeypatch.setattr(runtime, 'drain', lambda **_: pytest.fail('Global Action publication barrier'))
-        import vllm_kvmem.action_attention as capture
-        import vllm_kvmem.action_scoring as scoring
+        import vllm_kvmem.serving.action_attention as capture
+        import vllm_kvmem.serving.action_scoring as scoring
         seen = []
         def attention(*args, **kwargs):
             starts, counts = args[6:8]
@@ -322,7 +322,7 @@ def test_same_owner_cannot_overtake_inflight_publication(tmp_path, monkeypatch):
 def test_finished_owner_is_deferred_once_until_clipped_cpu_prefix_is_ready(tmp_path, explicit_finish):
     from dataclasses import replace
     from vllm.v1.core.sched.output import SchedulerOutput
-    from vllm_kvmem.connector import ControlMetadata
+    from vllm_kvmem.serving.connector import ControlMetadata
     runtime, a, b, archive = fixture(tmp_path)
     shared = packet(runtime, [('b', 4, 8), ('a', 4, 1)], rejected=(2, 0), confirmed=False)
     prefix = TerminalPrefix.from_request(request(10, 0, 8, 4))

@@ -18,8 +18,8 @@ BLOCK = 32
 
 
 def store_fixture(blocks, sink):
-    from vllm_kvmem.config import KVMemConfig
-    from vllm_kvmem.memory import RequestMemory
+    from vllm_kvmem.core.config import KVMemConfig
+    from vllm_kvmem.core.memory import RequestMemory
     from test_core import append
     count = blocks * BLOCK
     memory = RequestMemory('pick', KVMemConfig(block_tokens=BLOCK, select_budget=count, gen_budget=256,
@@ -104,8 +104,8 @@ def test_duplicate_candidates_keep_the_store_order():
 def test_plan_layer0_matches_cpu_selection_and_store_plan_skips(monkeypatch, kind):
     """Same window as the lazy CPU selection; same skipped blocks as the native plan."""
     from types import SimpleNamespace as NS
-    from vllm_kvmem.buffered_prefill_attention import BufferedPrefillHistory
-    from vllm_kvmem.layerwise_pressure import native_lookup_scores
+    from vllm_kvmem.serving.buffered_prefill_attention import BufferedPrefillHistory
+    from vllm_kvmem.serving.layerwise_pressure import native_lookup_scores
     from test_layerwise_pressure import controller, options
     from test_recall_experiment import native_authority, finish
     monkeypatch.setenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT', '1')
@@ -166,7 +166,7 @@ def test_plan_layer0_matches_cpu_selection_and_store_plan_skips(monkeypatch, kin
 
 def test_plan_layer0_sources_and_skips_with_a_staged_chunk():
     """Window rows keep their row when their dense position is unchanged; chunk rows follow."""
-    from vllm_kvmem.layer0_fast import plan_layer0, _Decline
+    from vllm_kvmem.serving.layer0_fast import plan_layer0, _Decline
     window = [0, 32, 64, 128, 192, 256]                    # previous window, 6 blocks
     chunk_begin, chunk_blocks = 320, 4                      # staged chunk: 320..447
     mapping = [(0, 0, b, 32, 32 * i) for i, b in enumerate(window)] + \

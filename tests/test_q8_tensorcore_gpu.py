@@ -7,7 +7,7 @@ pytestmark = pytest.mark.skipif(os.getenv("KVMEM_RUN_GPU_TESTS") != "1", reason=
 
 def test_activation_quantization_matches_cuda_roundf_contract():
     import torch
-    from vllm_kvmem.q8_tensorcore import quantize_activations
+    from vllm_kvmem.adapters.q8_tensorcore import quantize_activations
 
     x = torch.zeros(3, 64, device="cuda", dtype=torch.float32)
     x[0, :8] = torch.tensor([127., -127., .5, -.5, 1.5, -1.5, 2.5, -2.5], device="cuda")
@@ -28,7 +28,7 @@ def test_activation_bytes_match_pinned_fast_math_cuda_via_identity_weights():
     import numpy as np
     import torch
     from vllm_gguf_plugin import ops
-    from vllm_kvmem.q8_tensorcore import quantize_activations
+    from vllm_kvmem.adapters.q8_tensorcore import quantize_activations
 
     rng = np.random.default_rng(4919)
     x = torch.from_numpy(rng.standard_normal((256, 512), dtype=np.float32)).cuda().bfloat16()
@@ -44,7 +44,7 @@ def test_activation_bytes_match_pinned_fast_math_cuda_via_identity_weights():
 
 def test_request_departure_does_not_compile_new_batch_size_kernels():
     import torch
-    from vllm_kvmem.q8_tensorcore import q8_tensorcore_linear, _matmul, _reduce
+    from vllm_kvmem.adapters.q8_tensorcore import q8_tensorcore_linear, _matmul, _reduce
 
     # All-zero Q8 bytes encode a finite zero matrix. This test is about changing
     # native C4 -> C3 -> C2 verifier rows, a stall observed in the model run.
@@ -64,7 +64,7 @@ def test_grouped_integer_dot_preserves_q8_scales(rows, outputs, inputs, split):
     import torch
     import gguf
     from vllm_gguf_plugin import ops
-    from vllm_kvmem.q8_tensorcore import q8_tensorcore_linear, quantize_activations
+    from vllm_kvmem.adapters.q8_tensorcore import q8_tensorcore_linear, quantize_activations
 
     rng = np.random.default_rng(1717)
     weights = rng.normal(size=(outputs, inputs)).astype(np.float32) / np.sqrt(inputs)

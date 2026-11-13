@@ -130,7 +130,7 @@ def prepare(args):
         identity = model_identity(base)
         suites = ('niah',) if args.scope == 'smoke8' else protocol.SUITES
         configurations = {suite:protocol.profiles(base, args.port, suite) for suite in suites}
-        from vllm_kvmem.serve import build_launch
+        from vllm_kvmem.serving.serve import build_launch
         for suite, arms in configurations.items():
             for arm, profile in arms.items():
                 build_launch(profile, ROOT, root/(suite+'-'+arm)/'server')

@@ -63,7 +63,7 @@ def validate_sass_proof(proof, identities):
 def build_modules(output):
     import torch
     from flashinfer.jit.core import jit_spec_registry
-    from vllm_kvmem.native_attention_build import prefill_module, source_overlay
+    from vllm_kvmem.serving.native_attention_build import prefill_module, source_overlay
     geometry = (torch.bfloat16, torch.float8_e4m3fn, torch.bfloat16, torch.int32, 256)
     reference_overlay = source_overlay(None, prefill_static_aligned=True)
     candidate_overlay = source_overlay(None, prefill_static_aligned=True, prefill_static_readonly=True)

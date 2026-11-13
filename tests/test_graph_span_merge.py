@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from vllm_kvmem.block_graph import _merge_spans, _spans, BlockGraph
+from vllm_kvmem.serving.block_graph import _merge_spans, _spans, BlockGraph
 
 
 def reference_merge(old, old_known, supplied, prefix):

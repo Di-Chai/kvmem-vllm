@@ -10,9 +10,9 @@ import pytest
 import torch
 
 from vllm_kvmem import _native
-from vllm_kvmem.authority import record_key
-from vllm_kvmem.memory import Phase
-from vllm_kvmem.pressure_reader import prepare_pressure_reader, reader_extend
+from vllm_kvmem.serving.authority import record_key
+from vllm_kvmem.core.memory import Phase
+from vllm_kvmem.serving.pressure_reader import prepare_pressure_reader, reader_extend
 from test_paired_archive_reads import archive_fixture
 
 REGIONS = ((3, 11), (47, 9))

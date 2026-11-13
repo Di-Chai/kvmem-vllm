@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem.layerwise_query import LayerwiseQuery
+from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
 
 
 @pytest.mark.parametrize('flag,attribute', [
@@ -83,7 +83,7 @@ def test_resident_metadata_is_retained_until_existing_or_exception_fence(monkeyp
 
 
 def test_query_reader_is_lazy_and_bound_to_current_generation(monkeypatch):
-    from vllm_kvmem import query_region_reader
+    from vllm_kvmem.serving import query_region_reader
     created=[]
     def factory(authority,**kwargs):
         reader=NS(authority=authority,**kwargs);created.append(reader);return reader

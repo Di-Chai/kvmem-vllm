@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.query_stage_profile import QueryStageProfile, no_stage
+from vllm_kvmem.serving.query_stage_profile import QueryStageProfile, no_stage
 from test_assembly_read_prefetch import cuda, DeviceBytes, FakeEvent
 
 
@@ -87,7 +87,7 @@ def test_finish_never_queries_an_active_scope(tmp_path):
 
 
 def test_packed_read_retains_begin_result_order_and_scalar_archive_evidence(tmp_path,monkeypatch):
-    from vllm_kvmem import packed_assembly
+    from vllm_kvmem.serving import packed_assembly
     p,_=probe(tmp_path)
     payload=object();authority=object();handles=[object(),object()];calls=[]
     stats=dict(cache_copy_seconds=.004,read_queue_wait_seconds=.003,
@@ -187,7 +187,7 @@ def test_transfer_copy_probe_follows_ready_dependency_and_precedes_lifetime_fenc
 
 
 def test_default_off_and_explicit_supported_query_profile(monkeypatch):
-    from vllm_kvmem.layerwise_query import LayerwiseQuery
+    from vllm_kvmem.serving.layerwise_query import LayerwiseQuery
     from test_layerwise_query import runner
     monkeypatch.setenv('KVMEM_LAYERWISE_QUERY_MODE','sequential')
     monkeypatch.delenv('KVMEM_QUERY_STAGE_PROFILE',raising=False)
@@ -201,6 +201,6 @@ def test_default_off_and_explicit_supported_query_profile(monkeypatch):
 
 
 def test_disabled_stage_never_reads_a_clock(monkeypatch):
-    import vllm_kvmem.query_stage_profile as implementation
+    import vllm_kvmem.serving.query_stage_profile as implementation
     monkeypatch.setattr(implementation.time,'perf_counter',lambda:pytest.fail('disabled timing'))
     with no_stage('unused',gpu=True): pass

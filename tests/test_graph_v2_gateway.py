@@ -7,8 +7,8 @@ import pytest
 httpx = pytest.importorskip('httpx')
 pytest.importorskip('fastapi')
 from test_elastic_gateway import _Request, _status, configuration
-from vllm_kvmem.elastic_gateway import create_app
-from vllm_kvmem.request_plan import RequestPlan
+from vllm_kvmem.apps.elastic_gateway import create_app
+from vllm_kvmem.serving.request_plan import RequestPlan
 
 
 def test_gateway_preserves_absolute_locality_spans_and_provenance_across_append(tmp_path):

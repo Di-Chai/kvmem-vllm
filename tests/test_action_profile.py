@@ -7,9 +7,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from vllm_kvmem.action_profile import ActionProfiler
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.serving.action_profile import ActionProfiler
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 from test_options import config
 from test_serving_launcher import profile as serving_profile
 
@@ -145,7 +145,7 @@ def test_invalid_profile_options_fail_closed(values,match):
 
 
 def test_submit_batch_fence_is_preserved_and_distinct_from_owner_measurement(tmp_path):
-    from vllm_kvmem.capture_runtime import CaptureRuntime
+    from vllm_kvmem.serving.capture_runtime import CaptureRuntime
     p,_=profiler(tmp_path)
     b=batch();b.num_reqs=2
     r=CaptureRuntime.__new__(CaptureRuntime)
@@ -169,7 +169,7 @@ def test_submit_batch_fence_is_preserved_and_distinct_from_owner_measurement(tmp
 def test_page_attention_instrumentation_preserves_math_and_disabled_uses_no_clocks(tmp_path,monkeypatch):
     # CPU replacements only for the two Triton launches; all surrounding tensor
     # preparation, RoPE, softmax and profile branches are the production code.
-    import vllm_kvmem.action_scoring as scoring
+    import vllm_kvmem.serving.action_scoring as scoring
     class Kernel:
         def __init__(self,fn):self.fn=fn
         def __getitem__(self,grid):return self.fn
@@ -199,15 +199,15 @@ def test_page_attention_instrumentation_preserves_math_and_disabled_uses_no_cloc
     stages={s['stage'] for r in records(p) if r['event']=='batch' for s in r['stages']}
     assert {'score.rope','score.q_codec','score.logits','score.softmax','score.segment_mass'} <= stages
     def no_clock():pytest.fail('Disabled scoring used the diagnostic clock')
-    monkeypatch.setattr('vllm_kvmem.action_profile.time.perf_counter',no_clock)
-    monkeypatch.setattr('vllm_kvmem.action_profile.time.thread_time',no_clock)
+    monkeypatch.setattr('vllm_kvmem.serving.action_profile.time.perf_counter',no_clock)
+    monkeypatch.setattr('vllm_kvmem.serving.action_profile.time.thread_time',no_clock)
     assert torch.equal(scoring.page_attention(*args,**kw),expected)
 
 
 def test_mixed_owner_capture_preserves_packets_and_accepted_feedback(tmp_path,monkeypatch):
-    from vllm_kvmem.action_attention import ActionRuntime
-    import vllm_kvmem.action_attention as action
-    import vllm_kvmem.action_scoring as scoring
+    from vllm_kvmem.serving.action_attention import ActionRuntime
+    import vllm_kvmem.serving.action_attention as action
+    import vllm_kvmem.serving.action_scoring as scoring
     # Preserve actual parser, metadata, window mapping and feedback commit.
     # Replace GPU-only storage/calls; GPU numerical qualification is separate.
     empty=torch.empty

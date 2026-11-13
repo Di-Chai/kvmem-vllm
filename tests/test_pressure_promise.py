@@ -6,12 +6,12 @@ import threading
 
 import pytest
 
-from vllm_kvmem.action_attention import ActionRuntime
-from vllm_kvmem.logical_action import plan_logical_scores
-from vllm_kvmem.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
-from vllm_kvmem.prefill_planning import PrefillPlanFrame, freeze_prefill_frame
-from vllm_kvmem.request_plan import RequestPlan
-from vllm_kvmem import pressure_promise
+from vllm_kvmem.serving.action_attention import ActionRuntime
+from vllm_kvmem.serving.logical_action import plan_logical_scores
+from vllm_kvmem.serving.logical_prefill import LogicalPrefillGroup, LogicalPrefillSpan
+from vllm_kvmem.serving.prefill_planning import PrefillPlanFrame, freeze_prefill_frame
+from vllm_kvmem.serving.request_plan import RequestPlan
+from vllm_kvmem.serving import pressure_promise
 
 BLOCK, EXTENT, HISTORY = 32, 36864, 81920
 
@@ -103,7 +103,7 @@ def refresh_fixture(history_end=HISTORY - 4096):
 
 
 def pipeline_fixture():
-    from vllm_kvmem.pressure_pipeline import PressurePipeline
+    from vllm_kvmem.serving.pressure_pipeline import PressurePipeline
     p = PressurePipeline.__new__(PressurePipeline)
     p.active, p.installed, p.names = {}, True, ('a', 'b', 'mtp')
     p.pressure = NS(lanes=1, single_assembly=True)
@@ -143,7 +143,7 @@ def test_promise_acknowledges_with_fixed_extent_and_registers_a_guarding_lease(m
     refresh.executor = NS(submit=lambda fn, *a: submitted.append((fn, a)) or Future())
     monkeypatch.setattr(torch.cuda, 'Event', lambda: NS(record=lambda *a: None))
     monkeypatch.setattr(pressure_promise, 'ineligible', lambda *a: None)
-    import vllm_kvmem.async_refresh as ar
+    import vllm_kvmem.serving.async_refresh as ar
     monkeypatch.setattr(ar, 'stored_expansions', lambda tables: {0: 1})
     refresh.runner.block_tables = NS(num_blocks=NS(np={(0, 0): 2}),
         block_tables={0: NS(gpu={(0, slice(None, 2)): None})})
@@ -173,7 +173,7 @@ def test_promise_acknowledges_with_fixed_extent_and_registers_a_guarding_lease(m
 
 
 def test_begin_binds_plan_once_and_commits(monkeypatch):
-    from vllm_kvmem.pressure_pipeline import LayerMaterialization
+    from vllm_kvmem.serving.pressure_pipeline import LayerMaterialization
     p = pipeline_fixture()
     j = job()
     lease = LayerMaterialization(p, j, None, p.names)
@@ -188,7 +188,7 @@ def test_begin_binds_plan_once_and_commits(monkeypatch):
 
 
 def test_commit_refuses_a_different_extent():
-    from vllm_kvmem.pressure_pipeline import LayerMaterialization
+    from vllm_kvmem.serving.pressure_pipeline import LayerMaterialization
     p = pipeline_fixture()
     j = job()
     lease = LayerMaterialization(p, j, NS(total_window_tokens=EXTENT-32), p.names)
@@ -199,7 +199,7 @@ def test_commit_refuses_a_different_extent():
 
 def test_scheduler_requests_promise_only_when_idle(monkeypatch):
     from vllm.distributed import kv_transfer
-    from vllm_kvmem.scheduler import KVMemScheduler
+    from vllm_kvmem.serving.scheduler import KVMemScheduler
     calls = []
     def take(wait=0., idle=False):
         calls.append((wait, idle)); return None
@@ -362,7 +362,7 @@ def _async_check_fixture(monkeypatch, row):
     monkeypatch.setattr(pressure_promise.torch, 'empty',
                         lambda shape, dtype, pin_memory: torch.zeros(shape, dtype=dtype))
     monkeypatch.setattr(pressure_promise, 'ineligible', lambda *a: None)
-    import vllm_kvmem.async_refresh as ar
+    import vllm_kvmem.serving.async_refresh as ar
     monkeypatch.setattr(ar, 'stored_expansions', lambda tables: {0: 1})
 
     class Table:

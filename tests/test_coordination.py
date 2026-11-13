@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kvmem.coordination import HistoryAdmission
-from vllm_kvmem.session_control import SessionLedger, SessionNotice
+from vllm_kvmem.serving.coordination import HistoryAdmission
+from vllm_kvmem.serving.session_control import SessionLedger, SessionNotice
 
 
 def request(rid, tokens=80, session=None, salt='tenant'):
@@ -194,7 +194,7 @@ def test_actual_archive_watermark_cannot_exceed_reserved_bytes():
 def test_cpu_geometry_counts_native_mtp_but_not_recurrent_or_sliding_cache():
     torch = pytest.importorskip('torch')
     from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec, UniformTypeKVCacheSpecs
-    from vllm_kvmem.cache_manifest import archive_bytes_per_token
+    from vllm_kvmem.adapters.cache_manifest import archive_bytes_per_token
     spec = FullAttentionSpec(block_size=32, num_kv_heads=4, head_size=256, dtype=torch.uint8)
     groups = [SimpleNamespace(layer_names=list(map(str, range(16))), kv_cache_spec=spec),
               SimpleNamespace(layer_names=['mtp'], kv_cache_spec=UniformTypeKVCacheSpecs(
@@ -205,7 +205,7 @@ def test_cpu_geometry_counts_native_mtp_but_not_recurrent_or_sliding_cache():
 
 
 def test_options_require_cpu_fenced_history_and_validate_maintenance_without_cuda():
-    from vllm_kvmem.options import RuntimeOptions
+    from vllm_kvmem.core.options import RuntimeOptions
     base = RuntimeOptions()
     with pytest.raises(ValueError, match='CPU history coordination'):
         replace(base, cpu_history_coordination=True)
@@ -219,7 +219,7 @@ def test_native_connector_gates_individual_requests_and_settles_session_before_r
     from test_connector import pair
     from test_session_control import ledger, request as session_request
     from vllm.v1.outputs import KVConnectorOutput
-    from vllm_kvmem.connector import ControlCompletions
+    from vllm_kvmem.serving.connector import ControlCompletions
     connector, _ = pair()
     connector.async_retirement = True
     connector.history_admission = gate = HistoryAdmission(200, 4, 1, 100)
@@ -249,7 +249,7 @@ def test_explicit_close_at_full_cpu_budget_reaches_eviction_and_uses_request_ret
     from test_connector import pair
     from test_session_control import ledger, request as session_request, close_request
     from vllm.v1.outputs import KVConnectorOutput
-    from vllm_kvmem.connector import ControlCompletions
+    from vllm_kvmem.serving.connector import ControlCompletions
     connector,_=pair();connector.async_retirement=True
     connector.sessions,_=ledger()
     connector.history_admission=gate=HistoryAdmission(108,4,1,100)

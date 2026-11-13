@@ -7,9 +7,9 @@ import pytest
 
 from test_graph_options import model_profile, runtime, worker_payload
 from test_graph_v2_options import elastic_profile
-from vllm_kvmem.elastic_serve import build_launch as elastic_launch
-from vllm_kvmem.options import RuntimeOptions
-from vllm_kvmem.serve import build_launch
+from vllm_kvmem.apps.elastic_serve import build_launch as elastic_launch
+from vllm_kvmem.core.options import RuntimeOptions
+from vllm_kvmem.serving.serve import build_launch
 
 
 def enabled(**updates):

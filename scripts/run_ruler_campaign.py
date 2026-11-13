@@ -137,7 +137,7 @@ def run(root, diagnostic_cases=None, diagnostic_gen_budget=16384, diagnostic_chu
                 raise TimeoutError('RULER model loading exceeded 20 minutes')
             prepared = time.monotonic()
             if profile.get('profiler_config'):
-                from vllm_kvmem.profiling import control_profiler
+                from vllm_kvmem.serving.profiling import control_profiler
                 control_profiler(f"http://127.0.0.1:{profile['port']}", 'start')
             command = [sys.executable, '-B', str(runtime / 'scripts/benchmark_ruler.py'),
                        'run', '--campaign', str(root)]

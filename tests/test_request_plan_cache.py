@@ -11,8 +11,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from vllm_kvmem import request_plan as rp
-from vllm_kvmem.request_plan import RequestPlan, request_plan
+from vllm_kvmem.serving import request_plan as rp
+from vllm_kvmem.serving.request_plan import RequestPlan, request_plan
 
 PROVENANCE = {'encoding_scope': 'append_suffix', 'history': 'actual_accepted_ids', 'schema_version': 1,
               'source': 'deepswe_protocol', 'status': 'exact', 'unknown_spans': 0}

@@ -3,10 +3,10 @@ import pytest
 import torch
 
 from test_query_key_fps_performance import setup
-from vllm_kvmem.authority import RequestAuthority
-from vllm_kvmem.config import KVMemConfig
-from vllm_kvmem.memory_storage import MemoryArchive
-from vllm_kvmem.recall_value_reference import prepare_reference, score_value_records
+from vllm_kvmem.serving.authority import RequestAuthority
+from vllm_kvmem.core.config import KVMemConfig
+from vllm_kvmem.core.memory_storage import MemoryArchive
+from vllm_kvmem.serving.recall_value_reference import prepare_reference, score_value_records
 
 
 def test_target_kv_regions_skip_draft_layers_and_survive_archive_release(tmp_path, monkeypatch):

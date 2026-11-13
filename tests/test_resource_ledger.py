@@ -8,7 +8,7 @@ import weakref
 
 import pytest
 
-from vllm_kvmem.resource_ledger import ResourceLedger
+from vllm_kvmem.core.resource_ledger import ResourceLedger
 
 
 class Fence:
