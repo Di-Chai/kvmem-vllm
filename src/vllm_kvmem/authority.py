@@ -400,10 +400,20 @@ class RequestAuthority:
                 self._return_record_buffers(record)
 
     def _trace_evictions(self, retired):
-        """Strategy layer: the historical-GC evictor's decisions join the decision trace."""
+        """Strategy layer: the historical-GC evictor's decisions join the decision trace.
+
+        A completion does not say why a record's CPU backing was released. Only a
+        rise of the scope's policy-retirement counter marks evictions; releases at
+        session hand-off or request end leave it unchanged and are not logged.
+        """
         path = getattr(self.archive, 'history_scope_metrics_path', None)
         if path is None:
             return
+        stats = getattr(getattr(self.gc, 'scope', None), 'stats', None)
+        decided = stats.get('retired', 0) if isinstance(stats, dict) else 0
+        if decided <= getattr(self, '_traced_policy_retired', 0):
+            return
+        self._traced_policy_retired = decided
         import json
         from pathlib import Path
         row = dict(event='evicted', request_id=self.memory.request_id, at=time.time(),

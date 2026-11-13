@@ -108,3 +108,19 @@ def test_a_run_with_trace_scores_compares_equal_to_one_without(tmp_path):
     assert trace.diff(with_scores, plain)['same']
     moved = [trace.Decision(d.kind, d.request, d.layer, d.history + 32, d.method, d.selected, (), ()) for d in with_scores]
     assert not trace.diff(with_scores, moved)['same']
+
+
+def test_only_policy_retirements_are_logged_as_evictions(tmp_path):
+    from types import SimpleNamespace as NS
+    from vllm_kvmem.authority import RequestAuthority
+    stats = {'retired': 0}
+    auth = NS(archive=NS(history_scope_metrics_path=tmp_path / 'historical_gc_scopes.jsonl', _history_policy='lru'),
+              gc=NS(scope=NS(stats=stats)), memory=NS(request_id='r'))
+    log = tmp_path / trace.EVICTION_FILE
+    RequestAuthority._trace_evictions(auth, [(0, 1, 0)])          # a release at hand-off: counter unchanged
+    assert not log.exists()
+    stats['retired'] = 2
+    RequestAuthority._trace_evictions(auth, [(64, 3, 0), (32, 2, 0)])
+    RequestAuthority._trace_evictions(auth, [(96, 4, 0)])          # no new policy retirement since
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(r['request_id'], r['policy'], r['history_begins']) for r in rows] == [('r', 'lru', [32, 64])]
