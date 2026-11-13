@@ -1,9 +1,9 @@
-"""Diagnostic native worker: annotate launches without installing KVMem hooks."""
-from vllm.v1.worker.gpu_worker import Worker
+"""Moved to vllm_kvmem.serving.profile_worker (layering step 7). This alias is removed after the next release."""
+import sys
 
-
-class NativeProfileWorker(Worker):
-    def initialize_from_config(self, *args, **kwargs):
-        super().initialize_from_config(*args, **kwargs)
-        from .profile_scopes import install_profile_scopes
-        install_profile_scopes(self.model_runner)
+if __name__ == '__main__':
+    import runpy
+    runpy.run_module('vllm_kvmem.serving.profile_worker', run_name='__main__', alter_sys=True)
+else:
+    from vllm_kvmem.serving import profile_worker as _module
+    sys.modules[__name__] = _module

@@ -4,22 +4,32 @@ The package is being split along one seam. **Serving** moves blocks and schedule
 **Strategy** decides which blocks are retrieved, kept or evicted. They meet at a small
 contract, and every decision is recorded so each side can be tested without the other.
 
-This page describes the target, what exists today and the order of the remaining moves.
+This page describes the layers, what exists today, the steps that built it and what is left.
 The plan it belongs to is the [roadmap](roadmap.md).
 
-## Target layers
+## Layers
 
-| Layer | Owns | May import |
-| --- | --- | --- |
-| Apps | Benchmarks, bridges, configuration compiler | Public API only |
-| Strategy | Scorers, pickers, evictors | Its own package and the standard library |
-| Serving | Refresh pipeline, scheduling, sessions, tiering, tensor parallel, signal capture | Contract, core, model adapters |
-| Model adapters | Per-model KV layout and state capture | Core |
-| Core | KV archive, records, native code | Nothing above |
+| Layer | Directory | Owns | May import |
+| --- | --- | --- | --- |
+| Apps | `apps/` | Configuration compiler (`planner`), web UI, elastic gateway | Every layer |
+| Strategy | `strategy/` | Scorers, pickers, evictors: contract, registry, trace, replay | Its own package and the standard library |
+| Serving | `serving/` | Refresh pipeline, scheduling, sessions, tiering, tensor parallel, signal capture, the built-in strategy implementations | Strategy contract, model adapters, core |
+| Model adapters | `adapters/` | Per-model KV layout, state capture, engine compatibility | Strategy contract, core |
+| Core | `core/` | KV archive, records, the store, options, settings; the native extensions at the package root | Strategy contract |
 
-Strategy and serving never import each other's modules. Serving imports the strategy
-package's contract and registry; the strategy package imports nothing from the rest of
-`vllm_kvmem`. `tests/test_strategy_layer.py` checks the second rule on every run.
+Benchmarks and bridges live outside the package (`benchmarks/`, `scripts/`).
+`tests/test_layers.py` checks the import rule for every layer on every run, and
+`tests/test_strategy_layer.py` checks that the strategy package imports nothing else.
+Seven imports still point up (core into serving's pressure reader, pipeline and tensor
+parallel hooks, and one adapter into serving); they are listed in `tests/test_layers.py`,
+and the list may only shrink.
+
+Every module keeps an alias at its old flat path (`vllm_kvmem.memory` is
+`vllm_kvmem.core.memory`, the same module object) for one release. Code inside the
+package imports the new paths. The module paths vLLM receives on its command line and in
+its configuration (`vllm_kvmem.scheduler.KVMemScheduler`, `vllm_kvmem.connector`) still use
+the old names: they are part of vLLM's configuration, and changing them may re-key cached
+kernel tuning; they change when the aliases go.
 
 ## The contract
 
@@ -143,11 +153,13 @@ This gives each layer its own test:
 - The decision trace: per-layer, global and eviction decisions.
 - `vllm_kvmem.settings`: the one accessor for `KVMEM_*` settings, and profile settings in
   `system` and `strategy` namespaces over the default-on preset ([settings.md](settings.md)).
+- One directory per layer, with the import rule checked on every test run.
 - The gate as a tracked command, `benchmarks/gate/gate.py`, with both fixtures.
 
-## Remaining steps
+## Steps
 
-Seven steps. Each ends at the [gate](#the-gate) below.
+Seven steps, each ended at the [gate](#the-gate) below. What is left is listed under
+[Open decisions](#open-decisions).
 
 ### 1. Prove the seam on the agent path (done 2026-11-12)
 
@@ -231,13 +243,14 @@ decode and several owners, which is where earlier restore bugs appeared.
 - The reference deployments set no profile settings; their effective settings are
   unchanged.
 
-### 7. Directory moves (waiting for the freeze)
+### 7. Directory moves (done 2026-11-12)
 
-- Move modules into one directory per layer, leave import shims at the old paths for one
-  release, and extend the import rule to every layer.
-- Do it in one short freeze with all other work merged and paused: it conflicts with
-  every open change.
-- Extra condition: the full CPU suite has the same failures before and after.
+- 253 files moved into `core/`, `adapters/`, `serving/` and `apps/`, with an alias at every
+  old path; package-internal imports rewritten to the new paths.
+- The import rule holds for every layer, with the seven listed exceptions.
+- `capture.py`, `_fused_capture.py`, `capture_opaque.py` and `capture_compile.py` moved
+  together and byte for byte: their source fingerprint is part of vLLM's compile
+  configuration.
 
 ### Order
 
@@ -304,4 +317,5 @@ which is local and not part of a source checkout.
 | Comparison set for the retrieval paper | Adopted for step 3: per-layer MeanK, global MeanK, key-FPS, graph attention, recency, and the eviction policies. Whether the recall-experiment methods join it is open |
 | Signals by need (step 4) | Needs the prefill publication pipeline split from the attention statistics, or a kernel variant without them; decide whether the recency reference is worth that |
 | Legacy experiments | Marked legacy in the audit, not deleted. Deleting needs a list confirmed by the user |
-| When to hold the freeze for step 7 | Steps 1–6 are merged. A draft layer map leaves about 116 imports that point the wrong way (55 from core into serving), so step 7 is a refactor as well as a move; it needs a date when the other sessions on this checkout are paused |
+| Remove the old-path aliases | After the next release; then switch the module paths vLLM receives to the new names and record new references |
+| The seven upward imports | Invert each dependency (hooks registered by serving instead of imported by core) |

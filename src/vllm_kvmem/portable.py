@@ -1,20 +1,9 @@
-"""Host-portable sizing helpers.
+"""Moved to vllm_kvmem.core.portable (layering step 7). This alias is removed after the next release."""
+import sys
 
-Thread pools are sized by configuration, but never beyond the CPUs this
-process may run on (cgroup/affinity aware where the OS reports it). Pool
-size only changes overlap, never results.
-"""
-import os
-
-
-def available_cpus():
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except (AttributeError, OSError):   # macOS, Windows, restricted sandboxes
-        return max(1, os.cpu_count() or 1)
-
-
-def cap_workers(requested):
-    if type(requested) is not int or requested < 1:
-        raise ValueError('Worker counts must be positive integers')
-    return min(requested, available_cpus())
+if __name__ == '__main__':
+    import runpy
+    runpy.run_module('vllm_kvmem.core.portable', run_name='__main__', alter_sys=True)
+else:
+    from vllm_kvmem.core import portable as _module
+    sys.modules[__name__] = _module

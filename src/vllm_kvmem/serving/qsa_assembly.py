@@ -1,0 +1,148 @@
+"""Synchronous bounded QSA reconstruction from one atomic CPU authority.
+
+Both target and MTP selector keys are rebuilt from lossless BF16 projections
+using the installed B12X compression kernel, with dense selected positions.
+No inverse rotation of quantized/pooled keys is used. Scratch is chunk-bounded;
+only the final raw ring survives until the enclosing refresh commits.
+"""
+import time
+
+import torch
+
+from ..adapters.assembly import assemble_fp8
+from ..core.memory import Phase
+from ..core.native_pages import kernel_table
+from .window_assembly import AssemblyResult, _UnfencedAssembly
+
+
+class QSAWindowAssembler:
+    def __init__(self, runner, request_id, names, block_tokens, chunk_blocks=None, **kwargs):
+        if kwargs.get('lease') is not None or kwargs.get('arena', 'main') != 'main':
+            raise ValueError('QSA currently requires synchronous main-arena refresh')
+        self.runner, self.request_id = runner, request_id
+        self.block_tokens = block_tokens
+        options = getattr(getattr(runner, '_kvmem_capture_runtime', None), 'options', None)
+        self.chunk_blocks = (getattr(options, 'assembly_chunk_blocks', 32)
+                             if chunk_blocks is None else chunk_blocks)
+        if type(self.chunk_blocks) is not int or not 1 <= self.chunk_blocks <= 256:
+            raise ValueError('QSA assembly chunk blocks must be an integer in [1, 256]')
+        self.closed = False
+        self._completion = None
+        self.index = runner.req_states.req_id_to_index[request_id]
+        self.layers = tuple(runner._kvmem_qsa_layers.values())
+        self.names = tuple(runner._kvmem_qsa_layers)
+        expected = (*self.names, *('__qsa_index__.' + name for name in self.names))
+        if tuple(names) != expected:
+            raise ValueError('QSA assembly requires paired main and auxiliary archive layers')
+        groups = {name: i for i, group in enumerate(runner.kv_cache_config.kv_cache_groups)
+                  for name in group.layer_names}
+        self.tables = [kernel_table(runner, groups[layer.layer_name], self.index).clone()
+                       for layer in self.layers]
+        self.views = [layer.impl._kv_cache_views(layer.kv_cache) for layer in self.layers]
+
+    def close(self):
+        if self._completion is not None and not self._completion.query():
+            return False
+        self.closed = True
+        return True
+
+    def assemble(self, authority, plan):
+        from b12x.attention.qsa._kernels import launch_compress_completed_groups
+        if self.closed or authority.memory.phase is not Phase.ASSEMBLING or authority.memory._plan is not plan:
+            raise ValueError('QSA assembly requires an active owned selection')
+        count_layers = len(self.layers)
+        if authority.shape != (2 * count_layers, self.block_tokens,
+                               self.layers[0].num_kv_heads, self.layers[0].head_dim):
+            raise ValueError('QSA authority geometry differs from its paired archive format')
+        remaps = sorted(plan.remaps, key=lambda r: r.to_base)
+        records = {r.handle.slot: r for r in authority.records.values()}
+        cursor = 0
+        for remap in remaps:
+            record = records.get(remap.block_id)
+            if record is None or record.count != remap.n_tokens or remap.to_base != cursor:
+                raise ValueError('QSA selection must describe the complete contiguous dense frame')
+            cursor += remap.n_tokens
+        if cursor != plan.total_window_tokens or cursor <= 0:
+            raise ValueError('QSA selected frame extent mismatch')
+        for layer, table, (key, _) in zip(self.layers, self.tables, self.views):
+            if cursor > table.numel() * key.shape[1] or cursor > layer.rotary_emb.cos_sin_cache.shape[0]:
+                raise ValueError('QSA selection exceeds leased pages or RoPE capacity')
+            if layer._compressed_cache is None or key.shape[1] % layer.compress_ratio:
+                raise ValueError('QSA selector tail is not bound/aligned')
+            pages = table[:(cursor+key.shape[1]-1)//key.shape[1]].tolist()
+            if (len(set(pages)) != len(pages) or
+                    any(page <= 0 or page >= key.shape[0] for page in pages)):
+                raise ValueError('QSA selection contains null, duplicate or out-of-range pages')
+        device = self.layers[0].device
+        scratch = []
+        for layer in self.layers:
+            scratch.append((torch.zeros_like(layer._raw_k_ring[:1]),
+                            torch.full_like(layer._raw_logical_positions[:1], -1),
+                            torch.full_like(layer._raw_rope_positions[:1], -1)))
+        owners, uploaded, chunks = [self, authority, plan], 0, 0
+        started = time.perf_counter()
+        try:
+            for at in range(0, len(remaps), self.chunk_blocks):
+                chunk = remaps[at:at+self.chunk_blocks]
+                payloads = authority.read_records([records[r.block_id].handle for r in chunk])
+                raw = torch.cat([p[0] for p in payloads], dim=1).contiguous().to(device)
+                values = torch.cat([p[1] for p in payloads], dim=1).contiguous().to(device)
+                uploaded += raw.numel() + values.numel()
+                start, n = chunk[0].to_base, raw.shape[1]
+                positions = torch.arange(start, start+n, device=device, dtype=torch.int64)
+                requests = torch.zeros(n, device=device, dtype=torch.int32)
+                query_start = torch.tensor([0, n], device=device, dtype=torch.int32)
+                slot = torch.zeros(1, device=device, dtype=torch.int32)
+                for i, (layer, table, (key, value), ring_state) in enumerate(
+                        zip(self.layers, self.tables, self.views, scratch)):
+                    page = key.shape[1]
+                    slots = table[positions // page].long() * page + positions % page
+                    assemble_fp8(raw[i], values[i].view(torch.float8_e4m3fn),
+                        positions, slots, layer.rotary_emb.cos_sin_cache, key, value, layer._k_scale)
+                    selector = values[count_layers+i].reshape(n, -1)[:, :layer.index_head_dim*2]
+                    selector = selector.contiguous().view(torch.bfloat16)
+                    rope = positions[:, None].expand(-1, layer.position_axes).contiguous()
+                    cos, sin = layer.rotary_emb.cos_sin_cache.chunk(2, dim=-1)
+                    caps = layer._qsa_decode_context.caps
+                    launch_compress_completed_groups(raw_index_key=selector,
+                        query_positions=positions, rope_positions=rope,
+                        request_ids=requests, query_start_loc=query_start,
+                        raw_state_slot_ids=slot, raw_k_ring=ring_state[0],
+                        raw_logical_positions=ring_state[1], raw_rope_positions=ring_state[2],
+                        key_norm_weight=layer.indexer.k_layernorm.weight,
+                        rope_cos=cos, rope_sin=sin, compressed_cache=layer._compressed_cache,
+                        compressed_block_table=table[None, :], caps=caps)
+                    keep = min(n, layer.raw_ring_capacity)
+                    tail_positions, tail_raw = positions[-keep:], selector[-keep:]
+                    ring_slots = tail_positions % layer.raw_ring_capacity
+                    ring_state[0][0, ring_slots] = tail_raw
+                    ring_state[1][0, ring_slots] = tail_positions
+                    ring_state[2][0, ring_slots] = tail_positions[:, None].expand(-1, layer.position_axes)
+                chunks += 1
+            # Stage only the bounded tail. The outer transaction first restores
+            # provisional GDN/QSA state, then publishes these rebuilt rings.
+            pending = []
+            for layer, (ring, tags, _) in zip(self.layers, scratch):
+                p = torch.arange(max(0, cursor-layer.raw_ring_capacity), cursor,
+                                 device=device, dtype=torch.int64)
+                pending.append((layer, self.index, p, ring[0, p % layer.raw_ring_capacity].clone(), cursor))
+            event = torch.cuda.Event()
+            event.record()
+            self._completion = event
+            self.runner._kvmem_qsa_pending_rings.extend(pending)
+            return AssemblyResult(event, tuple(owners), cursor, 0, chunks,
+                time.perf_counter()-started, uploaded,
+                {'qsa_rebuilt_selector_tokens': cursor, 'qsa_auxiliary_codec': 'bf16_bytes_v1'})
+        except BaseException:
+            try:
+                event = torch.cuda.Event()
+                event.record()
+            except BaseException:
+                event = _UnfencedAssembly()
+            self._completion = event
+            authority.memory.fail_transaction(AssemblyResult(event, tuple(owners), 0, 0, 0))
+            raise
+        finally:
+            release = getattr(plan, 'release_cpu_sources', None)
+            if release is not None:
+                release()

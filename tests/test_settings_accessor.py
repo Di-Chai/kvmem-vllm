@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
+import vllm_kvmem
 from vllm_kvmem import settings
 
-PACKAGE = Path(settings.__file__).parent
+PACKAGE = Path(vllm_kvmem.__file__).parent
 # settings.py is the accessor; defaults.py writes the default-on preset into the environment.
 EXEMPT = {'settings.py', 'defaults.py'}
 

@@ -1,7 +1,7 @@
 recursive-include csrc *.cpp *.cu *.cuh *.hpp *.json
 recursive-include src/vllm_kvmem native*.cuh native_attention_sources.json
-recursive-include src/vllm_kvmem/webui/static *
-recursive-include src/vllm_kvmem/webui/profiles *.json
+recursive-include src/vllm_kvmem/apps/webui/static *
+recursive-include src/vllm_kvmem/apps/webui/profiles *.json
 graft ui
 prune ui/node_modules
 prune ui/test-results

@@ -195,7 +195,7 @@ def test_real_tvm_host_plan_sequence_qualifies_but_tensor_does_not(monkeypatch):
 
 
 def test_static_header_reuses_exact_mask_sum_log_body_without_generic_calls():
-    root=Path(build.__file__).resolve().parent
+    root=Path(build.__file__).resolve().parents[1]
     header=(root/'native_stats.cuh').read_text()
     original=header.split('if (aligned && !merge && (base & 15) == 0) {',1)[1].split('return;',1)[0]
     static=header.split('__device__ void store16_weight_static_aligned(',1)[1]

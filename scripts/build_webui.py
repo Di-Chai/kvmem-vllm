@@ -13,7 +13,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "ui"
 CHAT = UI / "chat"
-DEFAULT_OUTPUT = ROOT / "src/vllm_kvmem/webui/static"
+DEFAULT_OUTPUT = ROOT / "src/vllm_kvmem/apps/webui/static"
 
 
 def run(argv: list[str]) -> None:

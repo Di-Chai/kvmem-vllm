@@ -37,7 +37,7 @@ def arguments():
 
 
 def test_only_static_class_and_two_loads_change():
-    source = Path(build.__file__).with_name('native_prefill_stats.cuh').read_text()
+    source = (Path(build.__file__).resolve().parents[1] / 'native_prefill_stats.cuh').read_text()
     candidate = build.patch_static_readonly(source)
     prefix = source[:source.index('struct KVMemStaticAlignedAttention :')]
     assert candidate.startswith(prefix)
@@ -52,7 +52,7 @@ def test_only_static_class_and_two_loads_change():
 def test_patch_fails_closed_if_static_structure_changes():
     with pytest.raises(build.UnsupportedNativeStats):
         build.patch_static_readonly('missing class')
-    source = Path(build.__file__).with_name('native_prefill_stats.cuh').read_text()
+    source = (Path(build.__file__).resolve().parents[1] / 'native_prefill_stats.cuh').read_text()
     with pytest.raises(build.UnsupportedNativeStats):
         build.patch_static_readonly(source.replace('int sample = stats.rows[p.q_indptr[batch] + q];', 'changed'))
 

@@ -12,9 +12,9 @@ for name in ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_tiled.cuh', '
 setup(
     package_data={'vllm_kvmem': ['cuda_sources/*.cu', 'cuda_sources/*.cuh', 'cuda_sources/*.json',
                                 'native*.cuh', 'native_attention_sources.json'],
-                  'vllm_kvmem.webui': ['profiles/*.json'] + [
-                      str(path.relative_to('src/vllm_kvmem/webui'))
-                      for path in Path('src/vllm_kvmem/webui/static').rglob('*')
+                  'vllm_kvmem.apps.webui': ['profiles/*.json'] + [
+                      str(path.relative_to('src/vllm_kvmem/apps/webui'))
+                      for path in Path('src/vllm_kvmem/apps/webui/static').rglob('*')
                       if path.is_file()
                   ]},
     ext_modules=[Pybind11Extension(

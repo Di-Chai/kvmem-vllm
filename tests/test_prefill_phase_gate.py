@@ -120,7 +120,7 @@ def test_install_gpu_endpoint_uses_nonblocking_flush_only(tmp_path,monkeypatch):
     work=Work();manager=Manager()
     manager.runner=NS(vllm_config=NS(scheduler_config=NS(max_num_seqs=2)),
                       _kvmem_probe_output=tmp_path,_kvmem_public_work=work)
-    monkeypatch.setitem(sys.modules,'vllm_kvmem.async_refresh',NS(AsyncRefresh=Manager))
+    monkeypatch.setitem(sys.modules,'vllm_kvmem.serving.async_refresh',NS(AsyncRefresh=Manager))
     monkeypatch.setenv('KVMEM_DIAGNOSTIC_PREFILL_PHASE_OWNERS','2')
     monkeypatch.setenv('KVMEM_DIAGNOSTIC_PREFILL_GPU_COMPLETION','1')
     prefill_phase_gate.install()

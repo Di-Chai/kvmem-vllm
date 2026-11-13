@@ -156,8 +156,8 @@ def test_kernel_uses_stable_sources_existing_flags_build_root_and_lru(tmp_path, 
     scoring.kernel.cache_clear()
     try:
         for name in ('frozen-a', 'frozen-b'):
-            module_path = tmp_path / name / 'src/vllm_kvmem/cuda_scoring.py'
-            directory = module_path.parent / 'cuda_sources' if packaged_sources else module_path.parents[2] / 'csrc'
+            module_path = tmp_path / name / 'src/vllm_kvmem/core/cuda_scoring.py'
+            directory = module_path.parents[1] / 'cuda_sources' if packaged_sources else module_path.parents[3] / 'csrc'
             source(directory)
             monkeypatch.setattr(scoring, '__file__', str(module_path))
             scoring.kernel.cache_clear()
