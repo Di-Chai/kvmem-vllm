@@ -71,3 +71,12 @@ def test_the_strategy_table_is_generated_from_the_registry():
     assert '| pressure scorer | `recency` | runs (built in) | runs (strategy object) |' in text
     assert '`overlap` (legacy)' in text
     assert capabilities.main(['table']) == 0
+
+
+def test_costly_signals_no_strategy_reads_are_reported():
+    layer = dict(query_mode='sequential', pressure=True)
+    assert capabilities.check(dict(BASE), **layer)['unused_signals'] == []
+    recency = dict(BASE, strategy_query_scorer='recency', strategy_pressure_scorer='recency')
+    assert capabilities.check(recency, **layer)['unused_signals'] == ['layer_attention']
+    report = capabilities.check(dict(BASE, graph_mode='multi'), query_mode=None, pressure=False)
+    assert report['unused_signals'] == []     # graph propagation reads the block graph

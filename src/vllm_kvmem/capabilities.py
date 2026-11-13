@@ -26,6 +26,8 @@ SIGNALS = {
     'block_graph': 'the block graph (graph_mode locality, attention or multi)',
 }
 GRAPH_SCORING = ('locality', 'attention', 'multi')
+# Signals that cost GPU or host time to produce.
+COSTLY = frozenset(('layer_attention', 'key_fps_index', 'window_cache', 'block_graph'))
 
 
 def provided_signals(kvmem):
@@ -123,6 +125,14 @@ def check(kvmem, *, query_mode, pressure, batch_selection=False, environment=Non
             raise ValueError('Pressure batch selection implements the attention scorer and native picker only')
     report = dict(path=path, query_scorer=query, pressure_scorer=pressure_name, picker=picker,
                   signals=sorted(signals))
+    # Signals by need is not wired yet: report the costly signals no chosen strategy reads.
+    needed = set()
+    for role, name in choice:
+        if not (path == strategy.LAYER and role == strategy.PRESSURE_SCORER and not pressure):
+            needed.update(strategy.get(role, name).needs)
+    if kvmem.get('graph_mode', 'off') in GRAPH_SCORING:
+        needed.add('block_graph')    # graph propagation of the (shared-frame) Query reads it
+    report['unused_signals'] = sorted(signals & COSTLY - needed)
     gc = kvmem.get('historical_gc')
     if isinstance(gc, dict) and gc.get('mode', 'off') != 'off':
         report['evictor'] = strategy.check_path(strategy.EVICTOR, gc.get('policy', 'lru'), path).name

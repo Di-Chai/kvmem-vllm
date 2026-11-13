@@ -184,7 +184,11 @@ def run_agent(args):
         raise SystemExit('exists: %s' % out)
     profile = json.loads(json.dumps(fixture['profile']))
     opts = json.loads(args.opts)
-    profile['kvmem'].update(opts)   # the server validates every option
+    for key, value in opts.items():   # the server validates every option; null removes one
+        if value is None:
+            profile['kvmem'].pop(key, None)
+        else:
+            profile['kvmem'][key] = value
     profile['port'] = args.port
     execution = dict(fixture['execution'], **json.loads(args.env))
     # The global path: one selection for every layer (no --layerwise-* flag).
@@ -551,7 +555,8 @@ def main(argv=None):
     p.add_argument('--turns', type=int, default=None)
     p.add_argument('--path', choices=('layer', 'global'), default='layer',
                    help='agent fixture: per-layer selection (the fixture flags) or the global path')
-    p.add_argument('--opts', default='{}', help='kvmem profile options, JSON (e.g. the strategy_* options)')
+    p.add_argument('--opts', default='{}',
+                   help='kvmem profile options, JSON (e.g. the strategy_* options); null removes an option')
     p.add_argument('--env', default='{}', help='extra KVMEM_* execution flags, JSON')
     p.add_argument('--port', type=int, default=19641)
     p.add_argument('--autotune-dir', default=None, help='FlashInfer autotune cache root (agent fixture)')
