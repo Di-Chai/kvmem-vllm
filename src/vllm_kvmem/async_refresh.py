@@ -17,6 +17,7 @@ import time
 
 import numpy as np
 import torch
+from . import settings as _settings
 
 
 def maintenance_batch(runner, request_id, tokens, begin):
@@ -250,7 +251,7 @@ class AsyncRefresh:
                 (padding and len(command.input_tokens)!=1) or
                 len(command.input_tokens)+padding!=command.groups[0][1].replay_tokens):
             raise ValueError('Invalid asynchronous refresh command')
-        no_replay_prefill = (os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
+        no_replay_prefill = (_settings.get('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
                              getattr(command, 'pressure_stage', None) == 'prefill')
         if not command.input_tokens and (command.selection != 'pressure' or command.query_span is not None or
                 not (getattr(self.options, 'rolling_active_window', False) or no_replay_prefill)):
@@ -492,7 +493,7 @@ class AsyncRefresh:
             if job.guided_pressure:
                 if job.guided_witness != self.pressure_witness(job.authority):
                     raise RuntimeError('Private guided pressure changed accepted history/statistics')
-                if os.getenv('KVMEM_VERIFY_GUIDED_PRESSURE') == '1':
+                if _settings.get('KVMEM_VERIFY_GUIDED_PRESSURE') == '1':
                     from .guided_query import verify_guided_rollback
                     audit = verify_guided_rollback(before, bundle.tensors, [])
                     with (self.runner._kvmem_probe_output/'verified_guided_pressure.jsonl').open('a') as stream:
@@ -517,7 +518,7 @@ class AsyncRefresh:
         # The assembly stream consumes the concatenated tensor, so its fence
         # must cover cat as well as the query forwards and state restoration.
         ready=torch.cuda.Event();ready.record()
-        if os.getenv('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
+        if _settings.get('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
             from .retrieval_diagnostics import capture_native
             capture_native(self, job, query)
         if self.stream is None:self.stream=torch.cuda.Stream(device=self.runner.device,priority=0)
@@ -573,7 +574,7 @@ class AsyncRefresh:
             if getattr(job, 'promised_lease', None) is not None:
                 from .publication_trace import emit as _trace
                 _trace('assemble_prelude_start', rid=job.command.request_id)
-            if os.getenv('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
+            if _settings.get('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1':
                 from .retrieval_diagnostics import capture_archive
                 capture_archive(self, job, queries)
             fit=RequestPlan(None,block_tokens=cfg.block_tokens,gen_budget=cfg.gen_budget,
@@ -611,7 +612,7 @@ class AsyncRefresh:
                     event_type = 'query'
                 else:
                     raise ValueError('Recall experiment encountered an unqualified selection entry')
-                if (os.getenv('KVMEM_VALUE_RECALL_REFERENCE') == '1' and
+                if (_settings.get('KVMEM_VALUE_RECALL_REFERENCE') == '1' and
                         configured_event_method(event_type) != ACCUMULATED_ATTENTION):
                     authority.recall_value_scales = self.runtime.scales[:authority.scoring_layers].detach().cpu()
                 plan = select_for_event(authority, recall_q, mandatory, max_tokens=cfg.select_budget,
@@ -629,7 +630,7 @@ class AsyncRefresh:
                     from .prefill_attention import select_pressure
                     plan=select_pressure(authority,mandatory,max_tokens=cfg.select_budget)
             elif job.history<=cfg.select_budget:plan=authority.memory.select({})
-            elif os.getenv('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum':
+            elif _settings.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum':
                 if job.guided_rows or job.command.query_span is None:
                     raise ValueError('Token answer experiment requires the original public Query')
                 from .query_token_experiment import select_token_queries
@@ -800,7 +801,7 @@ class AsyncRefresh:
                 if actual!=expected:raise ValueError('Private refresh page reservation mismatch')
             if deferred_checks:
                 job.promise_page_checks=tuple(getattr(job,'promise_page_checks',()) or ())+tuple(deferred_checks)
-            if not job.command.input_tokens and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+            if not job.command.input_tokens and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1':
                 from .rolling_verification import RollingPressureOracle
                 job.pressure_oracle = RollingPressureOracle(self.runner, job)
             layerwise = getattr(self.runner, '_kvmem_layerwise_query', None)
@@ -939,8 +940,8 @@ class AsyncRefresh:
             row['query_scoring_method'] = report['actual_method'] if report is not None else 'no_eviction_required'
         elif job.command.selection == 'query':
             row['query_scoring_method'] = ('content_token_softmax_page_sum' if
-                os.getenv('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum' else
-                getattr(authority, 'query_score_mode', 'mean_k'))
+                _settings.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum' else
+                getattr(authority, 'query_strategy_name', None) or getattr(authority, 'query_score_mode', 'mean_k'))
             if getattr(authority, 'query_score_mode', 'mean_k') == 'overlap_16_8':
                 row['query_window_scoring'] = dict(authority.query_window_stats)
             if getattr(authority, 'query_score_mode', 'mean_k') == 'key_fps_4':

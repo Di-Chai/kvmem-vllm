@@ -3,6 +3,7 @@ import hashlib
 import os
 import struct
 from contextvars import ContextVar
+from . import settings as _settings
 
 
 _group = None
@@ -71,10 +72,10 @@ def _cpu_group():
 
 
 def validate_worker_options(options):
-    if (options.query_replay_cobatch or os.getenv('KVMEM_LAYERWISE_QUERY_MODE')
-            or os.getenv('KVMEM_SYSTEMONE_FORK') == '1'):
+    if (options.query_replay_cobatch or _settings.get('KVMEM_LAYERWISE_QUERY_MODE')
+            or _settings.get('KVMEM_SYSTEMONE_FORK') == '1'):
         raise ValueError('KVMem TP uses global selection and private Query replay on all ranks')
-    if options.guided_query_tokens or os.getenv('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum':
+    if options.guided_query_tokens or _settings.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES') == 'sum':
         raise ValueError('Tensor-parallel Query scoring requires the public Query')
     if options.historical_gc is not None or options.repository_gc:
         raise ValueError('Tensor-parallel selection requires retained history on every worker')

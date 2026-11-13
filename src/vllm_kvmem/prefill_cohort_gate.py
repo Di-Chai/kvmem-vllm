@@ -6,6 +6,7 @@ physical planning, sampling and output limits remain authoritative.
 """
 import json
 import os
+from . import settings as _settings
 
 
 class CohortGate:
@@ -57,7 +58,7 @@ class CohortGate:
 
 
 def install():
-    value=os.getenv('KVMEM_DIAGNOSTIC_PREFILL_COHORT_LENGTHS')
+    value=_settings.get('KVMEM_DIAGNOSTIC_PREFILL_COHORT_LENGTHS')
     if value is None:return
     lengths=json.loads(value)
     from .scheduler import KVMemScheduler

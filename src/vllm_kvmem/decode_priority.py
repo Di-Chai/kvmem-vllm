@@ -9,10 +9,11 @@ admission and the maintenance order tries it first. Selections, bytes and
 credits are unchanged; only the order of lane admission changes.
 """
 import os
+from . import settings as _settings
 
 
 def enabled():
-    value = os.getenv('KVMEM_LAYERWISE_DECODE_PRIORITY', '0')
+    value = _settings.get('KVMEM_LAYERWISE_DECODE_PRIORITY', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_DECODE_PRIORITY must be 0 or 1')
     return value == '1'

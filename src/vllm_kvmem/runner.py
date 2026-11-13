@@ -13,6 +13,7 @@ import torch
 
 from .cache_groups import full_attention_groups
 from .capture import capture_to, install_qwen_capture
+from . import settings as _settings
 
 
 def _probe_armed(runner):
@@ -28,7 +29,7 @@ def _probe_armed(runner):
     if armed:
         latch = getattr(runner, '_kvmem_armed_latch', None)
         if latch is None:
-            value = os.getenv('KVMEM_RUNNER_ARMED_LATCH', '0')
+            value = _settings.get('KVMEM_RUNNER_ARMED_LATCH', '0')
             if value not in ('0', '1'):
                 raise ValueError('KVMEM_RUNNER_ARMED_LATCH must be 0 or 1')
             latch = runner._kvmem_armed_latch = value == '1'
@@ -64,7 +65,7 @@ def make_probe_runner(base):
             if options.capture_opaque_projection:
                 from vllm.config import CUDAGraphMode, CompilationMode
                 compilation = self.vllm_config.compilation_config
-                if (os.getenv('KVMEM_FULL_GRAPH') != '1' or self.model_config.enforce_eager or
+                if (_settings.get('KVMEM_FULL_GRAPH') != '1' or self.model_config.enforce_eager or
                         compilation.mode != CompilationMode.VLLM_COMPILE or
                         compilation.cudagraph_mode != CUDAGraphMode.FULL_AND_PIECEWISE or
                         self.vllm_config.max_concurrent_batches != 1 or
@@ -78,7 +79,7 @@ def make_probe_runner(base):
                 super().load_model(*args, **kwargs)
             from .draft_quantization import install_quantized_context
             install_quantized_context(self)
-            self._kvmem_graph = os.getenv('KVMEM_FULL_GRAPH') == '1'
+            self._kvmem_graph = _settings.get('KVMEM_FULL_GRAPH') == '1'
             if not self.model_config.enforce_eager and not self._kvmem_graph:
                 raise ValueError("Runner capture probe currently requires enforce_eager")
             if self._kvmem_graph:
@@ -96,7 +97,7 @@ def make_probe_runner(base):
             from .tensor_parallel import configure_worker
             modules = dict(self.model.named_modules()) if tp_size > 1 else {}
             configure_worker(self.vllm_config, (modules[name] for name in self._kvmem_layers))
-            if os.getenv('KVMEM_LAYERWISE_QUERY_MODE'):
+            if _settings.get('KVMEM_LAYERWISE_QUERY_MODE'):
                 from .layerwise_query import install_layerwise_query
                 install_layerwise_query(self)
             if self._kvmem_graph:
@@ -112,9 +113,9 @@ def make_probe_runner(base):
             install_qsa_archive(self)
             self._kvmem_capture_opaque = (install_opaque_capture(self, opaque_fingerprint)
                 if options.capture_opaque_projection else None)
-            self._kvmem_serving = os.getenv('KVMEM_SERVING') == '1'
+            self._kvmem_serving = _settings.get('KVMEM_SERVING') == '1'
             self._kvmem_probe_done = self._kvmem_serving
-            self._kvmem_probe_output = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+            self._kvmem_probe_output = Path(_settings.require("KVMEM_RUNNER_PROBE_DIR"))
             if tp_size > 1:
                 from vllm.distributed import get_tp_group
                 rank = get_tp_group().rank_in_group
@@ -124,8 +125,8 @@ def make_probe_runner(base):
             if options.flashinfer_gemm_bucket_alignment:
                 from .flashinfer_gemm_buckets import install_flashinfer_gemm_bucket_alignment
                 install_flashinfer_gemm_bucket_alignment(self, options, self._kvmem_probe_output)
-            self._kvmem_scheduled = os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
-            self._kvmem_bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
+            self._kvmem_scheduled = _settings.get("KVMEM_SCHEDULED_REBUILD_PROBE") == "1"
+            self._kvmem_bounded_target = _settings.get("KVMEM_BOUNDED_TARGET") == "1"
             # Install before profiling/compilation/CUDA graph capture. Graphs
             # retain these addresses, and read fresh sampling metadata each run.
             self._kvmem_native_attention = None
@@ -170,7 +171,7 @@ def make_probe_runner(base):
             self._kvmem_saved_capture = None
             self._kvmem_window_adapter = None
             self._kvmem_window_batch = None
-            self._kvmem_continuous = os.getenv("KVMEM_ARCHIVE_PROBE") == "1"
+            self._kvmem_continuous = _settings.get("KVMEM_ARCHIVE_PROBE") == "1"
             self._kvmem_capture_runtime = None
             self._kvmem_pending_capture = None
             self._kvmem_sessions = None
@@ -183,20 +184,20 @@ def make_probe_runner(base):
             self._kvmem_next_generation = 0
             self._kvmem_restore_allocations = {}
             if self._kvmem_bounded_target:
-                if any(os.getenv(flag) == "1" for flag in (
+                if any(_settings.get(flag) == "1" for flag in (
                         "KVMEM_REPLAY_PROBE", "KVMEM_COMPRESSION_PROBE", "KVMEM_REBUILD_PROBE", "KVMEM_SCHEDULED_REBUILD_PROBE")):
                     raise ValueError("Bounded target execution requires its own scheduled refresh lifecycle")
                 from .bounded_runtime import install_bounded_target
                 install_bounded_target(self)
-            if os.getenv("KVMEM_REPLAY_PROBE") == "1":
+            if _settings.get("KVMEM_REPLAY_PROBE") == "1":
                 from .replay_probe import install_replay_probe
                 install_replay_probe(self)
-            if os.getenv("KVMEM_COMPRESSION_PROBE") == "1":
-                if os.getenv("KVMEM_REPLAY_PROBE") == "1" or not self._kvmem_continuous:
+            if _settings.get("KVMEM_COMPRESSION_PROBE") == "1":
+                if _settings.get("KVMEM_REPLAY_PROBE") == "1" or not self._kvmem_continuous:
                     raise ValueError("Compression probe requires its own replay and continuous authority")
                 from .compression_probe import install_compression_probe
                 install_compression_probe(self)
-            if os.getenv("KVMEM_WINDOW_METADATA") == "1":
+            if _settings.get("KVMEM_WINDOW_METADATA") == "1":
                 from .window_bridge import install_window_bridge
                 def current_window(batch):
                     if batch is getattr(self, '_kvmem_last_batch', None):
@@ -205,7 +206,7 @@ def make_probe_runner(base):
                         return self._kvmem_window_adapter.capture_window(batch)
                     return None
                 install_window_bridge(self.model_state, current_window)
-            if os.getenv("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
+            if _settings.get("KVMEM_REBUILD_PROBE") == "1" and self.speculative_config is not None:
                 raise ValueError("Rebuild probe needs target-only qualification before draft lifecycle integration")
             from .profile_scopes import install_profile_scopes
             install_profile_scopes(self)
@@ -337,7 +338,7 @@ def make_probe_runner(base):
                 raise RuntimeError("Scheduled refresh changed native KV bytes")
             from .options import RuntimeOptions
             from .window_batch import WindowBatchAdapter
-            if os.getenv("KVMEM_WINDOW_METADATA") != "1":
+            if _settings.get("KVMEM_WINDOW_METADATA") != "1":
                 raise RuntimeError("Scheduled refresh requires the explicit window metadata hook")
             if self._kvmem_window_adapter is None:
                 config = RuntimeOptions.from_vllm(self.vllm_config).memory
@@ -797,7 +798,7 @@ def make_probe_runner(base):
             output = self._kvmem_probe_output
             output.mkdir(parents=True, exist_ok=True)
             rebuild = None
-            if os.getenv("KVMEM_REBUILD_PROBE") == "1":
+            if _settings.get("KVMEM_REBUILD_PROBE") == "1":
                 from .refresh_probe import rebuild_native_batch
                 rebuild = rebuild_native_batch(self, captured, output)
             # Diagnostic-only synchronized export, once after the first real batch.

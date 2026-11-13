@@ -26,6 +26,7 @@ from .capture_feedback import EarlyCaptureFeedback
 from .process_memory import sample_process_memory
 from .archive_telemetry import ArchiveResourceReporter
 from .report_writer import LAZY_REPORT_INTERVAL, LatestReportWriter, lazy_archive_report, write_report
+from . import settings as _settings
 
 
 @dataclass
@@ -126,7 +127,7 @@ class CaptureRuntime(EarlyCaptureFeedback):
             synthesized_rows=0, synthesized_verified_rows=0)
         # Debug only: also download the device rows of logical prefill owners and
         # compare them with the prompt tokens their publisher reads on the CPU.
-        verify = os.getenv('KVMEM_THINKING_SYNTH_VERIFY', '0')
+        verify = _settings.get('KVMEM_THINKING_SYNTH_VERIFY', '0')
         if verify not in ('0', '1'):
             raise ValueError('KVMEM_THINKING_SYNTH_VERIFY must be 0 or 1')
         self.thinking_synth_verify = verify == '1'
@@ -222,12 +223,12 @@ class CaptureRuntime(EarlyCaptureFeedback):
             self.archive = make_shared_archive(self.options, output / 'continuous_archive', record_bytes,
                 max_reqs if getattr(runner, '_kvmem_bounded_target', False) else 1,
                 max_query_tokens=max_tokens)
-        if (os.getenv('KVMEM_LIFECYCLE_TRACE') == '1' and
+        if (_settings.get('KVMEM_LIFECYCLE_TRACE') == '1' and
                 getattr(self.archive, '_history_worker', None) is not None):
             self.archive.history_scope_metrics_path = output / 'historical_gc_scopes.jsonl'
         self.downloads = PackedDownloads(max_tokens * (self.row_elements * 2 + thinking_row_bytes) + (4 * max_reqs + 1) * 8 + q_slot_bytes,
                                          2, runner.device)
-        split_flag = os.getenv('KVMEM_SPLIT_CAPTURE_DMA',
+        split_flag = _settings.get('KVMEM_SPLIT_CAPTURE_DMA',
             '1' if getattr(self.options, 'split_capture_dma', True) else '0')
         if split_flag not in ('0', '1'):
             raise ValueError('KVMEM_SPLIT_CAPTURE_DMA must be 0 or 1')

@@ -8,6 +8,7 @@ import copy
 import logging
 import os
 from uuid import uuid4
+from . import settings as _settings
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ class SystemOnePlugin:
         pass  # vLLM owns /v1/systemone.
 
     async def init_state(self, engine_client, state, args):
-        if os.getenv('KVMEM_SERVING') != '1':
+        if _settings.get('KVMEM_SERVING') != '1':
             return
         serving = getattr(state, 'serving_structured_decisions', None)
         if serving is None:

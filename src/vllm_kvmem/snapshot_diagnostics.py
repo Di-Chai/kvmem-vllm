@@ -6,12 +6,13 @@ An interval of zero preserves per-step snapshots for diagnostic comparisons.
 import math
 import os
 import time
+from . import settings as _settings
 
 
 class SnapshotCadence:
     def __init__(self, interval_seconds=None, *, clock=time.perf_counter):
         if interval_seconds is None:
-            interval_seconds = float(os.getenv('KVMEM_SNAPSHOT_INTERVAL_SECONDS', '1'))
+            interval_seconds = float(_settings.get('KVMEM_SNAPSHOT_INTERVAL_SECONDS', '1'))
         if not math.isfinite(interval_seconds) or interval_seconds < 0:
             raise ValueError('Snapshot interval must be finite and nonnegative')
         self.interval, self.clock = interval_seconds, clock

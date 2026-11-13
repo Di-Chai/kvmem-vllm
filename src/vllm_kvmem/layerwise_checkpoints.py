@@ -11,6 +11,7 @@ import os
 import time
 
 from .prefill_attention import PrefillHistory
+from . import settings as _settings
 
 
 def sessions_enabled():
@@ -20,7 +21,7 @@ def sessions_enabled():
     With it, non-frozen P prefixes and terminal M checkpoints also carry every
     layer's map, prefill attention history and (rolling) decode history.
     """
-    value = os.getenv('KVMEM_LAYERWISE_SESSIONS', '0')
+    value = _settings.get('KVMEM_LAYERWISE_SESSIONS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_SESSIONS must be 0 or 1')
     return value == '1'
@@ -37,7 +38,7 @@ def fast_state():
     digests are unchanged; any input outside the plain shapes the extension
     handles takes the original code.
     """
-    value = os.getenv('KVMEM_CHECKPOINT_FAST_STATE', '0')
+    value = _settings.get('KVMEM_CHECKPOINT_FAST_STATE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_CHECKPOINT_FAST_STATE must be 0 or 1')
     return value == '1'
@@ -84,7 +85,7 @@ def fast_turn():
     The checkpoint contents, the held records, errors and evidence are the
     same; inputs outside the plain shapes take the original code.
     """
-    value = os.getenv('KVMEM_SESSION_FAST_TURN', '0')
+    value = _settings.get('KVMEM_SESSION_FAST_TURN', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_SESSION_FAST_TURN must be 0 or 1')
     return value == '1' and fast_state()
@@ -102,7 +103,7 @@ def capture_index():
     the map in key order natively instead of rebuilding it from rows. Needs
     KVMEM_SESSION_FAST_TURN; results and error messages are unchanged.
     """
-    value = os.getenv('KVMEM_CHECKPOINT_CAPTURE_INDEX', '0')
+    value = _settings.get('KVMEM_CHECKPOINT_CAPTURE_INDEX', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_CHECKPOINT_CAPTURE_INDEX must be 0 or 1')
     return value == '1' and fast_turn()
@@ -414,7 +415,7 @@ def lazy_evidence():
     layerwise_query.jsonl; its digests are computed by the deferred evidence
     writer (or at the next synchronous emit) instead of before the step runs.
     """
-    value = os.getenv('KVMEM_CHECKPOINT_LAZY_EVIDENCE', '0')
+    value = _settings.get('KVMEM_CHECKPOINT_LAZY_EVIDENCE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_CHECKPOINT_LAZY_EVIDENCE must be 0 or 1')
     return value == '1'

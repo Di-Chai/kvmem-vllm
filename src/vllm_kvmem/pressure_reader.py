@@ -5,6 +5,7 @@ import time
 import torch
 
 from .memory import Phase
+from . import settings as _settings
 
 
 def layerwise_gc():
@@ -13,14 +14,14 @@ def layerwise_gc():
     one native read right per source (``HistoricalPayloadRead``) for its whole
     plan, so a concurrent retirement cannot free or reuse those bytes before
     the reader closes; a record retired before preparation raises KeyError."""
-    value = os.getenv('KVMEM_LAYERWISE_HISTORICAL_GC', '0')
+    value = _settings.get('KVMEM_LAYERWISE_HISTORICAL_GC', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_HISTORICAL_GC must be 0 or 1')
     return value == '1'
 
 
 def native_reader():
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_READER', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_READER', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_READER must be 0 or 1')
     from . import _native
@@ -30,14 +31,14 @@ def native_reader():
 def layer0_parallel_gather():
     """KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER: parallel copies for layer 0 of a
     promised refresh only, while the next forward is blocked at its guard."""
-    value = os.getenv('KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER', '0')
+    value = _settings.get('KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_LAYER0_PARALLEL_GATHER must be 0 or 1')
     return value == '1'
 
 
 def reader_adopt():
-    value = os.getenv('KVMEM_PRESSURE_READER_ADOPT', '0')
+    value = _settings.get('KVMEM_PRESSURE_READER_ADOPT', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_READER_ADOPT must be 0 or 1')
     return value == '1'
@@ -47,7 +48,7 @@ def reader_extend():
     """KVMEM_PRESSURE_READER_EXTEND: with lazy layer-0-first selection the
     prepared reader covers layer 0's records; add each later layer's records
     before its upload instead of reading them through the per-chunk path."""
-    value = os.getenv('KVMEM_PRESSURE_READER_EXTEND', '0')
+    value = _settings.get('KVMEM_PRESSURE_READER_EXTEND', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_READER_EXTEND must be 0 or 1')
     return value == '1'
@@ -55,11 +56,11 @@ def reader_extend():
 
 class PressureReader:
     def __init__(self, authority, plan, layers):
-        paired = os.getenv('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER', '0')
+        paired = _settings.get('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER', '0')
         if paired not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER must be 0 or 1')
         self.paired_gather = paired == '1'
-        workers = os.getenv('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER_WORKERS', '1')
+        workers = _settings.get('KVMEM_LAYERWISE_PRESSURE_PAIRED_GATHER_WORKERS', '1')
         if workers not in ('1','2') or workers != '1' and not self.paired_gather:
             raise ValueError('Pressure paired workers require 1 or 2 and an enabled paired route')
         self.paired_workers = int(workers)
@@ -87,7 +88,7 @@ class PressureReader:
         accepted = self.records
         block = authority.shape[1]
         try:
-            if os.getenv('KVMEM_PRESSURE_READER_BATCH', '0') == '1':
+            if _settings.get('KVMEM_PRESSURE_READER_BATCH', '0') == '1':
                 visits = sum(len(layer) for layer in layers)
                 self._collect_batched(authority, layers, block, leases, keys)
             for layer in (() if self.records else layers):

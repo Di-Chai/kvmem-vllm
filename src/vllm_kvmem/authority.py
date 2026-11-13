@@ -14,6 +14,7 @@ import torch
 
 from . import _native
 from .memory import RequestMemory
+from . import settings as _settings
 
 
 class _Ready:
@@ -196,6 +197,7 @@ def global_query_scorer(authority):
         cache = authority.__dict__.setdefault('_strategy_scorers', {})
         if name not in cache:
             cache[name] = resolve(QUERY_SCORER, name, GLOBAL)
+        authority.query_strategy_name = name    # reported as the Query scoring method
         return _object_scorer(cache[name])
     return native(QUERY_SCORER, QUERY_SCORE_MODES[authority.query_score_mode], GLOBAL)
 
@@ -305,7 +307,7 @@ class RequestAuthority:
         # skip redundant zero-filling (the batched native finalizer writes every
         # sum) and compute their FP16 MeanK in one stacked FP32 division.
         import os
-        batched_means = os.getenv('KVMEM_AUTHORITY_BATCHED_MEANS', '0')
+        batched_means = _settings.get('KVMEM_AUTHORITY_BATCHED_MEANS', '0')
         if batched_means not in ('0', '1'):
             raise ValueError('KVMEM_AUTHORITY_BATCHED_MEANS must be 0 or 1')
         self._fast_record_init = (batched_means == '1' and mean_k_backend == 'qw3_cuda' and

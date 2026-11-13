@@ -11,6 +11,7 @@ engine runs eagerly). A graph captured later at run time drops the blocks again.
 import json
 import os
 import time
+from . import settings as _settings
 
 
 def prewarm_count(payload_bytes, requested, max_sequences, capacity_bytes, retained=0):
@@ -32,7 +33,7 @@ def requested_count(options):
     The environment form enables the same startup warming without changing the
     serving profile (and with it the vLLM config hash that keys tuned kernels).
     """
-    value = os.getenv('KVMEM_CHECKPOINT_PINNED_PREWARM')
+    value = _settings.get('KVMEM_CHECKPOINT_PINNED_PREWARM')
     if value is None:
         return options.checkpoint_pinned_prewarm_count
     if not value.isascii() or not value.isdigit() or int(value) > 64:

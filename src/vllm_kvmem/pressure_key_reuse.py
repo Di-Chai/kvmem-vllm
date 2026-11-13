@@ -20,20 +20,21 @@ in-place moves need no ordering. Requires the resident-V reuse sources
 (KVMEM_LAYERWISE_PRESSURE_RESIDENT_VALUES) and compact positions.
 """
 import os
+from . import settings as _settings
 
 REUSE, RELOAD = 0, 1
 
 
 def enabled():
-    value = os.getenv('KVMEM_LAYERWISE_PRESSURE_GPU_REUSE', '0')
+    value = _settings.get('KVMEM_LAYERWISE_PRESSURE_GPU_REUSE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_PRESSURE_GPU_REUSE must be 0 or 1')
     # Byte-verification runs (KVMEM_VERIFY_SESSION_RESTORE) keep the exact path.
-    return value == '1' and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') != '1'
+    return value == '1' and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') != '1'
 
 
 def reuse_limit():
-    value = os.getenv('KVMEM_LAYERWISE_PRESSURE_REUSE_LIMIT', '32')
+    value = _settings.get('KVMEM_LAYERWISE_PRESSURE_REUSE_LIMIT', '32')
     if not value.isdigit() or not 0 <= int(value) <= 1 << 20:
         raise ValueError('KVMEM_LAYERWISE_PRESSURE_REUSE_LIMIT must be a nonnegative integer')
     return int(value)

@@ -11,6 +11,7 @@ import operator
 import sys
 import threading
 import weakref
+from . import settings as _settings
 
 
 MASS_TOLERANCE = .005
@@ -19,7 +20,7 @@ SNAPSHOT_VERSION = 1
 
 def _native_size():
     import os
-    value = os.getenv('KVMEM_GRAPH_NATIVE_SIZE', '0')
+    value = _settings.get('KVMEM_GRAPH_NATIVE_SIZE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_GRAPH_NATIVE_SIZE must be 0 or 1')
     if value != '1':

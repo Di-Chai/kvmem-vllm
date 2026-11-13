@@ -8,6 +8,7 @@ import time
 
 from . import _native
 from .memory_storage import MemoryAllocation, MemoryTier, gather_records_native
+from . import settings as _settings
 
 
 def payload_pool_config():
@@ -16,8 +17,8 @@ def payload_pool_config():
     KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB: huge-page-advised slab size; 0 disables.
     KVMEM_CPU_PAYLOAD_POOL_AHEAD: free records kept pre-faulted by a native thread.
     """
-    chunk = os.getenv('KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB', '0')
-    ahead = os.getenv('KVMEM_CPU_PAYLOAD_POOL_AHEAD', '0')
+    chunk = _settings.get('KVMEM_CPU_PAYLOAD_POOL_CHUNK_MIB', '0')
+    ahead = _settings.get('KVMEM_CPU_PAYLOAD_POOL_AHEAD', '0')
     if not chunk.isdigit() or not ahead.isdigit():
         raise ValueError('CPU payload pool sizes must be non-negative integers')
     chunk, ahead = int(chunk), int(ahead)
@@ -33,7 +34,7 @@ def tiering_drop_cache():
     for its bytes to reach the device and drops them from the page cache, and a
     promotion drops what it read, so spilled sessions really leave RAM. 0 keeps
     buffered I/O (spills return sooner; bytes linger as dirty/cached pages)."""
-    value = os.getenv('KVMEM_TIERING_DROP_CACHE', '1')
+    value = _settings.get('KVMEM_TIERING_DROP_CACHE', '1')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_TIERING_DROP_CACHE must be 0 or 1')
     return value == '1'

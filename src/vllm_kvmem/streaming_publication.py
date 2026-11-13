@@ -34,31 +34,32 @@ import numpy as np
 import torch
 
 from . import _native
+from . import settings as _settings
 
 
 def enabled():
-    value = os.getenv('KVMEM_STREAM_PUBLICATION', '0')
+    value = _settings.get('KVMEM_STREAM_PUBLICATION', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_STREAM_PUBLICATION must be 0 or 1')
     return value == '1'
 
 
 def verify_enabled():
-    return os.getenv('KVMEM_STREAM_PUBLICATION_VERIFY', '0') == '1'
+    return _settings.get('KVMEM_STREAM_PUBLICATION_VERIFY', '0') == '1'
 
 
 def start_delay():
     """KVMEM_STREAM_PUBLICATION_DELAY_MS: keep the worker idle at the start of
     the forward, while the previous chunk's publication and its promised
     refresh (layer-0 selection and upload) are on the critical path."""
-    value = float(os.getenv('KVMEM_STREAM_PUBLICATION_DELAY_MS', '0'))
+    value = float(_settings.get('KVMEM_STREAM_PUBLICATION_DELAY_MS', '0'))
     if not 0 <= value <= 400:
         raise ValueError('KVMEM_STREAM_PUBLICATION_DELAY_MS must be in [0, 400]')
     return value / 1000
 
 
 def zero_copy_requested():
-    value = os.getenv('KVMEM_STREAM_PUBLICATION_ZERO_COPY', '0')
+    value = _settings.get('KVMEM_STREAM_PUBLICATION_ZERO_COPY', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_STREAM_PUBLICATION_ZERO_COPY must be 0 or 1')
     return value == '1'
@@ -291,7 +292,7 @@ def verify_page(record, raw, values, start, n):
 
 
 def prescatter_enabled():
-    value = os.getenv('KVMEM_PUBLICATION_PRESCATTER', '0')
+    value = _settings.get('KVMEM_PUBLICATION_PRESCATTER', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PUBLICATION_PRESCATTER must be 0 or 1')
     return value == '1'

@@ -6,6 +6,7 @@ Only a fenced worker settlement can replace a running turn's reservation.
 """
 from dataclasses import dataclass
 import os
+from . import settings as _settings
 
 
 def history_lru_eviction_enabled():
@@ -16,7 +17,7 @@ def history_lru_eviction_enabled():
     history is protected (short histories: the per-layer checkpoint windows
     cover almost all of it) blocks every returning turn. The evicted session's
     next turn is a cold prefill."""
-    value = os.getenv('KVMEM_SESSION_HISTORY_LRU_EVICTION', '0')
+    value = _settings.get('KVMEM_SESSION_HISTORY_LRU_EVICTION', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_SESSION_HISTORY_LRU_EVICTION must be 0 or 1')
     return value == '1'

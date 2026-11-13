@@ -3,6 +3,7 @@ from types import MethodType
 from contextlib import nullcontext
 import os
 import time
+from . import settings as _settings
 
 
 def layer_read_blocks(full_frame_blocks, archive_layers):
@@ -60,7 +61,7 @@ def isolate_partial_records():
     read (not a full, archived block) gets a chunk of its own, so the generic all-layer
     read covers only that record instead of the whole chunk around it. Same bytes and
     positions; only chunk boundaries move."""
-    value = os.getenv('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', '0')
+    value = _settings.get('KVMEM_ASSEMBLY_ISOLATE_PARTIAL', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_ASSEMBLY_ISOLATE_PARTIAL must be 0 or 1')
     return value == '1'
@@ -140,7 +141,7 @@ def packet_histories(frame, pending, starts, counts):
 def native_plan_check(job, chosen, plan=None, layers=()):
     """Opt-in KVMEM_PRESSURE_NATIVE_PLAN_CHECK: (slots, counts, begins) of the
     layer-zero selection for the native plan check, or None for the original."""
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_PLAN_CHECK', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_PLAN_CHECK', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_PLAN_CHECK must be 0 or 1')
     from . import _native
@@ -171,7 +172,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
     rolling = job.command.pressure_stage == 'decode' and getattr(controller, 'rolling_decode', False)
     if job.command.pressure_stage != 'prefill' and not rolling:
         raise ValueError('Single pressure assembly is only qualified for prefill')
-    parent_staging = os.getenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0')
+    parent_staging = _settings.get('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0')
     if parent_staging not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING must be 0 or 1')
     # This candidate changes only prefill transport. A long answer can still
@@ -246,7 +247,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
         pipeline = getattr(controller, 'pipeline', None) if job.command.pressure_stage == 'prefill' else None
         # A promised (already acknowledged) lease binds its plan and commits
         # host maps first: the next forward may already be waiting on layer 0.
-        early_lease = pipeline is not None and (os.getenv('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE') == '1' or
+        early_lease = pipeline is not None and (_settings.get('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE') == '1' or
                                                 getattr(job, 'promised_lease', None) is not None)
         if getattr(job, 'promised_lease', None) is not None and not parent_staging:
             job.promise_commit_after_layer0 = True
@@ -259,7 +260,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
             # reader preparation (long native calls) monopolizes this producer.
             # Pair with KVMEM_LAYERWISE_PRESSURE_IDLE_ACK_WAIT_MS so an idle
             # engine is already waiting at the schedule boundary.
-            yield_ms = float(os.getenv('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE_YIELD_MS', '0'))
+            yield_ms = float(_settings.get('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE_YIELD_MS', '0'))
             if not 0 <= yield_ms <= 50:
                 raise ValueError('KVMEM_LAYERWISE_PRESSURE_EARLY_LEASE_YIELD_MS must be in [0, 50]')
             if yield_ms:
@@ -381,7 +382,7 @@ def install_single_assembly(assembler, controller, job, runtime_names):
                           layer0_fast_reason=(getattr(fast_result, 'reason', '') if fast_result is not None
                                               else 'declined:' + str(getattr(job, 'layer0_fast_declined', 'not_launched'))),
                           layer0_fast_timings={k: round(1e3*v, 2) for k, v in getattr(fast_result, 'timings', ())})
-                     if os.getenv('KVMEM_LAYER0_FAST') == '1' else {}),
+                     if _settings.get('KVMEM_LAYER0_FAST') == '1' else {}),
                   **(dict(layerwise_reader_extended_blocks=getattr(reader, 'extended_blocks', 0),
                           layerwise_reader_extend_misses=reader_extend_misses)
                      if reader is not None and extend_reader else {}),

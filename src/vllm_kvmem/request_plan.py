@@ -6,6 +6,7 @@ silently shortened Query. Prefix pressure never supplies a semantic Query.
 """
 import os
 from dataclasses import dataclass, replace
+from . import settings as _settings
 
 
 FIELDS = {'kvmem_query_span', 'kvmem_query_message_range', 'kvmem_message_spans',
@@ -409,7 +410,7 @@ class RequestPlan:
 
 
 def _query_reserve_final_window():
-    value = os.getenv('KVMEM_QUERY_RESERVE_FINAL_WINDOW', '0')
+    value = _settings.get('KVMEM_QUERY_RESERVE_FINAL_WINDOW', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_QUERY_RESERVE_FINAL_WINDOW must be 0 or 1')
     return value == '1'
@@ -428,7 +429,7 @@ def request_plan_cache_enabled():
     plan is returned only when all of these are unchanged, so results (and
     errors, which are never cached) equal the uncached path.
     """
-    value = os.getenv('KVMEM_REQUEST_PLAN_CACHE', '0')
+    value = _settings.get('KVMEM_REQUEST_PLAN_CACHE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_REQUEST_PLAN_CACHE must be 0 or 1')
     return value == '1'
@@ -440,8 +441,8 @@ def request_plan(request, block_tokens, gen_budget):
     params = getattr(request, 'kv_transfer_params', None) or {}
     payload = params.get('kvmem_request_plan')
     from .session_control import SessionLedger
-    key = (os.getenv('KVMEM_REQUEST_PLAN_CONFIG', '{}'), os.getenv('KVMEM_LAYERWISE_QUERY_MODE'),
-           os.getenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES'), block_tokens, gen_budget,
+    key = (_settings.get('KVMEM_REQUEST_PLAN_CONFIG', '{}'), _settings.get('KVMEM_LAYERWISE_QUERY_MODE'),
+           _settings.get('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES'), block_tokens, gen_budget,
            getattr(request, 'num_prompt_tokens', None), SessionLedger.output_tokens(request),
            None if not isinstance(payload, dict) else tuple((k, id(v)) for k, v in payload.items()))
     cached = getattr(request, '_kvmem_request_plan_cache', None)
@@ -457,7 +458,7 @@ def request_plan(request, block_tokens, gen_budget):
 
 def _request_plan(request, block_tokens, gen_budget):
     import os, json
-    config = json.loads(os.getenv('KVMEM_REQUEST_PLAN_CONFIG','{}'))
+    config = json.loads(_settings.get('KVMEM_REQUEST_PLAN_CONFIG','{}'))
     reserve = config.get('guided_reserve',0)
     rolling = config.get('rolling_active_window',False)
     if type(rolling) is not bool:
@@ -472,5 +473,5 @@ def _request_plan(request, block_tokens, gen_budget):
     from .session_control import SessionLedger
     return replace(plan, output_tokens=SessionLedger.output_tokens(request),
                    rolling_active_window=rolling, pressure_probe_tokens=pressure_reserve,
-                   reserve_query_output=(os.getenv('KVMEM_LAYERWISE_QUERY_MODE') in ('global', 'sequential')
-                       and os.getenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES') == '1'))
+                   reserve_query_output=(_settings.get('KVMEM_LAYERWISE_QUERY_MODE') in ('global', 'sequential')
+                       and _settings.get('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES') == '1'))

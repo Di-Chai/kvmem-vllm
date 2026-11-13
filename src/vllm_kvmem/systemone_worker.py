@@ -8,6 +8,7 @@ import os
 import time
 
 from .systemone_active import ActiveDecisionError
+from . import settings as _settings
 
 
 class SystemOneWorker:
@@ -186,7 +187,7 @@ def execute_reads(runner, source, index, binding, reads):
     checkpoints = StateCheckpoints(rid, bundle.bytes, capacity=1)
     checkpoint = checkpoints.capture(history, bundle.tensors)
     tail = TailSnapshot(views)
-    audit = os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1'
+    audit = _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1'
     prefix = TailSnapshot(tail_views(runner, rid, 0, window)) if audit else None
     private_adapter = WindowBatchAdapter(full_attention_groups(runner.kv_cache_config), capacity)
     private_adapter.offsets = {rid: offset}

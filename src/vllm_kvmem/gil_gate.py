@@ -16,6 +16,7 @@ import threading
 import time
 
 from .tensor_parallel import active as _tp_active
+from . import settings as _settings
 
 _gate = None
 
@@ -153,7 +154,7 @@ class Gate:
 def configured():
     """KVMEM_GIL_GATE_MS='max_wait[,schedule_hold]' in ms (hold default 20).
     '' or '0' turns the gate off (the default-on table is overridden with =0)."""
-    value = os.getenv('KVMEM_GIL_GATE_MS', '')
+    value = _settings.get('KVMEM_GIL_GATE_MS', '')
     if value in ('', '0'):
         return None
     parts = value.split(',')
@@ -202,7 +203,7 @@ def drain_open_enabled():
     an owner in the step being launched is never parked. Without it the engine
     can wait on a publication that is itself parked on the closed gate (up to
     KVMEM_GIL_GATE_MS per logical span). Scheduling only: same work, same order."""
-    value = os.getenv('KVMEM_GIL_GATE_DRAIN_OPEN', '0')
+    value = _settings.get('KVMEM_GIL_GATE_DRAIN_OPEN', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_GIL_GATE_DRAIN_OPEN must be 0 or 1')
     # A local owner becoming runnable cannot release the publication gate
@@ -235,7 +236,7 @@ def chunk_checkpoint(request_id=None):
     """Opt-in KVMEM_GIL_GATE_CHUNKS=1 (with the gate on): also park between the
     staged chunks of one layer's assembly, so a background layer that started
     before the engine closed the gate stops within one chunk, not one layer."""
-    value = os.getenv('KVMEM_GIL_GATE_CHUNKS', '0')
+    value = _settings.get('KVMEM_GIL_GATE_CHUNKS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_GIL_GATE_CHUNKS must be 0 or 1')
     if value == '1':

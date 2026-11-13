@@ -10,6 +10,7 @@ import math
 import os
 import statistics
 import time
+from . import settings as _settings
 
 
 def context_bucket(tokens):
@@ -82,7 +83,7 @@ class OfflineAgentPolicy:
     def __init__(self, scheduler, options, output, *, clock=time.monotonic):
         self.scheduler, self.clock, self.output = scheduler, clock, output
         self.aging = options.maintenance_aging_ms / 1000
-        self.chunk = int(os.getenv('KVMEM_PREFILL_CHUNK_TOKENS', '0')) or options.prefill_max_tokens
+        self.chunk = int(_settings.get('KVMEM_PREFILL_CHUNK_TOKENS', '0')) or options.prefill_max_tokens
         self.costs = ServiceCosts()
         self.progress = {}
         self.hints = {}

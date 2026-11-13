@@ -14,6 +14,7 @@ import time
 
 from .systemone_active import ActiveDecisionError
 from .systemone_worker import ActiveDecisionQueue
+from . import settings as _settings
 
 MAX_QUESTION = 544
 
@@ -23,7 +24,7 @@ class ForkPagePool:
     def __init__(self, scheduler, memory):
         from .window_manager import WorkingSetManager
         cfg = scheduler.vllm_config
-        self.branch_count = int(os.getenv('KVMEM_SYSTEMONE_BRANCHES', '1'))
+        self.branch_count = int(_settings.get('KVMEM_SYSTEMONE_BRANCHES', '1'))
         if (not scheduler._bounded_target or scheduler.async_refresh or scheduler.async_restore or
                 cfg.max_concurrent_batches != 1 or cfg.scheduler_config.async_scheduling or
                 self.branch_count not in (1, 2, 4) or
@@ -40,8 +41,8 @@ class ForkPagePool:
                   for i, m in enumerate(self.groups)]
         if self.pool.get_num_free_blocks() < self.branch_count * sum(counts) + manager._demand(manager.max_model_len):
             raise ValueError('Insufficient native pages for a fork and full foreground growth')
-        self.verify_refresh = os.getenv('KVMEM_SYSTEMONE_VERIFY_REFRESH') == '1'
-        if self.verify_refresh and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') != '1':
+        self.verify_refresh = _settings.get('KVMEM_SYSTEMONE_VERIFY_REFRESH') == '1'
+        if self.verify_refresh and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') != '1':
             raise ValueError('Forced refresh is verification-only and requires byte audit')
         if self.capacity > manager.max_model_len:
             raise ValueError('Observer scratch extent exceeds native maximum model length')
@@ -110,7 +111,7 @@ class ForkPagePool:
         return bool(matches)
 
     def report(self):
-        directory = os.getenv('KVMEM_RUNNER_PROBE_DIR')
+        directory = _settings.get('KVMEM_RUNNER_PROBE_DIR')
         if directory:
             Path(directory).mkdir(parents=True, exist_ok=True)
             report = Path(directory) / 'systemone_fork_pool.json'
@@ -145,7 +146,7 @@ class ForkLane(ActiveDecisionQueue):
         self.notices = []
         self.capture_tokens = None
         self.slot = pool['slot']
-        self.quantum = int(os.getenv('KVMEM_SYSTEMONE_QUANTUM', '16'))
+        self.quantum = int(_settings.get('KVMEM_SYSTEMONE_QUANTUM', '16'))
         if not 2 <= self.quantum <= 64:
             raise ValueError('System One quantum must be between 2 and 64 tokens')
         states = runner.req_states
@@ -298,7 +299,7 @@ class ForkLane(ActiveDecisionQueue):
         state = NativeRecurrentState(runner)
         both = state.borrow([parent, child])  # Also proves recurrent rows disjoint.
         saved = []
-        audit = os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1'
+        audit = _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1'
         before = {k: v.cpu() for k, v in both.tensors.items() if k.startswith(parent + '/')} if audit else {}
         speculative = step['history_begin'] + step['scheduled'] > int(public.prefill_len_np[index])
         accepted = step['accepted'] - 1 if speculative else 0
@@ -553,7 +554,7 @@ class ForkDecisions(ActiveDecisionQueue):
         self.capture_tokens = None
         self.batch_id = 0
         self.quantum = self.lanes[0].quantum
-        self.token_budget = int(os.getenv('KVMEM_SYSTEMONE_TOKEN_BUDGET', str(self.quantum * len(self.lanes))))
+        self.token_budget = int(_settings.get('KVMEM_SYSTEMONE_TOKEN_BUDGET', str(self.quantum * len(self.lanes))))
         if not 4 <= self.quantum <= 64 or not 4 * len(self.lanes) <= self.token_budget <= 64 * len(self.lanes):
             raise ValueError('Observer quantum must be 4..64, total budget 4..64 tokens per reserved branch')
         from .systemone_fork_audit import install

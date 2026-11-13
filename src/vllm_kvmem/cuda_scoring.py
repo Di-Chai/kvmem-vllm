@@ -8,6 +8,7 @@ import tempfile
 import shutil
 
 import torch
+from . import settings as _settings
 
 
 _SOURCE_NAMES = ('qw3_mean_k.cu', 'qw3_mean_k_kernel.cuh', 'qw3_mean_k_tiled.cuh')
@@ -73,7 +74,7 @@ def kernel():
     if not source.exists():
         source = Path(__file__).resolve().parents[2] / 'csrc'
     directory, stable_source, digest = _prepare_build_sources(source,
-        Path(os.getenv('KVMEM_CUDA_BUILD_DIR', tempfile.gettempdir())).resolve())
+        Path(_settings.get('KVMEM_CUDA_BUILD_DIR', tempfile.gettempdir())).resolve())
     return load(name='kvmem_meank_' + digest, sources=[str(stable_source)],
         build_directory=str(directory), extra_cuda_cflags=['-O3'], verbose=False)
 
@@ -87,7 +88,7 @@ def global_backend():
     tiny term into a large FP32 total one at a time), so selections near the
     budget boundary can change: qualify end to end before use.
     """
-    value = os.getenv('KVMEM_MEANK_GLOBAL_BACKEND', 'legacy')
+    value = _settings.get('KVMEM_MEANK_GLOBAL_BACKEND', 'legacy')
     if value not in ('legacy', 'tiled'):
         raise ValueError('KVMEM_MEANK_GLOBAL_BACKEND must be legacy or tiled')
     return value

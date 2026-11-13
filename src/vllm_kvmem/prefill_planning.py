@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass
 
 from .prefill_attention import PrefillHistory
+from . import settings as _settings
 
 
 def native_plan_function(name):
@@ -15,7 +16,7 @@ def native_plan_function(name):
     prefill-plan helpers (frame_window_segments, logical_plan_check). They
     return None/False for anything outside their exact int64 domain and the
     caller then runs the original Python."""
-    value = os.getenv('KVMEM_NATIVE_PREFILL_PLAN', '0')
+    value = _settings.get('KVMEM_NATIVE_PREFILL_PLAN', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_PREFILL_PLAN must be 0 or 1')
     if value == '0':

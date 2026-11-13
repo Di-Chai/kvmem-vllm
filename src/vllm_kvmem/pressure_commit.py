@@ -1,6 +1,7 @@
 """An immutable, owner-bound map prepared with the original pressure ranking."""
 from dataclasses import dataclass
 from itertools import accumulate
+from . import settings as _settings
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,7 @@ class PreparedPressureCommit:
 
 def _native_commit_map():
     import os
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_COMMIT_MAP', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_COMMIT_MAP', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_COMMIT_MAP must be 0 or 1')
     if value != '1':
@@ -37,7 +38,7 @@ def native_commit_table():
     table kept with the record index. Lookups and checks run without the GIL and
     rows are created one layer at a time (same maps, same errors)."""
     import os
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_COMMIT_TABLE', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_COMMIT_TABLE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_COMMIT_TABLE must be 0 or 1')
     if value != '1':

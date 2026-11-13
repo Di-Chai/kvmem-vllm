@@ -23,10 +23,11 @@ import threading
 import time
 
 import torch
+from . import settings as _settings
 
 
 def enabled():
-    value = os.getenv('KVMEM_LAYERWISE_PRESSURE_PROMISE', '0')
+    value = _settings.get('KVMEM_LAYERWISE_PRESSURE_PROMISE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_PRESSURE_PROMISE must be 0 or 1')
     return value == '1'
@@ -61,7 +62,7 @@ def ineligible(pipeline, refresh, job, capture):
         return 'lane_busy'
     if not getattr(pipeline.pressure, 'single_assembly', False):
         return 'assembly_mode'
-    if os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+    if _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1':
         return 'oracle'
     if rid not in refresh.runner.req_states.req_id_to_index:
         return 'native_state'
@@ -83,7 +84,7 @@ def ineligible(pipeline, refresh, job, capture):
 def pm_sessions():
     """KVMEM_PROMISE_PM_SESSIONS=1: allow promised refreshes with P/M (non-frozen)
     session checkpoints; every checkpoint first settles the owner's producer."""
-    value = os.getenv('KVMEM_PROMISE_PM_SESSIONS', '0')
+    value = _settings.get('KVMEM_PROMISE_PM_SESSIONS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PROMISE_PM_SESSIONS must be 0 or 1')
     return value == '1'
@@ -141,7 +142,7 @@ def settle_before_checkpoint(runner, request_id):
 
 
 def async_page_check():
-    value = os.getenv('KVMEM_PROMISE_ASYNC_PAGE_CHECK', '0')
+    value = _settings.get('KVMEM_PROMISE_ASYNC_PAGE_CHECK', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PROMISE_ASYNC_PAGE_CHECK must be 0 or 1')
     return value == '1'
@@ -152,7 +153,7 @@ def refresh_async_page_check():
     reservation read (AsyncRefresh.step) is copied in stream order to pinned
     memory instead of a blocking .cpu(); the refresh executor verifies it before
     any page write (same expected rows, same error)."""
-    value = os.getenv('KVMEM_REFRESH_ASYNC_PAGE_CHECK', '0')
+    value = _settings.get('KVMEM_REFRESH_ASYNC_PAGE_CHECK', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_REFRESH_ASYNC_PAGE_CHECK must be 0 or 1')
     return value == '1'

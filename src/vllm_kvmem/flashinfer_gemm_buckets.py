@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import threading
+from . import settings as _settings
 
 
 _CONFIG_NAMES = (
@@ -172,7 +173,7 @@ def install_flashinfer_gemm_bucket_alignment(runner, options, output):
     # launcher deliberately filters KVMEM_* environment variables, so reuse
     # upstream tactics by default instead of depending on an explicit seed.
     # The upstream file is only read; all subsequent writes use cache_path.
-    seed_path = os.getenv('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
+    seed_path = _settings.get('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
     if not seed_path:
         upstream_cache = kernel_warmup.resolve_flashinfer_autotune_file(runner)
         if upstream_cache.is_file():

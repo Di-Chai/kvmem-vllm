@@ -8,13 +8,14 @@ import json
 import os
 import threading
 import time
+from . import settings as _settings
 
 _lock = threading.Lock()
 _path = None
 
 
 def enabled():
-    return os.getenv('KVMEM_PUBLICATION_TRACE') == '1'
+    return _settings.get('KVMEM_PUBLICATION_TRACE') == '1'
 
 
 def emit(event, **fields):
@@ -22,7 +23,7 @@ def emit(event, **fields):
     if not enabled():
         return
     if _path is None:
-        directory = os.getenv('KVMEM_RUNNER_PROBE_DIR')
+        directory = _settings.get('KVMEM_RUNNER_PROBE_DIR')
         if not directory:
             return
         _path = os.path.join(directory, 'publication_trace.jsonl')

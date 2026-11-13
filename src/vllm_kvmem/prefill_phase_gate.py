@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import time
+from . import settings as _settings
 
 
 class PrefillPhaseGate:
@@ -74,7 +75,7 @@ class PrefillPhaseGate:
 
 
 def install():
-    value = os.getenv('KVMEM_DIAGNOSTIC_PREFILL_PHASE_OWNERS')
+    value = _settings.get('KVMEM_DIAGNOSTIC_PREFILL_PHASE_OWNERS')
     if value is None:
         return
     expected = int(value)
@@ -95,7 +96,7 @@ def install():
                 with path.open('a') as stream:
                     stream.write(json.dumps(row) + '\n')
             completion = None
-            if os.getenv('KVMEM_DIAGNOSTIC_PREFILL_GPU_COMPLETION') == '1':
+            if _settings.get('KVMEM_DIAGNOSTIC_PREFILL_GPU_COMPLETION') == '1':
                 def completion():
                     work = getattr(manager.runner, '_kvmem_public_work', None)
                     if work is None:

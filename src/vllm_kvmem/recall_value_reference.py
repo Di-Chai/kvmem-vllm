@@ -7,10 +7,11 @@ import torch
 
 from .recall_value_scoring import (REFERENCE_METHODS, aggregate_scores,
     aggregate_set_errors, iter_attention_moments)
+from . import settings as _settings
 
 
 def reference_enabled():
-    return os.getenv('KVMEM_VALUE_RECALL_REFERENCE') == '1'
+    return _settings.get('KVMEM_VALUE_RECALL_REFERENCE') == '1'
 
 
 def prepare_reference(authority, records, queries, mask, *, cache_tiles=False,
@@ -74,7 +75,7 @@ def prepare_reference(authority, records, queries, mask, *, cache_tiles=False,
         normalization='global_candidate_and_mandatory_token_softmax', key_frame='content',
         query_precision='fp16_to_fp32' if authority.mean_k_backend == 'qw3_cuda' else 'fp32',
         query_rows=q.shape[1], query_operand_sha256=hashlib.sha256(q.numpy().tobytes()).hexdigest())
-    device = torch.device(os.getenv('KVMEM_RECALL_DEVICE', 'cpu'))
+    device = torch.device(_settings.get('KVMEM_RECALL_DEVICE', 'cpu'))
     if packed and not region:
         began = time.perf_counter()
         geometry = (len(records), layers, *authority.shape[1:])
@@ -144,9 +145,9 @@ def prepare_reference(authority, records, queries, mask, *, cache_tiles=False,
 
     def iterator():
         return iter_attention_moments(q, read_blocks, [r.count for r in records], mask,
-            kv_heads=authority.shape[2], device=os.getenv('KVMEM_RECALL_DEVICE', 'cpu'),
+            kv_heads=authority.shape[2], device=_settings.get('KVMEM_RECALL_DEVICE', 'cpu'),
             query_batch=reference_query_batch,
-            block_batch=(reference_block_batch or int(os.getenv('KVMEM_RECALL_BLOCK_BATCH', '16'))))
+            block_batch=(reference_block_batch or int(_settings.get('KVMEM_RECALL_BLOCK_BATCH', '16'))))
 
     iterator.read_blocks = read_blocks
     iterator.queries = q
@@ -156,7 +157,7 @@ def prepare_reference(authority, records, queries, mask, *, cache_tiles=False,
 
 def score_value_records(authority, records, queries, mask, method):
     began = time.perf_counter()
-    backend=os.getenv('KVMEM_VALUE_RECALL_BACKEND','reference')
+    backend=_settings.get('KVMEM_VALUE_RECALL_BACKEND','reference')
     if backend not in ('reference','streaming','streaming_packed','streaming_region'):
         raise ValueError('Unknown Value recall backend; no fallback is allowed')
     streaming = backend.startswith('streaming')
@@ -167,9 +168,9 @@ def score_value_records(authority, records, queries, mask, method):
         from .recall_value_streaming import streaming_scores,streaming_value_norm
         operation=streaming_value_norm if method=='block_value_norm' else streaming_scores
         values,reduction=operation(iterator.queries,iterator.read_blocks,[r.count for r in records],mask,
-            kv_heads=authority.shape[2],device=os.getenv('KVMEM_RECALL_DEVICE','cpu'),
-            query_batch=int(os.getenv('KVMEM_RECALL_QUERY_BATCH','128')),
-            block_batch=int(os.getenv('KVMEM_RECALL_BLOCK_BATCH','128')))
+            kv_heads=authority.shape[2],device=_settings.get('KVMEM_RECALL_DEVICE','cpu'),
+            query_batch=int(_settings.get('KVMEM_RECALL_QUERY_BATCH','128')),
+            block_batch=int(_settings.get('KVMEM_RECALL_BLOCK_BATCH','128')))
         scores={method:values} if method=='block_value_norm' else values
     else:
         scores, reduction = aggregate_scores(iterator(), layers=authority.scoring_layers, heads=queries.shape[2])
@@ -188,21 +189,21 @@ def compare_frozen_state(authority, records, queries, mask, pins, *, max_tokens,
     began=time.perf_counter()
     scores, reduction = aggregate_scores(iterator(), layers=authority.scoring_layers, heads=queries.shape[2])
     stats['reference_scoring_seconds']=time.perf_counter()-began
-    if os.getenv('KVMEM_VALUE_RECALL_BACKEND')=='streaming':
+    if _settings.get('KVMEM_VALUE_RECALL_BACKEND')=='streaming':
         from .recall_value_streaming import streaming_scores,streaming_value_norm
         began=time.perf_counter()
         optimized,backend_stats=streaming_scores(iterator.queries,iterator.read_blocks,
             [r.count for r in records],mask,kv_heads=authority.shape[2],
-            device=os.getenv('KVMEM_RECALL_DEVICE','cpu'),
-            query_batch=int(os.getenv('KVMEM_RECALL_QUERY_BATCH','128')),
-            block_batch=int(os.getenv('KVMEM_RECALL_BLOCK_BATCH','128')))
+            device=_settings.get('KVMEM_RECALL_DEVICE','cpu'),
+            query_batch=int(_settings.get('KVMEM_RECALL_QUERY_BATCH','128')),
+            block_batch=int(_settings.get('KVMEM_RECALL_BLOCK_BATCH','128')))
         stats['optimized_scoring_seconds']=time.perf_counter()-began
         began=time.perf_counter()
         optimized['block_value_norm'],_=streaming_value_norm(iterator.queries,iterator.read_blocks,
             [r.count for r in records],mask,kv_heads=authority.shape[2],
-            device=os.getenv('KVMEM_RECALL_DEVICE','cpu'),
-            query_batch=int(os.getenv('KVMEM_RECALL_QUERY_BATCH','128')),
-            block_batch=int(os.getenv('KVMEM_RECALL_BLOCK_BATCH','128')))
+            device=_settings.get('KVMEM_RECALL_DEVICE','cpu'),
+            query_batch=int(_settings.get('KVMEM_RECALL_QUERY_BATCH','128')),
+            block_batch=int(_settings.get('KVMEM_RECALL_BLOCK_BATCH','128')))
         stats['optimized_value_norm_seconds']=time.perf_counter()-began
         stats['optimized_score_max_abs_difference']={m:max(abs(a-b) for a,b in zip(scores[m],optimized[m])) for m in REFERENCE_METHODS}
         stats['optimized_implementation']=backend_stats['implementation']

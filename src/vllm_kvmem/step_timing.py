@@ -3,11 +3,12 @@ from collections import deque
 import json
 import math
 import time
+from . import settings as _settings
 
 
 def _marks_enabled():
     import os
-    return os.getenv('KVMEM_STEP_MARKS', '0') == '1'
+    return _settings.get('KVMEM_STEP_MARKS', '0') == '1'
 
 
 class StepTiming:

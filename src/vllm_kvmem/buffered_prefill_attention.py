@@ -8,6 +8,7 @@ import math
 import os
 
 from .prefill_attention import PrefillHistory
+from . import settings as _settings
 
 
 def require_batch_accept():
@@ -71,7 +72,7 @@ class BufferedPrefillHistory(PrefillHistory):
         self.successful_buffered_commits=0
         self.successful_buffered_batch_commits=0
         self.successful_buffered_restores=0
-        self.native_score_export=os.getenv('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT')=='1'
+        self.native_score_export=_settings.get('KVMEM_LAYERWISE_PRESSURE_NATIVE_SCORE_EXPORT')=='1'
         if self.native_score_export and not hasattr(self._buffered_state,'scores'):
             raise ValueError('Native score export requires the rebuilt prefill state extension')
 

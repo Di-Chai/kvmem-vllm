@@ -16,6 +16,7 @@ import torch
 from .request_checkpoint import NativeRequestCheckpointAdapter
 from .resource_ledger import ResourceLedger
 from .session_swap import SessionSwapIdentity
+from . import settings as _settings
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ class RequestSwapWorker:
         if type(max_checkpoint_bytes) is not int or max_checkpoint_bytes <= 0:
             raise ValueError('Exact swaps require a positive shared checkpoint byte cap')
         self.runner = runner
-        self.verify_request_swap = os.getenv('KVMEM_VERIFY_REQUEST_SWAP') == '1'
+        self.verify_request_swap = _settings.get('KVMEM_VERIFY_REQUEST_SWAP') == '1'
         self.verification_successes = self.verification_failures = 0
         self.verification_path = None
         if self.verify_request_swap:

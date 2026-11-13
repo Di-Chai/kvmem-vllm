@@ -9,6 +9,7 @@ import hashlib
 import os
 
 from .prompt_checkpoints import token_bytes
+from . import settings as _settings
 
 
 def session_namespace(session, salt):
@@ -24,7 +25,7 @@ def session_namespace(session, salt):
 def idle_lru_eviction_enabled():
     """KVMEM_SESSION_IDLE_LRU_EVICTION=1: a full preserve_history ledger evicts
     its least recently used idle session instead of blocking new sessions."""
-    value = os.getenv('KVMEM_SESSION_IDLE_LRU_EVICTION', '0')
+    value = _settings.get('KVMEM_SESSION_IDLE_LRU_EVICTION', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_SESSION_IDLE_LRU_EVICTION must be 0 or 1')
     return value == '1'
@@ -101,7 +102,7 @@ def held_p_capture():
     Value 2 (exactness testing only) also holds a piece without peers, so the
     capture runs in a zero-token step and N=1 exercises the same path.
     """
-    value = os.getenv('KVMEM_HELD_P_CAPTURE', '0')
+    value = _settings.get('KVMEM_HELD_P_CAPTURE', '0')
     if value not in ('0', '1', '2'):
         raise ValueError('KVMEM_HELD_P_CAPTURE must be 0, 1 or 2')
     return int(value)

@@ -12,10 +12,11 @@ import time
 
 import numpy as np
 import torch
+from . import settings as _settings
 
 
 def enabled():
-    return os.environ.get('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1'
+    return _settings.get('KVMEM_RETRIEVAL_DIAGNOSTICS') == '1'
 
 
 def _save(path, value):

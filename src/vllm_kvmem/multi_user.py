@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import uuid
+from . import settings as _settings
 
 
 _DEFAULTS = {
@@ -226,7 +227,7 @@ class MultiUserMiddleware:
     def __init__(self, app, config=None):
         self.app = app
         self.config = validate_config(
-            os.environ.get('KVMEM_MULTI_USER_CONFIG') if config is None else config,
+            _settings.get('KVMEM_MULTI_USER_CONFIG') if config is None else config,
             check_users=False)
         self._users = _load_users(self.config['users_file'])
         self._admission = _Admission(self.config)

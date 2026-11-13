@@ -18,6 +18,7 @@ import torch
 
 from . import _native
 from .codec import native_vllm_fp8_views
+from . import settings as _settings
 
 
 class _AcceptanceParser:
@@ -213,7 +214,7 @@ class ActionHistory:
 
 
 def global_prefill_buffered():
-    value = os.getenv('KVMEM_GLOBAL_PREFILL_BUFFERED', '0')
+    value = _settings.get('KVMEM_GLOBAL_PREFILL_BUFFERED', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_GLOBAL_PREFILL_BUFFERED must be 0 or 1')
     return value == '1'
@@ -228,7 +229,7 @@ def decode_action_before_mtp():
     kernels, fence and packets finish before the drafts start; only the GPU
     queue order changes.
     """
-    value = os.getenv('KVMEM_DECODE_ACTION_BEFORE_MTP', '0')
+    value = _settings.get('KVMEM_DECODE_ACTION_BEFORE_MTP', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_DECODE_ACTION_BEFORE_MTP must be 0 or 1')
     return value == '1'
@@ -244,7 +245,7 @@ def mixed_decode_candidates():
     bounded geometry candidates as a pure decode batch; the parser/publication
     fence and every coordinate check run after the forward is queued.
     """
-    value = os.getenv('KVMEM_MIXED_DECODE_CANDIDATES', '0')
+    value = _settings.get('KVMEM_MIXED_DECODE_CANDIDATES', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_MIXED_DECODE_CANDIDATES must be 0 or 1')
     return value == '1'
@@ -260,7 +261,7 @@ def mixed_terminal_plans():
     with the GPU idle. Enabled, that owner gets its eager plan from CPU
     coordinates behind its own fence; capture() checks the coordinates.
     """
-    value = os.getenv('KVMEM_MIXED_TERMINAL_PLANS', '0')
+    value = _settings.get('KVMEM_MIXED_TERMINAL_PLANS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_MIXED_TERMINAL_PLANS must be 0 or 1')
     return value == '1'
@@ -269,7 +270,7 @@ def mixed_terminal_plans():
 def mixed_terminal_check():
     """KVMEM_MIXED_TERMINAL_CHECK=1 (testing): recompute each armed terminal
     plan with the eager planner after the forward and fail on any difference."""
-    return os.getenv('KVMEM_MIXED_TERMINAL_CHECK', '0') == '1'
+    return _settings.get('KVMEM_MIXED_TERMINAL_CHECK', '0') == '1'
 
 
 def window_segments(records, history_begin, local_begin, count, block_tokens):

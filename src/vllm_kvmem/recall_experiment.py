@@ -14,6 +14,7 @@ import torch
 
 
 from .recall_value_scoring import VALUE_METHODS
+from . import settings as _settings
 
 METHODS = ('mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass', *VALUE_METHODS)
 ACCUMULATED_ATTENTION = 'accumulated_attention'
@@ -21,19 +22,19 @@ _LOG_LOCK = threading.Lock()
 
 
 def configured_method():
-    method = os.getenv('KVMEM_RECALL_METHOD', '')
+    method = _settings.get('KVMEM_RECALL_METHOD', '')
     if method and method not in METHODS:
         raise ValueError('Invalid KVMEM_RECALL_METHOD')
-    if method in VALUE_METHODS and os.getenv('KVMEM_VALUE_RECALL_REFERENCE') != '1':
+    if method in VALUE_METHODS and _settings.get('KVMEM_VALUE_RECALL_REFERENCE') != '1':
         raise ValueError('Value recall requires mandatory-inclusive reference normalization')
-    if method and os.getenv('KVMEM_PRESSURE_QUERY_WINDOW', '128') != '128':
+    if method and _settings.get('KVMEM_PRESSURE_QUERY_WINDOW', '128') != '128':
         raise ValueError('Recall comparison requires a fixed 128-token pressure Q window')
     return method
 
 
 def configured_event_method(event_type):
     method = configured_method()
-    stages = {stage: os.getenv('KVMEM_' + stage.upper() + '_PRESSURE_METHOD', 'same_method')
+    stages = {stage: _settings.get('KVMEM_' + stage.upper() + '_PRESSURE_METHOD', 'same_method')
               for stage in ('prefill', 'decode')}
     if any(value not in ('same_method', ACCUMULATED_ATTENTION) for value in stages.values()):
         raise ValueError('Unknown pressure method; no fallback is allowed')
@@ -196,7 +197,7 @@ def score_records(authority, records, queries, score_mask, method):
     if method in VALUE_METHODS:
         from .recall_value_reference import score_value_records
         return score_value_records(authority, records, queries, score_mask, method)
-    device_name = os.getenv('KVMEM_RECALL_DEVICE', 'cpu')
+    device_name = _settings.get('KVMEM_RECALL_DEVICE', 'cpu')
     if device_name not in ('cpu', 'cuda'):
         raise ValueError('KVMEM_RECALL_DEVICE must be cpu or cuda')
     device = torch.device(device_name)
@@ -208,8 +209,8 @@ def score_records(authority, records, queries, score_mask, method):
     queries = queries.to(device='cpu', dtype=torch.float32)
     if not bool(torch.isfinite(queries).all()):
         raise ValueError('Nonfinite Query in recall scoring')
-    query_batch = int(os.getenv('KVMEM_RECALL_QUERY_BATCH', '4'))
-    block_batch = int(os.getenv('KVMEM_RECALL_BLOCK_BATCH', '32'))
+    query_batch = int(_settings.get('KVMEM_RECALL_QUERY_BATCH', '4'))
+    block_batch = int(_settings.get('KVMEM_RECALL_BLOCK_BATCH', '32'))
     if not 1 <= query_batch <= 128 or not 1 <= block_batch <= 128:
         raise ValueError('Recall scratch tiles exceed the qualified bounds')
     # The vectorized representative dimension must also fit the small 4090
@@ -389,11 +390,11 @@ def select_for_event(authority, queries, mandatory, *, max_tokens, event_type,
                 mask = [True] * len(records)
             profile_path = Path(output) / 'value_query_optimization.jsonl'
             if (not accumulated and method in VALUE_METHODS and
-                    os.getenv('KVMEM_VALUE_RECALL_PROFILE') == event_type and not profile_path.exists()):
+                    _settings.get('KVMEM_VALUE_RECALL_PROFILE') == event_type and not profile_path.exists()):
                 from .recall_value_profile import compare_query_backends
                 backend_options = (dict(baseline_backend='streaming_packed', baseline_block_batch=1024,
                                         optimized_backend='streaming_region')
-                    if os.getenv('KVMEM_VALUE_RECALL_BACKEND') == 'streaming_region' else {})
+                    if _settings.get('KVMEM_VALUE_RECALL_BACKEND') == 'streaming_region' else {})
                 report = compare_query_backends(authority, records, queries, mask, pins,
                                                 max_tokens=max_tokens, **backend_options)
                 report.update(event_type=event_type, request_id=request_id,
@@ -414,7 +415,7 @@ def select_for_event(authority, queries, mandatory, *, max_tokens, event_type,
             if reference_enabled() and not accumulated:
                 stats.update(attention_normalization_domain='candidate_and_mandatory',
                     mandatory_in_normalization=True)
-        if not accumulated and os.getenv('KVMEM_VALUE_RECALL_DIAGNOSTICS') == event_type:
+        if not accumulated and _settings.get('KVMEM_VALUE_RECALL_DIAGNOSTICS') == event_type:
             from .recall_value_reference import compare_frozen_state
             diagnostic = compare_frozen_state(authority, records, queries, mask, pins,
                 max_tokens=max_tokens, pressure=pressure,
@@ -436,7 +437,7 @@ def select_for_event(authority, queries, mandatory, *, max_tokens, event_type,
         if not selected.issubset(by_slot):
             raise ValueError('Native picker escaped the frozen candidate set')
         selected_records = [r for r in records if r.handle.slot in selected]
-        event = dict(version=1, sample_id=os.getenv('KVMEM_RECALL_SAMPLE_ID', request_id),
+        event = dict(version=1, sample_id=_settings.get('KVMEM_RECALL_SAMPLE_ID', request_id),
             request_id=request_id, authority_id=authority.memory.request_id,
             event_type=event_type, configured_method=configured, actual_method=method,
             fallback_reason=None, accepted_through=authority.history_end,
@@ -450,11 +451,11 @@ def select_for_event(authority, queries, mandatory, *, max_tokens, event_type,
             budget=max_tokens, block_tokens=authority.shape[1], pressure_query_window=128)
         event.update(query_metadata)
         event.update(stats)
-        if any(os.getenv('KVMEM_' + stage.upper() + '_PRESSURE_METHOD') == ACCUMULATED_ATTENTION
+        if any(_settings.get('KVMEM_' + stage.upper() + '_PRESSURE_METHOD') == ACCUMULATED_ATTENTION
                for stage in ('prefill', 'decode')):
             event.update(configuration_kind='pressure_attention_query_recall', configured_event_method=method,
-                prefill_pressure_method=os.getenv('KVMEM_PREFILL_PRESSURE_METHOD', 'same_method'),
-                decode_pressure_method=os.getenv('KVMEM_DECODE_PRESSURE_METHOD', 'same_method'))
+                prefill_pressure_method=_settings.get('KVMEM_PREFILL_PRESSURE_METHOD', 'same_method'),
+                decode_pressure_method=_settings.get('KVMEM_DECODE_PRESSURE_METHOD', 'same_method'))
         _write_event(output, event)
         expected = tuple(record.handle for record in selected_records)
         plan = authority.memory.select(selection_scores, pins, **kwargs)

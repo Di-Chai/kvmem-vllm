@@ -21,12 +21,13 @@ from .replay_probe import _clone, _equal
 from .state import StateCheckpoints
 from .window_assembly import NativeWindowAssembler
 from .window_batch import WindowBatchAdapter
+from . import settings as _settings
 
 
 def install_compression_probe(runner):
-    if os.getenv("KVMEM_WINDOW_METADATA") != "1":
+    if _settings.get("KVMEM_WINDOW_METADATA") != "1":
         raise ValueError("Compression qualification requires the explicit dense-window metadata hook")
-    if os.getenv("KVMEM_REBUILD_PROBE") == "1" or os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") == "1":
+    if _settings.get("KVMEM_REBUILD_PROBE") == "1" or _settings.get("KVMEM_SCHEDULED_REBUILD_PROBE") == "1":
         raise ValueError("Compression qualification cannot share an identity rebuild transaction")
     if runner.speculative_config is not None or runner.vllm_config.max_concurrent_batches != 1:
         raise ValueError("Compression qualification requires synchronous target-only execution")

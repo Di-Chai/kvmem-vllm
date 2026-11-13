@@ -12,6 +12,7 @@ from types import MethodType, SimpleNamespace
 import os
 
 import torch
+from . import settings as _settings
 
 QSA_MODULE = 'vllm.models.qwen4_exp.nvidia.b12x_qsa'
 
@@ -32,7 +33,7 @@ def validate_qsa_config(config, options):
     # Full CUDA graphs capture the persistent raw projection copies, including
     # the MTP prefix-only branch. Torch compilation has a different capture
     # contract and remains unqualified for QSA.
-    full_graph = (os.getenv('KVMEM_FULL_GRAPH') == '1' and compilation is not None
+    full_graph = (_settings.get('KVMEM_FULL_GRAPH') == '1' and compilation is not None
                   and compilation.mode == 0
                   and getattr(compilation.cudagraph_mode, 'name', None) == 'FULL')
     if ((not config.model_config.enforce_eager and not full_graph) or config.scheduler_config.async_scheduling or

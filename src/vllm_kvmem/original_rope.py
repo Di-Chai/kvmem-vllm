@@ -3,10 +3,11 @@ import os
 from types import MethodType
 
 import torch
+from . import settings as _settings
 
 
 def enabled():
-    return os.getenv('KVMEM_LAYERWISE_ORIGINAL_ROPE') == '1'
+    return _settings.get('KVMEM_LAYERWISE_ORIGINAL_ROPE') == '1'
 
 
 def record_positions(records, device):

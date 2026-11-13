@@ -15,6 +15,7 @@ import torch
 from .action_attention import ActionRuntime, window_segments
 from .prefill_attention import PrefillHistory
 from .original_rope import enabled as original_rope
+from . import settings as _settings
 
 
 def _decode_labels():
@@ -152,7 +153,7 @@ class PendingMaps:
 
 
 def native_lookups():
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_LOOKUPS must be 0 or 1')
     return value == '1'
@@ -161,7 +162,7 @@ def native_lookups():
 def native_layer_pick():
     """KVMEM_PRESSURE_NATIVE_LAYER_PICK: one native call per layer for the
     fast-prepare candidate loop, preview pick, layer checks and archive order."""
-    value = os.getenv('KVMEM_PRESSURE_NATIVE_LAYER_PICK', '0')
+    value = _settings.get('KVMEM_PRESSURE_NATIVE_LAYER_PICK', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_NATIVE_LAYER_PICK must be 0 or 1')
     return value == '1'
@@ -215,7 +216,7 @@ def record_index(controller, authority):
     """Opt-in KVMEM_PRESSURE_RECORD_INDEX_CACHE: reuse the sorted records,
     their slots and lookup tables while the authority's record set is unchanged
     (VersionedRecords.version). Identical objects and order; None when off."""
-    value = os.getenv('KVMEM_PRESSURE_RECORD_INDEX_CACHE', '0')
+    value = _settings.get('KVMEM_PRESSURE_RECORD_INDEX_CACHE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_RECORD_INDEX_CACHE must be 0 or 1')
     current = authority.records
@@ -303,13 +304,13 @@ class LayerwisePrefillPressure:
             raise ValueError('Compiled batches require the native layerwise Query dispatcher')
         self.maps = {}
         self.histories = {}
-        self.rolling_decode = os.getenv('KVMEM_LAYERWISE_ROLLING_DECODE') == '1'
+        self.rolling_decode = _settings.get('KVMEM_LAYERWISE_ROLLING_DECODE') == '1'
         self.decode_histories = {}
         self.options = None
-        self.single_assembly = os.getenv('KVMEM_LAYERWISE_PRESSURE_SINGLE_ASSEMBLY') == '1'
-        self.fast_metadata = os.getenv('KVMEM_LAYERWISE_PRESSURE_FAST_METADATA') == '1'
-        self.buffered_history = os.getenv('KVMEM_LAYERWISE_BUFFERED_HISTORY') == '1'
-        batch_accept = os.getenv('KVMEM_LAYERWISE_PRESSURE_BATCH_ACCEPT', '0')
+        self.single_assembly = _settings.get('KVMEM_LAYERWISE_PRESSURE_SINGLE_ASSEMBLY') == '1'
+        self.fast_metadata = _settings.get('KVMEM_LAYERWISE_PRESSURE_FAST_METADATA') == '1'
+        self.buffered_history = _settings.get('KVMEM_LAYERWISE_BUFFERED_HISTORY') == '1'
+        batch_accept = _settings.get('KVMEM_LAYERWISE_PRESSURE_BATCH_ACCEPT', '0')
         if batch_accept not in ('0', '1'):
             raise ValueError('Layerwise pressure batch acceptance must be 0 or 1')
         self.batch_accept = batch_accept == '1'
@@ -324,37 +325,37 @@ class LayerwisePrefillPressure:
             require_batch_accept()
         # New execution candidates remain opt-in until full throughput gates
         # pass; a successful component test alone must not change defaults.
-        self.prepared_reads = os.getenv('KVMEM_LAYERWISE_PRESSURE_PREPARED_READS') == '1'
-        self.post_forward_reap = os.getenv('KVMEM_LAYERWISE_PRESSURE_POST_FORWARD_REAP') == '1'
-        self.submit_on_prepare = os.getenv('KVMEM_LAYERWISE_PRESSURE_SUBMIT_ON_PREPARE') == '1'
-        self.reuse_layer_views = os.getenv('KVMEM_LAYERWISE_PRESSURE_REUSE_LAYER_VIEWS') == '1'
-        self.resident_values = os.getenv('KVMEM_LAYERWISE_PRESSURE_RESIDENT_VALUES') == '1'
-        batch_selection = os.getenv('KVMEM_LAYERWISE_PRESSURE_BATCH_SELECTION', '0')
+        self.prepared_reads = _settings.get('KVMEM_LAYERWISE_PRESSURE_PREPARED_READS') == '1'
+        self.post_forward_reap = _settings.get('KVMEM_LAYERWISE_PRESSURE_POST_FORWARD_REAP') == '1'
+        self.submit_on_prepare = _settings.get('KVMEM_LAYERWISE_PRESSURE_SUBMIT_ON_PREPARE') == '1'
+        self.reuse_layer_views = _settings.get('KVMEM_LAYERWISE_PRESSURE_REUSE_LAYER_VIEWS') == '1'
+        self.resident_values = _settings.get('KVMEM_LAYERWISE_PRESSURE_RESIDENT_VALUES') == '1'
+        batch_selection = _settings.get('KVMEM_LAYERWISE_PRESSURE_BATCH_SELECTION', '0')
         if batch_selection not in ('0', '1'):
             raise ValueError('Layerwise pressure batch selection must be 0 or 1')
         self.batch_selection = batch_selection == '1'
         # Opt-in: one pass per layer builds candidates and picker scores from
         # the same accepted values (identical floats, order and checks).
-        fast_prepare = os.getenv('KVMEM_LAYERWISE_PRESSURE_FAST_PREPARE', '0')
+        fast_prepare = _settings.get('KVMEM_LAYERWISE_PRESSURE_FAST_PREPARE', '0')
         if fast_prepare not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_FAST_PREPARE must be 0 or 1')
         self.fast_prepare = fast_prepare == '1'
         # Opt-in: build the prepared 17-layer commit maps after the plan/ACK on
         # the producer instead of inside selection. Same maps; consumers resolve.
-        deferred_maps = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS', '0')
+        deferred_maps = _settings.get('KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS', '0')
         if deferred_maps not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_DEFERRED_MAPS must be 0 or 1')
         self.deferred_maps = deferred_maps == '1'
-        pipeline = os.getenv('KVMEM_LAYERWISE_PRESSURE_PIPELINE', '0')
+        pipeline = _settings.get('KVMEM_LAYERWISE_PRESSURE_PIPELINE', '0')
         if pipeline not in ('0', '1'):
             raise ValueError('Layerwise pressure pipeline must be 0 or 1')
-        handoff = os.getenv('KVMEM_LAYERWISE_PRESSURE_PIPELINE_HANDOFF', '0')
+        handoff = _settings.get('KVMEM_LAYERWISE_PRESSURE_PIPELINE_HANDOFF', '0')
         if handoff not in ('0', '1'):
             raise ValueError('Layerwise pressure pipeline handoff must be 0 or 1')
         self.pipeline_handoff = handoff == '1'
-        prepared_commit = os.getenv('KVMEM_LAYERWISE_PRESSURE_PREPARED_COMMIT', '0')
-        preforward = os.getenv('KVMEM_LAYERWISE_PRESSURE_PIPELINE_PREFORWARD', '0')
-        progress = os.getenv('KVMEM_LAYERWISE_PRESSURE_PIPELINE_PROGRESS', '0')
+        prepared_commit = _settings.get('KVMEM_LAYERWISE_PRESSURE_PREPARED_COMMIT', '0')
+        preforward = _settings.get('KVMEM_LAYERWISE_PRESSURE_PIPELINE_PREFORWARD', '0')
+        progress = _settings.get('KVMEM_LAYERWISE_PRESSURE_PIPELINE_PROGRESS', '0')
         if prepared_commit not in ('0', '1') or preforward not in ('0', '1') or progress not in ('0', '1'):
             raise ValueError('Prepared commit and pre-forward pressure flags must be 0 or 1')
         self.prepared_commit = prepared_commit == '1'
@@ -371,7 +372,7 @@ class LayerwisePrefillPressure:
             raise ValueError('Early handoff requires pipeline and original pressure prepare/reap paths')
         # Opt-in: acknowledge an already-prepared plan at the next schedule
         # instead of the next batch's feedback (synchronous single process).
-        schedule_ack = os.getenv('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
+        schedule_ack = _settings.get('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
         if schedule_ack not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK must be 0 or 1')
         self.schedule_ack = schedule_ack == '1'
@@ -382,7 +383,7 @@ class LayerwisePrefillPressure:
         if pipeline == '1':
             if (not self.single_assembly or not self.prepared_reads or not self.reuse_layer_views or
                     not query.paired_reads or not query.native_batches or
-                    os.getenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0') != '0' or
+                    _settings.get('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0') != '0' or
                     (self.resident_values and not _gpu_reuse())):
                 raise ValueError('Pipeline requires the qualified single-assembly immutable-reader path')
             from .pressure_pipeline import PressurePipeline
@@ -391,7 +392,7 @@ class LayerwisePrefillPressure:
         # worker thread, CUDA stream, staging scratch and transfer credit; the
         # engine thread still owns every commit. Selection and bytes are the
         # same per owner; only how many owners assemble at once changes.
-        lanes = os.getenv('KVMEM_LAYERWISE_PRESSURE_LANES', '1')
+        lanes = _settings.get('KVMEM_LAYERWISE_PRESSURE_LANES', '1')
         if lanes not in ('1', '2'):
             raise ValueError('Layerwise pressure lanes must be 1 or 2')
         self.lanes = int(lanes)
@@ -403,7 +404,7 @@ class LayerwisePrefillPressure:
 
     @staticmethod
     def parent_staging_requested():
-        return os.getenv('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0') != '0'
+        return _settings.get('KVMEM_LAYERWISE_PRESSURE_PARENT_STAGING', '0') != '0'
 
     def new_history(self, options):
         if getattr(self, 'buffered_history', False):
@@ -695,7 +696,7 @@ class LayerwisePrefillPressure:
         # snapshot below, independent of the (lazy) selections themselves.
         lazy = (getattr(job, 'promised_lease', None) is not None and not decode and batched is None and
                 (not capture_values or _gpu_reuse()) and prepare_commit and getattr(self, 'deferred_maps', False) and
-                os.getenv('KVMEM_LAYERWISE_PRESSURE_LAYER0_FIRST') == '1')
+                _settings.get('KVMEM_LAYERWISE_PRESSURE_LAYER0_FIRST') == '1')
         maps_snapshot = self.resolved_maps(rid) if lazy else None
         eager_sources = lazy and capture_values
         if eager_sources:

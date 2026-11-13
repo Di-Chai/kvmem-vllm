@@ -11,18 +11,19 @@ import torch
 
 
 from .recall_value_scoring import VALUE_METHODS
+from . import settings as _settings
 
 METHODS = ('mean_k', 'fixed4', 'fps4', 'min_max', 'exact_mass', *VALUE_METHODS)
 PRESSURE_QUERY_WINDOW = 128
 
 
 def configured_method():
-    method = os.getenv('KVMEM_RECALL_METHOD', '')
+    method = _settings.get('KVMEM_RECALL_METHOD', '')
     if not method:
         return None
     if method not in METHODS:
         raise ValueError('KVMEM_RECALL_METHOD must be ' + ', '.join(METHODS))
-    if os.getenv('KVMEM_PRESSURE_QUERY_WINDOW', '128') != '128':
+    if _settings.get('KVMEM_PRESSURE_QUERY_WINDOW', '128') != '128':
         raise ValueError('This recall experiment fixes KVMEM_PRESSURE_QUERY_WINDOW=128')
     return method
 
@@ -36,7 +37,7 @@ def pressure_query_required():
     """
     if configured_method() is None:
         return False
-    stages = [os.getenv('KVMEM_' + stage + '_PRESSURE_METHOD', 'same_method')
+    stages = [_settings.get('KVMEM_' + stage + '_PRESSURE_METHOD', 'same_method')
               for stage in ('PREFILL', 'DECODE')]
     if any(stage not in ('same_method', 'accumulated_attention') for stage in stages):
         raise ValueError('Unknown pressure method; no fallback is allowed')

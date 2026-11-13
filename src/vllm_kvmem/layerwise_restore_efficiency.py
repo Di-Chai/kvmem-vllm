@@ -13,6 +13,7 @@ import torch
 from .memory import Phase
 from .layerwise_checkpoints import prepare_restore, _identity
 from .window_assembly import AssemblyResult, _validate_destinations
+from . import settings as _settings
 
 
 def install_direct_restore(worker, request_id, checkpoint, assembler, plan):
@@ -110,7 +111,7 @@ def direct_session_restore():
     engine thread only installs CPU state. Same records, packing, rounding,
     positions and order as restore_sync, so the restored pages are identical."""
     import os
-    value = os.getenv('KVMEM_RESTORE_DIRECT_LAYERS', '0')
+    value = _settings.get('KVMEM_RESTORE_DIRECT_LAYERS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_DIRECT_LAYERS must be 0 or 1')
     return value == '1'
@@ -121,7 +122,7 @@ def prepared_restore_reads():
     direct swap-in reads through one prepared native source reader (as pressure
     refreshes do), inline and GIL-free, with parallel copies. Byte-identical."""
     import os
-    value = os.getenv('KVMEM_RESTORE_PREPARED_READS', '0')
+    value = _settings.get('KVMEM_RESTORE_PREPARED_READS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_PREPARED_READS must be 0 or 1')
     return value == '1'
@@ -132,7 +133,7 @@ def restore_gate_exempt():
     swap-in's per-layer assemblies are not parked by the GIL gate while the engine
     launches a step. Scheduling only: the same work in the same order."""
     import os
-    value = os.getenv('KVMEM_RESTORE_GATE_EXEMPT', '0')
+    value = _settings.get('KVMEM_RESTORE_GATE_EXEMPT', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_GATE_EXEMPT must be 0 or 1')
     return value == '1'
@@ -143,7 +144,7 @@ def restore_stage_profile():
     per-layer host stages and CUDA intervals, written to restore_stage_profile.jsonl
     by the engine thread once the restore completed."""
     import os
-    value = os.getenv('KVMEM_RESTORE_STAGE_PROFILE', '0')
+    value = _settings.get('KVMEM_RESTORE_STAGE_PROFILE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_STAGE_PROFILE must be 0 or 1')
     return value == '1'

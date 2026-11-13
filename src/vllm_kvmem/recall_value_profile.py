@@ -6,13 +6,14 @@ import torch
 
 from .recall_value_reference import score_value_records
 from .recall_value_scoring import VALUE_METHODS
+from . import settings as _settings
 
 
 def compare_query_backends(authority, records, queries, mask, pins, *, max_tokens,
                            baseline_backend='streaming', baseline_block_batch=128,
                            optimized_backend='streaming_packed'):
-    old_backend = os.environ.get('KVMEM_VALUE_RECALL_BACKEND')
-    old_batch = os.environ.get('KVMEM_RECALL_BLOCK_BATCH')
+    old_backend = _settings.get('KVMEM_VALUE_RECALL_BACKEND')
+    old_batch = _settings.get('KVMEM_RECALL_BLOCK_BATCH')
     slots = [r.handle.slot for r in records]
     report = dict(passed=True, methods={}, candidate_blocks=len(records),
         candidate_tokens=sum(r.count for r in records), query_rows=queries.shape[1],
@@ -31,11 +32,11 @@ def compare_query_backends(authority, records, queries, mask, pins, *, max_token
                 authority._value_recall_records = {}
                 os.environ['KVMEM_VALUE_RECALL_BACKEND'] = backend
                 os.environ['KVMEM_RECALL_BLOCK_BATCH'] = str(batch)
-                if queries.is_cuda or os.getenv('KVMEM_RECALL_DEVICE')=='cuda':
+                if queries.is_cuda or _settings.get('KVMEM_RECALL_DEVICE')=='cuda':
                     torch.cuda.synchronize()
                 began = time.perf_counter()
                 values, stats = score_value_records(authority, records, queries, mask, method)
-                if os.getenv('KVMEM_RECALL_DEVICE')=='cuda':
+                if _settings.get('KVMEM_RECALL_DEVICE')=='cuda':
                     torch.cuda.synchronize()
                 scores[name] = values
                 runs[name] = dict(seconds=time.perf_counter()-began, stats=stats)

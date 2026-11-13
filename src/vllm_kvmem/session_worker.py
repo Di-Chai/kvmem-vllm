@@ -18,6 +18,7 @@ from .authority import _Ready
 from .prompt_checkpoints import PromptCheckpointPool
 from .session_control import SessionNotice
 from .session_state import PromptStateAdapter
+from . import settings as _settings
 
 
 def verify_preserved_authority(authority, timeout=180):
@@ -97,7 +98,7 @@ def deferred_p_capture():
     """Opt-in KVMEM_DEFERRED_P_CAPTURE=1: a P checkpoint's CPU snapshots run after
     the next forward is enqueued (overlapping it); its model-state copy stays
     before that forward. Same checkpoint contents and admission decisions."""
-    value = os.getenv('KVMEM_DEFERRED_P_CAPTURE', '0')
+    value = _settings.get('KVMEM_DEFERRED_P_CAPTURE', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_DEFERRED_P_CAPTURE must be 0 or 1')
     return value == '1'
@@ -579,7 +580,7 @@ class SessionWorker:
     def _verify_restored(self, request_id, checkpoint, resident=False):
         if not self.pool.model_ready(checkpoint):
             raise RuntimeError('Restore verification requires a completed model checkpoint')
-        if os.getenv('KVMEM_VERIFY_SESSION_RESTORE_DIGEST') == '1':
+        if _settings.get('KVMEM_VERIFY_SESSION_RESTORE_DIGEST') == '1':
             from .restore_digest import verify
             return verify(self, request_id, checkpoint, resident)
         binding = self.bindings[request_id]
@@ -595,11 +596,11 @@ class SessionWorker:
             # oracle is not a valid comparison for a pressure refresh.
             oracle = None
         oracle_kind = 'native_terminal_window'
-        if (os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1' and not resident and
+        if (_settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1' and not resident and
                 checkpoint.authority.raw_dtype == torch.float8_e4m3fn):
             oracle = self._rebuilt_target_bytes(request_id, checkpoint.authority)
             oracle_kind = 'fp8_immutable_rebuild'
-        if os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+        if _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1':
             recurrent = self.model_adapter._recurrent_views(request_id)
             if any(not torch.equal(t.cpu(), checkpoint.model.recurrent[name]) for name,t in recurrent.items()):
                 raise RuntimeError('Query-boundary recurrent state differs from its CPU checkpoint')
@@ -755,8 +756,8 @@ class SessionWorker:
             return False  # Ordinary retirement will emit an empty checkpoint acknowledgment.
         if checkpoint.request_id != request_id or checkpoint.authority is not authority:
             raise ValueError('Terminal request does not own the retained prompt snapshot')
-        if command is not None and kind == 'captured' and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
-            if os.getenv('KVMEM_VERIFY_SESSION_RESTORE_DIGEST') == '1':
+        if command is not None and kind == 'captured' and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+            if _settings.get('KVMEM_VERIFY_SESSION_RESTORE_DIGEST') == '1':
                 from .restore_digest import target_digest
                 oracle = target_digest(self, request_id, checkpoint.window.window_tokens)
             else:

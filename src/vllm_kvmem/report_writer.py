@@ -18,12 +18,13 @@ Flag off keeps the synchronous, indented writes unchanged.
 import json
 import os
 from threading import Condition, Thread
+from . import settings as _settings
 
 LAZY_REPORT_INTERVAL = 1.0
 
 
 def lazy_archive_report():
-    value = os.getenv('KVMEM_LAZY_ARCHIVE_REPORT', '0')
+    value = _settings.get('KVMEM_LAZY_ARCHIVE_REPORT', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAZY_ARCHIVE_REPORT must be 0 or 1')
     return value == '1'

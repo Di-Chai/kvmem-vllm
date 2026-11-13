@@ -10,10 +10,11 @@ import os
 import threading
 from collections import deque
 from concurrent.futures import Future
+from . import settings as _settings
 
 
 def restore_first():
-    value = os.getenv('KVMEM_RESTORE_FIRST', '0')
+    value = _settings.get('KVMEM_RESTORE_FIRST', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_FIRST must be 0 or 1')
     return value == '1'

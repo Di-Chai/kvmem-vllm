@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from . import settings as _settings
 
 TARGET = 'vllm.v1.core.kv_cache_utils'
 
@@ -20,7 +21,7 @@ def physical_config(config):
     from .options import RuntimeOptions
     from .pressure_query_capture import configured_method
     recall = configured_method()
-    finite_history = os.getenv('KVMEM_FULL_HISTORY_BENCHMARK') == '1'
+    finite_history = _settings.get('KVMEM_FULL_HISTORY_BENCHMARK') == '1'
     transfer = getattr(config, 'kv_transfer_config', None)
     payload = getattr(transfer, 'kv_connector_extra_config', {}) or {}
     incremental = payload.get('kvmem', {}).get('gpu_memory_admission') == 'incremental'
@@ -52,8 +53,8 @@ def physical_config(config):
         # Do not extend this exception
         # to ordinary no-GC serving or a different logical/physical geometry.
         if (config.model_config.max_model_len != 524288 or
-                os.getenv('KVMEM_RECALL_CONCURRENT_OWNERS', '1') not in ('1', '2', '4', '8') or
-                str(config.scheduler_config.max_num_seqs) != os.getenv('KVMEM_RECALL_CONCURRENT_OWNERS', '1') or
+                _settings.get('KVMEM_RECALL_CONCURRENT_OWNERS', '1') not in ('1', '2', '4', '8') or
+                str(config.scheduler_config.max_num_seqs) != _settings.get('KVMEM_RECALL_CONCURRENT_OWNERS', '1') or
                 gc is not None or
                 options.memory.block_tokens != 32 or
                 options.memory.select_budget != 36864 or
@@ -124,7 +125,7 @@ def wrap_planner(original):
             rows.append(dict(pool_pages=cache.num_blocks, per_owner_pages=per_owner,
                              concurrent_owners=owners, required_pages=needed,
                              admission='incremental' if incremental else 'static'))
-        if directory := os.getenv('KVMEM_RUNNER_PROBE_DIR'):
+        if directory := _settings.get('KVMEM_RUNNER_PROBE_DIR'):
             path = Path(directory)/'logical-kv-capacity.json'
             path.parent.mkdir(parents=True, exist_ok=True)
             temp = path.with_suffix('.tmp')

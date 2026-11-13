@@ -14,6 +14,7 @@ import sys
 from types import SimpleNamespace
 
 from .options import RuntimeOptions
+from . import settings as _settings
 
 
 DEFAULTS = {
@@ -108,7 +109,7 @@ def _validate_safetensors_config(model):
 
 def build_launch(profile, base, run_dir, *, check_paths=True):
     if not isinstance(profile, dict) or set(profile) - set(DEFAULTS) - set(PATHS) - {
-            'kvmem', 'multi_user', 'linear_backend_per_quant'}:
+            'kvmem', 'multi_user', 'linear_backend_per_quant', 'settings'}:
         raise ValueError('Serving profile contains unknown fields or is not an object')
     cfg = {**DEFAULTS, **profile}
     if cfg['model_adapter'] not in (None, 'qwen38_flash_next_b12x'):
@@ -240,7 +241,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             raise ValueError('Logical histories above 1M require bounded MTP, owned rolling sessions, '
                              'deleting historical GC and physical CPU progress reservations')
     if (options.query_score_mode in ('overlap_16_8', 'key_fps_4') and
-            os.environ.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES')):
+            _settings.get('KVMEM_EXPERIMENTAL_QUERY_TOKEN_SCORES')):
         raise ValueError('Indexed Query scoring cannot be combined with experimental Query token scores')
     if cfg['experimental_dflash_query_planning'] and (
             cfg['draft_method'] != 'dflash' or not options.request_planning):
@@ -379,7 +380,7 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
     if cfg['kv_cache_memory_bytes'] is not None:
         argv.extend(['--kv-cache-memory-bytes', str(cfg['kv_cache_memory_bytes'])])
     if options.flashinfer_gemm_bucket_alignment:
-        seed = os.getenv('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
+        seed = _settings.get('KVMEM_FLASHINFER_GEMM_AUTOTUNE_SEED')
         if seed:
             # Allow only this read-only seed through the KVMEM environment
             # reset, and record the resolved path in the saved launch plan.
@@ -514,6 +515,12 @@ def build_launch(profile, base, run_dir, *, check_paths=True):
             'max_model_len':cfg['max_model_len'],
             'query_replay_budget':cfg['query_replay_budget'],
             'rolling_active_window':options.rolling_active_window})
+    # Profile settings (vllm_kvmem.settings): system and strategy namespaces over the preset.
+    for name, value in _settings.profile_environment(cfg.get('settings')).items():
+        if env.get(name, value) != value:
+            raise ValueError('settings: %s=%s conflicts with %s=%s required by the profile options'
+                             % (name, value, name, env[name]))
+        env[name] = value
     return {'scope': 'experimental mainline serving; see support matrix for qualification limits',
             'profile': cfg, 'vllm_argv': argv, 'environment': env}
 

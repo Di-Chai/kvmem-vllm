@@ -7,6 +7,7 @@ import os
 from types import SimpleNamespace
 
 import torch
+from . import settings as _settings
 
 
 def owner_chunk_limit(owners, native_rows, logical_tokens, maximum):
@@ -43,7 +44,7 @@ def owner_chunk_allocations(owners, native_rows, logical_tokens, maximum, *, rot
 def coalesce_with_decode(available=True):
     """Logical owners may share a step with ordinary decode rows."""
     from .defaults import legacy
-    value=os.getenv('KVMEM_PREFILL_COALESCE_WITH_DECODE', '1' if available and not legacy() else '0')
+    value=_settings.get('KVMEM_PREFILL_COALESCE_WITH_DECODE', '1' if available and not legacy() else '0')
     if value not in ('0','1'):
         raise ValueError('KVMEM_PREFILL_COALESCE_WITH_DECODE must be 0 or 1')
     if value == '1' and not available:

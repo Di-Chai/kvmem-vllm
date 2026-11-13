@@ -14,13 +14,14 @@ import json
 import os
 import threading
 import time
+from . import settings as _settings
 
 _SENTINEL = '\x00kvmem-deferred-layers\x00'
 _TOKEN = json.dumps(_SENTINEL)
 
 
 def delay_seconds():
-    value = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE_DELAY_MS', '100')
+    value = _settings.get('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE_DELAY_MS', '100')
     try:
         delay = float(value)
     except ValueError:

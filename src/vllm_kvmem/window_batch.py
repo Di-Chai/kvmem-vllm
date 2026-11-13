@@ -14,6 +14,7 @@ import triton
 import triton.language as tl
 
 from .metadata import WindowLengths, WorkingSetMetadata
+from . import settings as _settings
 
 _active_lengths = ContextVar("kvmem_attention_window_lengths", default=None)
 
@@ -81,7 +82,7 @@ def translate_dynamic():
     engine thread before the forward (40-76 ms). Prefill chunks that share a
     step with decoders have a new shape nearly every step.
     """
-    value = os.getenv('KVMEM_WINDOW_TRANSLATE_DYNAMIC', '0')
+    value = _settings.get('KVMEM_WINDOW_TRANSLATE_DYNAMIC', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_WINDOW_TRANSLATE_DYNAMIC must be 0 or 1')
     return value == '1'

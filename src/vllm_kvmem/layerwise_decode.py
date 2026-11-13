@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import _native
+from . import settings as _settings
 
 
 def sample_rows(begin, count, interval):
@@ -44,7 +45,7 @@ def decode_scope():
     accepted history block, thinking included.
     """
     import os
-    value = os.getenv('KVMEM_LAYERWISE_DECODE_SCOPE', 'all')
+    value = _settings.get('KVMEM_LAYERWISE_DECODE_SCOPE', 'all')
     if value not in ('all', 'non-thinking'):
         raise ValueError('KVMEM_LAYERWISE_DECODE_SCOPE must be all or non-thinking')
     return value
@@ -54,7 +55,7 @@ def decode_interval(options):
     """KVMEM_LAYERWISE_DECODE_INTERVAL: sampling interval of the 'non-thinking'
     scope, counted over non-thinking output tokens (default: action_interval)."""
     import os
-    value = os.getenv('KVMEM_LAYERWISE_DECODE_INTERVAL')
+    value = _settings.get('KVMEM_LAYERWISE_DECODE_INTERVAL')
     if value is None:
         return options.action_interval
     if not value.isdigit() or not 1 <= int(value) <= 4096:
@@ -67,7 +68,7 @@ def prefill_fold_enabled():
     (tool results, user input; the rows the prefill history already samples,
     minus rows inside <think>...</think>) also score rolling decode."""
     import os
-    value = os.getenv('KVMEM_LAYERWISE_DECODE_PREFILL', '0')
+    value = _settings.get('KVMEM_LAYERWISE_DECODE_PREFILL', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_DECODE_PREFILL must be 0 or 1')
     return value == '1'
@@ -78,7 +79,7 @@ def prefill_fold_weight(options):
     counts as. Default: prefill stride / decode interval (rounded, >= 1), so a
     prefill token and a non-thinking output token weigh about the same."""
     import os
-    value = os.getenv('KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT')
+    value = _settings.get('KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT')
     if value is not None:
         if not value.isdigit() or not 1 <= int(value) <= 4096:
             raise ValueError('KVMEM_LAYERWISE_DECODE_PREFILL_WEIGHT must be an integer in [1, 4096]')
@@ -174,7 +175,7 @@ class NativeDecodeHistory:
 def mass_map_enabled():
     """KVMEM_NATIVE_DECODE_MASS_MAP=1: keep accepted decode mass natively."""
     import os
-    value = os.getenv('KVMEM_NATIVE_DECODE_MASS_MAP', '0')
+    value = _settings.get('KVMEM_NATIVE_DECODE_MASS_MAP', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_DECODE_MASS_MAP must be 0 or 1')
     return value == '1' and hasattr(_native, 'prepare_decode_attention_map')
@@ -192,7 +193,7 @@ def sparse_mass_enabled():
     """KVMEM_NATIVE_DECODE_SPARSE_MASS=1: prepare_decode_attention_sparse, which
     returns the same dictionary but writes only changed entries after copy()."""
     import os
-    value = os.getenv('KVMEM_NATIVE_DECODE_SPARSE_MASS', '0')
+    value = _settings.get('KVMEM_NATIVE_DECODE_SPARSE_MASS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_DECODE_SPARSE_MASS must be 0 or 1')
     return value == '1' and hasattr(_native, 'prepare_decode_attention_sparse')
@@ -206,7 +207,7 @@ def native_segments_enabled():
     raises its original error. Equivalence: tests/test_native_decode_segments.py.
     """
     import os
-    value = os.getenv('KVMEM_NATIVE_DECODE_SEGMENTS', '0')
+    value = _settings.get('KVMEM_NATIVE_DECODE_SEGMENTS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_DECODE_SEGMENTS must be 0 or 1')
     return value == '1' and hasattr(_native, 'decode_segment_identities')
@@ -257,7 +258,7 @@ def layer_map_enabled():
     """KVMEM_NATIVE_DECODE_LAYER_MAP=1: per-layer decode identities straight from
     the frozen pressure frame (parsed once per frame), without building record lists."""
     import os
-    value = os.getenv('KVMEM_NATIVE_DECODE_LAYER_MAP', '0')
+    value = _settings.get('KVMEM_NATIVE_DECODE_LAYER_MAP', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_DECODE_LAYER_MAP must be 0 or 1')
     return value == '1' and hasattr(_native, 'decode_identities_from_map')
@@ -275,7 +276,7 @@ def layer_batch_enabled():
     Equivalence: tests/test_native_decode_segments.py.
     """
     import os
-    value = os.getenv('KVMEM_NATIVE_DECODE_LAYER_BATCH', '0')
+    value = _settings.get('KVMEM_NATIVE_DECODE_LAYER_BATCH', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_DECODE_LAYER_BATCH must be 0 or 1')
     return (value == '1' and hasattr(_native, 'decode_identities_from_maps') and

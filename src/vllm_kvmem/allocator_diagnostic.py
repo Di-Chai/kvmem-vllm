@@ -10,6 +10,7 @@ from threading import get_ident
 import json
 import os
 import time
+from . import settings as _settings
 
 
 FIELDS = tuple(f'{name}.all.{suffix}' for name in (
@@ -203,13 +204,13 @@ class AllocatorDiagnostic:
 
 
 def install(output, device, *, backend=None):
-    enabled = os.getenv('KVMEM_ALLOCATOR_DIAGNOSTIC', '0')
+    enabled = _settings.get('KVMEM_ALLOCATOR_DIAGNOSTIC', '0')
     if enabled not in ('0', '1'):
         raise ValueError('KVMEM_ALLOCATOR_DIAGNOSTIC must be 0 or 1')
     if enabled == '0':
         return None
     output = Path(output)
-    phase_file = os.getenv('KVMEM_ALLOCATOR_DIAGNOSTIC_PHASE_FILE', str(output/'allocator_phase.json'))
+    phase_file = _settings.get('KVMEM_ALLOCATOR_DIAGNOSTIC_PHASE_FILE', str(output/'allocator_phase.json'))
     return AllocatorDiagnostic(output/'allocator_diagnostic.jsonl', backend or TorchAllocator(device), phase_file=phase_file)
 
 

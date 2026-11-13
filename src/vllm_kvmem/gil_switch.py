@@ -8,13 +8,14 @@ A shorter interval bounds those waits. Thread scheduling only: no numerical effe
 """
 import os
 import sys
+from . import settings as _settings
 
 _MIN_US, _MAX_US = 50, 100_000
 
 
 def configured():
     """The configured interval in seconds, or None when unset (keep the default)."""
-    value = os.getenv('KVMEM_GIL_SWITCH_INTERVAL_US', '')
+    value = _settings.get('KVMEM_GIL_SWITCH_INTERVAL_US', '')
     if value == '':
         return None
     if not value.isdigit() or not _MIN_US <= int(value) <= _MAX_US:
@@ -36,7 +37,7 @@ def name_threads():
     on also gets its Python name as its OS thread name (Linux PR_SET_NAME, 15
     bytes), so system profilers can attribute CPU time and GIL waits to e.g.
     kvmem-refresh_0. Thread names only; no effect on any result."""
-    value = os.getenv('KVMEM_DIAG_THREAD_NAMES', '0')
+    value = _settings.get('KVMEM_DIAG_THREAD_NAMES', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_DIAG_THREAD_NAMES must be 0 or 1')
     import threading
@@ -63,7 +64,7 @@ def load_config():
     Python for hold_ms at a time, sleeping between bursts so that it holds the
     GIL for about `duty` of wall time. Measures how throughput responds to
     background GIL holding; never changes any computed result. None when unset."""
-    value = os.getenv('KVMEM_DIAG_GIL_LOAD', '')
+    value = _settings.get('KVMEM_DIAG_GIL_LOAD', '')
     if value == '':
         return None
     try:

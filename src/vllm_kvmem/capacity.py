@@ -8,6 +8,7 @@ Execution remains synchronous, APC-off, TP=1.
 """
 import os
 from .window_manager import WorkingSetManager
+from . import settings as _settings
 
 
 class ReservedKVCacheManager:
@@ -177,7 +178,7 @@ class ReservedKVCacheManager:
             command = transaction[0] if transaction is not None else None
             # Opt-in zero-replay prefill pressure: the boundary block is not
             # replayed; the refresh window rebuild owns and releases its pages.
-            replayed = (0 if os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
+            replayed = (0 if _settings.get('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0') == '1' and
                         not command_inputs(command) and getattr(command, 'pressure_stage', None) == 'prefill'
                         else count)
             if (rid in scheduled or command is None or not command.asynchronous or

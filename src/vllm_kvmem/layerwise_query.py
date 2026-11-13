@@ -14,6 +14,7 @@ from types import MethodType
 
 import torch
 from .original_rope import enabled as original_rope, record_positions
+from . import settings as _settings
 
 
 def top_set(memory, records, scores, fixed, budget, *, record_index=None):
@@ -52,7 +53,7 @@ def decode_inline_reads():
     I/O pool, whose per-chunk handoffs contend with the engine for the GIL.
     Same bytes in the same staging slots; only the executing thread changes."""
     import os
-    value = os.getenv('KVMEM_DECODE_INLINE_READS', '0')
+    value = _settings.get('KVMEM_DECODE_INLINE_READS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_DECODE_INLINE_READS must be 0 or 1')
     return value == '1'
@@ -60,10 +61,10 @@ def decode_inline_reads():
 class LayerwiseQuery:
     def __init__(self, runner):
         self.runner = runner
-        self.mode = os.environ['KVMEM_LAYERWISE_QUERY_MODE']
+        self.mode = _settings.require('KVMEM_LAYERWISE_QUERY_MODE')
         if self.mode not in ('global', 'sequential'):
             raise ValueError('Expected global or sequential layerwise diagnostic')
-        self.native_batches = os.getenv('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES') == '1'
+        self.native_batches = _settings.get('KVMEM_LAYERWISE_QUERY_NATIVE_BATCHES') == '1'
         if not self.native_batches and (not runner.model_config.enforce_eager or runner._kvmem_graph):
             raise ValueError('Layerwise diagnostic requires an eager native forward')
         if not self.native_batches and runner.vllm_config.scheduler_config.max_num_seqs != 1:
@@ -80,9 +81,9 @@ class LayerwiseQuery:
         self.active = None
         self.finished = set()
         self.path = None
-        self.optimized = os.getenv('KVMEM_LAYERWISE_QUERY_OPTIMIZED') == '1'
-        self.no_probe = os.getenv('KVMEM_LAYERWISE_QUERY_NO_PROBE') == '1'
-        self.mtp_selection = os.getenv('KVMEM_LAYERWISE_QUERY_MTP_SELECTION',
+        self.optimized = _settings.get('KVMEM_LAYERWISE_QUERY_OPTIMIZED') == '1'
+        self.no_probe = _settings.get('KVMEM_LAYERWISE_QUERY_NO_PROBE') == '1'
+        self.mtp_selection = _settings.get('KVMEM_LAYERWISE_QUERY_MTP_SELECTION',
                                        'layer0' if self.no_probe else 'global')
         if self.mtp_selection not in ('global', 'layer0'):
             raise ValueError('Expected global or layer0 MTP selection')
@@ -91,19 +92,19 @@ class LayerwiseQuery:
             raise ValueError('No-probe/layer0 MTP requires optimized sequential Query')
         if self.no_probe and self.mtp_selection != 'layer0':
             raise ValueError('No-probe Query requires layer0 MTP selection')
-        self.packed_assembly = os.getenv('KVMEM_LAYERWISE_PACKED_ASSEMBLY') == '1'
-        self.prepared_index = os.getenv('KVMEM_LAYERWISE_PREPARED_INDEX') == '1'
+        self.packed_assembly = _settings.get('KVMEM_LAYERWISE_PACKED_ASSEMBLY') == '1'
+        self.prepared_index = _settings.get('KVMEM_LAYERWISE_PREPARED_INDEX') == '1'
         # Query-local metadata only; native ranking and KV execution stay unchanged.
-        record_index = os.getenv('KVMEM_LAYERWISE_QUERY_RECORD_INDEX', '0')
+        record_index = _settings.get('KVMEM_LAYERWISE_QUERY_RECORD_INDEX', '0')
         if record_index not in ('0', '1'):
             raise ValueError('Query record indexing must be 0 or 1')
         self.record_index = record_index == '1'
         # Execution candidate remains disabled until full-prefix byte and
         # output equivalence plus matched serving measurements pass.
         self.direct_prefix_restore = False
-        self.batched_reads = os.getenv('KVMEM_LAYERWISE_BATCHED_READS') == '1'
-        self.paired_reads = os.getenv('KVMEM_LAYERWISE_PAIRED_READS') == '1'
-        paired_gather = os.getenv('KVMEM_LAYERWISE_QUERY_PAIRED_GATHER', '0')
+        self.batched_reads = _settings.get('KVMEM_LAYERWISE_BATCHED_READS') == '1'
+        self.paired_reads = _settings.get('KVMEM_LAYERWISE_PAIRED_READS') == '1'
+        paired_gather = _settings.get('KVMEM_LAYERWISE_QUERY_PAIRED_GATHER', '0')
         if paired_gather not in ('0', '1'):
             raise ValueError('Query paired gathering must be 0 or 1')
         self.paired_gather = paired_gather == '1'
@@ -115,7 +116,7 @@ class LayerwiseQuery:
             raise ValueError('Batched layer reads require optimized Query execution')
         if self.prepared_index and not self.optimized:
             raise ValueError('Prepared layer index requires optimized Query execution')
-        self.score_backend = os.getenv('KVMEM_LAYERWISE_QUERY_SCORE_BACKEND', 'legacy')
+        self.score_backend = _settings.get('KVMEM_LAYERWISE_QUERY_SCORE_BACKEND', 'legacy')
         if self.score_backend not in ('legacy', 'tiled'):
             raise ValueError('Query score backend must be legacy or tiled')
         if self.score_backend != 'legacy' and (
@@ -123,7 +124,7 @@ class LayerwiseQuery:
             raise ValueError('Query score backend override requires prepared optimized sequential Query')
         for attribute, name in (('resident_values', 'KVMEM_LAYERWISE_QUERY_RESIDENT_V'),
                                 ('lazy_reader', 'KVMEM_LAYERWISE_QUERY_LAZY_READER')):
-            value = os.getenv(name, '0')
+            value = _settings.get(name, '0')
             if value not in ('0', '1'):
                 raise ValueError(name+' must be 0 or 1')
             setattr(self, attribute, value == '1')
@@ -136,8 +137,8 @@ class LayerwiseQuery:
             raise ValueError('Query transport candidates and experimental paired gather require separate qualification')
         if self.packed_assembly and (not self.optimized or original_rope()):
             raise ValueError('Packed layer assembly requires optimized compact-position execution')
-        self.diagnostics = not self.optimized or os.getenv('KVMEM_LAYERWISE_QUERY_DIAGNOSTICS') == '1'
-        stage_profile = os.getenv('KVMEM_QUERY_STAGE_PROFILE', '0')
+        self.diagnostics = not self.optimized or _settings.get('KVMEM_LAYERWISE_QUERY_DIAGNOSTICS') == '1'
+        stage_profile = _settings.get('KVMEM_QUERY_STAGE_PROFILE', '0')
         if stage_profile not in ('0', '1'):
             raise ValueError('Query stage profiling must be 0 or 1')
         self.stage_profile = stage_profile == '1'
@@ -146,7 +147,7 @@ class LayerwiseQuery:
         self.buffered_events = []
         self._emit_lock = threading.RLock()
         self.deferred_writer = None
-        deferred_evidence = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE', '0')
+        deferred_evidence = _settings.get('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE', '0')
         if deferred_evidence not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_DEFERRED_EVIDENCE must be 0 or 1')
         if deferred_evidence == '1':
@@ -154,7 +155,7 @@ class LayerwiseQuery:
             self.deferred_writer = DeferredEvidence(self)
         self.active_owners = {}
         self.pressure = None
-        if os.getenv('KVMEM_LAYERWISE_PREFILL_PRESSURE') == '1':
+        if _settings.get('KVMEM_LAYERWISE_PREFILL_PRESSURE') == '1':
             from .layerwise_pressure import LayerwisePrefillPressure
             self.pressure = runner._kvmem_layerwise_pressure = LayerwisePrefillPressure(self)
 

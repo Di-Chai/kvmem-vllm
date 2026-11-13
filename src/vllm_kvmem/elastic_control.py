@@ -7,12 +7,13 @@ import hmac
 import json
 import os
 from pathlib import Path
+from . import settings as _settings
 
 
 class ElasticControlMiddleware:
     def __init__(self, app):
         self.app = app
-        self.key = Path(os.environ['KVMEM_ELASTIC_ADMIN_FILE']).read_text().strip()
+        self.key = Path(_settings.require('KVMEM_ELASTIC_ADMIN_FILE')).read_text().strip()
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http' or scope['path'] != '/internal/kvmem/cache/reset':

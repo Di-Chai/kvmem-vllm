@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import time
+from . import settings as _settings
 
 try:                                    # vLLM's logger prints in the engine process
     from vllm.logger import init_logger
@@ -30,7 +31,7 @@ def tiering_prefetch():
     session's promotion when its next turn arrives at the scheduler, so it
     overlaps the request's queue wait. 0 promotes only when its restore is
     admitted. Same records, same bytes; only the timing moves."""
-    value = os.getenv('KVMEM_TIERING_PREFETCH', '1')
+    value = _settings.get('KVMEM_TIERING_PREFETCH', '1')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_TIERING_PREFETCH must be 0 or 1')
     return value == '1'
@@ -42,7 +43,7 @@ def tiering_queue():
     vLLM's waiting queue -- the connector reports no matched tokens yet -- and
     holds no GPU slot until the worker reports it back in RAM. 0 admits it at
     once and lets its restore wait on the promotion inside a GPU slot."""
-    value = os.getenv('KVMEM_TIERING_QUEUE', '1')
+    value = _settings.get('KVMEM_TIERING_QUEUE', '1')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_TIERING_QUEUE must be 0 or 1')
     return value == '1'
@@ -52,7 +53,7 @@ def tiering_threads():
     """KVMEM_TIERING_THREADS (default 8, capped at the core count): parallel
     record I/O per session spill/promotion (pread/pwrite and SHA-256 release
     the GIL). Same records, same bytes."""
-    value = os.getenv('KVMEM_TIERING_THREADS', '8')
+    value = _settings.get('KVMEM_TIERING_THREADS', '8')
     if not value.isdigit() or not 1 <= int(value) <= 64:
         raise ValueError('KVMEM_TIERING_THREADS must be an integer in [1, 64]')
     cores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 1)

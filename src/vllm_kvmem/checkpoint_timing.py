@@ -3,10 +3,11 @@ from contextlib import contextmanager
 import json
 import os
 import time
+from . import settings as _settings
 
 
 def async_checkpoint_capture(runner=None):
-    value = os.getenv('KVMEM_ASYNC_CHECKPOINT_CAPTURE')
+    value = _settings.get('KVMEM_ASYNC_CHECKPOINT_CAPTURE')
     if value is None:
         config = getattr(getattr(runner, 'vllm_config', None), 'kv_transfer_config', None)
         extra = getattr(config, 'kv_connector_extra_config', {}) or {}

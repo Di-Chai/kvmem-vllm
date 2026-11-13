@@ -37,26 +37,27 @@ from copy import copy
 from dataclasses import dataclass
 
 import torch
+from . import settings as _settings
 
 BLOCK = 32
 
 
 def enabled():
-    value = os.getenv('KVMEM_LAYER0_FAST', '0')
+    value = _settings.get('KVMEM_LAYER0_FAST', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYER0_FAST must be 0 or 1')
     return value == '1'
 
 
 def max_owners():
-    value = os.getenv('KVMEM_LAYER0_FAST_MAX_OWNERS', '2')
+    value = _settings.get('KVMEM_LAYER0_FAST_MAX_OWNERS', '2')
     if not value.isdigit() or not 1 <= int(value) <= 64:
         raise ValueError('KVMEM_LAYER0_FAST_MAX_OWNERS must be an integer in [1, 64]')
     return int(value)
 
 
 def fast_layers():
-    value = os.getenv('KVMEM_LAYER0_FAST_LAYERS', '1')
+    value = _settings.get('KVMEM_LAYER0_FAST_LAYERS', '1')
     if not value.isdigit() or not 1 <= int(value) <= 16:
         raise ValueError('KVMEM_LAYER0_FAST_LAYERS must be an integer in [1, 16]')
     return int(value)

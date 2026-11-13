@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from .capture import capture_to
+from . import settings as _settings
 
 
 PRIVATE_PROMPT = (
@@ -229,7 +230,7 @@ def guided_query(runner, original, source, index, begin, reserve, max_tokens, *,
     options = runner._kvmem_capture_runtime.options
     backend = getattr(options,'guided_query_backend','eager')
     enabled = backend == 'cuda_graph' and getattr(runner,'_kvmem_graph',False)
-    graph = PrivateDecodeGraph(measure_gpu=os.environ.get('KVMEM_VERIFY_SESSION_RESTORE') == '1')
+    graph = PrivateDecodeGraph(measure_gpu=_settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1')
     if backend == 'cuda_graph' and not enabled:
         graph.fallback = 'native-full-graph-disabled'
     decode_batch = None
@@ -332,7 +333,7 @@ def guided_query(runner, original, source, index, begin, reserve, max_tokens, *,
         return int(token.item()),q.clone()
 
     try:
-        audit = enabled and os.environ.get('KVMEM_VERIFY_SESSION_RESTORE') == '1'
+        audit = enabled and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1'
         initial = None
         if audit:
             from .native_state import NativeRecurrentState

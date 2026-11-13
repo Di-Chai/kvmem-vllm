@@ -1,6 +1,7 @@
 """qw3 prefill mass/exposure policy, keyed by logical history, never GPU slots."""
 import math
 import os
+from . import settings as _settings
 
 
 class PrefillHistory:
@@ -8,7 +9,7 @@ class PrefillHistory:
         self.options = options
         self.values = {}
         self.end = self.samples = self.chunks = 0
-        flag = os.getenv('KVMEM_NATIVE_PREFILL_COMMIT',
+        flag = _settings.get('KVMEM_NATIVE_PREFILL_COMMIT',
                          '1' if getattr(options, 'native_prefill_commit', True) else '0')
         if flag not in ('0', '1'):
             raise ValueError('KVMEM_NATIVE_PREFILL_COMMIT must be 0 or 1')
@@ -215,7 +216,7 @@ def _native_lookups():
 
 
 def single_pick():
-    value = os.getenv('KVMEM_PRESSURE_SINGLE_PICK', '0')
+    value = _settings.get('KVMEM_PRESSURE_SINGLE_PICK', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_SINGLE_PICK must be 0 or 1')
     return value == '1'

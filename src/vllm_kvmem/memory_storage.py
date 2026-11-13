@@ -13,6 +13,7 @@ import time
 
 from . import _native
 from .storage import AsyncArchive
+from . import settings as _settings
 
 CPU_REGION_GATHER_PARALLEL_MIN_BYTES = 32 * 1024**2
 
@@ -23,7 +24,7 @@ def region_gather_parallel_min_bytes():
     worker copies a disjoint record range with the same native routine, so the
     bytes are identical; only the copy's latency on the refresh path changes."""
     import os
-    value = os.getenv('KVMEM_CPU_REGION_GATHER_PARALLEL_MIN_MIB')
+    value = _settings.get('KVMEM_CPU_REGION_GATHER_PARALLEL_MIN_MIB')
     if value is None:
         return globals()['CPU_REGION_GATHER_PARALLEL_MIN_BYTES']   # read at call time
     if not value.isdigit() or not 1 <= int(value) <= 1024:
@@ -39,7 +40,7 @@ def _skip_digest():
     must only enable this with verify_archive_on_finish=False.
     """
     import os
-    return os.getenv('KVMEM_ARCHIVE_SKIP_DIGEST') == '1'
+    return _settings.get('KVMEM_ARCHIVE_SKIP_DIGEST') == '1'
 
 
 class SplitHistoricalIndexOwner:

@@ -16,6 +16,7 @@ from .terminal import TerminalPrefix
 from .archive_admission import ArchiveCapacity
 from .session_control import SessionCommands
 from .request_swap_worker import SwapCommand
+from . import settings as _settings
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.cancelled = set()
         self.cancel_updates = set()
         self.terminal_prefixes = {}
-        self.bounded_target = os.getenv('KVMEM_BOUNDED_TARGET') == '1'
+        self.bounded_target = _settings.get('KVMEM_BOUNDED_TARGET') == '1'
         self.worker_jobs = {}
         self.worker_completions = []
         self.worker_selected_windows = {}
@@ -133,7 +134,7 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         repository_gc = options.get('repository_gc', False)
         if type(self.async_retirement) is not bool or type(repository_gc) is not bool:
             raise ValueError('Retirement and repository GC options must be boolean')
-        if (self.async_retirement or repository_gc) and os.getenv('KVMEM_BOUNDED_TARGET') != '1':
+        if (self.async_retirement or repository_gc) and _settings.get('KVMEM_BOUNDED_TARGET') != '1':
             raise ValueError('Retirement/GC requires bounded authority admission')
         if self.async_retirement or repository_gc or self.physical_retirement:
             from .engine_api import require_contract
@@ -166,9 +167,9 @@ class KVMemConnector(KVConnectorBase_V1, SupportsHMA):
         self.held_captures = set()      # opt-in KVMEM_HELD_P_CAPTURE (scheduler side)
         self.publication_live = None
         if (self.bounded_target and role == KVConnectorRole.SCHEDULER
-                and kv_cache_config is not None and os.getenv('KVMEM_RUNNER_PROBE_DIR')):
+                and kv_cache_config is not None and _settings.get('KVMEM_RUNNER_PROBE_DIR')):
             from .cache_manifest import write_mean_k_geometry
-            write_mean_k_geometry(vllm_config, kv_cache_config, os.environ['KVMEM_RUNNER_PROBE_DIR'])
+            write_mean_k_geometry(vllm_config, kv_cache_config, _settings.require('KVMEM_RUNNER_PROBE_DIR'))
 
     def queue(self, command):
         if command.request_id in self.pending:

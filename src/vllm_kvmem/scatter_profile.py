@@ -6,6 +6,7 @@ only: cProfile inflates Python-heavy code, so compare shares, not absolute time.
 """
 import contextlib
 import os
+from . import settings as _settings
 
 _profile = None
 _items = 0
@@ -14,7 +15,7 @@ _items = 0
 @contextlib.contextmanager
 def profiled(runtime):
     global _profile, _items
-    if os.getenv('KVMEM_SCATTER_CPROFILE') != '1':
+    if _settings.get('KVMEM_SCATTER_CPROFILE') != '1':
         yield
         return
     import cProfile
@@ -33,7 +34,7 @@ def profiled(runtime):
 def _dump():
     import io
     import pstats
-    directory = os.getenv('KVMEM_RUNNER_PROBE_DIR')
+    directory = _settings.get('KVMEM_RUNNER_PROBE_DIR')
     if not directory or _profile is None:
         return
     out = io.StringIO()

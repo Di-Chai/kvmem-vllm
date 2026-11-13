@@ -11,6 +11,7 @@ import os
 import time
 
 import torch
+from . import settings as _settings
 
 
 @dataclass
@@ -27,7 +28,7 @@ def restore_stream_priority():
     """Opt-in KVMEM_RESTORE_STREAM_PRIORITY=1: restore copies and re-RoPE kernels run on
     a high-priority CUDA stream, so a swap-in's short kernels are not queued behind the
     running batch's forward. Scheduling only: the same kernels and bytes."""
-    value = os.getenv('KVMEM_RESTORE_STREAM_PRIORITY', '0')
+    value = _settings.get('KVMEM_RESTORE_STREAM_PRIORITY', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_STREAM_PRIORITY must be 0 or 1')
     if value == '0':
@@ -39,7 +40,7 @@ def restore_stream_priority():
 def restore_timing_enabled():
     """Opt-in KVMEM_RESTORE_TIMING=1 (diagnostic): async_restore.jsonl rows carry GPU
     phase times (main-stream wait, assembly, model upload) and host copy times."""
-    value = os.getenv('KVMEM_RESTORE_TIMING', '0')
+    value = _settings.get('KVMEM_RESTORE_TIMING', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_RESTORE_TIMING must be 0 or 1')
     return value == '1'

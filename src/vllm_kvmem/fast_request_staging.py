@@ -22,6 +22,7 @@ import os
 
 import numpy as np
 import torch
+from . import settings as _settings
 
 
 # sha256 of inspect.getsource() of the vLLM functions whose behaviour the
@@ -36,7 +37,7 @@ _SOURCES = {
 
 
 def enabled():
-    value = os.getenv('KVMEM_FAST_REQUEST_STAGING', '0')
+    value = _settings.get('KVMEM_FAST_REQUEST_STAGING', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_FAST_REQUEST_STAGING must be 0 or 1')
     return value == '1'

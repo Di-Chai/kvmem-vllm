@@ -22,6 +22,7 @@ import threading
 import numpy as np
 
 from .buffered_prefill_attention import BufferedPrefillHistory, require_batch_accept
+from . import settings as _settings
 
 # Bounds the pinned score downloads a long run of unselected spans can retain.
 MAX_PENDING = 64
@@ -31,7 +32,7 @@ _FIELDS = ('_buffered_state', 'end', 'samples', 'chunks', 'successful_buffered_c
 
 
 def enabled():
-    value = os.getenv('KVMEM_LAYERWISE_PRESSURE_DEFERRED_FOLD', '0')
+    value = _settings.get('KVMEM_LAYERWISE_PRESSURE_DEFERRED_FOLD', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_PRESSURE_DEFERRED_FOLD must be 0 or 1')
     return value == '1'

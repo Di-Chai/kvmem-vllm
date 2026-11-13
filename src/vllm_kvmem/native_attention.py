@@ -24,6 +24,7 @@ import triton
 import triton.language as tl
 
 from .native_attention_build import UnsupportedNativeStats, source_overlay, prefill_module, xqa_module
+from . import settings as _settings
 
 
 def statistic_layer_names(runner, options):
@@ -141,7 +142,7 @@ def batched_arm():
     """KVMEM_NATIVE_ARM_BATCHED: arm() builds its row lists in bulk and clears every
     layer's LSE rows with one launch over a stacked buffer (same values written)."""
     import os
-    value = os.getenv('KVMEM_NATIVE_ARM_BATCHED', '0')
+    value = _settings.get('KVMEM_NATIVE_ARM_BATCHED', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_ARM_BATCHED must be 0 or 1')
     return value == '1'
@@ -326,7 +327,7 @@ def _batched_select():
     """Opt-in KVMEM_NATIVE_SCORE_BATCHED_SELECT=1 (read once): see NativeAttentionStats.score."""
     global _BATCHED_SELECT
     if _BATCHED_SELECT is None:
-        value = os.getenv('KVMEM_NATIVE_SCORE_BATCHED_SELECT', '0')
+        value = _settings.get('KVMEM_NATIVE_SCORE_BATCHED_SELECT', '0')
         if value not in ('0', '1'):
             raise ValueError('KVMEM_NATIVE_SCORE_BATCHED_SELECT must be 0 or 1')
         _BATCHED_SELECT = value == '1'
@@ -359,7 +360,7 @@ class NativeAttentionStats:
         from .defaults import legacy
         default_quad = getattr(options, 'action_native_prefill_static_quad', False) or (
             self.static_prefill_enabled and not legacy())
-        flag = os.getenv('KVMEM_NATIVE_PREFILL_STATIC_QUAD', '1' if default_quad else '0')
+        flag = _settings.get('KVMEM_NATIVE_PREFILL_STATIC_QUAD', '1' if default_quad else '0')
         if flag not in ('0', '1'):
             raise ValueError('KVMEM_NATIVE_PREFILL_STATIC_QUAD must be 0 or 1')
         self.static_quad_enabled = flag == '1'
@@ -396,7 +397,7 @@ class NativeAttentionStats:
         self.unavailable = False
         capability = torch.cuda.get_device_capability()
         self.fa2_only = capability == (8, 0)
-        if os.getenv('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED') == '1':
+        if _settings.get('KVMEM_NATIVE_ATTENTION_FORCE_UNSUPPORTED') == '1':
             # Frozen campaigns use this switch to reproduce the original fallback receipt.
             self.disabled = 'unsupported_architecture_requires_sm12x'
         elif not self.fa2_only and capability[0] != 12:

@@ -10,6 +10,7 @@ import hashlib
 import os
 
 import torch
+from . import settings as _settings
 
 
 def coalesced_copies():
@@ -17,7 +18,7 @@ def coalesced_copies():
     (K and V together, physical byte order) and copy every run of adjacent rows
     that is one contiguous region with a single copy. Same bytes, same places;
     no GPU staging (a run is only merged when it is already contiguous)."""
-    value = os.getenv('KVMEM_SWAP_COALESCED_COPY', '0')
+    value = _settings.get('KVMEM_SWAP_COALESCED_COPY', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_SWAP_COALESCED_COPY must be 0 or 1')
     return value == '1'

@@ -14,13 +14,14 @@ from typing import Protocol
 
 from . import _native
 from .config import KVMemConfig
+from . import settings as _settings
 
 
 
 def _native_publish_selection():
     """KVMEM_NATIVE_PUBLISH_SELECTION=1: RequestMemory._publish_selection's mapping
     loop runs as one native call (same store calls and order)."""
-    value = os.getenv('KVMEM_NATIVE_PUBLISH_SELECTION', '0')
+    value = _settings.get('KVMEM_NATIVE_PUBLISH_SELECTION', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_NATIVE_PUBLISH_SELECTION must be 0 or 1')
     if value == '0':
@@ -35,7 +36,7 @@ class Fence(Protocol):
 
 
 def _native_lookups():
-    return os.getenv('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0') == '1'
+    return _settings.get('KVMEM_PRESSURE_NATIVE_LOOKUPS', '0') == '1'
 
 
 class Phase(Enum):

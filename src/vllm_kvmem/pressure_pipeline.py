@@ -10,6 +10,7 @@ from functools import wraps
 import os
 from threading import Condition
 import time
+from . import settings as _settings
 
 
 class LayerMaterialization:
@@ -612,7 +613,7 @@ def dispatch_batch_members():
     """KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS=1: an outstanding materialization
     forces Python execution only for batches that contain its owner. Default
     off: any outstanding materialization disables FULL graph replay."""
-    value = os.getenv('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', '0')
+    value = _settings.get('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PIPELINE_DISPATCH_BATCH_MEMBERS must be 0 or 1')
     return value == '1'
@@ -622,7 +623,7 @@ def fresh_handoff_wait():
     """KVMEM_PRESSURE_HANDOFF_FRESH_WAIT=0: post-forward does not wait for the
     plan of a producer it has just submitted (results are identical; only the
     boundary at which the handoff is acknowledged changes). Default 1."""
-    value = os.getenv('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '1')
+    value = _settings.get('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT', '1')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_PRESSURE_HANDOFF_FRESH_WAIT must be 0 or 1')
     return value == '1'
@@ -631,7 +632,7 @@ def fresh_handoff_wait():
 def swaps_enabled():
     """KVMEM_LAYERWISE_PIPELINE_SWAPS: run the pipeline with incremental GPU
     admission and exact layerwise request swaps (default off: static only)."""
-    value = os.getenv('KVMEM_LAYERWISE_PIPELINE_SWAPS', '0')
+    value = _settings.get('KVMEM_LAYERWISE_PIPELINE_SWAPS', '0')
     if value not in ('0', '1'):
         raise ValueError('KVMEM_LAYERWISE_PIPELINE_SWAPS must be 0 or 1')
     return value == '1'

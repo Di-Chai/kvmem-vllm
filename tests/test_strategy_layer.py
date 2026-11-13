@@ -369,6 +369,7 @@ def test_the_global_path_runs_a_strategy_object_behind_the_contract():
     records = [record(32 * i) for i in range(4)]
     auth = NS(query_score_mode='mean_k', graph_options=NS(strategy_path='global', strategy_query_scorer='recency'))
     scorer = global_query_scorer(auth)
+    assert auth.query_strategy_name == 'recency'
     scores, mean_scores = scorer(auth, records, None, None, (False, True, True, True), None, False, None)
     assert mean_scores is None and scores[0] == 0 and scores[1] < scores[2] < scores[3]
     with pytest.raises(ValueError, match='public Query only'):

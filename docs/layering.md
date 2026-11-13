@@ -24,11 +24,11 @@ package's contract and registry; the strategy package imports nothing from the r
 ## The contract
 
 `src/vllm_kvmem/strategy/contract.py` defines three roles. A fourth, eviction, is listed
-in the registry but still chosen through `historical_gc.policy`.
+in the registry and chosen through `historical_gc.policy`; the evictors run in native code.
 
 | Role | Decides | Sees | Returns |
 | --- | --- | --- | --- |
-| Query scorer | How relevant each history block is to a Query, per attention layer | The candidate records, which are eligible, the layer's Query rows, the mean-key index | One score per record; 0 for ineligible records |
+| Query scorer | How relevant each history block is to a Query, per attention layer or globally | The candidate records, which are eligible, the Query rows, the mean-key index | One score per record; 0 for ineligible records |
 | Pressure scorer | Which blocks of a full window are worth keeping, per layer | The layer's window rows and its accumulated attention | One score ≥ 0 per row, at least one > 0 |
 | Picker | Which blocks a set of scores selects | Scores, mandatory blocks, token budget | The selected blocks |
 
@@ -43,26 +43,40 @@ Rules every strategy keeps, because serving pipelines work on the strength of th
 Serving checks every result (`check_query_scores`, `check_pressure_scores`, `check_pick`)
 and stops the refresh with a `ContractError` instead of running a selection it cannot trust.
 
+Decisions are made on one of two **paths**. On the **global** path one selection serves
+every layer (`authority.select_for_queries`, `prefill_attention.select_pressure`). On the
+**per-layer** path each attention layer picks its own window (`--layerwise-*` flags). Each
+registry entry declares the paths it runs on and the paths where serving's built-in code
+implements it; serving binds that code to the registry (`registry.bind`), and both paths
+look their strategy up by name.
+
 ## Choosing a strategy
 
 Three profile options under `kvmem`, all defaulting to serving's built-in code:
 
-| Option | Default | Other shipped values |
-| --- | --- | --- |
-| `strategy_query_scorer` | `meank` | `recency` |
-| `strategy_pressure_scorer` | `attention` | `recency` |
-| `strategy_picker` | `native` | none yet |
+| Option | Default | Global path | Per-layer path |
+| --- | --- | --- | --- |
+| `strategy_query_scorer` | `meank` | `meank`, `key_fps`, `recency`, `overlap` (legacy) | `meank`, `recency` |
+| `strategy_pressure_scorer` | `attention` | `attention`, `graph`, `recency` | `attention`, `recency` |
+| `strategy_picker` | `native` | `native` | `native` |
 
-A default name resolves to "no strategy object", and serving runs its existing path
-unchanged, including the fused native pick. The `recency` scorers keep the most recent
-history and ignore content; they are the lower reference for comparisons.
+The launcher records the path in `strategy_path` and refuses a name that does not run on
+it. On the global path these options are the same switch as the older ones:
+`strategy_query_scorer=key_fps` is `query_score_mode=key_fps_4`, and
+`strategy_pressure_scorer=recency` is `pressure_policy=recency`; a conflicting pair is
+refused. A default name resolves to "no strategy object", and serving runs its existing
+path unchanged, including the fused native pick. The `recency` scorers keep the most
+recent history and ignore content; they are the lower reference for comparisons.
 
 A scorer that is not built in still runs on the fast pipeline. Its scores feed the same
 native picker, through the fused native call when that is enabled. Two shortcuts
 implement the built-in strategy only and refuse anything else: pressure batch selection
 and group selection.
 
-`python -m vllm_kvmem.strategy.trace table` prints every registered strategy.
+`python -m vllm_kvmem.capabilities table` prints every registered strategy on every path,
+with its declared needs. At launch, `vllm_kvmem.capabilities.check` refuses a strategy
+whose path or signals the configuration lacks and records the result in `launch.json`
+under `strategy`.
 
 ## Adding a strategy
 
@@ -83,10 +97,16 @@ register(Strategy(PRESSURE_SCORER, 'oldest', OldestFirst, needs=('positions',),
 Then set `"strategy_pressure_scorer": "oldest"` in the profile. A strategy on the hot
 path should be cheap: it runs once per layer per refresh on the refresh thread.
 
+`paths` defaults to the per-layer path. A Query scorer object may also declare the global
+path, where it scores all layers at once (`view.layer` is `None`); global pressure runs
+built-in scorers only.
+
 ## The decision trace
 
-Serving writes each per-layer decision to `capture/layerwise_query.jsonl`.
-`vllm_kvmem.strategy.trace` reads those records into one shape and compares runs:
+Serving writes each per-layer decision to `capture/layerwise_query.jsonl`, each refresh's
+global selection to `capture/bounded_refresh.jsonl` (layer -1) and each historical-GC
+eviction to `capture/historical_gc_evictions.jsonl`. `vllm_kvmem.strategy.trace` reads
+them into one shape (kinds `query`, `pressure`, `evict`) and compares runs:
 
 ```sh
 python -m vllm_kvmem.strategy.trace summary RUN
@@ -97,23 +117,33 @@ This gives each layer its own test:
 
 - **Serving change:** the strategy is unchanged, so the trace and the generated tokens
   must be identical at one request.
-- **Strategy change:** set `strategy_trace_scores` to also record every candidate's score,
-  then study alternatives on the CPU from the recorded run. Later decisions depend on
-  earlier ones, so this screens strategies; finalists still run end to end.
+- **Strategy change:** set `strategy_trace_scores` to also record every candidate's score
+  and what the picker needed (mandatory blocks, budget, sink band), then replay the run on
+  the CPU through other strategies:
+
+  ```sh
+  python -m vllm_kvmem.strategy.replay RUN [--evidence FILE]
+  ```
+
+  It picks every recorded per-layer decision again, first from the recorded scores (which
+  must repeat the recorded choice) and then through every registered scorer the trace can
+  feed. It reports exact repeats, overlap with the recorded blocks and, with `--evidence`,
+  how much of the gold evidence each strategy keeps. Later decisions depend on earlier
+  ones, so this screens strategies; finalists still run end to end. The reference pickers
+  match the native store picker (`tests/test_strategy_replay.py`).
 
 ## What is in place
 
-- The `strategy` package: contract, registry, built-in entries, `recency` scorers, trace reader.
-- Scorer seams on the per-layer path: Query (`layerwise_query.py`) and pressure
-  (`layerwise_pressure.py`). Prefill pressure, the final Query, the agent Query and
-  rolling-decode pressure have run end to end with a non-default scorer, with sessions,
-  restore and historical GC on, at one and at four concurrent sessions.
-- The gate as a tracked command, `benchmarks/gate/gate.py`, with both fixtures.
+- The `strategy` package: contract, registry with paths and native bindings, built-in
+  entries, `recency` scorers, trace reader, offline replay.
+- Query and pressure scorers on both paths, looked up by name; the global path's
+  `query_score_mode` and `pressure_policy` are names for the same entries.
 - Picker seam at `RequestMemory.preview_selection`, the funnel for global and per-layer picks.
-- Four typed options replacing what would have been environment flags.
-- A launch-time check that refuses a scorer the launched path would ignore. The scorer
-  seams exist on the per-layer path only; the global path still follows
-  `query_score_mode` and `pressure_policy`.
+- Launch-time capability checks (`vllm_kvmem.capabilities`) and the generated strategy table.
+- The decision trace: per-layer, global and eviction decisions.
+- `vllm_kvmem.settings`: the one accessor for `KVMEM_*` settings, and profile settings in
+  `system` and `strategy` namespaces over the default-on preset ([settings.md](settings.md)).
+- The gate as a tracked command, `benchmarks/gate/gate.py`, with both fixtures.
 
 ## Remaining steps
 
@@ -149,40 +179,59 @@ decode and several owners, which is where earlier restore bugs appeared.
   graph v1, guidance, Query history and Query token scores stay on the global path, marked
   legacy. The recall-experiment methods are left as they are. Nothing is deleted.
 
-### 3. Port the chosen strategies
+### 3. Port the chosen strategies (done 2026-11-12)
 
-- Each becomes a registered scorer with declared needs.
-- The option branches in `authority.select_for_queries` and
-  `prefill_attention.select_pressure` become registry lookups, so the global path and the
-  per-layer path choose strategies the same way.
-- Extra condition for this step: each ported strategy's own trace is unchanged by the port.
+- Registry entries declare the paths they decide on and where serving's built-in code
+  implements them; serving binds that code to the registry. New entries: Query scorers
+  `key_fps` and `overlap` (legacy), pressure scorer `graph`; `recency` runs on both paths.
+- `authority.select_for_queries` and `prefill_attention.select_pressure` look their scorer
+  up in the registry instead of branching on `query_score_mode` and `pressure_policy`. A
+  Query scorer object (`recency`) runs on the global path behind the contract.
+- On the global path `strategy_query_scorer` and `strategy_pressure_scorer` are the same
+  switch as the older options; the launcher records the path in `strategy_path`.
+- The trace also holds each refresh's global decision, so a global strategy's own trace
+  can be compared. Before and after the port, on the agent fixture: global MeanK, key FPS
+  (also chosen as `strategy_query_scorer=key_fps`), recency pressure, graph pressure and
+  per-layer recency gave the same tokens and decisions.
 
-### 4. Signals by need, capability checks
+### 4. Capability checks (done 2026-11-12); signals by need (not done)
 
-- Serving computes only the signals the chosen strategies declare. A strategy that does
-  not read attention statistics stops paying for them (about 3–6% of GPU time today).
-- One check of declared needs against what the configuration provides replaces the
-  hand-written combination rejections in the launcher, and generates the table from step 2.
+- `vllm_kvmem.capabilities` checks every chosen strategy against the launched path and the
+  signals the configuration produces, and refuses at launch what was refused only at the
+  first refresh. Strategies set through older options that decide only on the global path
+  are reported for a per-layer launch (`launch.json`, `strategy.shared_frame_only`).
+  `python -m vllm_kvmem.capabilities table` generates the strategy table.
+- **Signals by need is not done.** The attention statistics feed the prefill publication
+  pipeline, which requires action and prefill attention, and they are computed inside the
+  attention kernel. A strategy that does not read them (recency) cannot stop paying for
+  them without splitting that pipeline. The launch report lists such costly signals
+  (`unused_signals`).
 
-### 5. Evictors and offline replay
+### 5. Evictors and offline replay (done 2026-11-12)
 
-- Historical-GC policies are registered as evictors and chosen through the registry.
-- Eviction decisions join the trace.
-- A CPU tool replays a trace recorded with `strategy_trace_scores` through another
-  strategy and reports overlap with the recorded choice and, where the benchmark marks
-  it, whether the gold evidence was selected. The trace must also record mandatory
-  blocks and the budget for this.
+- `historical_gc.policy` must name a registered evictor. Evictions are written to
+  `capture/historical_gc_evictions.jsonl` and read as `evict` decisions.
+- With `strategy_trace_scores`, per-layer decisions also record what the picker needed, and
+  `python -m vllm_kvmem.strategy.replay` picks them again on the CPU through other
+  strategies. Its reference pickers equal the native store picker. On recorded runs the
+  recorded scores repeat every per-layer decision: 160 of 160 on the agent fixture and
+  4,400 of 4,400 on the memory benchmark. Recency would keep 89% and 92% of the same
+  pressure blocks, and 77% and 41% of the same Query blocks.
+- Recording scores changes no decision: both fixtures give the same tokens and decisions
+  with and without `strategy_trace_scores`.
 
-### 6. Typed configuration
+### 6. Typed configuration (done 2026-11-12)
 
-- 217 `KVMEM_*` names are read in 94 modules. First route every read through one
-  accessor, with no behavior change.
-- Then move the source from environment variables to two profile namespaces: `system`
-  settings never change output, `strategy` settings may. Environment variables remain as
-  overrides for A/B runs; the default-on table becomes a preset.
-- Extra condition: the effective settings of the reference deployments are unchanged.
+- Every `KVMEM_*` read in the package goes through `vllm_kvmem.settings` (318 reads in 79
+  modules); a test forbids direct reads.
+- A serving profile may carry `settings` with a `preset` (`default-on` or `legacy`) and the
+  namespaces `system` (never changes output) and `strategy` (may change it). The launcher
+  expands them into the server environment; explicit execution flags still override them.
+  Every setting has a namespace ([settings.md](settings.md)).
+- The reference deployments set no profile settings; their effective settings are
+  unchanged.
 
-### 7. Directory moves
+### 7. Directory moves (waiting for the freeze)
 
 - Move modules into one directory per layer, leave import shims at the old paths for one
   release, and extend the import rule to every layer.
@@ -251,7 +300,8 @@ which is local and not part of a source checkout.
 
 | Decision | Recommendation |
 | --- | --- |
-| Move `main` forward to the strategy-layer commit | Yes: it is additive and exact, and other work then builds on the seam |
+| Move `main` forward to the strategy-layer commit | Done: `main` follows every step that passed its gate |
 | Comparison set for the retrieval paper | Adopted for step 3: per-layer MeanK, global MeanK, key-FPS, graph attention, recency, and the eviction policies. Whether the recall-experiment methods join it is open |
+| Signals by need (step 4) | Needs the prefill publication pipeline split from the attention statistics, or a kernel variant without them; decide whether the recency reference is worth that |
 | Legacy experiments | Marked legacy in the audit, not deleted. Deleting needs a list confirmed by the user |
-| When to hold the freeze for step 7 | After steps 1–6 are merged |
+| When to hold the freeze for step 7 | Steps 1–6 are merged. A draft layer map leaves about 116 imports that point the wrong way (55 from core into serving), so step 7 is a refactor as well as a move; it needs a date when the other sessions on this checkout are paused |

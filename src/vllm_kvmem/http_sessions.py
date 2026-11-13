@@ -7,6 +7,7 @@ import json
 import os
 
 from .session_control import session_namespace, session_release_intent
+from . import settings as _settings
 
 
 def validate_session_payload(payload, header):
@@ -20,7 +21,7 @@ def validate_session_payload(payload, header):
         if isinstance(extras, dict) and isinstance(extras.get('session_id'), str):
             session = extras['session_id']
     session_namespace(session, payload.get('cache_salt'))
-    if os.getenv('KVMEM_REQUIRE_OWNED_SESSION') == '1' and not session:
+    if _settings.get('KVMEM_REQUIRE_OWNED_SESSION') == '1' and not session:
         raise ValueError('Block graph requests require an owned session namespace')
     release = session_release_intent(payload.get('kv_transfer_params'), session,
         payload.get('prompt'), payload.get('max_tokens'))
@@ -37,7 +38,7 @@ def normalize_query_plan(payload, session_header=None):
     if fields and 'kvmem_request_plan' in params:
         raise ValueError('Duplicate request plan')
     fields = fields or params.get('kvmem_request_plan')
-    config = os.getenv('KVMEM_REQUEST_PLAN_CONFIG')
+    config = _settings.get('KVMEM_REQUEST_PLAN_CONFIG')
     if fields is not None and not config:
         raise ValueError('Explicit Query planning is not enabled for this backend')
     if not config:

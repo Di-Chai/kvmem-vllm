@@ -16,6 +16,7 @@ from .connector import KVMemConnector, RefreshCommand, RestoreCommand, ControlMe
 from .options import RuntimeOptions
 from .window_manager import WorkingSetManager
 from .admission import QueryPolicy
+from . import settings as _settings
 
 # Placeholder for KVMEM_LIFECYCLE_SNAPSHOT_CACHE (spliced after json.dumps).
 _SESSION_VIEWS_SLOT = '\x00kvmem-session-views\x00'
@@ -44,13 +45,13 @@ class KVMemScheduler(Scheduler):
             raise ValueError("Scheduler refresh transactions require synchronous execution")
         self.draft_contract = None
         if self.vllm_config.speculative_config is not None:
-            if (os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1") or os.getenv("KVMEM_BOUNDED_TARGET") != "1":
+            if (_settings.get("KVMEM_BOUNDED_DFLASH") != "1" and _settings.get("KVMEM_BOUNDED_MTP") != "1") or _settings.get("KVMEM_BOUNDED_TARGET") != "1":
                 raise ValueError("Bounded speculation requires its explicit experimental opt-in")
             from .draft_contract import DraftContract
             self.draft_contract = DraftContract.from_vllm(
                 self.vllm_config, RuntimeOptions.from_vllm(self.vllm_config).memory)
-        self._bounded_target = os.getenv("KVMEM_BOUNDED_TARGET") == "1"
-        if not self._bounded_target and os.getenv("KVMEM_SCHEDULED_REBUILD_PROBE") != "1":
+        self._bounded_target = _settings.get("KVMEM_BOUNDED_TARGET") == "1"
+        if not self._bounded_target and _settings.get("KVMEM_SCHEDULED_REBUILD_PROBE") != "1":
             raise ValueError("Compressed runtime not yet enabled; scheduler currently exposes the explicit identity probe")
         if self._bounded_target:
             from .engine_api import require_contract
@@ -96,25 +97,25 @@ class KVMemScheduler(Scheduler):
         self.prefill_coalesce_with_decode = coalesce_with_decode(
             self.prefill_physical_coalescing and self.prefill_physical_multi_owner)
         self.prefill_physical_max_chunks = options.prefill_physical_max_chunks
-        partial_tail = os.getenv('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL',
+        partial_tail = _settings.get('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL',
                                  '1' if self.prefill_physical_coalescing and not legacy() else '0')
         if partial_tail not in ('0', '1'):
             raise ValueError('KVMEM_PREFILL_PHYSICAL_PARTIAL_TAIL must be 0 or 1')
         if partial_tail == '1' and not self.prefill_physical_coalescing:
             raise ValueError('Partial physical tails require physical prefill coalescing')
         self.prefill_physical_partial_tail = partial_tail == '1'
-        no_replay = os.getenv('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0')
+        no_replay = _settings.get('KVMEM_PREFILL_PRESSURE_NO_REPLAY', '0')
         if no_replay not in ('0', '1'):
             raise ValueError('KVMEM_PREFILL_PRESSURE_NO_REPLAY must be 0 or 1')
         self.prefill_pressure_no_replay = no_replay == '1'
-        min_decoders = os.getenv('KVMEM_PREFILL_CADENCE_MIN_DECODERS', '1')
+        min_decoders = _settings.get('KVMEM_PREFILL_CADENCE_MIN_DECODERS', '1')
         if not min_decoders.isdigit() or not 1 <= int(min_decoders) <= 64:
             raise ValueError('KVMEM_PREFILL_CADENCE_MIN_DECODERS must be an integer in [1, 64]')
         self.prefill_cadence_min_decoders = int(min_decoders)
         # Opt-in KVMEM_PREFILL_DECODE_SHARE: decode-only turns sized by time, not
         # by a step count, so one setting fits short (G4K) and long (G16K) prefill
         # steps. Replaces prefill_cadence; the minimum-decoders gate still applies.
-        share = os.getenv('KVMEM_PREFILL_DECODE_SHARE', '')
+        share = _settings.get('KVMEM_PREFILL_DECODE_SHARE', '')
         self.prefill_decode_share = None
         if share:
             try:
@@ -130,7 +131,7 @@ class KVMemScheduler(Scheduler):
         self._share_previous = None
         # Opt-in KVMEM_PREFILL_DECODE_BURST: decoders never ride prefill steps;
         # their time share is spent in consecutive decode-only steps instead.
-        burst = os.getenv('KVMEM_PREFILL_DECODE_BURST', '0')
+        burst = _settings.get('KVMEM_PREFILL_DECODE_BURST', '0')
         if burst not in ('0', '1'):
             raise ValueError('KVMEM_PREFILL_DECODE_BURST must be 0 or 1')
         if burst == '1' and self.prefill_decode_share is None:
@@ -141,7 +142,7 @@ class KVMemScheduler(Scheduler):
         # prefill is an admitted request with fewer than N prompt tokens left in
         # total (agent tool results, short user turns) and no arrival waits for
         # admission, decoders ride the prefill step instead of being held out.
-        minimum = os.getenv('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS', '0')
+        minimum = _settings.get('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS', '0')
         if not minimum.isdigit() or int(minimum) > 1 << 20:
             raise ValueError('KVMEM_PREFILL_DECODE_BURST_MIN_TOKENS must be an integer in [0, 1048576]')
         self.prefill_burst_min_tokens = int(minimum)
@@ -197,7 +198,7 @@ class KVMemScheduler(Scheduler):
             if options.gpu_memory_admission == 'incremental':
                 from .incremental_capacity import IncrementalKVCacheManager
                 from .request_swap_control import RequestSwapController
-                if (os.getenv('KVMEM_SYSTEMONE_FORK') == '1' or
+                if (_settings.get('KVMEM_SYSTEMONE_FORK') == '1' or
                         (not self.vllm_config.model_config.enforce_eager and not options.request_swap_layerwise) or
                         any(getattr(self.vllm_config.parallel_config, field, 1) != 1 for field in
                             ('tensor_parallel_size', 'pipeline_parallel_size',
@@ -224,11 +225,11 @@ class KVMemScheduler(Scheduler):
             if self.swap_controller is not None:
                 self.swap_controller.bind(self.kv_cache_manager)
                 self.connector.request_swap_pending = self.swap_controller.has_pending_work
-        if os.getenv('KVMEM_SYSTEMONE_FORK') == '1':
+        if _settings.get('KVMEM_SYSTEMONE_FORK') == '1':
             from .systemone_fork import ForkPagePool
             self.connector.systemone_pool = ForkPagePool(self, config)
         self.connector.scheduler_completion = self._complete_refresh
-        schedule_ack = os.getenv('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
+        schedule_ack = _settings.get('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK', '0')
         if schedule_ack not in ('0', '1'):
             raise ValueError('KVMEM_LAYERWISE_PRESSURE_SCHEDULE_ACK must be 0 or 1')
         self._schedule_ack = schedule_ack == '1' and self.vllm_config.parallel_config.tensor_parallel_size == 1
@@ -325,7 +326,7 @@ class KVMemScheduler(Scheduler):
             if options.active_tool_grace_ms:
                 from .tool_grace import ToolGrace
                 tool_grace = ToolGrace(options.active_tool_grace_ms, options.active_tool_max_wait_ms,
-                    output=Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'tool_grace.jsonl')
+                    output=Path(_settings.require('KVMEM_RUNNER_PROBE_DIR')) / 'tool_grace.jsonl')
             wait_model = None
             if options.active_resident_victim == 'expected_wait':
                 from .residency_policy import ReturnGapModel
@@ -345,7 +346,7 @@ class KVMemScheduler(Scheduler):
                 resident_slots=getattr(options, 'resident_restore_slots', 1),
                 cold_busy=lambda: any(isinstance(command, RefreshCommand)
                                       for command, _ in self.transactions.values()),
-                output=Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'restore_admission.jsonl')
+                output=Path(_settings.require('KVMEM_RUNNER_PROBE_DIR')) / 'restore_admission.jsonl')
         self.connector.publication_live = lambda: {
             rid for rid, request in self.requests.items() if request.status is RequestStatus.RUNNING}
         self.offline_policy = None
@@ -359,12 +360,12 @@ class KVMemScheduler(Scheduler):
             if self.policy != SchedulingPolicy.FCFS or any(type(q) is not FCFSRequestQueue for q in self._waiting_queues()):
                 raise ValueError('Offline agent ordering requires the qualified native FCFS queues')
             self.offline_policy = OfflineAgentPolicy(self, options,
-                Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'offline_decisions.jsonl')
+                Path(_settings.require('KVMEM_RUNNER_PROBE_DIR')) / 'offline_decisions.jsonl')
             self.connector.scheduler_step_feedback = self._observe_offline_steps
             self.connector.scheduler_restore_feedback = self.offline_policy.costs.observe_restores
         if options.offline_prefill_coalescing:
             from .prefill_coalescing import OfflinePrefillCoalescer
-            baseline = int(os.environ['KVMEM_PREFILL_CHUNK_TOKENS'])
+            baseline = int(_settings.require('KVMEM_PREFILL_CHUNK_TOKENS'))
             self.prefill_coalescer = OfflinePrefillCoalescer(baseline,
                 options.offline_prefill_max_tokens, config.block_tokens)
             self._coalescing_max_tokens = options.offline_prefill_max_tokens
@@ -452,7 +453,7 @@ class KVMemScheduler(Scheduler):
                 getattr(self, '_lifecycle_finish_generation', 0))
 
     def _write_lifecycle_snapshot(self, *, force=False):
-        if not getattr(self, "_bounded_target", False) or os.getenv("KVMEM_LIFECYCLE_TRACE") != "1":
+        if not getattr(self, "_bounded_target", False) or _settings.get("KVMEM_LIFECYCLE_TRACE") != "1":
             return False
         if not self._snapshot_cadence('resources').due(self._lifecycle_snapshot_identity(), force=force):
             return False
@@ -492,12 +493,12 @@ class KVMemScheduler(Scheduler):
         if sessions is not None:
             report['sessions'] = dict(entries=len(sessions.entries), hits=sessions.hits,
                                       misses=sessions.misses, waits=sessions.waits)
-            cached_views = (os.getenv('KVMEM_LIFECYCLE_SNAPSHOT_CACHE', '0') == '1' and
+            cached_views = (_settings.get('KVMEM_LIFECYCLE_SNAPSHOT_CACHE', '0') == '1' and
                             callable(getattr(sessions, 'snapshot_json', None)))
             # Opt-in: the same bytes, with unchanged idle views not re-encoded.
             report['session_views'] = _SESSION_VIEWS_SLOT if cached_views else sessions.snapshot()
             report['session_owners'] = sessions.owner_snapshot()
-        path = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"])
+        path = Path(_settings.require("KVMEM_RUNNER_PROBE_DIR"))
         temporary = path / "scheduler_resources.tmp"
         text = json.dumps(report)
         if report.get('session_views') is _SESSION_VIEWS_SLOT:
@@ -517,7 +518,7 @@ class KVMemScheduler(Scheduler):
         identity = tuple((stage, tuple(histogram)) for stage, histogram in self._scheduled_queries.items())
         if not self._snapshot_cadence('queries').due(identity, force=force):
             return
-        path = Path(os.environ['KVMEM_RUNNER_PROBE_DIR'])
+        path = Path(_settings.require('KVMEM_RUNNER_PROBE_DIR'))
         temporary = path / 'scheduled_queries.tmp'
         temporary.write_text(json.dumps({"queries": self._scheduled_queries,
             "prefill_cadence": self.prefill_cadence,
@@ -592,13 +593,13 @@ class KVMemScheduler(Scheduler):
         getattr(self, '_deferred_native_padding', {}).pop(request.request_id, None)
         if getattr(self, 'archive_admission', None) is not None:
             self.archive_admission.forget(request.request_id)
-        if getattr(self, "_bounded_target", False) and os.getenv("KVMEM_LIFECYCLE_TRACE") == "1":
+        if getattr(self, "_bounded_target", False) and _settings.get("KVMEM_LIFECYCLE_TRACE") == "1":
             report = {"request_id": request.request_id, "status": request.status.name,
                       "at": time.perf_counter(), "history_end": request.num_computed_tokens,
                       "in_flight_tokens": request.num_in_flight_tokens,
                       "refresh_pending": request.request_id in self.transactions,
                       "lifetime_reservation_retained": request.request_id in self.kv_cache_manager.reservations}
-            with (Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "scheduler_finished.jsonl").open("a") as stream:
+            with (Path(_settings.require("KVMEM_RUNNER_PROBE_DIR")) / "scheduler_finished.jsonl").open("a") as stream:
                 stream.write(json.dumps(report) + "\n")
         return result
 
@@ -693,7 +694,7 @@ class KVMemScheduler(Scheduler):
                 "groups": [{"group_id": group_id, "blocks": len(manager.req_to_blocks[request_id]),
                             "block_tokens": manager.block_size, "offset": manager.offsets[request_id]}
                            for group_id, manager in self.window_managers.items()]}
-            with (Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "scheduler_refresh.jsonl").open("a") as stream:
+            with (Path(_settings.require("KVMEM_RUNNER_PROBE_DIR")) / "scheduler_refresh.jsonl").open("a") as stream:
                 stream.write(json.dumps(report) + "\n")
 
     def _prefill_refresh_control(self, request, tokens):
@@ -834,7 +835,7 @@ class KVMemScheduler(Scheduler):
                 not atomic_replay):
             tokens = min(tokens, self.prefill_controller.cap(decode_ready=self._decode_ready()))
         if plan is not None and num_computed_tokens < request.num_prompt_tokens:
-            chunk = int(os.getenv('KVMEM_PREFILL_CHUNK_TOKENS','0'))
+            chunk = int(_settings.get('KVMEM_PREFILL_CHUNK_TOKENS','0'))
             if chunk and not atomic_replay:
                 # Ordinary ingestion follows the requested chunk size. The
                 # complete Query remains atomic even when it exceeds this cap.
@@ -974,7 +975,7 @@ class KVMemScheduler(Scheduler):
             if not owners or native_rows <= 0:
                 return
             requests = owners
-            chunk = int(os.getenv('KVMEM_PREFILL_CHUNK_TOKENS', '0'))
+            chunk = int(_settings.get('KVMEM_PREFILL_CHUNK_TOKENS', '0'))
             limit = owner_chunk_limit(len(requests), native_rows,
                 chunk, self.prefill_physical_max_chunks)
             if getattr(self, 'prefill_physical_fill_rows', False):
@@ -1235,7 +1236,7 @@ class KVMemScheduler(Scheduler):
             controls = [(rid, history, count) for rid, (_, history, count) in
                         self.kv_cache_manager.refresh_control_allocations.items()]
             self.kv_cache_manager.validate_refresh_controls(output.num_scheduled_tokens, self.transactions)
-            with (Path(os.environ['KVMEM_RUNNER_PROBE_DIR'])/'refresh_control_allocations.jsonl').open('a') as stream:
+            with (Path(_settings.require('KVMEM_RUNNER_PROBE_DIR'))/'refresh_control_allocations.jsonl').open('a') as stream:
                 for rid, history, count in controls:
                     stream.write(json.dumps(dict(at=time.monotonic(),request_id=rid,
                         history=history,replay_tokens=count,public_peer_count=len(output.num_scheduled_tokens),
@@ -1375,7 +1376,7 @@ class KVMemScheduler(Scheduler):
             eligible_decode_ids=self._coalescing_eligible_decode,
             scheduled_decode_tokens=decodes, public_prefill_tokens=prefills,
             atomic_prefill_tokens=atomics, baseline_tokens=coalescer.baseline)
-        with (Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'coalescing_decisions.jsonl').open('a') as stream:
+        with (Path(_settings.require('KVMEM_RUNNER_PROBE_DIR')) / 'coalescing_decisions.jsonl').open('a') as stream:
             stream.write(json.dumps(row) + '\n')
 
     def _phase_eligible(self, request):
@@ -1495,7 +1496,7 @@ class KVMemScheduler(Scheduler):
         if (self._phase_decision.changed or prefills or self._phase_maintenance or
                 now - getattr(self, '_phase_last_log', float('-inf')) >= 1.):
             self._phase_last_log = now
-            path = Path(os.environ['KVMEM_RUNNER_PROBE_DIR']) / 'phase_decisions.jsonl'
+            path = Path(_settings.require('KVMEM_RUNNER_PROBE_DIR')) / 'phase_decisions.jsonl'
             with path.open('a') as stream:
                 stream.write(json.dumps(dict(at=now, step=self.current_step,
                     decision=vars(self._phase_decision), public_prefill_tokens=prefills,
@@ -1736,8 +1737,8 @@ class KVMemScheduler(Scheduler):
         if worker is self.connector:
             raise RuntimeError('Schedule-time ACK found the scheduler connector, not the worker')
         wait = 0.
-        idle_ms = float(os.getenv('KVMEM_LAYERWISE_PRESSURE_IDLE_ACK_WAIT_MS', '0'))
-        promise = os.getenv('KVMEM_LAYERWISE_PRESSURE_PROMISE', '0') == '1'
+        idle_ms = float(_settings.get('KVMEM_LAYERWISE_PRESSURE_IDLE_ACK_WAIT_MS', '0'))
+        promise = _settings.get('KVMEM_LAYERWISE_PRESSURE_PROMISE', '0') == '1'
         idle = bool((idle_ms or promise) and all(r.request_id in self.transactions for r in self.running)
                     and not any(self._waiting_queues()))
         if idle_ms and idle:
@@ -1774,7 +1775,7 @@ class KVMemScheduler(Scheduler):
             self._prepare_logical_prefill()
             self._prepare_phase()
             self._prepare_prefill_budget()
-            armed = Path(os.environ["KVMEM_RUNNER_PROBE_DIR"]) / "armed"
+            armed = Path(_settings.require("KVMEM_RUNNER_PROBE_DIR")) / "armed"
             if not getattr(self, "_bounded_target", False) and not self._probe_submitted and armed.is_file():
                 for request in self.running:
                     if request.num_computed_tokens == request.num_prompt_tokens and request.num_output_tokens:

@@ -21,6 +21,7 @@ from .native_state import NativeRecurrentState
 from .state import StateCheckpoints
 from .window_assembly import NativeWindowAssembler
 from .window_batch import WindowBatchAdapter
+from . import settings as _settings
 
 
 @dataclass
@@ -36,7 +37,7 @@ class QueryJob:
 def install_bounded_target(runner):
     from .options import RuntimeOptions
     options = RuntimeOptions.from_vllm(runner.vllm_config)
-    if os.getenv('KVMEM_LAYERWISE_QUERY_MODE') and not options.async_refresh:
+    if _settings.get('KVMEM_LAYERWISE_QUERY_MODE') and not options.async_refresh:
         raise ValueError('Layerwise selection requires the asynchronous refresh lifecycle')
     if options.request_swap_layerwise:
         query = getattr(runner, '_kvmem_layerwise_query', None)
@@ -49,7 +50,7 @@ def install_bounded_target(runner):
         validate_modes(query, pressure)
     draft_contract = None
     if runner.speculative_config is not None:
-        if os.getenv("KVMEM_BOUNDED_DFLASH") != "1" and os.getenv("KVMEM_BOUNDED_MTP") != "1":
+        if _settings.get("KVMEM_BOUNDED_DFLASH") != "1" and _settings.get("KVMEM_BOUNDED_MTP") != "1":
             raise ValueError("Bounded speculation requires explicit DFlash2 opt-in")
         from .draft_contract import DraftContract
         from .options import RuntimeOptions
@@ -58,7 +59,7 @@ def install_bounded_target(runner):
     if (runner.vllm_config.max_concurrent_batches != 1 or
             runner.vllm_config.cache_config.enable_prefix_caching or
             runner.vllm_config.cache_config.mamba_cache_mode != "none" or
-            os.getenv("KVMEM_WINDOW_METADATA") != "1" or not runner._kvmem_continuous):
+            _settings.get("KVMEM_WINDOW_METADATA") != "1" or not runner._kvmem_continuous):
         raise ValueError("Bounded execution requires synchronous APC-off archive/window execution")
     # Private read transactions must bypass the public refresh-job wrapper.
     runner._kvmem_private_forward = runner.model.forward
@@ -86,7 +87,7 @@ def install_bounded_target(runner):
             return original(*args, **kwargs)
         batch = runner._kvmem_last_batch
         started_at = time.perf_counter()
-        lifecycle_trace = os.getenv("KVMEM_LIFECYCLE_TRACE") == "1"
+        lifecycle_trace = _settings.get("KVMEM_LIFECYCLE_TRACE") == "1"
         if lifecycle_trace:
             active = {"started_at": started_at, "requests": [
                 {"request_id": request_id, "command_id": job.command.command_id,
@@ -147,10 +148,10 @@ def install_bounded_target(runner):
         state_adapter = checkpoints = before = bundle = None
         captured = []
         audit_guided = (options.guided_query_tokens > 0 and
-                        os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1')
+                        _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1')
         guided_draft = []
         rolling_audits = {}
-        if options.rolling_active_window and os.getenv('KVMEM_VERIFY_SESSION_RESTORE') == '1':
+        if options.rolling_active_window and _settings.get('KVMEM_VERIFY_SESSION_RESTORE') == '1':
             from types import SimpleNamespace
             from .rolling_verification import RollingPressureOracle
             for request_id, job in jobs.items():
