@@ -136,15 +136,18 @@ decode and several owners, which is where earlier restore bugs appeared.
   is new; the earlier tool-wait runs used 24K of history and made no selection at all.
 - The gate is a tracked command ([Running the gate](#running-the-gate)).
 
-### 2. Audit and choose
+### 2. Audit and choose (done 2026-11-12)
 
-- A table of every strategy against every pipeline feature: runs, is rejected, or
-  silently falls back. Strategies today: `query_score_mode` (`mean_k`, `overlap_16_8`,
-  `key_fps_4`, optional MeanK quota), guided Query, Query replay, `pressure_policy`
-  (`recency`, `attention`, `graph`), graph scoring v1 and v2, decode scoring scope,
-  historical-GC policies, and the per-layer scorers.
-- Choose the strategies the retrieval paper compares. Only those are ported in step 3;
-  the rest stay on the global path, marked legacy, or are deleted.
+- [strategy-audit.md](strategy-audit.md): every strategy against every path, as runs,
+  rejected (at launch or late) or silent.
+- Main finding: the per-layer path silently ignores every global Query strategy (window
+  overlap, key FPS, the MeanK quota, both graph versions, guidance, Query history, the recall
+  methods). Each shapes only the shared frame, while every attention layer still picks by
+  per-layer MeanK. Five refusals come only at the first refresh.
+- Chosen for step 3, the recommendation below: per-layer and global MeanK, key FPS, graph
+  attention, attention and recency pressure, and the GC eviction policies. Window overlap,
+  graph v1, guidance, Query history and Query token scores stay on the global path, marked
+  legacy. The recall-experiment methods are left as they are. Nothing is deleted.
 
 ### 3. Port the chosen strategies
 
@@ -249,6 +252,6 @@ which is local and not part of a source checkout.
 | Decision | Recommendation |
 | --- | --- |
 | Move `main` forward to the strategy-layer commit | Yes: it is additive and exact, and other work then builds on the seam |
-| Comparison set for the retrieval paper | After the audit; start from per-layer MeanK, global MeanK, key-FPS, graph attention, recency, and the eviction policies |
-| Legacy experiments | Delete the ones that will not be used again; it shrinks every later step |
+| Comparison set for the retrieval paper | Adopted for step 3: per-layer MeanK, global MeanK, key-FPS, graph attention, recency, and the eviction policies. Whether the recall-experiment methods join it is open |
+| Legacy experiments | Marked legacy in the audit, not deleted. Deleting needs a list confirmed by the user |
 | When to hold the freeze for step 7 | After steps 1–6 are merged |
